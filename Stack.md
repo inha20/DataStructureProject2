@@ -1,0 +1,61 @@
+자료구조 리포지토리 - 스택(Stack) 편
+Part 1. 기본 연산
+CreateStack()
+Push()
+Pop()
+Peek()
+Top()
+IsEmpty()
+IsFull()
+Size()
+Clear()
+Part 2. 배열 스택
+ArrayStack()
+Resize()
+DynamicStack()
+Part 3. 연결리스트 스택
+LinkedStack()
+PushNode()
+PopNode()
+Part 4. 대표 활용
+ReverseString()
+BalancedParentheses()
+InfixToPostfix()
+PostfixEvaluation()
+PrefixEvaluation()
+DecimalToBinary()
+BaseConversion()
+Undo()
+BrowserHistory()
+Part 5. DFS
+DepthFirstSearch()
+IterativeDFS()
+MazeSolver()
+TopologicalSort()
+Part 6. 단조 스택
+MonotonicStack()
+NextGreaterElement()
+PreviousGreaterElement()
+LargestRectangle()
+DailyTemperatures()
+StockSpan()
+Part 7. 특수 스택
+MinStack()
+MaxStack()
+TwoStacksInArray()
+MultipleStacks()
+Part 8. 재귀
+CallStack()
+StackFrame()
+TailRecursion()
+RecursionSimulation()
+Part 9. 병렬
+LockFreeStack()
+TreiberStack()
+EliminationBackoffStack()
+Part 10. 연구 주제
+PersistentStack()
+ImmutableStack()
+StackAllocator()
+StackOverflow()
+StackUnwinding()
