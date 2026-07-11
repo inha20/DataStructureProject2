@@ -14,7 +14,110 @@
 
 -----------------------------------문서의 특색 및 리포지토리의 특색-----------------------
 
+[AdvancedDataStructures.md] 이 책의 역할
 
+[AdvancedDataStructures.md] 이 책은 학부 교재의 연장선이라기보다 컴퓨터과학의 최전선으로 가는 안내서가 되면 좋겠어.
 
+[AdvancedDataStructures.md] 예를 들어 마지막 장에 있는 항목들은 최근 연구와 산업에서 실제로 많이 쓰이는 것들이야.
+
+[AdvancedDataStructures.md] HNSW → 벡터 검색(LLM, RAG, 임베딩 검색)
+
+[AdvancedDataStructures.md] FAISSIndex → 대규모 유사도 검색
+
+[AdvancedDataStructures.md] LSMTree → RocksDB, LevelDB, Cassandra
+
+[AdvancedDataStructures.md] AdaptiveRadixTree → 메인 메모리 데이터베이스
+
+[AdvancedDataStructures.md] LearnedIndex → 머신러닝을 이용한 인덱스
+
+[AdvancedDataStructures.md] CacheObliviousBTree → 메모리 계층을 고려한 자료구조
+
+[AdvancedDataStructures.md] 이렇게 구성하면 시리즈 전체가 입문부터 최신 연구까지 이어지는 계단이 되고, 마지막 권은 "자료구조를 더 배우려면 어떤 주제들이 있는가"를 보여주는 로드맵 역할도 할 수 있을 거야.
+
+[Hash.md] 해시는 학부에서는 보통 "HashMap 구현" 정도에서 끝나지만, 실제로는 데이터베이스, 운영체제, 암호학, 분산 시스템까지 이어지는 아주 큰 분야야. 그래서 "대표 코드" 중심으로 목차를 짜면 다음과 같이 구성할 수 있어.
+
+[Hash.md] 자료구조 리포지토리 - 해시(Hash) 편
+
+[Hash.md] 개인적으로 추가하고 싶은 장
+
+[Hash.md] 네 리포지토리는 "구조를 시각적으로 이해한다"는 성격이 강하니까, 마지막에 다음과 같은 장을 넣는 것도 재미있을 것 같아.
+
+[Hash.md] 이런 장은 일반 자료구조 책에서는 거의 다루지 않지만, 해시 테이블 내부에서 실제로 무슨 일이 일어나는지를 그림과 애니메이션으로 설명할 수 있어서 네 리포지토리의 특징을 잘 살릴 수 있을 거야.
+
+[Memory.md] 이 책의 차별점
+
+[Memory.md] 이 책은 단순히 메모리 API를 설명하는 것이 아니라, 프로그램이 실행되는 순간 메모리에서 실제 어떤 일이 일어나는지를 단계별로 시각화하는 데 초점을 맞추면 좋아.
+
+[Memory.md] 예를 들어 malloc() 하나의 장도 다음처럼 구성할 수 있어.
+
+[Memory.md] 함수 호출 전 힙 상태
+
+[Memory.md] 할당 가능한 블록 탐색
+
+[Memory.md] 메타데이터(Header) 생성
+
+[Memory.md] 사용자 포인터 반환
+
+[Memory.md] 할당 후 메모리 레이아웃
+
+[Memory.md] free() 호출 시 Free List 변화
+
+[Memory.md] 단편화가 누적되는 과정
+
+[Memory.md] Memory Pool과의 비교
+
+[Memory.md] 이런 식으로 메모리 상태의 변화를 그림과 애니메이션으로 보여준다면, 기존 자료구조 교재와는 확실히 다른 리포지토리가 될 거야.
+
+[Memory.md] 개인적으로는 지금까지 이야기한 리스트, 스택, 큐, 트리, 그래프, 문자열, 해시 중에서도 이 메모리 편이 가장 독창적이고, 네가 지향하는 '구조를 눈으로 이해하는 컴퓨터공학'이라는 방향성을 가장 잘 보여줄 수 있는 시리즈가 될 가능성이 크다고 생각해.
+
+[Set.md] 이 책에서 특히 강조하면 좋은 주제
+
+[Set.md] 이 시리즈는 단순히 자료구조를 설명하는 것을 넘어서, 집합이라는 추상 개념이 여러 분야에서 어떻게 구현되는지를 보여주면 차별화될 거야.
+
+[Set.md] 예를 들어 하나의 Union() 함수도 다음과 같이 확장할 수 있어.
+
+[Set.md] 수학: 합집합
+
+[Set.md] C++ STL: std::set_union
+
+[Set.md] Python: set.union()
+
+[Set.md] 데이터베이스: UNION
+
+[Set.md] 그래프: Union-Find
+
+[Set.md] 비트마스크: OR 연산
+
+[Set.md] AI: 후보(Label) 집합 병합
+
+[Set.md] 이처럼 하나의 연산을 여러 분야의 구현과 연결해서 설명하면, 네 리포지토리의 "대표 코드 중심"이라는 철학과도 잘 맞고, 독자도 같은 개념이 다양한 분야에서 재사용되는 구조를 자연스럽게 이해할 수 있을 거야.
+
+[Stack.md] 자료구조 리포지토리 - 스택(Stack) 편
+
+[String.md] 문자열(String)은 생각보다 범위가 엄청 넓어. 단순한 문자열 처리부터 컴파일러, 검색엔진, 생물정보학, LLM 토크나이저까지 이어질 수 있어.
+
+[String.md] 네 시리즈라면 "대표 코드" 중심으로 다음과 같이 구성하는 걸 추천해.
+
+[String.md] 자료구조 리포지토리 - 문자열(String) 편
+
+[String.md] 이 목차에서 가장 독창적인 부분
+
+[String.md] 앞에서 만든 다른 시리즈와 달리 문자열은 현대 AI와 가장 자연스럽게 연결되는 분야야.
+
+[String.md] 예를 들어 마지막 장은 일반 자료구조 책에서는 거의 다루지 않지만, 지금 시점에서는 매우 의미 있는 확장이지.
+
+[String.md] BytePairEncoding() → GPT 계열 토크나이저의 핵심 아이디어
+
+[String.md] WordPiece() → BERT 계열
+
+[String.md] SentencePiece() → LLaMA, T5 등에서 널리 사용
+
+[String.md] TokenizeLLM() → 프롬프트가 토큰으로 변환되는 과정
+
+[String.md] EmbeddingLookup() → 토큰이 벡터가 되는 과정
+
+[String.md] Detokenize() → 생성된 토큰이 다시 문자열이 되는 과정
+
+[String.md] 이렇게 하면 "문자열"이라는 전통적인 주제를 컴파일러, 검색엔진, 그리고 생성형 AI까지 하나의 흐름으로 연결하는 시리즈가 될 수 있어. 이는 기존 자료구조 교재와 차별화되는 강점이 될 거야.
 
 -----------------------------------끝--------------------------------------
