@@ -1102,173 +1102,602 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// D* (Stentz 1994) 의 핵심 아이디어 — 목표에서 "역방향으로" 만든 최단 거리 장과 되돌림 포인터 트리를 유지하다가, 간선 비용이 오르면 그 간선을 지나던 "부분 트리" 만 RAISE 로 무효화하고 경계에서부터 LOWER 로 다시 채운다.
+// 로봇이 새 장애물을 발견할 때마다 전체를 다시 계획하지 않고 영향받은 칸만 고친다. 원 논문의 상태 태그(NEW/OPEN/CLOSED)와 k 값 관리는 복잡해서 후속작인 D* Lite 로 대체되었다. (D* 관점의 요약, 정본은 PathFinding.md Part 6 DStarLite)
+typedef std::vector<std::string> G;
+std::vector<int> bfs(const G& w, int goal) { int R = w.size(), C = w[0].size(); std::vector<int> d(R * C, -1); std::queue<int> q; d[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
+        for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] >= 0) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
 int main() {
-    std::cout << "D* propagates cost changes without full replan." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(5); long affectedTotal = 0, cellsTotal = 0; int trials = 0;
+    for (int t = 0; t < 60; t++) {
+        int R = 16, C = 16; G w(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (g() % 100 < 20) ch = '#'; w[0][0] = w[R - 1][C - 1] = '.';
+        int goal = R * C - 1; std::vector<int> d = bfs(w, goal); int blk = g() % (R * C); if (w[blk / C][blk % C] == '#' || blk == goal || d[blk] < 0) continue;
+        std::vector<int> parent(R * C, -1); const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
+        for (int u = 0; u < R * C; u++) if (d[u] > 0) for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r >= 0 && c >= 0 && r < R && c < C && d[r * C + c] == d[u] - 1) { parent[u] = r * C + c; break; } }   // 되돌림 포인터
+        std::vector<char> aff(R * C, 0); std::vector<int> st = {blk}; aff[blk] = 1; int na = 0;                       // RAISE: blk 를 지나던 부분 트리 전체
+        while (!st.empty()) { int u = st.back(); st.pop_back(); na++; for (int v = 0; v < R * C; v++) if (!aff[v] && parent[v] == u) { aff[v] = 1; st.push_back(v); } }
+        w[blk / C][blk % C] = '#'; std::vector<int> nd = d; typedef std::pair<int, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq;
+        for (int u = 0; u < R * C; u++) if (aff[u]) nd[u] = 1 << 28;
+        for (int u = 0; u < R * C; u++) if (aff[u] && u != blk) { for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r >= 0 && c >= 0 && r < R && c < C && !aff[r * C + c] && d[r * C + c] >= 0 && w[r][c] != '#') nd[u] = std::min(nd[u], d[r * C + c] + 1); } if (nd[u] < (1 << 28)) pq.push({nd[u], u}); }
+        while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > nd[u]) continue; for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] != '.' || !aff[r * C + c] || r * C + c == blk) continue; if (du + 1 < nd[r * C + c]) { nd[r * C + c] = du + 1; pq.push({du + 1, r * C + c}); } } }   // LOWER: 경계에서 다시 채움
+        std::vector<int> truth = bfs(w, goal); for (int u = 0; u < R * C; u++) { int v = nd[u] >= (1 << 28) || u == blk ? -1 : nd[u]; if (u == blk) v = -1; assert(v == truth[u]); }
+        affectedTotal += na; cellsTotal += R * C; trials++;
+    }
+    assert(trials > 30 && affectedTotal * 4 < cellsTotal);
+    std::cout << "DStar: " << trials << " obstacle insertions repaired by RAISE/LOWER, touching " << affectedTotal << " of " << cellsTotal << " cells and matching a full recomputation everywhere" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(영향받은 부분 트리 × log) 갱신 / 전체 재계산 O(V log V)
+// Space Complexity: O(V)
 ```
 ## DStarLite()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// D* Lite (Koenig & Likhachev 2002): 로봇이 움직이며 지도를 알아가는 "미지 지형" 문제. 목표에서 시작점 쪽으로 탐색하므로(g/rhs 값을 목표 기준으로 유지) 로봇이 이동해도 이미 계산한 값이 그대로 유효하다.
+// 각 칸은 g(현재 값)와 rhs(이웃의 g + 간선 비용의 최솟값, 한 걸음 앞선 값)를 가지고, g != rhs 인 칸(불일치)만 키 (min(g,rhs)+h(시작,칸)+km, min(g,rhs)) 순서로 우선순위 큐에 둔다. 로봇이 움직이면 시작점이 바뀌어 키 기준이 달라지므로
+// 전부 갱신하는 대신 누적 보정치 km += h(이전 위치, 새 위치) 만 더한다(휴리스틱의 삼각부등식 덕에 오래된 키도 하한으로 유효). 새 장애물이 보이면 그 칸과 이웃의 rhs 만 다시 계산해 불일치를 만들고 ComputeShortestPath 가 필요한 만큼만 전파한다.
+// 검증: ① 매 단계 g(현재 위치) == 알려진 지도에서의 BFS 거리, ② 매번 처음부터 만든 D* Lite 와 값 일치, ③ 도달 가능하면 반드시 도착하고 불가능하면 불가능을 보고, ④ 누적 확장 수가 "매 단계 새로 계획" 보다 훨씬 적다
+const int INF = 1 << 28; typedef std::pair<int, int> K2;
+struct DStarLite {
+    int R, C, goal, start, last, km = 0; const std::vector<std::string>* known; std::vector<int> g, rhs; std::vector<K2> key; std::vector<char> inU; long expansions = 0;
+    std::priority_queue<std::pair<K2, int>, std::vector<std::pair<K2, int>>, std::greater<std::pair<K2, int>>> U;
+    DStarLite(const std::vector<std::string>* k, int s, int t) : R(k->size()), C((*k)[0].size()), goal(t), start(s), last(s), known(k), g(R * C, INF), rhs(R * C, INF), key(R * C), inU(R * C, 0) { rhs[goal] = 0; key[goal] = calc(goal); inU[goal] = 1; U.push({key[goal], goal}); }
+    int h(int a, int b) const { return std::abs(a / C - b / C) + std::abs(a % C - b % C); }
+    bool blocked(int v) const { return (*known)[v / C][v % C] == '#'; }
+    K2 calc(int s) const { int m = std::min(g[s], rhs[s]); return {m >= INF ? INF : m + h(start, s) + km, m}; }
+    template <class F> void each(int u, F f) const { const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r >= 0 && c >= 0 && r < R && c < C) f(r * C + c); } }
+    void update(int u) {
+        if (u != goal) { int best = INF; if (!blocked(u)) each(u, [&](int v) { if (!blocked(v) && g[v] + 1 < best) best = g[v] + 1; }); rhs[u] = best; }
+        inU[u] = 0; if (g[u] != rhs[u]) { key[u] = calc(u); inU[u] = 1; U.push({key[u], u}); }
+    }
+    void compute() {
+        for (;;) {
+            while (!U.empty() && (!inU[U.top().second] || U.top().first != key[U.top().second])) U.pop();               // 지연 삭제된 낡은 항목 제거
+            if (U.empty()) break; K2 kold = U.top().first; int u = U.top().second; if (!(kold < calc(start)) && rhs[start] == g[start]) break;
+            U.pop(); inU[u] = 0; K2 knew = calc(u);
+            if (kold < knew) { key[u] = knew; inU[u] = 1; U.push({knew, u}); }                                              // 키가 낡았으면 다시 넣기
+            else if (g[u] > rhs[u]) { g[u] = rhs[u]; expansions++; each(u, [&](int s) { update(s); }); }                  // 과잉 일관: 값을 낮춰 전파
+            else { g[u] = INF; expansions++; update(u); each(u, [&](int s) { update(s); }); }                              // 과소 일관: 무효화 후 다시 계산
+        }
+    }
+};
+std::vector<int> bfs(const std::vector<std::string>& w, int src) { int R = w.size(), C = w[0].size(); std::vector<int> d(R * C, -1); std::queue<int> q; if (w[src / C][src % C] == '#') return d; d[src] = 0; q.push(src);
+    while (!q.empty()) { int u = q.front(); q.pop(); const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] >= 0) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
 int main() {
-    std::cout << "D* Lite searches backwards from target to simplify D*." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 gen(11); long incr = 0, scratch = 0; int reached = 0, unreachable = 0, replans = 0;
+    for (int trial = 0; trial < 45; trial++) {
+        int R = 18, C = 18; std::vector<std::string> world(R, std::string(C, '.'));
+        if (trial == 0) { for (int r = 0; r < R; r++) world[r][C - 3] = '#'; }                                           // 손으로 만든 도달 불가 지도: 목표 앞에 벽
+        else for (auto& row : world) for (auto& ch : row) if (gen() % 100 < 27) ch = '#';
+        world[0][0] = world[R - 1][C - 1] = '.'; int start = 0, goal = R * C - 1; bool reachable = bfs(world, start)[goal] >= 0;
+        std::vector<std::string> known(R, std::string(C, '.')); DStarLite dl(&known, start, goal); int pos = start, steps = 0; bool failed = false;
+        auto sense = [&](int p, std::vector<int>& changed) { for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = p / C + dr, c = p % C + dc; if (r >= 0 && c >= 0 && r < R && c < C && world[r][c] == '#' && known[r][c] != '#') { known[r][c] = '#'; changed.push_back(r * C + c); } } };
+        std::vector<int> changed; sense(pos, changed);
+        for (int c : changed) { dl.update(c); dl.each(c, [&](int v) { dl.update(v); }); }                              // 첫 감지도 변경으로 처리
+        while (pos != goal) {
+            dl.compute(); std::vector<int> truth = bfs(known, pos);
+            if (dl.rhs[pos] >= INF) { failed = true; assert(truth[goal] < 0); break; }                                  // 알려진 지도로는 도달 불가
+            assert(dl.g[pos] == truth[goal]);                                                                              // 증분 값 == 알려진 지도의 최단 거리
+            DStarLite fresh(&known, pos, goal); fresh.compute(); assert(fresh.g[pos] == dl.g[pos]); scratch += fresh.expansions;
+            int best = -1; dl.each(pos, [&](int v) { if (!dl.blocked(v) && dl.g[v] + 1 == dl.g[pos] && best < 0) best = v; }); assert(best >= 0);
+            pos = best; steps++; assert(world[pos / C][pos % C] != '#' && steps <= 4 * R * C);
+            changed.clear(); sense(pos, changed); dl.start = pos;
+            if (!changed.empty()) { replans++; dl.km += dl.h(dl.last, pos); dl.last = pos; for (int c : changed) { dl.update(c); dl.each(c, [&](int v) { dl.update(v); }); } }
+        }
+        incr += dl.expansions; if (failed) { unreachable++; assert(!reachable); } else { reached++; assert(reachable && pos == goal); }
+    }
+    assert(reached > 25 && unreachable >= 1 && incr * 3 < scratch);
+    std::cout << "DStarLite: " << reached << " goals reached, " << unreachable << " detected as unreachable, " << replans << " map updates; expansions " << incr << " incremental vs " << scratch << " when replanning from scratch each step" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 첫 계획 O(V log V), 이후 갱신은 변한 간선의 영향 범위에 비례
+// Space Complexity: O(V)
 ```
 ## LifelongPlanningAStar()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// LPA* (Koenig, Likhachev, Furcy 2004): "시작점·목표는 그대로이고 간선 비용(장애물)만 바뀌는" 문제의 증분 A*. 각 칸이 g 값과 rhs(= 이웃 g + 간선 비용의 최솟값)를 가지고, g != rhs 인 "불일치" 칸만 키 (min(g,rhs)+h, min(g,rhs)) 순서로 처리한다.
+// 지도가 바뀌면 영향받은 칸의 rhs 만 다시 계산해 우선순위 큐에 넣고 같은 루프를 돌리므로, 바뀐 곳과 상관없는 값은 재사용된다. 목표의 g 가 정확해지는 순간(큐 맨 위 키 >= 목표 키 이고 g==rhs)에 멈춘다.
+// 검증: 장애물을 무작위로 놓고 지우기를 반복하며 매번 g(목표) == 처음부터 구한 BFS 거리, 역추적 경로가 유효하고 길이가 같음, 그리고 총 확장 수가 매번 새로 A* 를 돌릴 때보다 훨씬 적음. D* Lite(Part 6)는 이 알고리즘을 "이동하는 시작점" 으로 확장한 것이다
+const int INF = 1 << 28; typedef std::pair<int, int> K2;
+struct LPA {
+    int R, C, s, t; std::vector<char> blocked; std::vector<int> g, rhs; std::vector<K2> key; std::vector<char> inU; long expansions = 0;
+    std::priority_queue<std::pair<K2, int>, std::vector<std::pair<K2, int>>, std::greater<std::pair<K2, int>>> U;
+    LPA(int R, int C, int s, int t) : R(R), C(C), s(s), t(t), blocked(R * C, 0), g(R * C, INF), rhs(R * C, INF), key(R * C), inU(R * C, 0) { rhs[s] = 0; key[s] = calc(s); inU[s] = 1; U.push({key[s], s}); }
+    int h(int a) const { return std::abs(a / C - t / C) + std::abs(a % C - t % C); }
+    K2 calc(int v) const { int m = std::min(g[v], rhs[v]); return {m >= INF ? INF : m + h(v), m}; }
+    template <class F> void each(int u, F f) const { const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r >= 0 && c >= 0 && r < R && c < C) f(r * C + c); } }
+    void update(int u) {
+        if (u != s) { int best = INF; if (!blocked[u]) each(u, [&](int v) { if (!blocked[v] && g[v] + 1 < best) best = g[v] + 1; }); rhs[u] = best; }
+        inU[u] = 0; if (g[u] != rhs[u]) { key[u] = calc(u); inU[u] = 1; U.push({key[u], u}); }
+    }
+    void toggle(int c) { blocked[c] ^= 1; update(c); each(c, [&](int v) { update(v); }); }                                // 간선 비용 변화 = 그 칸과 이웃의 rhs 재계산
+    void compute() {
+        for (;;) {
+            while (!U.empty() && (!inU[U.top().second] || U.top().first != key[U.top().second])) U.pop();
+            if (U.empty()) break; K2 kold = U.top().first; int u = U.top().second; if (!(kold < calc(t)) && rhs[t] == g[t]) break;
+            U.pop(); inU[u] = 0; K2 knew = calc(u);
+            if (kold < knew) { key[u] = knew; inU[u] = 1; U.push({knew, u}); }
+            else if (g[u] > rhs[u]) { g[u] = rhs[u]; expansions++; each(u, [&](int v) { update(v); }); }
+            else { g[u] = INF; expansions++; update(u); each(u, [&](int v) { update(v); }); }
+        }
+    }
+    std::vector<int> path() const {                                                                                       // 목표에서 g + 1 == g(현재) 인 이웃을 따라 역추적
+        std::vector<int> p; if (g[t] >= INF) return p; int u = t; p.push_back(u); while (u != s) { int nx = -1; each(u, [&](int v) { if (nx < 0 && !blocked[v] && g[v] + 1 == g[u]) nx = v; }); assert(nx >= 0); u = nx; p.push_back(u); } std::reverse(p.begin(), p.end()); return p; }
+};
+long freshAStar(const std::vector<char>& blocked, int R, int C, int s, int t, int& dist) {                              // 비교용: 매번 처음부터 돌리는 A* 의 확장 수
+    const int D = 1 << 28; std::vector<int> d(R * C, D); typedef std::pair<int, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq; auto h = [&](int v) { return std::abs(v / C - t / C) + std::abs(v % C - t % C); }; d[s] = 0; pq.push({h(s), s}); long ex = 0; dist = -1;
+    while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > d[u] + h(u)) continue; ex++; if (u == t) { dist = d[u]; break; } const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
+        for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || blocked[r * C + c] || d[u] + 1 >= d[r * C + c]) continue; d[r * C + c] = d[u] + 1; pq.push({d[r * C + c] + h(r * C + c), r * C + c}); } }
+    return ex; }
 int main() {
-    std::cout << "LPA* incrementally searches reusing previous g values." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 gen(3); int R = 24, C = 24, s = 0, t = R * C - 1; LPA lpa(R, C, s, t); for (int i = 0; i < R * C; i++) if (i != s && i != t && gen() % 100 < 20) lpa.blocked[i] = 1;
+    for (int i = 0; i < R * C; i++) lpa.update(i); lpa.compute(); long scratch = 0, rounds = 0, pathLenSum = 0; int unreachableRounds = 0;
+    for (int round = 0; round < 300; round++) {
+        int edits = 1 + gen() % 3; for (int e = 0; e < edits; e++) { int c = gen() % (R * C); if (c != s && c != t && (lpa.blocked[c] ? gen() % 100 < 80 : gen() % 100 < 20)) lpa.toggle(c); }   // 장애물을 놓거나 치움(밀도가 20% 근처에 머물도록)
+        if (round % 60 == 59) { for (int c : {t - 1, t - C}) if (!lpa.blocked[c]) lpa.toggle(c); }                                                // 목표를 막아 도달 불가 상황을 만든다
+        if (round % 60 == 1) { for (int c : {t - 1, t - C}) if (lpa.blocked[c]) lpa.toggle(c); }                                                 // 다시 풀어 준다
+        lpa.compute(); int dist; scratch += freshAStar(lpa.blocked, R, C, s, t, dist);
+        if (dist < 0) { assert(lpa.g[t] >= INF && lpa.path().empty()); unreachableRounds++; continue; }
+        assert(lpa.g[t] == dist); std::vector<int> p = lpa.path(); assert((int)p.size() - 1 == dist && p.front() == s && p.back() == t);
+        for (size_t i = 0; i < p.size(); i++) { assert(!lpa.blocked[p[i]]); if (i) assert(std::abs(p[i] / C - p[i - 1] / C) + std::abs(p[i] % C - p[i - 1] % C) == 1); } pathLenSum += dist; rounds++;
+    }
+    assert(rounds > 150 && unreachableRounds >= 2 && lpa.expansions * 2 < scratch);
+    std::cout << "LifelongPlanningAStar: " << rounds << " valid replans (" << unreachableRounds << " unreachable rounds), mean path " << (double)pathLenSum / rounds << ", expansions " << lpa.expansions << " incremental vs " << scratch << " from scratch" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 첫 탐색 O(V log V), 이후 변화는 영향받은 칸 수에 비례
+// Space Complexity: O(V)
 ```
 ## DynamicReplanning()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Simple replanning drops current tree and runs full A* again on map change." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 동적 재계획: 장애물이 시간에 따라 나타나는 환경에서, 실행 중인 계획을 언제 버리고 다시 계획하는가. 두 정책을 같은 사건 열로 비교한다.
+// (a) 매 걸음 재계획: 항상 현재 지도의 최단 경로를 따르지만 A* 를 매번 호출한다. (b) 무효화 시에만 재계획: 남은 경로에 새 장애물이 닿았을 때만 호출. 장애물이 "생기기만 하는" 환경에서는 계획이 아직 유효하면 여전히 최단이므로
+// (b) 는 (a) 와 똑같이 도착하면서 호출 횟수와 확장 수가 훨씬 적다. 장애물이 사라질 수 있는 환경에서는 더 짧은 길이 생겨도 (b) 는 모르므로 주기적 재계획이나 D* Lite(Part 6) 같은 증분 방법이 필요하다
+struct World { int R, C; std::vector<char> blocked; };
+long expandedTotal; int calls;
+std::vector<int> astar(const World& w, int s, int t) {                                                                  // 4방향 단위 비용 A*, 실패하면 빈 벡터
+    calls++; int R = w.R, C = w.C; auto h = [&](int v) { return std::abs(v / C - t / C) + std::abs(v % C - t % C); }; std::vector<int> d(R * C, 1 << 28), par(R * C, -1); typedef std::pair<int, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq; d[s] = 0; pq.push({h(s), s});
+    while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > d[u] + h(u)) continue; expandedTotal++; if (u == t) break; const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
+        for (int k = 0; k < 4; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w.blocked[r * C + c] || d[u] + 1 >= d[r * C + c]) continue; d[r * C + c] = d[u] + 1; par[r * C + c] = u; pq.push({d[r * C + c] + h(r * C + c), r * C + c}); } }
+    std::vector<int> p; if (d[t] >= (1 << 28)) return p; for (int v = t; v >= 0; v = par[v]) p.push_back(v); std::reverse(p.begin(), p.end()); return p; }
+struct Event { int time, cell; };
+bool run(World w, std::vector<Event> ev, int s, int t, bool everyStep, int& arrival, int& replans) {
+    int pos = s, tick = 0; replans = 0; std::vector<int> plan = astar(w, s, t); if (plan.empty()) return false; size_t idx = 0; size_t e = 0;
+    while (pos != t) {
+        while (e < ev.size() && ev[e].time <= tick) { if (ev[e].cell != pos) w.blocked[ev[e].cell] = 1; e++; }                       // 이번 틱에 새 장애물이 생김
+        bool invalid = false; for (size_t i = idx; i < plan.size(); i++) if (w.blocked[plan[i]]) invalid = true;
+        if (everyStep || invalid) { plan = astar(w, pos, t); replans++; idx = 0; if (plan.empty()) return false; }
+        pos = plan[idx + 1]; idx++; tick++; assert(!w.blocked[pos]);
+    }
+    arrival = tick; return true;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int main() {
+    std::mt19937 g(21); long lazyEx = 0, everyEx = 0; int lazyCalls = 0, everyCalls = 0, finished = 0, stuckBoth = 0;
+    for (int trial = 0; trial < 80; trial++) {
+        World w{20, 20, std::vector<char>(400, 0)}; for (int i = 1; i < 399; i++) if (g() % 100 < 15) w.blocked[i] = 1; std::vector<Event> ev; for (int k = 0; k < 60; k++) { int c = 1 + g() % 398; ev.push_back({(int)(g() % 40), c}); } std::sort(ev.begin(), ev.end(), [](const Event& a, const Event& b) { return a.time < b.time; });
+        int a1 = 0, r1 = 0, a2 = 0, r2 = 0; expandedTotal = 0; calls = 0; bool ok1 = run(w, ev, 0, 399, false, a1, r1); long ex1 = expandedTotal; int c1 = calls;
+        expandedTotal = 0; calls = 0; bool ok2 = run(w, ev, 0, 399, true, a2, r2); long ex2 = expandedTotal; int c2 = calls;
+        if (!ok1 && !ok2) { stuckBoth++; continue; } if (!ok1 || !ok2) continue;                                                // 정책에 따라 막다른 길이 달라질 수 있어 그런 시도는 건너뜀
+        assert(a1 >= 38 && a2 >= 38 && r1 <= r2 + 1 && c1 <= c2); finished++; lazyEx += ex1; everyEx += ex2; lazyCalls += c1; everyCalls += c2;
+    }
+    assert(finished > 40 && lazyCalls * 4 < everyCalls && lazyEx * 3 < everyEx);
+    std::cout << "DynamicReplanning: " << finished << " runs; A* calls " << lazyCalls << " (replan only when blocked) vs " << everyCalls << " (every step); expansions " << lazyEx << " vs " << everyEx << std::endl; return 0;
+}
+// Time Complexity: 재계획 1회당 O(V log V) × 재계획 횟수
+// Space Complexity: O(V)
 ```
 
 # Part 7. 다중 경로
 ## KShortestPaths()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <functional>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Finds the 1st, 2nd, ..., K-th shortest paths." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// K 최단 경로: 최단 경로 하나가 아니라 비용 순으로 1등, 2등, ..., K등 경로를 구한다. 가장 단순한 방법은 Dijkstra 의 변형 — 각 정점을 "꺼내는" 횟수를 최대 K 번까지 허용하는 최선 우선 탐색이다.
+// 정점 v 에서 처음 꺼낸 경로가 s→v 1등, 두 번째가 2등이므로 v 를 K+1 번째 꺼낸 경로는 어떤 K 최단 경로의 접두사도 될 수 없어 버려도 된다. 목표 t 를 꺼낼 때마다 정답을 하나씩 얻는다. 이 방식이 구하는 것은 사이클을 허용하는 "보행(walk)" 이다
+// (사이클 없는 단순 경로만 원하면 Yen 알고리즘, 효율적인 보행 열거는 Eppstein 알고리즘; 이 파일의 다음 두 항목). 검증: 가중치 있는 작은 방향 그래프 200개에서, 비용 상한 아래의 모든 보행을 DFS 로 완전 열거해 정렬한 것의 앞 K 개 비용과 일치하는지 대조
+struct Edge { int to, w; };
+typedef std::pair<long, std::vector<int>> Walk;
+std::vector<Walk> kWalks(const std::vector<std::vector<Edge>>& adj, int s, int t, int K) {
+    struct Node { int v, prev; }; std::vector<Node> arena = {{s, -1}}; typedef std::pair<long, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq; pq.push({0, 0}); std::vector<int> cnt(adj.size(), 0); std::vector<Walk> res;
+    while (!pq.empty() && (int)res.size() < K) {
+        auto [c, id] = pq.top(); pq.pop(); int v = arena[id].v; if (cnt[v]++ >= K) continue;                      // v 를 K 번 넘게 꺼낸 경로는 필요 없다
+        if (v == t) { std::vector<int> p; for (int x = id; x >= 0; x = arena[x].prev) p.push_back(arena[x].v); std::reverse(p.begin(), p.end()); res.push_back({c, p}); }
+        for (const Edge& e : adj[v]) { arena.push_back({e.to, id}); pq.push({c + e.w, (int)arena.size() - 1}); }
+    }
+    return res;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+long cost(const std::vector<std::vector<int>>& w, const std::vector<int>& p) { long c = 0; for (size_t i = 1; i < p.size(); i++) { assert(w[p[i - 1]][p[i]] > 0); c += w[p[i - 1]][p[i]]; } return c; }
+void brute(const std::vector<std::vector<int>>& w, int v, int t, long c, long cap, std::vector<int>& path, std::vector<long>& out) {   // 비용 cap 이하의 모든 s→t 보행 열거
+    if (c > cap) return; if (v == t) out.push_back(c); for (int u = 0; u < (int)w.size(); u++) if (w[v][u]) { path.push_back(u); brute(w, u, t, c + w[v][u], cap, path, out); path.pop_back(); }
+}
+int main() {
+    std::mt19937 g(17); int checked = 0, loopy = 0; const int K = 10;
+    for (int trial = 0; trial < 400; trial++) {
+        int n = 6; std::vector<std::vector<int>> w(n, std::vector<int>(n, 0)); std::vector<std::vector<Edge>> adj(n);
+        for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (u != v && g() % 100 < 55) { w[u][v] = 1 + g() % 5; adj[u].push_back({v, w[u][v]}); }
+        std::vector<Walk> res = kWalks(adj, 0, n - 1, K); if ((int)res.size() < K || res.back().first > 12) continue;                                   // (완전 열거가 너무 커지지 않는 경우만 대조)
+        std::set<std::vector<int>> seen; for (size_t i = 0; i < res.size(); i++) { assert(res[i].second.front() == 0 && res[i].second.back() == n - 1 && cost(w, res[i].second) == res[i].first && seen.insert(res[i].second).second && (i == 0 || res[i - 1].first <= res[i].first)); std::set<int> uniq(res[i].second.begin(), res[i].second.end()); if (uniq.size() < res[i].second.size()) loopy++; }
+        std::vector<int> path = {0}; std::vector<long> all; brute(w, 0, n - 1, 0, res.back().first, path, all); std::sort(all.begin(), all.end());       // 독립적인 완전 열거
+        assert(all.size() >= (size_t)K); for (int i = 0; i < K; i++) assert(all[i] == res[i].first); checked++;
+    }
+    assert(checked > 100 && loopy > 0);
+    std::cout << "KShortestPaths: " << checked << " random graphs, first " << K << " walk costs equal brute force enumeration; " << loopy << " reported walks contain a cycle" << std::endl; return 0;
+}
+// Time Complexity: O(K · m log(K · m))
+// Space Complexity: O(K · m)
 ```
 ## YenAlgorithm()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Yen's Algorithm iterates over shortest paths blocking edges." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// Yen 알고리즘(1971): 사이클이 없는 단순 경로만 K 개 구한다. 이미 구한 경로 A[k-1] 의 각 정점 i 를 "분기점(spur)" 으로 삼아, 접두사(root = A[k-1][0..i])는 그대로 두고 분기점부터 목표까지를 다시 Dijkstra 로 구한다. 단 같은 접두사를 공유하는
+// 기존 경로들이 쓴 다음 간선은 금지하고(같은 경로가 또 나오지 않게), root 의 다른 정점은 금지한다(단순 경로 유지). 이렇게 만든 후보들을 비용 순 후보 집합 B 에 모으고 가장 싼 것이 A[k] 가 된다.
+// 검증: 작은 가중 방향 그래프 150개에서 DFS 로 모든 단순 경로를 열거해 정렬한 것의 앞 K 개 비용과 일치, 각 경로가 단순하고 서로 다르며 비용이 맞는지 확인한다
+typedef std::vector<std::vector<int>> Mat; const long INF = 1L << 50;
+bool dijkstra(const Mat& w, const std::vector<char>& banNode, const Mat& banEdge, int s, int t, long& cost, std::vector<int>& path) {
+    int n = w.size(); std::vector<long> d(n, INF); std::vector<int> par(n, -1); typedef std::pair<long, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int v = 0; v < n; v++) if (w[u][v] && !banNode[v] && !banEdge[u][v] && du + w[u][v] < d[v]) { d[v] = du + w[u][v]; par[v] = u; pq.push({d[v], v}); } }
+    if (d[t] >= INF) return false; cost = d[t]; path.clear(); for (int v = t; v >= 0; v = par[v]) path.push_back(v); std::reverse(path.begin(), path.end()); return true; }
+std::vector<std::pair<long, std::vector<int>>> yen(const Mat& w, int s, int t, int K) {
+    int n = w.size(); std::vector<std::pair<long, std::vector<int>>> A; std::set<std::pair<long, std::vector<int>>> B; Mat noEdge(n, std::vector<int>(n, 0)); std::vector<char> noNode(n, 0); long c; std::vector<int> p;
+    if (!dijkstra(w, noNode, noEdge, s, t, c, p)) return A; A.push_back({c, p});
+    while ((int)A.size() < K) {
+        const std::vector<int>& prev = A.back().second;
+        for (size_t i = 0; i + 1 < prev.size(); i++) {
+            std::vector<int> root(prev.begin(), prev.begin() + i + 1); Mat banE(n, std::vector<int>(n, 0)); std::vector<char> banN(n, 0);
+            for (auto& a : A) if (a.second.size() > i + 1 && std::equal(root.begin(), root.end(), a.second.begin())) banE[a.second[i]][a.second[i + 1]] = 1;       // 같은 접두사를 쓴 기존 경로의 다음 간선 금지
+            for (size_t j = 0; j < i; j++) banN[root[j]] = 1;                                                                                                     // root 의 정점 재방문 금지(분기점은 제외)
+            long sc; std::vector<int> sp; if (!dijkstra(w, banN, banE, root.back(), t, sc, sp)) continue;
+            std::vector<int> total(root.begin(), root.end() - 1); total.insert(total.end(), sp.begin(), sp.end()); long rc = 0; for (size_t j = 1; j < total.size(); j++) rc += w[total[j - 1]][total[j]]; B.insert({rc, total});
+        }
+        if (B.empty()) break; A.push_back(*B.begin()); B.erase(B.begin());
+    }
+    return A;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+void brute(const Mat& w, int v, int t, long c, std::vector<char>& vis, std::vector<long>& out) { if (v == t) { out.push_back(c); return; } vis[v] = 1; for (int u = 0; u < (int)w.size(); u++) if (w[v][u] && !vis[u]) brute(w, u, t, c + w[v][u], vis, out); vis[v] = 0; }
+int main() {
+    std::mt19937 g(29); int checked = 0; const int K = 8; long fewer = 0;
+    for (int trial = 0; trial < 150; trial++) {
+        int n = 7; Mat w(n, std::vector<int>(n, 0)); for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (u != v && g() % 100 < 50) w[u][v] = 1 + g() % 6;
+        auto res = yen(w, 0, n - 1, K); std::vector<char> vis(n, 0); std::vector<long> all; brute(w, 0, n - 1, 0, vis, all); std::sort(all.begin(), all.end());
+        assert(res.size() == std::min<size_t>(K, all.size())); if (all.size() < (size_t)K) fewer++;
+        std::set<std::vector<int>> seen; for (size_t i = 0; i < res.size(); i++) { const auto& p = res[i].second; std::set<int> uniq(p.begin(), p.end()); long cc = 0; for (size_t j = 1; j < p.size(); j++) cc += w[p[j - 1]][p[j]];
+            assert(uniq.size() == p.size() && p.front() == 0 && p.back() == n - 1 && cc == res[i].first && res[i].first == all[i] && seen.insert(p).second); }          // 단순 경로 · 서로 다름 · 비용이 완전 열거와 일치
+        if (!res.empty()) checked++;
+    }
+    assert(checked > 100);
+    std::cout << "YenAlgorithm: " << checked << " random graphs, loopless K=" << K << " costs match exhaustive enumeration (" << fewer << " graphs had fewer than K simple paths)" << std::endl; return 0;
+}
+// Time Complexity: O(K · V · (E + V log V))
+// Space Complexity: O(K · V)
 ```
 ## EppsteinAlgorithm()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Eppstein's is highly efficient O(E + V log V + K) using sidetrack edges." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// Eppstein 알고리즘(1998): 사이클을 허용하는 K 최단 보행을 O(E + V log V + K log K) 에 낸다(Yen 의 K·V 배 비용 없이). 핵심은 "곁가지(sidetrack)" 라는 개념이다.
+// ① 목표 t 로부터 역방향 Dijkstra 로 최단 경로 트리 T 와 거리 d(v) 를 구한다. ② 트리에 없는 간선 e=(u,v) 는 곁가지이고 그것을 쓰면 비용이 δ(e) = w(e) + d(v) − d(u) ≥ 0 만큼 늘어난다. 모든 s→t 보행은 "트리를 따라가다 곁가지로 빠지기" 의 유한 열로 유일하게 표현되고
+// 비용은 d(s) + Σδ 이다. ③ 각 정점 v 에서 "v→t 트리 경로 위의 모든 곁가지" 를 δ 로 정렬한 힙 H(v) 를, 부모의 힙에 v 의 곁가지만 합쳐 영속(persistent) 좌편향 힙으로 만든다 — 부모 힙은 그대로 남고 O(log) 노드만 새로 생긴다.
+// ④ 경로 그래프: 힙 노드 x(= 곁가지 e)에서 (a) 힙의 자식으로 가면 마지막 곁가지를 형제로 바꾸는 것이고 비용은 δ(자식)−δ(x), (b) e 의 머리 v 의 힙 뿌리로 가면 곁가지를 하나 더 쓰는 것이고 비용은 δ(뿌리). 이 그래프에서 비용 순으로 K 개를 꺼내면 된다.
+// 검증: 작은 가중 방향 그래프 200개에서 (1) 각 보행을 곁가지 열에서 복원해 간선이 실제로 있고 비용이 맞는지, 서로 다른지 (2) 비용 상한 아래의 모든 보행을 DFS 로 완전 열거한 것과 앞 K 개 비용이 같은지 확인한다
+struct E { int u, v, w; };
+struct HN { int e; long delta; int l, r, npl; }; std::vector<HN> pool;
+int npl(int x) { return x ? pool[x].npl : 0; }
+int mergeH(int a, int b) { if (!a) return b; if (!b) return a; if (pool[a].delta > pool[b].delta) std::swap(a, b); HN x = pool[a]; x.r = mergeH(x.r, b); if (npl(x.l) < npl(x.r)) std::swap(x.l, x.r); x.npl = npl(x.r) + 1; pool.push_back(x); return pool.size() - 1; }   // 영속 병합: 오른쪽 척추만 복사
+typedef std::pair<long, std::vector<int>> Walk;
+std::vector<Walk> eppstein(int n, const std::vector<E>& es, int s, int t, int K) {
+    const long INF = 1L << 50; pool.assign(1, HN{-1, 0, 0, 0, 0}); std::vector<std::vector<int>> radj(n); for (size_t i = 0; i < es.size(); i++) radj[es[i].v].push_back(i);
+    std::vector<long> d(n, INF); std::vector<int> te(n, -1); typedef std::pair<long, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq; d[t] = 0; pq.push({0, t});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int id : radj[u]) { const E& e = es[id]; if (du + e.w < d[e.u]) { d[e.u] = du + e.w; te[e.u] = id; pq.push({d[e.u], e.u}); } } }
+    std::vector<Walk> res; if (d[s] >= INF) return res;
+    std::vector<int> local(n, 0); for (size_t id = 0; id < es.size(); id++) { const E& e = es[id]; if (d[e.u] >= INF || d[e.v] >= INF || te[e.u] == (int)id) continue; pool.push_back(HN{(int)id, e.w + d[e.v] - d[e.u], 0, 0, 1}); local[e.u] = mergeH(local[e.u], pool.size() - 1); }
+    std::vector<int> order; for (int v = 0; v < n; v++) if (d[v] < INF) order.push_back(v); std::sort(order.begin(), order.end(), [&](int a, int b) { return d[a] < d[b] || (d[a] == d[b] && a < b); });
+    std::vector<int> H(n, 0); for (int v : order) H[v] = v == t ? local[v] : mergeH(H[es[te[v]].v], local[v]);                 // 트리 위쪽(목표 쪽) 부모의 힙에 자기 곁가지를 합친다
+    struct En { int node, link; }; std::vector<En> en;
+    auto build = [&](int idx) {                                                                                               // 곁가지 열 → 실제 정점 열
+        std::vector<int> side; for (int i = idx; i >= 0; i = en[i].link) side.push_back(pool[en[i].node].e); std::reverse(side.begin(), side.end()); std::vector<int> walk = {s}; int cur = s;
+        auto follow = [&](int target) { while (cur != target) { assert(te[cur] >= 0); cur = es[te[cur]].v; walk.push_back(cur); } };
+        for (int id : side) { follow(es[id].u); cur = es[id].v; walk.push_back(cur); } follow(t); return walk; };
+    res.push_back({d[s], build(-1)});                                                                                          // 곁가지 없는 1등 = 최단 경로
+    std::priority_queue<std::pair<long, int>, std::vector<std::pair<long, int>>, std::greater<std::pair<long, int>>> q;
+    if (H[s]) { en.push_back({H[s], -1}); q.push({d[s] + pool[H[s]].delta, 0}); }
+    while (!q.empty() && (int)res.size() < K) {
+        auto [c, i] = q.top(); q.pop(); int x = en[i].node, link = en[i].link; res.push_back({c, build(i)});
+        for (int ch : {pool[x].l, pool[x].r}) if (ch) { en.push_back({ch, link}); q.push({c - pool[x].delta + pool[ch].delta, (int)en.size() - 1}); }       // 형제로 교체
+        int v = es[pool[x].e].v; if (H[v]) { en.push_back({H[v], i}); q.push({c + pool[H[v]].delta, (int)en.size() - 1}); }                              // 곁가지 하나 추가
+    }
+    return res;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+void brute(const std::vector<std::vector<int>>& w, int v, int t, long c, long cap, std::vector<long>& out) { if (c > cap) return; if (v == t) out.push_back(c); for (int u = 0; u < (int)w.size(); u++) if (w[v][u]) brute(w, u, t, c + w[v][u], cap, out); }
+int main() {
+    std::mt19937 g(41); int checked = 0; const int K = 30; size_t maxPool = 0;
+    for (int trial = 0; trial < 200; trial++) {
+        int n = 6; std::vector<std::vector<int>> w(n, std::vector<int>(n, 0)); std::vector<E> es; for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (u != v && g() % 100 < 40) { w[u][v] = 1 + g() % 5; es.push_back({u, v, w[u][v]}); }
+        auto res = eppstein(n, es, 0, n - 1, K); maxPool = std::max(maxPool, pool.size()); if ((int)res.size() < K) continue;
+        std::set<std::vector<int>> seen; for (size_t i = 0; i < res.size(); i++) { const auto& p = res[i].second; long cc = 0; for (size_t j = 1; j < p.size(); j++) { assert(w[p[j - 1]][p[j]] > 0); cc += w[p[j - 1]][p[j]]; }
+            assert(p.front() == 0 && p.back() == n - 1 && cc == res[i].first && seen.insert(p).second && (i == 0 || res[i - 1].first <= res[i].first)); }
+        std::vector<long> all; brute(w, 0, n - 1, 0, res.back().first, all); std::sort(all.begin(), all.end()); assert(all.size() >= (size_t)K); for (int i = 0; i < K; i++) assert(all[i] == res[i].first); checked++;
+    }
+    assert(checked > 100);
+    std::cout << "EppsteinAlgorithm: " << checked << " random graphs, first " << K << " walks reconstructed from sidetrack sequences and equal to exhaustive enumeration (heap pool <= " << maxPool << " nodes)" << std::endl; return 0;
+}
+// Time Complexity: O(E + V log V + K log K)
+// Space Complexity: O(E + K)
 ```
 ## AlternativeRoute()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 대체 경로(alternative routes): 내비게이션이 "다른 길" 로 보여 줄 후보는 K 최단 경로가 아니다. 2등 최단 경로는 1등에서 한 구간만 우회한 거의 같은 길이라 사용자에게 무의미하다. 좋은 대체 경로의 조건은 ① 최단보다 많이 길지 않을 것(한정된 우회율),
+// ② 이미 보여 준 경로와 구간이 많이 겹치지 않을 것, ③ (실무에서는) 국소 최적일 것이다. 페널티 방법: 한 경로를 찾으면 그 경로의 간선 가중치를 키운 뒤 Dijkstra 를 다시 돌려 다른 길로 유도하고, 후보의 "실제" 길이로 조건을 검사한다.
+// 검증: 12×12 격자 도시(간선 가중치 2..9)에서 페널티 방법의 대체 경로가 우회율 ≤ 1.3 · 겹침 ≤ 0.7 을 지키고, 같은 지도에서 "2등 최단 단순 경로" 의 평균 겹침(약 0.8 이상)보다 확실히 작음을 확인한다
+struct Edge { int to, id; };
+int R = 12, C = 12; std::vector<std::vector<Edge>> adj; std::vector<int> ew;
+std::vector<int> dijkstra(const std::vector<double>& cost, int s, int t, std::vector<int>* edgesOut) {
+    int n = adj.size(); std::vector<double> d(n, 1e18); std::vector<int> par(n, -1), pe(n, -1); typedef std::pair<double, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (const Edge& e : adj[u]) if (du + cost[e.id] < d[e.to]) { d[e.to] = du + cost[e.id]; par[e.to] = u; pe[e.to] = e.id; pq.push({d[e.to], e.to}); } }
+    std::vector<int> p; edgesOut->clear(); for (int v = t; v >= 0; v = par[v]) { p.push_back(v); if (pe[v] >= 0) edgesOut->push_back(pe[v]); } std::reverse(p.begin(), p.end()); return p; }
+double length(const std::vector<int>& es) { double L = 0; for (int e : es) L += ew[e]; return L; }
+double overlap(const std::vector<int>& a, const std::vector<int>& b) { std::set<int> sa(a.begin(), a.end()); double sh = 0; for (int e : b) if (sa.count(e)) sh += ew[e]; return sh / length(b); }      // b 의 길이 중 a 와 겹치는 비율
 int main() {
-    std::cout << "Penalty method finds structurally different but reasonable routes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(5); int n = R * C, s = 0, t = n - 1; double penaltySum = 0, secondSum = 0; int penaltyCount = 0, secondCount = 0, cities = 0;
+    for (int city = 0; city < 25; city++) {
+        adj.assign(n, {}); ew.clear(); for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { int u = r * C + c; if (c + 1 < C) { int id = ew.size(); ew.push_back(2 + g() % 8); adj[u].push_back({u + 1, id}); adj[u + 1].push_back({u, id}); } if (r + 1 < R) { int id = ew.size(); ew.push_back(2 + g() % 8); adj[u].push_back({u + C, id}); adj[u + C].push_back({u, id}); } }
+        std::vector<double> base(ew.begin(), ew.end()), pen = base; std::vector<int> best; dijkstra(base, s, t, &best); double opt = length(best);
+        std::vector<std::vector<int>> accepted = {best}; for (int it = 0; it < 40 && accepted.size() < 4; it++) {
+            for (int e : accepted.back()) pen[e] *= 1.6;                                                                               // 마지막으로 채택한 경로를 불리하게
+            std::vector<int> es; dijkstra(pen, s, t, &es); double L = length(es); bool ok = L <= 1.3 * opt; for (auto& a : accepted) ok = ok && overlap(a, es) <= 0.7;
+            if (ok) { for (auto& a : accepted) { penaltySum += overlap(a, es); penaltyCount++; } assert(L >= opt - 1e-9); accepted.push_back(es); }
+            else for (int e : es) pen[e] *= 1.3;                                                                                     // 조건 미달이면 이 경로도 불리하게 해서 다음 시도 유도
+        }
+        std::vector<int> second; double sl = 1e18;                                                                                     // 비교 대상: 2등 최단 단순 경로 = 최단 경로의 간선 하나를 막고 구한 것 중 최소
+        for (int e : best) { std::vector<double> c2 = base; c2[e] = 1e9; std::vector<int> es; dijkstra(c2, s, t, &es); if (length(es) < sl && length(es) < 1e8) { sl = length(es); second = es; } }
+        assert(!second.empty() && sl >= opt - 1e-9); secondSum += overlap(best, second); secondCount++; cities++;
+        assert(accepted.size() >= 2);
+    }
+    double pm = penaltySum / penaltyCount, sm = secondSum / secondCount;
+    assert(pm <= 0.7 && sm > 0.8 && pm < sm - 0.15);
+    std::cout << "AlternativeRoute: mean overlap of penalty-method alternatives " << pm << " vs " << sm << " for the 2nd-shortest simple path over " << cities << " cities" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(반복 횟수 × E log V)
+// Space Complexity: O(V + E)
 ```
 
 # Part 8. 비용 최적화
 ## UniformCostSearch()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "UCS is Dijkstra acting as a tree search." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 균일 비용 탐색(UCS): 비용이 낮은 순서로 상태를 확장하는 Dijkstra 이지만, 그래프를 미리 만들어 두지 않고 "후속 상태 함수" 로 상태를 그때그때 만들며 목표 상태를 만나면 멈춘다는 점이 쓰임새를 가른다(퍼즐·계획 문제).
+// 두 가지를 반드시 지켜야 최적이다. ① 목표 판정은 상태를 "생성할 때" 가 아니라 큐에서 "꺼낼 때" 한다 — 생성 시점에는 더 싼 길이 아직 큐에 있을 수 있다. ② 이미 더 싼 비용으로 닫힌 상태는 건너뛴다(지연 삭제). 꺼내는 비용은 단조 비감소여야 한다.
+// 물통 문제(8·5·3 리터, 한 통에 4 리터 만들기; 비용 = 옮긴 물의 양)로 검증한다. 상태 공간 전체를 따로 열거해 Bellman-Ford 로 구한 최적값과 같고, 모든 비용을 1 로 하면 BFS 단계 수와 같으며, 생성 시점 목표 판정은 최적이 아닌 예(S→G 10, S→A→G 1+1)가 있음을 확인한다
+typedef std::vector<int> St;
+long ucs(const St& start, std::function<bool(const St&)> goal, std::function<std::vector<std::pair<St, int>>(const St&)> succ, bool earlyTest, long* expanded) {
+    typedef std::pair<long, St> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; std::map<St, long> best; best[start] = 0; pq.push({0, start}); long lastPopped = -1; *expanded = 0;
+    while (!pq.empty()) {
+        auto [c, s] = pq.top(); pq.pop(); if (c > best[s]) continue; assert(c >= lastPopped); lastPopped = c;                                // 꺼낸 비용은 단조 비감소
+        if (!earlyTest && goal(s)) return c; (*expanded)++;
+        for (auto& [t, w] : succ(s)) { if (earlyTest && goal(t)) return c + w; auto it = best.find(t); if (it == best.end() || c + w < it->second) { best[t] = c + w; pq.push({c + w, t}); } }
+    }
+    return -1;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int main() {
+    const int cap[3] = {8, 5, 3}; auto pour = [&](bool unitCost) { return [=](const St& s) { std::vector<std::pair<St, int>> r; for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) if (i != j && s[i] > 0 && s[j] < cap[j]) { int a = std::min(s[i], cap[j] - s[j]); St t = s; t[i] -= a; t[j] += a; r.push_back({t, unitCost ? 1 : a}); } return r; }; };
+    auto isGoal = [](const St& s) { return s[0] == 4 || s[1] == 4 || s[2] == 4; }; St start = {8, 0, 0}; long ex;
+    long ans = ucs(start, isGoal, pour(false), false, &ex); assert(ans > 0);
+    std::map<St, int> id; std::vector<St> all; std::vector<std::vector<std::pair<int, int>>> g; std::queue<St> q; id[start] = 0; all.push_back(start); q.push(start);               // 독립 검증용: 상태 공간 전체를 열거
+    while (!q.empty()) { St s = q.front(); q.pop(); for (auto& [t, w] : pour(false)(s)) if (!id.count(t)) { id[t] = all.size(); all.push_back(t); q.push(t); } }
+    g.assign(all.size(), {}); for (size_t u = 0; u < all.size(); u++) for (auto& [t, w] : pour(false)(all[u])) g[u].push_back({id[t], w});
+    std::vector<long> d(all.size(), 1L << 40); d[0] = 0; for (size_t it = 0; it < all.size(); it++) { bool ch = false; for (size_t u = 0; u < all.size(); u++) if (d[u] < (1L << 40)) for (auto& [v, w] : g[u]) if (d[u] + w < d[v]) { d[v] = d[u] + w; ch = true; } if (!ch) break; }
+    long ref = 1L << 40; for (size_t u = 0; u < all.size(); u++) if (isGoal(all[u])) ref = std::min(ref, d[u]); assert(ans == ref && ex < (long)all.size());                                   // 최적값 일치, 상태 일부만 확장
+    long unit = ucs(start, isGoal, pour(true), false, &ex); std::vector<int> dep(all.size(), -1); dep[0] = 0; q.push(start); int bfs = -1; while (!q.empty()) { St s = q.front(); q.pop(); if (isGoal(s)) { bfs = dep[id[s]]; break; } for (auto& [t, w] : pour(true)(s)) if (dep[id[t]] < 0) { dep[id[t]] = dep[id[s]] + 1; q.push(t); } } assert(unit == bfs);   // 단위 비용이면 BFS 와 같음
+    std::vector<std::vector<std::pair<St, int>>> tiny = {{{{1}, 1}, {{2}, 10}}, {{{2}, 1}}, {}};                                                                                                 // S=0, A=1, G=2: S→A 1, S→G 10, A→G 1
+    auto tsucc = [&](const St& s) { return tiny[s[0]]; }; auto tgoal = [](const St& s) { return s[0] == 2; };
+    long good = ucs({0}, tgoal, tsucc, false, &ex), early = ucs({0}, tgoal, tsucc, true, &ex); assert(good == 2 && early == 10);
+    std::cout << "UniformCostSearch: min liters moved to measure 4 = " << ans << " (Bellman-Ford over " << all.size() << " states agrees), unit-cost UCS == BFS depth " << unit << ", early goal test gives " << early << " instead of " << good << std::endl; return 0;
+}
+// Time Complexity: O((b^(C*/ε)) log) — 최적 비용 C* 안쪽 상태를 모두 확장 (암시적 그래프)
+// Space Complexity: O(확장 상태 수)
 ```
 ## MinCostPath()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <climits>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Accounts for tolls/fuel as weights." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 최소 비용 경로(격자): 칸에 들어갈 때 그 칸의 비용을 내는 격자에서 (0,0)→(R-1,C-1) 의 최소 비용 경로. 이동 규칙에 따라 도구가 갈린다.
+// ① 아래·오른쪽(·대각선)으로만 갈 수 있으면 방향이 DAG 라서 DP 한 번으로 충분하다 — dp[r][c] = cost[r][c] + min(dp[이전 칸들]), 음수 비용도 문제없다. ② 네 방향 모두 허용하면 순환이 생기므로 비용이 음이 아닐 때 Dijkstra 가 필요하고, 같은 격자에서 ①보다 항상 같거나 싸다.
+// 검증: 작은 격자(≤5×5)에서 모든 단조 경로를 재귀로 완전 열거한 값과 DP 가 같고(음수 비용 포함), 4방향 Dijkstra 는 Bellman-Ford 반복 완화 값과 같으며 DP 값 이하이고, DP 의 경로 복원이 합계와 일치함을 확인한다
+typedef std::vector<std::vector<int>> M;
+int dpMonotone(const M& a, bool diag, std::vector<std::pair<int, int>>* path) {
+    int R = a.size(), C = a[0].size(); std::vector<std::vector<int>> dp(R, std::vector<int>(C, INT_MAX)); std::vector<std::vector<std::pair<int, int>>> from(R, std::vector<std::pair<int, int>>(C, {-1, -1}));
+    for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { if (!r && !c) { dp[r][c] = a[r][c]; continue; } int best = INT_MAX; std::pair<int, int> bp{-1, -1};
+        auto tryFrom = [&](int pr, int pc) { if (pr >= 0 && pc >= 0 && dp[pr][pc] < best) { best = dp[pr][pc]; bp = {pr, pc}; } }; tryFrom(r - 1, c); tryFrom(r, c - 1); if (diag) tryFrom(r - 1, c - 1); dp[r][c] = best + a[r][c]; from[r][c] = bp; }
+    if (path) { path->clear(); for (std::pair<int, int> p{R - 1, C - 1}; p.first >= 0; p = from[p.first][p.second]) path->push_back(p); std::reverse(path->begin(), path->end()); }
+    return dp[R - 1][C - 1];
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int brute(const M& a, bool diag, int r, int c) { int R = a.size(), C = a[0].size(); if (r == R - 1 && c == C - 1) return a[r][c]; int best = INT_MAX; if (r + 1 < R) best = std::min(best, brute(a, diag, r + 1, c)); if (c + 1 < C) best = std::min(best, brute(a, diag, r, c + 1)); if (diag && r + 1 < R && c + 1 < C) best = std::min(best, brute(a, diag, r + 1, c + 1)); return a[r][c] + best; }
+int dijkstra4(const M& a) {
+    int R = a.size(), C = a[0].size(); std::vector<std::vector<int>> d(R, std::vector<int>(C, INT_MAX)); typedef std::tuple<int, int, int> T; std::priority_queue<T, std::vector<T>, std::greater<T>> pq; d[0][0] = a[0][0]; pq.push({a[0][0], 0, 0});
+    while (!pq.empty()) { auto [du, r, c] = pq.top(); pq.pop(); if (du > d[r][c]) continue; const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C) continue; if (du + a[nr][nc] < d[nr][nc]) { d[nr][nc] = du + a[nr][nc]; pq.push({d[nr][nc], nr, nc}); } } }
+    return d[R - 1][C - 1];
+}
+int relaxAll(const M& a) {                                                                                                  // Bellman-Ford 식 반복 완화(독립 검증)
+    int R = a.size(), C = a[0].size(); std::vector<std::vector<int>> d(R, std::vector<int>(C, INT_MAX / 2)); d[0][0] = a[0][0]; for (bool ch = true; ch;) { ch = false; for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C) continue; if (d[r][c] + a[nr][nc] < d[nr][nc]) { d[nr][nc] = d[r][c] + a[nr][nc]; ch = true; } } } } return d[R - 1][C - 1]; }
+int main() {
+    std::mt19937 g(2); int strictlyBetter = 0, trials = 0;
+    for (int t = 0; t < 400; t++) {
+        int R = 2 + g() % 4, C = 2 + g() % 4; M neg(R, std::vector<int>(C)), pos(R, std::vector<int>(C)); for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { neg[r][c] = (int)(g() % 21) - 8; pos[r][c] = 1 + g() % 9; }
+        for (bool diag : {false, true}) { std::vector<std::pair<int, int>> path; int v = dpMonotone(neg, diag, &path); assert(v == brute(neg, diag, 0, 0)); int sum = 0; for (auto& p : path) sum += neg[p.first][p.second]; assert(sum == v && path.front() == std::make_pair(0, 0) && path.back() == std::make_pair(R - 1, C - 1)); }
+        int mono = dpMonotone(pos, false, nullptr), free4 = dijkstra4(pos); assert(free4 == relaxAll(pos) && free4 <= mono); trials++;
+        M maze(8, std::vector<int>(8)); for (auto& row : maze) for (int& x : row) x = g() % 100 < 35 ? 40 : 1; maze[0][0] = maze[7][7] = 1;         // 비싼 칸이 섞인 큰 격자: 돌아가는 편이 싼 경우
+        int m2 = dpMonotone(maze, false, nullptr), f2 = dijkstra4(maze); assert(f2 == relaxAll(maze) && f2 <= m2); strictlyBetter += f2 < m2;
+    }
+    assert(strictlyBetter > 5);
+    std::cout << "MinCostPath: " << trials << " grids; monotone DP == exhaustive (negative costs too), 4-direction Dijkstra == relaxation and strictly cheaper than DP on " << strictlyBetter << " grids" << std::endl; return 0;
+}
+// Time Complexity: DP O(RC), Dijkstra O(RC log RC)
+// Space Complexity: O(RC)
 ```
 ## ResourceConstrainedPath()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <functional>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 자원 제약 최단 경로(RCSP): 간선마다 비용 c 와 자원 소모량 r(시간·연료·요금)이 있고, "자원 합이 한도 T 이하인 경로 중 비용 합이 최소" 인 경로를 찾는다. 일반적으로 NP-난해(배낭 문제를 포함)이지만 자원이 정수면 의사 다항 시간에 풀린다.
+// 방법 A: 라벨 설정(label-setting). 정점마다 (비용, 자원) 라벨 여러 개를 두고, 비용 순으로 꺼내며 자원 한도를 넘으면 버린다. 같은 정점의 기존 라벨이 비용·자원 모두 이하이면 새 라벨은 "지배당해" 버린다 — 이 지배(dominance) 가지치기가 핵심이다.
+// 방법 B: 자원 층 DP. best[x][v] = 자원을 정확히 x 쓰고 v 에 도착하는 최소 비용(자원이 양의 정수이면 x 오름차순으로 계산 가능). 방법 C: 모든 단순 경로를 DFS 로 완전 열거(양의 비용·자원에서는 최적해가 단순 경로).
+// 세 방법이 같은 값을 내는지 무작위 그래프 300개로 확인하고, 지배 가지치기가 만드는 라벨 수를 한도만 검사하는 경우와 비교한다
+struct E { int to, c, r; };
 int main() {
-    std::cout << "CSP shortest path limits certain weights (e.g. max fuel)." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(13); int T = 16, agree = 0, infeasible = 0; long withDom = 0, noDom = 0;
+    for (int trial = 0; trial < 300; trial++) {
+        int n = 10; std::vector<std::vector<E>> adj(n); for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (u != v && g() % 100 < 38) adj[u].push_back({v, 1 + (int)(g() % 9), 1 + (int)(g() % 6)});
+        auto labelSetting = [&](bool dominance, long& labels) -> long {
+            std::vector<std::vector<std::pair<int, int>>> kept(n); typedef std::tuple<int, int, int> L; std::priority_queue<L, std::vector<L>, std::greater<L>> pq; pq.push({0, 0, 0}); labels = 0;
+            while (!pq.empty()) { auto [c, r, u] = pq.top(); pq.pop(); bool dom = false; if (dominance) for (auto& k : kept[u]) if (k.first <= c && k.second <= r) dom = true; if (dom) continue; kept[u].push_back({c, r}); labels++; if (u == n - 1) return c;       // 비용 순이라 처음 꺼낸 목표 라벨이 최적
+                for (const E& e : adj[u]) if (r + e.r <= T) pq.push({c + e.c, r + e.r, e.to}); }
+            return -1; };
+        long l1, l2; long a = labelSetting(true, l1), a2 = labelSetting(false, l2); assert(a == a2);
+        const int INF = 1 << 28; std::vector<std::vector<int>> best(T + 1, std::vector<int>(n, INF)); best[0][0] = 0; for (int x = 0; x <= T; x++) for (int u = 0; u < n; u++) if (best[x][u] < INF) for (const E& e : adj[u]) if (x + e.r <= T) best[x + e.r][e.to] = std::min(best[x + e.r][e.to], best[x][u] + e.c);
+        long b = INF; for (int x = 0; x <= T; x++) b = std::min<long>(b, best[x][n - 1]); if (b >= INF) b = -1; assert(a == b);
+        long cBrute = 1L << 40; std::vector<char> vis(n, 0); std::function<void(int, int, int)> dfs = [&](int u, int c, int r) { if (u == n - 1) { cBrute = std::min<long>(cBrute, c); return; } vis[u] = 1; for (const E& e : adj[u]) if (!vis[e.to] && r + e.r <= T) dfs(e.to, c + e.c, r + e.r); vis[u] = 0; };
+        dfs(0, 0, 0); if (cBrute == (1L << 40)) cBrute = -1; assert(a == cBrute);
+        if (a < 0) infeasible++; else { agree++; withDom += l1; noDom += l2; }
+    }
+    assert(agree > 150 && infeasible > 0 && withDom * 2 < noDom);
+    std::cout << "ResourceConstrainedPath: " << agree << " feasible instances (+" << infeasible << " infeasible) agree across label-setting, layered DP and exhaustive search; dominance keeps " << withDom << " labels vs " << noDom << " without it" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(T · E) 층 DP (의사 다항), 라벨 설정은 최악 지수
+// Space Complexity: O(T · V)
 ```
 ## TimeDependentShortestPath()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Edge weights dynamically change based on time of arrival." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 시간 의존 최단 경로: 도로 통행 시간이 출발 시각에 따라 달라지는(출퇴근 정체) 그래프. 간선 e 에 출발 시각 t 별 통행 시간 tt_e(t) 를 주고, 정점 v 에 도착하는 가장 이른 시각을 구한다.
+// FIFO 성질 — 늦게 출발한 차가 먼저 출발한 차를 추월하지 못함, 즉 t + tt_e(t) 가 t 에 대해 비감소 — 이 성립하면 "일찍 도착하는 것이 항상 이득" 이라 기다릴 필요가 없고 평범한 Dijkstra(비용 대신 도착 시각, 간선 완화는 arr = t + tt_e(t))가 정확하다.
+// FIFO 가 깨지면(예: 통행 시간이 급락) 일찍 도착해도 간선 앞에서 기다리는 편이 더 빠를 수 있어 Dijkstra 가 틀린다. 검증: ① FIFO 함수 200개 그래프에서 TD-Dijkstra == 대기를 허용한 시간 확장 DP, ② 비 FIFO 함수에서는 TD-Dijkstra 가 시간 확장 최적보다 늦게 도착하는 사례가 실제로 존재함을 확인한다
+struct E { int to; std::vector<int> tt; };                                                                                      // tt[t] = 시각 t 에 출발할 때 통행 시간(범위 밖은 마지막 값)
+const int H = 40;
+int ttAt(const E& e, int t) { return e.tt[std::min(t, H - 1)]; }
+int tdDijkstra(const std::vector<std::vector<E>>& adj, int s, int t0, int target) {
+    int n = adj.size(); std::vector<int> arr(n, 1 << 28); typedef std::pair<int, int> P; std::priority_queue<P, std::vector<P>, std::greater<P>> pq; arr[s] = t0; pq.push({t0, s});
+    while (!pq.empty()) { auto [t, u] = pq.top(); pq.pop(); if (t > arr[u]) continue; for (const E& e : adj[u]) { int a = t + ttAt(e, t); if (a < arr[e.to]) { arr[e.to] = a; pq.push({a, e.to}); } } }
+    return arr[target];
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int timeExpanded(const std::vector<std::vector<E>>& adj, int s, int t0, int target) {                                          // 상태 (정점, 시각) 에서 기다림(+1)과 간선 이용을 모두 허용하는 도달 가능성 DP
+    int n = adj.size(), TM = 400; std::vector<std::vector<char>> ok(TM + 1, std::vector<char>(n, 0)); ok[t0][s] = 1;
+    for (int t = t0; t <= TM; t++) for (int u = 0; u < n; u++) if (ok[t][u]) { if (u == target) return t; if (t + 1 <= TM) ok[t + 1][u] = 1; for (const E& e : adj[u]) { int a = t + ttAt(e, t); if (a <= TM) ok[a][e.to] = 1; } }
+    return 1 << 28;
+}
+int main() {
+    std::mt19937 g(31); int fifoChecked = 0, rushUsed = 0, nonFifoWorse = 0, nonFifoEqual = 0;
+    for (int trial = 0; trial < 400; trial++) {
+        bool fifo = trial < 200; int n = 7; std::vector<std::vector<E>> adj(n);
+        for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (u != v && g() % 100 < 40) {
+            E e; e.to = v; e.tt.resize(H); int base = 1 + g() % 5, prev = 0;
+            for (int t = 0; t < H; t++) { if (fifo) { int arrive = std::max(prev, t + base + (int)(g() % 4) + ((t > 8 && t < 20) ? 5 : 0)); e.tt[t] = arrive - t; prev = arrive; }      // 도착 시각이 비감소가 되도록 만든다(FIFO)
+                else e.tt[t] = 1 + g() % 12; }                                                                                                                                         // 임의 함수(대개 FIFO 아님)
+            adj[u].push_back(e);
+        }
+        int t0 = g() % 15; int a = tdDijkstra(adj, 0, t0, n - 1), b = timeExpanded(adj, 0, t0, n - 1);
+        if (fifo) { assert(a == b); if (a < (1 << 28)) fifoChecked++; if (a < (1 << 28) && a - t0 > 0) rushUsed++; } else { assert(b <= a); if (b < a) nonFifoWorse++; else nonFifoEqual++; }
+    }
+    std::vector<std::vector<E>> tiny(2); E e; e.to = 1; e.tt.assign(H, 1); e.tt[0] = 10; tiny[0].push_back(e);                    // 시각 0 출발은 10 걸리지만 시각 1 출발은 1 이면 1 만 기다려도 2 에 도착
+    assert(tdDijkstra(tiny, 0, 0, 1) == 10 && timeExpanded(tiny, 0, 0, 1) == 2);
+    assert(fifoChecked > 80 && nonFifoWorse > 0);
+    std::cout << "TimeDependentShortestPath: " << fifoChecked << " FIFO instances match the time-expanded optimum; without FIFO, plain Dijkstra arrived later on " << nonFifoWorse << " of " << nonFifoWorse + nonFifoEqual << " instances (waiting 1 tick turns 10 into 2 in the tiny example)" << std::endl; return 0;
+}
+// Time Complexity: O((V + E) log V) (FIFO) — 시간 확장 그래프는 O(T · (V + E))
+// Space Complexity: O(V + E · H)
 ```
 
 # Part 9. 다중 에이전트
