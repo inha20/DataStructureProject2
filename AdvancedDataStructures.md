@@ -5162,167 +5162,469 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <list>
+#include <unordered_map>
 #include <cassert>
 
+// 캐시 인지(cache-aware): 캐시 블록 크기 B 와 용량 M 을 알고 그 값에 맞춰 알고리즘을 조정한다(타일 크기 = B). 캐시 무관(cache-oblivious): B 와 M 을 코드에서 모르는 채 "문제를 재귀적으로 반으로 나누기" 만으로
+// 모든 캐시 수준에서 동시에 거의 최적이 되도록 설계한다.  행렬 전치(N×N)로 확인한다 — 읽는 쪽은 행 단위로 연속이지만 쓰는 쪽은 열 단위라 단순 이중 루프는 쓸 때마다 새 캐시 라인을 건드린다.
+// 단순 루프: 약 N² 번 미스.  타일 T×T (T = 라인 크기에 맞춘 값): 약 2N²/L 번.  재귀(긴 변을 반으로): 타일 크기를 몰라도 약 2N²/L.  타일을 잘못 잡으면(너무 크면) 캐시에 안 들어가 도로 느려진다 — 인지형의 약점
+struct Cache {
+    size_t cap, L; std::list<long> lru; std::unordered_map<long, std::list<long>::iterator> where; long miss = 0;
+    Cache(size_t cap, size_t L) : cap(cap), L(L) {}
+    void touch(long addr) { long blk = addr / L; auto it = where.find(blk); if (it != where.end()) lru.erase(it->second); else { miss++; if (lru.size() == cap) { where.erase(lru.back()); lru.pop_back(); } } lru.push_front(blk); where[blk] = lru.begin(); }
+};
+const int N = 256;
+void access(Cache& c, int i, int j) { c.touch((long)i * N + j); c.touch((long)N * N + (long)j * N + i); }       // B[j][i] = A[i][j]
+long naive() { Cache c(64, 8); for (int i = 0; i < N; i++) for (int j = 0; j < N; j++) access(c, i, j); return c.miss; }
+long tiled(int T) { Cache c(64, 8); for (int ii = 0; ii < N; ii += T) for (int jj = 0; jj < N; jj += T) for (int i = ii; i < ii + T; i++) for (int j = jj; j < jj + T; j++) access(c, i, j); return c.miss; }
+void rec(Cache& c, int i0, int i1, int j0, int j1) { int di = i1 - i0, dj = j1 - j0; if (di == 1 && dj == 1) { access(c, i0, j0); return; }
+    if (di >= dj) { int m = (i0 + i1) / 2; rec(c, i0, m, j0, j1); rec(c, m, i1, j0, j1); } else { int m = (j0 + j1) / 2; rec(c, i0, i1, j0, m); rec(c, i0, i1, m, j1); } }
+long oblivious() { Cache c(64, 8); rec(c, 0, N, 0, N); return c.miss; }
 int main() {
-    std::cout << "Aware: hardcoded parameters. Oblivious: theoretically optimal everywhere." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    long n0 = naive(), t8 = tiled(8), t64 = tiled(64), ob = oblivious();
+    assert(t8 * 3 < n0 && ob * 3 < n0);                                    // 인지형(좋은 T)과 무관형 모두 단순 루프의 1/3 이하
+    assert(ob <= t8 * 1.6);                                                // 무관형은 T 를 몰라도 최적 타일에 가깝다
+    assert(t64 > t8 * 1.5);                                                // 타일이 캐시보다 크면 인지형도 나빠진다 (환경에 맞게 다시 조정해야 함)
+    std::cout << "transpose " << N << "x" << N << " cache misses: naive " << n0 << ", tiled T=8 " << t8 << ", tiled T=64 (wrong) " << t64 << ", cache-oblivious recursion " << ob << " (lower bound ~" << 2L * N * N / 8 << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 전치 O(N²) 연산, 캐시 미스는 인지형·무관형 모두 O(N²/L)
+// Space Complexity: O(N²)
 ```
 ## Immutable vs Persistent
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <memory>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 불변(immutable) 자료구조: 만들어진 뒤 절대 변하지 않는다. 그래서 스레드 사이에 잠금 없이 공유할 수 있다. 하지만 "수정" 이 필요하면 전체를 새로 복사해야 하니 O(N).
+// 영속(persistent) 자료구조: 수정하면 새 버전이 생기되 옛 버전도 계속 쓸 수 있고, 두 버전이 변하지 않은 부분을 공유하므로 수정 비용이 O(log N) 이다. 영속 = "불변 + 구조 공유로 갱신을 싸게 만든 것".
+// 수정 가능한(ephemeral) 구조는 옛 버전이 사라지고, 영속 구조는 모든 버전이 남는다 -> 실행 취소, 시간 여행 질의, 분기 탐색, 락프리 읽기. 대가는 갱신마다 O(log N) 노드 할당과 가비지 수집이다
+struct Node { std::shared_ptr<const Node> l, r; int val; };
+typedef std::shared_ptr<const Node> P; long allocated = 0;
+P build(int lo, int hi) { allocated++; if (lo == hi) return std::make_shared<const Node>(Node{nullptr, nullptr, 0}); int m = (lo + hi) / 2; return std::make_shared<const Node>(Node{build(lo, m), build(m + 1, hi), 0}); }
+P setAt(const P& t, int lo, int hi, int i, int v) { allocated++; if (lo == hi) return std::make_shared<const Node>(Node{nullptr, nullptr, v}); int m = (lo + hi) / 2;
+    return i <= m ? std::make_shared<const Node>(Node{setAt(t->l, lo, m, i, v), t->r, 0}) : std::make_shared<const Node>(Node{t->l, setAt(t->r, m + 1, hi, i, v), 0}); }
+int getAt(P t, int lo, int hi, int i) { while (lo < hi) { int m = (lo + hi) / 2; if (i <= m) { t = t->l; hi = m; } else { t = t->r; lo = m + 1; } } return t->val; }
 int main() {
-    std::cout << "Immutable: read-only. Persistent: creates new versions sharing old data." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int N = 4096, U = 1000; std::mt19937 g(1);
+    std::vector<int> immutableCopy(N, 0); long copied = 0; std::vector<std::vector<int>> versionsCopy = {immutableCopy};     // 불변 벡터: 수정 = 전체 복사
+    P root = build(0, N - 1); allocated = 0; std::vector<P> versions = {root};
+    for (int u = 0; u < U; u++) { int i = g() % N, v = g(); auto c = versionsCopy.back(); c[i] = v; copied += N; versionsCopy.push_back(std::move(c)); versions.push_back(setAt(versions.back(), 0, N - 1, i, v)); }
+    for (int t = 0; t < 5000; t++) { int ver = g() % versions.size(), i = g() % N; assert(getAt(versions[ver], 0, N - 1, i) == versionsCopy[ver][i]); }       // 두 방식 모두 모든 옛 버전이 그대로
+    assert(allocated <= (long)U * 14 && copied == (long)U * N);            // 영속: 갱신당 노드 약 13 개, 불변 복사: 갱신당 4096 칸
+    std::cout << "after " << U << " updates of " << N << " cells: full-copy immutable wrote " << copied << " cells, persistent tree allocated " << allocated << " nodes (" << (double)copied / allocated << "x less), all " << versions.size() << " versions intact" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(N)
+// Time Complexity: 전체 복사 갱신 O(N), 영속 갱신 O(log N)
+// Space Complexity: 영속 버전당 O(log N)
 ```
 ## Lock-Free vs Wait-Free
 ### 대표코드
 ```cpp
+#include <atomic>
 #include <iostream>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 진행 보장의 세 단계. 블로킹(잠금): 잠금을 쥔 스레드가 멈추면 모두 멈춘다.  락프리(lock-free): 어떤 시점에도 "적어도 한 스레드는" 유한 단계 안에 연산을 끝낸다(시스템 전체의 진행 보장, 개별 스레드는 굶을 수 있다).
+// 웨이트프리(wait-free): "모든 스레드가" 다른 스레드와 무관하게 유한한(상한이 있는) 단계 안에 끝낸다.  CAS 재시도 루프는 락프리이지만 웨이트프리가 아니다 — 경쟁에서 계속 지는 스레드가 있을 수 있다.
+// fetch_add 같은 하드웨어 원자 명령 한 번으로 끝나는 연산은 웨이트프리이다.  아래는 스케줄러를 손으로 정해 두 스레드의 명령을 교차시키는 결정적 시뮬레이션으로 이를 보인다 (실제 OS 스케줄러에서는 굶는 일이 드물지만 불가능하지 않다)
+struct Th { long seen = 0; bool hasRead = false; long done = 0, failed = 0; };
 int main() {
-    std::cout << "Lock-Free: system progress. Wait-Free: per-thread progress guaranteed." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    // (1) CAS 루프 카운터: 매 라운드 A.read, B.read, A.cas, B.cas 순서로 명령이 교차한다
+    long x = 0; Th A, B; const int R = 1000;
+    for (int r = 0; r < R; r++) {
+        A.seen = x; B.seen = x;                                            // 둘 다 같은 값을 읽는다
+        if (x == A.seen) { x = A.seen + 1; A.done++; } else A.failed++;     // A 의 CAS 성공
+        if (x == B.seen) { x = B.seen + 1; B.done++; } else B.failed++;     // B 의 CAS 는 x 가 이미 바뀌어 실패 -> 다음 라운드에 처음부터
+    }
+    assert(x == R && A.done == R && B.done == 0 && B.failed == R);         // 시스템은 R 번 전진(락프리)했지만 B 는 한 번도 못 끝냈다(웨이트프리 아님)
+    // (2) fetch_add 카운터: 같은 스케줄에서 명령 하나로 끝나므로 둘 다 R 번 완료
+    std::atomic<long> y{0}; long doneA = 0, doneB = 0;
+    for (int r = 0; r < R; r++) { y.fetch_add(1); doneA++; y.fetch_add(1); doneB++; }
+    assert(y == 2 * R && doneA == R && doneB == R);
+    // (3) 실제 스레드: 두 카운터 모두 정확하다 (정확성은 보장, 개별 지연은 보장 못 함)
+    std::atomic<long> cas{0}, fa{0}; std::vector<std::thread> th;
+    for (int t = 0; t < 4; t++) th.emplace_back([&] { for (int i = 0; i < 50000; i++) { long v = cas.load(); while (!cas.compare_exchange_weak(v, v + 1)); fa.fetch_add(1); } });
+    for (auto& t : th) t.join(); assert(cas == 200000 && fa == 200000);
+    std::cout << "adversarial schedule: CAS-loop thread B completed " << B.done << " ops in " << R << " rounds (A completed " << A.done << ") -> lock-free, not wait-free; fetch_add completed " << doneA << "/" << doneB << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: CAS 루프: 경쟁 시 재시도 무한 가능(락프리), fetch_add: O(1) 웨이트프리
 // Space Complexity: O(1)
 ```
 ## Online vs Offline 자료구조
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <functional>
 #include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 온라인(online): 질의를 하나씩 받아 그때그때 답해야 한다(미래를 모름).  오프라인(offline): 질의 전체를 미리 알고 순서를 바꾸거나 한꺼번에 처리해도 된다.
+// 같은 문제도 오프라인이면 더 단순하고 가볍게 풀리는 경우가 많다. 최소 공통 조상(LCA)으로 비교한다 — 온라인: 이진 도약(binary lifting) 표 O(N log N) 공간, 질의마다 O(log N).
+// 오프라인: Tarjan 알고리즘 — 트리를 DFS 하며 서로소 집합(Union-Find)만 쓰고 질의 두 끝점이 모두 방문된 순간 답한다. O(N) 공간(질의 목록 제외), 거의 O(1) 분할상환.
+// 대가: 질의를 미리 모두 알아야 하고 결과 순서가 방문 순서와 달라 되돌려 놓아야 한다.  (다른 예: 간선 삭제가 있는 연결성 — 온라인은 어렵지만 오프라인은 시간 분할 정복 + 롤백 DSU 로 쉽다)
 int main() {
-    std::cout << "Online processes on the fly. Offline pre-processes all data upfront." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(2); const int N = 5000, Q = 10000; std::vector<int> par(N, -1), depth(N, 0); std::vector<std::vector<int>> kids(N);
+    for (int i = 1; i < N; i++) { par[i] = g() % i; depth[i] = depth[par[i]] + 1; kids[par[i]].push_back(i); }
+    std::vector<std::pair<int, int>> qs(Q); for (auto& q : qs) q = {(int)(g() % N), (int)(g() % N)};
+    int LOG = 1; while ((1 << LOG) < N) LOG++; std::vector<std::vector<int>> up(LOG, std::vector<int>(N, 0));        // 온라인: 이진 도약 표
+    for (int i = 0; i < N; i++) up[0][i] = par[i] < 0 ? i : par[i]; for (int k = 1; k < LOG; k++) for (int i = 0; i < N; i++) up[k][i] = up[k - 1][up[k - 1][i]];
+    auto lcaOnline = [&](int a, int b) { if (depth[a] < depth[b]) std::swap(a, b); for (int k = 0; k < LOG; k++) if ((depth[a] - depth[b]) >> k & 1) a = up[k][a]; if (a == b) return a;
+        for (int k = LOG - 1; k >= 0; k--) if (up[k][a] != up[k][b]) { a = up[k][a]; b = up[k][b]; } return up[0][a]; };
+    std::vector<int> online(Q); for (int i = 0; i < Q; i++) online[i] = lcaOnline(qs[i].first, qs[i].second);
+    std::vector<int> dsu(N), anc(N), offline(Q, -1); std::iota(dsu.begin(), dsu.end(), 0); std::iota(anc.begin(), anc.end(), 0); std::vector<char> visited(N, 0);      // 오프라인: Tarjan
+    std::vector<std::vector<std::pair<int, int>>> at(N); for (int i = 0; i < Q; i++) { at[qs[i].first].push_back({qs[i].second, i}); at[qs[i].second].push_back({qs[i].first, i}); }
+    std::function<int(int)> find = [&](int x) { return dsu[x] == x ? x : dsu[x] = find(dsu[x]); };
+    std::function<void(int)> dfs = [&](int u) { visited[u] = 1; for (int c : kids[u]) { dfs(c); dsu[find(c)] = find(u); anc[find(u)] = u; }
+        for (auto& pr : at[u]) if (visited[pr.first] && offline[pr.second] < 0) offline[pr.second] = anc[find(pr.first)]; };
+    dfs(0);
+    assert(online == offline);                                             // 두 방식의 답이 같다
+    long onlineWords = (long)LOG * N, offlineWords = 2L * N;               // 보조 구조 크기 (워드 수)
+    assert(offlineWords * 4 < onlineWords);
+    std::cout << "LCA of " << Q << " queries on a " << N << "-node tree: identical answers; auxiliary memory online " << onlineWords << " words (binary lifting) vs offline " << offlineWords << " words (union-find)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 온라인 질의당 O(log N), 오프라인 전체 O((N + Q) α(N))
+// Space Complexity: 온라인 O(N log N), 오프라인 O(N + Q)
 ```
 ## Static vs Dynamic 자료구조
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Static: fixed elements. Dynamic: supports inserts/deletes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 정적(static): 한 번 만들고 읽기만 한다 -> 갱신 지원을 버린 대가로 더 작고 빠르고 단순하다(희소 표 O(1) 질의, 정렬 배열 + 이분 탐색, 완전 해시, 성기게 압축된 비트열).
+// 동적(dynamic): 삽입·삭제·갱신을 지원하는 대신 포인터·여유 공간·균형 정보 같은 비용을 낸다. 선택 기준은 "읽기 대 쓰기 비율".  구간 최솟값(RMQ)으로 비교한다:
+// 희소 표: 질의 2 번 조회, 하지만 값이 하나 바뀌면 표를 다시 짓는다 O(N log N).  세그먼트 트리: 질의·갱신 모두 O(log N).  LSM 의 SSTable 이 정적 구조이고 변경은 새 정적 구조로 병합하는 것도 같은 생각이다
+long ops = 0;
+struct Sparse { std::vector<std::vector<int>> t; std::vector<int> lg; explicit Sparse(const std::vector<int>& a) { int n = a.size(); lg.assign(n + 1, 0); for (int i = 2; i <= n; i++) lg[i] = lg[i / 2] + 1; t.push_back(a);
+        for (int k = 1; (1 << k) <= n; k++) { t.emplace_back(n - (1 << k) + 1); for (int i = 0; i + (1 << k) <= n; i++) { t[k][i] = std::min(t[k - 1][i], t[k - 1][i + (1 << (k - 1))]); ops++; } } }
+    int query(int l, int r) const { int k = lg[r - l + 1]; ops += 2; return std::min(t[k][l], t[k][r - (1 << k) + 1]); } };
+struct Seg { int n; std::vector<int> t; explicit Seg(const std::vector<int>& a) : n(a.size()), t(2 * a.size()) { for (int i = 0; i < n; i++) t[n + i] = a[i]; for (int i = n - 1; i > 0; i--) t[i] = std::min(t[2 * i], t[2 * i + 1]); }
+    void set(int p, int v) { for (t[p += n] = v; p > 1; p >>= 1) { t[p >> 1] = std::min(t[p], t[p ^ 1]); ops++; } }
+    int query(int l, int r) { int res = 1 << 30; for (l += n, r += n + 1; l < r; l >>= 1, r >>= 1) { if (l & 1) { res = std::min(res, t[l++]); ops++; } if (r & 1) { res = std::min(res, t[--r]); ops++; } } return res; } };
+long runStatic(std::vector<int> a, int Q, int U, std::mt19937& g) {            // 갱신마다 희소 표를 다시 지음
+    ops = 0; Sparse s(a); int n = a.size(); for (int i = 0; i < Q + U; i++) { if (i % ((Q + U) / std::max(U, 1)) == 0 && U > 0 && i / ((Q + U) / U) < U) { a[g() % n] = g() % 1000; s = Sparse(a); } else { int l = g() % n, r = g() % n; if (l > r) std::swap(l, r); s.query(l, r); } } return ops;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+long runDynamic(std::vector<int> a, int Q, int U, std::mt19937& g) {
+    ops = 0; Seg s(a); int n = a.size(); for (int i = 0; i < Q + U; i++) { if (i % ((Q + U) / std::max(U, 1)) == 0 && U > 0 && i / ((Q + U) / U) < U) s.set(g() % n, g() % 1000); else { int l = g() % n, r = g() % n; if (l > r) std::swap(l, r); s.query(l, r); } } return ops;
+}
+int main() {
+    std::mt19937 g(1); const int N = 1 << 12; std::vector<int> a(N); for (auto& x : a) x = g() % 1000; const int Q = 20000;
+    std::mt19937 g1(5), g2(5); long s0 = runStatic(a, Q, 0, g1), d0 = runDynamic(a, Q, 0, g2);
+    std::mt19937 g3(6), g4(6); long s1 = runStatic(a, Q, 200, g3), d1 = runDynamic(a, Q, 200, g4);
+    assert(s0 < d0);                                                       // 갱신이 없으면 정적 구조가 이긴다
+    assert(s1 > d1 * 5);                                                   // 갱신이 조금만 있어도 매번 다시 짓는 정적 구조는 크게 진다
+    std::cout << "RMQ, N=" << N << ", " << Q << " queries: no updates -> static " << s0 << " vs dynamic " << d0 << " node operations; with 200 updates -> static " << s1 << " vs dynamic " << d1 << std::endl; return 0;
+}
+// Time Complexity: 정적 질의 O(1)·갱신 시 재구성 O(N log N), 동적 질의·갱신 O(log N)
+// Space Complexity: 정적 O(N log N), 동적 O(N)
 ```
 ## Internal Memory vs External Memory
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <list>
+#include <queue>
+#include <random>
+#include <unordered_map>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Internal: fast RAM (AVL). External: slow disk I/O (B-Tree)." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 내부 메모리 모델(RAM)은 모든 접근이 같은 비용이라고 보고 연산 횟수를 센다. 외부 메모리(I/O) 모델은 데이터가 디스크에 있고 한 번에 블록 B 개 원소를 옮기며 메모리에는 M 개만 들어간다고 보고 "블록 전송 횟수" 를 센다 —
+// 디스크 한 번 접근이 CPU 연산 수십만 번의 시간이기 때문이다.  정렬의 I/O 하한은 Θ((N/B) log_{M/B}(N/B)) 이고, 외부 병합 정렬(M 크기 런을 만든 뒤 (M/B-1)-way 병합)이 그것을 달성한다.
+// 반면 RAM 에서 최적인 힙 정렬은 접근이 배열 전체를 뛰어다녀 거의 모든 접근이 블록 미스이다.  같은 O(N log N) 알고리즘이 외부 메모리에서는 수백 배 느릴 수 있다는 것을 I/O 횟수로 확인한다
+const int B = 64, M = 4096, N = 1 << 18;
+long blocks(long n) { return (n + B - 1) / B; }
+struct Cache { size_t cap; std::list<long> lru; std::unordered_map<long, std::list<long>::iterator> where; long miss = 0; explicit Cache(size_t c) : cap(c) {}
+    void touch(long idx) { long blk = idx / B; auto it = where.find(blk); if (it != where.end()) lru.erase(it->second); else { miss++; if (lru.size() == cap) { where.erase(lru.back()); lru.pop_back(); } } lru.push_front(blk); where[blk] = lru.begin(); } };
+long heapSortIO(std::vector<int> a) {                                      // 제자리 힙 정렬을 M/B 블록짜리 LRU 캐시 위에서 실행
+    Cache c(M / B); long n = a.size();
+    auto rd = [&](long i) { c.touch(i); return a[i]; }; auto wr = [&](long i, int v) { c.touch(i); a[i] = v; };
+    auto sift = [&](long root, long end) { for (;;) { long ch = 2 * root + 1; if (ch >= end) break; if (ch + 1 < end && rd(ch) < rd(ch + 1)) ch++; if (rd(root) >= rd(ch)) break; int t = rd(root); wr(root, rd(ch)); wr(ch, t); root = ch; } };
+    for (long i = n / 2 - 1; i >= 0; i--) sift(i, n);
+    for (long e = n - 1; e > 0; e--) { int t = rd(0); wr(0, rd(e)); wr(e, t); sift(0, e); }
+    assert(std::is_sorted(a.begin(), a.end())); return c.miss;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+long externalMergeSortIO(const std::vector<int>& in) {
+    long io = 0; std::vector<std::vector<int>> runs;
+    for (size_t i = 0; i < in.size(); i += M) { std::vector<int> r(in.begin() + i, in.begin() + std::min(in.size(), i + M)); io += blocks(r.size()); std::sort(r.begin(), r.end()); io += blocks(r.size()); runs.push_back(r); }      // 1 단계: 메모리 크기 런 (읽기+쓰기)
+    const size_t F = M / B - 1; int passes = 0;
+    while (runs.size() > 1) { std::vector<std::vector<int>> next; passes++;
+        for (size_t g = 0; g < runs.size(); g += F) { size_t e = std::min(runs.size(), g + F); using E = std::pair<int, std::pair<size_t, size_t>>; std::priority_queue<E, std::vector<E>, std::greater<E>> pq; std::vector<int> out;
+            for (size_t r = g; r < e; r++) { io += blocks(runs[r].size()); pq.push({runs[r][0], {r, 0}}); }          // 입력 런 읽기
+            while (!pq.empty()) { auto t = pq.top(); pq.pop(); out.push_back(t.first); size_t r = t.second.first, i = t.second.second + 1; if (i < runs[r].size()) pq.push({runs[r][i], {r, i}}); }
+            io += blocks(out.size()); next.push_back(out); }                                                         // 출력 쓰기
+        runs = next; }
+    assert(runs.size() == 1 && std::is_sorted(runs[0].begin(), runs[0].end()) && runs[0].size() == in.size()); return io;
+}
+int main() {
+    std::mt19937 g(1); std::vector<int> data(N); for (auto& x : data) x = g();
+    long ext = externalMergeSortIO(data), heap = heapSortIO(data); double bound = (double)N / B * (1 + std::max(1.0, std::ceil(std::log((double)N / M) / std::log((double)M / B - 1))));
+    assert(ext <= 2 * bound * 2 && heap > ext * 20);
+    std::cout << "sorting " << N << " ints (B=" << B << ", M=" << M << "): external merge sort " << ext << " block I/Os vs in-place heapsort through the same cache " << heap << " (" << heap / ext << "x more)" << std::endl; return 0;
+}
+// Time Complexity: 외부 병합 정렬 I/O O((N/B) log_{M/B}(N/B)), 힙 정렬 I/O O(N log (N/M))
+// Space Complexity: O(N) 디스크 + O(M) 메모리
 ```
 ## Exact vs Approximate 자료구조
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include <cassert>
 
+// 정확한 자료구조는 원소 수에 비례하는 공간을 쓴다(집합 = 키를 전부 저장, 빈도표 = 키와 횟수를 전부). 근사 자료구조는 "작은 오차를 허용하면" 공간을 원소 수와 거의 무관하게 고정하거나 몇 십 분의 일로 줄인다.
+//   집합 소속: 블룸 필터 (거짓 양성만, 키당 ~10 비트)   서로 다른 개수: HyperLogLog (±1~2%, 16 KB 고정)   빈도: 카운트-민 스케치 (과대 추정만, ε·N 이내)
+// 같은 스트림에 정확 구조와 근사 구조를 모두 적용해 메모리와 오차를 나란히 잰다. 근사의 오차는 마음대로가 아니라 이론으로 보장된 한계(파라미터 ε, δ, p)를 갖는다는 것이 핵심이다
+static inline uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
 int main() {
-    std::cout << "Exact gives 100% truth. Approximate trades accuracy for extreme space saving." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937_64 g(7); const int K = 200000, EVENTS = 600000; std::vector<double> w(K); for (int i = 0; i < K; i++) w[i] = 1.0 / std::pow(i + 1, 0.9);
+    std::discrete_distribution<int> zipf(w.begin(), w.end());
+    std::unordered_map<uint64_t, uint32_t> exactFreq; std::unordered_set<uint64_t> exactSet;
+    const int p = 14; std::vector<uint8_t> hll(1 << p, 0);                                                  // HyperLogLog 16 KB
+    const size_t mb = (size_t)(K * 9.6); std::vector<uint64_t> bloom((mb + 63) / 64, 0); const int bk = 7;      // 블룸 필터 ~9.6 비트/키 (등록 키 수 = 서로 다른 키 수)
+    const double eps = 0.001; const size_t cw = (size_t)std::ceil(std::exp(1.0) / eps), cd = 5; std::vector<std::vector<uint32_t>> cms(cd, std::vector<uint32_t>(cw, 0));        // 카운트-민
+    std::vector<uint64_t> distinctKeys;
+    for (int e = 0; e < EVENTS; e++) {
+        uint64_t key = (uint64_t)zipf(g) * 1000003ULL + 17; if (!exactFreq.count(key)) distinctKeys.push_back(key); exactFreq[key]++; exactSet.insert(key);
+        uint64_t h = mix(key); size_t idx = h >> (64 - p); uint64_t ww = (h << p) | (1ULL << (p - 1)); uint8_t rho = __builtin_clzll(ww) + 1; if (rho > hll[idx]) hll[idx] = rho;
+        for (int i = 0; i < bk; i++) { size_t pos = (mix(key) + (uint64_t)i * (mix(~key) | 1)) % mb; bloom[pos >> 6] |= 1ULL << (pos & 63); }
+        for (size_t i = 0; i < cd; i++) cms[i][mix(key ^ (i * 0x9e3779b97f4a7c15ULL + 1)) % cw]++;
+    }
+    double alpha = 0.7213 / (1 + 1.079 / (1 << p)), sum = 0; size_t zeros = 0; for (uint8_t r : hll) { sum += std::ldexp(1.0, -r); zeros += r == 0; } double est = alpha * (1 << p) * (1 << p) / sum; if (est <= 2.5 * (1 << p) && zeros) est = (1 << p) * std::log((double)(1 << p) / zeros);
+    double hllErr = std::fabs(est - (double)exactSet.size()) / exactSet.size(); assert(hllErr < 0.03);
+    long fp = 0, T = 100000; for (long i = 0; i < T; i++) { uint64_t key = (1ULL << 50) + i; bool in = true; for (int j = 0; j < bk; j++) { size_t pos = (mix(key) + (uint64_t)j * (mix(~key) | 1)) % mb; if (!((bloom[pos >> 6] >> (pos & 63)) & 1)) { in = false; break; } } fp += in; }
+    double fpr = (double)fp / T; assert(fpr < 0.02);
+    long over = 0; for (auto& kv : exactFreq) { uint32_t m = UINT32_MAX; for (size_t i = 0; i < cd; i++) m = std::min(m, cms[i][mix(kv.first ^ (i * 0x9e3779b97f4a7c15ULL + 1)) % cw]); assert(m >= kv.second); if (m > kv.second + eps * EVENTS) over++; }
+    assert(over <= exactFreq.size() * 0.02);
+    size_t exactBytes = exactSet.size() * 8, exactFreqBytes = exactFreq.size() * 12;                // 키 8 B + 횟수 4 B 의 순수 페이로드만 센 하한 (실제 해시 표는 훨씬 큼)
+    size_t hllBytes = hll.size(), bloomBytes = bloom.size() * 8, cmsBytes = cd * cw * 4;
+    assert(exactBytes > hllBytes * 50 && exactBytes > bloomBytes * 1.5 && exactFreqBytes > cmsBytes * 4);
+    std::cout << exactSet.size() << " distinct keys / " << EVENTS << " events\n  distinct count: exact >=" << exactBytes << " B vs HyperLogLog " << hllBytes << " B (error " << hllErr * 100 << "%)\n  membership: exact >=" << exactBytes
+              << " B vs Bloom " << bloomBytes << " B (false positives " << fpr * 100 << "%)\n  frequency: exact >=" << exactFreqBytes << " B vs Count-Min " << cmsBytes << " B (keys off by more than eps*N: " << over << "/" << exactFreq.size() << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 근사 구조 연산은 모두 O(1)~O(d)
+// Space Complexity: 근사 구조는 원소 수와 무관한 고정 크기(ε, δ, p 로 결정), 정확 구조는 O(N)
 ```
 ## CPU 자료구조 vs GPU 자료구조
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// CPU 는 복잡한 제어 흐름과 불규칙한 메모리 접근(포인터 따라가기)을 캐시와 분기 예측으로 견디도록 만들어졌고, GPU 는 수천 스레드가 "같은 명령을 같은 모양의 데이터에" 적용할 때 빛난다. 그래서 자료구조 선택 기준이 달라진다:
+// ① 메모리 배치: GPU 의 워프(32 스레드)가 연속 주소를 읽어야 한 번의 128 B 트랜잭션으로 합쳐진다 -> 구조체의 배열(AoS) 대신 필드별 배열(SoA) ② 분기: 워프 안의 스레드가 서로 다른 분기를 타면 양쪽을 모두 순서대로 실행(divergence)하므로
+// 입력을 조건별로 미리 분류(분할)한다 ③ 포인터 추적(연결 리스트·고전 트리)은 스레드마다 주소가 흩어져 합쳐지지 않으므로 배열 기반(CSR, 암묵적 힙, 구조 평탄화) 구조를 쓴다.  숫자로 확인한다
+long segments(const std::vector<long>& addr) { std::set<long> s; for (long a : addr) s.insert(a / 128); return s.size(); }
 int main() {
-    std::cout << "CPU excels at branching/pointers. GPU demands linear arrays (SoA) and SIMT." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int N = 1 << 16; std::mt19937 g(1);
+    long aos = 0, soa = 0, chase = 0;                                      // 입자 N 개의 x 좌표 하나를 읽는 워프 로드
+    for (int w = 0; w < N / 32; w++) {
+        std::vector<long> a1, a2, a3; for (int l = 0; l < 32; l++) { long i = w * 32 + l; a1.push_back(i * 32); a2.push_back(i * 4); a3.push_back((long)(g() % N) * 32); }      // AoS: 구조체 32 B 중 x / SoA: float 배열 / 무작위 포인터
+        aos += segments(a1); soa += segments(a2); chase += segments(a3);
+    }
+    assert(soa * 6 < aos && soa * 20 < chase);                             // SoA 는 워프당 1 트랜잭션, AoS 는 8, 무작위 접근은 32 에 가깝다
+    long cost[2] = {0, 0}; const int T_COST = 10, F_COST = 10;             // 분기 양쪽 비용 각 10 사이클: 워프는 "참인 레인이 있으면 참쪽" + "거짓인 레인이 있으면 거짓쪽" 을 모두 실행
+    std::vector<int> pred(N); for (auto& p : pred) p = g() % 2;
+    auto warpCost = [&](const std::vector<int>& v) { long c = 0; for (int w = 0; w < N / 32; w++) { bool anyT = false, anyF = false; for (int l = 0; l < 32; l++) (v[w * 32 + l] ? anyT : anyF) = true; c += (anyT ? T_COST : 0) + (anyF ? F_COST : 0); } return c; };
+    cost[0] = warpCost(pred); std::vector<int> sorted = pred; std::sort(sorted.begin(), sorted.end()); cost[1] = warpCost(sorted);        // 조건별로 모아 두면 워프 안이 모두 같은 분기
+    assert(cost[1] * 19 < cost[0] * 10 + cost[0] / 100);                  // 분류 후 거의 절반
+    std::cout << "warp loads of one field: AoS " << aos << " segments, SoA " << soa << ", random pointer chasing " << chase << " (of " << N / 32 << " warps)\nbranch divergence cost: random predicate " << cost[0] << " cycles vs partitioned input " << cost[1] << " cycles" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 이 시뮬레이션은 O(N)
+// Space Complexity: O(N)
 ```
 ## LSM Tree가 SSD에 적합한 이유
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// SSD 의 NAND 플래시는 ① 페이지(4~16 KB) 단위로만 쓰고 ② 이미 쓴 페이지는 덮어쓸 수 없으며 ③ 지우기(erase)는 수십~수백 페이지의 블록 단위로만 한다. 그래서 제자리 덮어쓰기는 불가능하고 SSD 컨트롤러(FTL)가
+// 새 페이지에 쓰고 옛 페이지는 "무효" 표시를 한 뒤, 여유가 모자라면 무효 페이지가 많은 블록을 골라 아직 유효한 페이지를 다른 곳에 복사하고(가비지 컬렉션, GC) 지운다. 이 복사 때문에 호스트가 쓴 양보다 NAND 에 실제로 쓰는 양이 많아진다(쓰기 증폭 WA = NAND 쓰기 / 호스트 쓰기).
+// B-트리처럼 작은 페이지를 무작위로 제자리 갱신하면 무효 페이지가 블록 곳곳에 흩어져 GC 가 많이 복사해야 해서 WA 가 크고 수명이 짧아진다. LSM 은 큰 순차 파일을 쓰고 한 번에 통째로 지우므로(한 파일의 페이지가 같은 블록에 모여 같이 무효화) GC 가 거의 복사할 게 없다.
+// 아래는 간단한 FTL(탐욕 GC) 시뮬레이터로 두 쓰기 패턴의 WA 를 잰다. LSM 자체의 쓰기 증폭(압축)은 별개(LSMTree 항목)이지만 장치 수준에서는 이점이 있다
+struct FTL {
+    static const int P = 64, NB = 256; std::vector<int> l2p, p2l = std::vector<int>(NB * P, -1), valid = std::vector<int>(NB, 0); std::vector<char> state = std::vector<char>(NB, 0);
+    int active = -1, fill = 0, freeBlocks = NB; long host = 0, nand = 0, erases = 0; bool inGC = false;
+    explicit FTL(int logical) : l2p(logical, -1) {}
+    void program(int lpn) {
+        for (;;) {                                                         // GC 가 활성 블록을 열거나 채웠을 수 있으므로 다시 판정한다
+            if (active >= 0 && fill == P) { state[active] = 2; active = -1; }                          // 활성 블록이 다 찼다
+            if (active >= 0) break;
+            if (!inGC && freeBlocks <= 3) { gc(); continue; }               // 여유 블록이 모자라면 먼저 GC
+            int b = 0; while (state[b] != 0) b++; state[b] = 1; active = b; fill = 0; freeBlocks--; break;
+        }
+        int ppn = active * P + fill++; p2l[ppn] = lpn; l2p[lpn] = ppn; valid[active]++; nand++;
+    }
+    void write(int lpn) { host++; int old = l2p[lpn]; if (old >= 0) { valid[old / P]--; p2l[old] = -1; } program(lpn); }
+    void gc() {
+        inGC = true;
+        while (freeBlocks <= 3) {
+            int v = -1; for (int b = 0; b < NB; b++) if (state[b] == 2 && (v < 0 || valid[b] < valid[v])) v = b;           // 유효 페이지가 가장 적은 블록 (탐욕)
+            for (int i = 0; i < P; i++) { int lpn = p2l[v * P + i]; if (lpn >= 0) { valid[v]--; p2l[v * P + i] = -1; program(lpn); } }       // 아직 유효한 페이지를 옮겨 쓴다 (쓰기 증폭의 원인)
+            state[v] = 0; valid[v] = 0; freeBlocks++; erases++;
+        }
+        inGC = false;
+    }
+    double wa() const { return (double)nand / host; }
+};
 int main() {
-    std::cout << "LSM sequential appends avoid SSD random overwrite wear." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int logical = (int)(FTL::NB * FTL::P * 0.80); std::mt19937 g(1);
+    FTL rnd(logical); for (int i = 0; i < logical; i++) rnd.write(i); rnd.host = rnd.nand = 0;
+    for (int i = 0; i < 400000; i++) rnd.write(g() % logical);              // B-트리식: 작은 페이지의 무작위 제자리 갱신
+    FTL seq(logical); for (int i = 0; i < logical; i++) seq.write(i); seq.host = seq.nand = 0;
+    for (int r = 0; r < 25; r++) for (int i = 0; i < logical; i++) seq.write(i);                         // LSM 식: 큰 순차 쓰기, 옛 파일은 통째로 무효
+    assert(rnd.wa() > 2.0 && seq.wa() < 1.1 && rnd.wa() > seq.wa() * 2);
+    std::cout << "FTL write amplification at 80% utilization: random in-place updates " << rnd.wa() << " (" << rnd.erases << " erases) vs sequential log-structured writes " << seq.wa() << " (" << seq.erases << " erases)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 시뮬레이션 O(쓰기 수 × 블록 수)
+// Space Complexity: O(물리 페이지 수)
 ```
 ## 벡터 데이터베이스는 왜 HNSW를 사용하는가?
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 벡터 검색은 "질의와 가까운 k 개" 를 찾는 일이고, 차원이 높으면 공간 분할 트리(KD, Ball)는 거의 모든 가지를 방문해 전수 탐색과 다를 바 없어진다. 남는 선택이 IVF(군집 -> 일부 군집만 탐색)와 근접 그래프(HNSW 계열)이다.
+// IVF 는 군집 수를 √N 으로 두면 탐색량이 ~√N 으로 늘어난다. 근접 그래프는 "이웃의 이웃이 더 가깝다" 는 성질로 질의 쪽으로 걸어가기 때문에 같은 recall 에서 거리 계산이 N 에 거의 무관하게 천천히(~로그) 늘고,
+// 새 벡터를 넣을 때 재학습 없이 이웃 몇 개와 연결만 하면 되며(군집 중심을 다시 학습할 필요가 없다), 압축 없이도 정확한 거리를 쓴다. 대가는 메모리(벡터 + 간선)와 삭제의 어려움이다.
+// 아래는 같은 데이터에서 N 을 키우며 "recall@10 >= 0.9 를 처음 달성하는 설정" 의 평균 거리 계산 수를 전수 탐색·IVF·근접 그래프(계층 없는 단순판)로 비교한다 (HNSW 본체는 이 책 Part 12 HNSW 항목)
+const int D = 16; typedef std::array<float, D> V;
+float dist(const V& a, const V& b) { float s = 0; for (int i = 0; i < D; i++) s += (a[i] - b[i]) * (a[i] - b[i]); return s; }
+struct Graph {
+    const std::vector<V>* P; std::vector<std::vector<int>> nb; long evals = 0; std::mt19937 g{3};
+    void build(const std::vector<V>& pts, int M) { P = &pts; int n = pts.size(); nb.assign(n, {}); std::vector<std::pair<float, int>> d(n);
+        for (int i = 0; i < n; i++) { for (int j = 0; j < n; j++) d[j] = {dist(pts[i], pts[j]), j}; std::partial_sort(d.begin(), d.begin() + M + 1, d.end()); for (int k = 1; k <= M; k++) nb[i].push_back(d[k].second); nb[i].push_back(g() % n); nb[i].push_back(g() % n); } }
+    std::vector<int> search(const V& q, int k, int ef) {
+        int n = P->size(); std::vector<char> seen(n, 0); using PI = std::pair<float, int>; std::priority_queue<PI, std::vector<PI>, std::greater<PI>> cand; std::priority_queue<PI> res;
+        for (int s = 0; s < 16; s++) { int id = g() % n; if (seen[id]) continue; seen[id] = 1; float d = dist(q, (*P)[id]); evals++; cand.push({d, id}); res.push({d, id}); if ((int)res.size() > ef) res.pop(); }       // 시작점 16 개
+        while (!cand.empty()) { PI c = cand.top(); if ((int)res.size() >= ef && c.first > res.top().first) break; cand.pop();
+            for (int e : nb[c.second]) { if (seen[e]) continue; seen[e] = 1; float d = dist(q, (*P)[e]); evals++; if ((int)res.size() < ef || d < res.top().first) { cand.push({d, e}); res.push({d, e}); if ((int)res.size() > ef) res.pop(); } } }
+        std::vector<PI> v; while (!res.empty()) { v.push_back(res.top()); res.pop(); } std::reverse(v.begin(), v.end()); std::vector<int> out; for (int i = 0; i < k && i < (int)v.size(); i++) out.push_back(v[i].second); return out;
+    }
+};
+struct IVF {
+    const std::vector<V>* P; std::vector<V> cents; std::vector<std::vector<int>> lists; long evals = 0;
+    void build(const std::vector<V>& pts, int nlist, std::mt19937& g) { P = &pts; for (int c = 0; c < nlist; c++) cents.push_back(pts[g() % pts.size()]); lists.assign(nlist, {});
+        for (size_t i = 0; i < pts.size(); i++) { int b = 0; float bd = 1e30f; for (int c = 0; c < nlist; c++) { float d = dist(pts[i], cents[c]); if (d < bd) { bd = d; b = c; } } lists[b].push_back(i); } }
+    std::vector<int> search(const V& q, int k, int nprobe) {
+        std::vector<std::pair<float, int>> cd; for (size_t c = 0; c < cents.size(); c++) cd.push_back({dist(q, cents[c]), (int)c}); evals += cents.size(); std::partial_sort(cd.begin(), cd.begin() + nprobe, cd.end());
+        std::vector<std::pair<float, int>> cand; for (int p = 0; p < nprobe; p++) for (int id : lists[cd[p].second]) { cand.push_back({dist(q, (*P)[id]), id}); evals++; }
+        int kk = std::min<int>(k, cand.size()); std::partial_sort(cand.begin(), cand.begin() + kk, cand.end()); std::vector<int> out; for (int i = 0; i < kk; i++) out.push_back(cand[i].second); return out;
+    }
+};
 int main() {
-    std::cout << "HNSW graphs bypass the curse of dimensionality seen in KD-Trees." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 g(5); std::normal_distribution<float> N(0, 1); const int Q = 60, K = 10; double gEv[4], iEv[4]; int sizes[4] = {1000, 2000, 4000, 8000};
+    for (int s = 0; s < 4; s++) {
+        int n = sizes[s]; std::vector<V> centers(20); for (auto& c : centers) for (auto& x : c) x = N(g) * 4; auto sample = [&]() { V p = centers[g() % 20]; for (auto& x : p) x += N(g); return p; };
+        std::vector<V> pts; for (int i = 0; i < n; i++) pts.push_back(sample()); std::vector<V> qs; std::vector<std::vector<int>> exact;
+        for (int t = 0; t < Q; t++) { qs.push_back(sample()); std::vector<std::pair<float, int>> d; for (int i = 0; i < n; i++) d.push_back({dist(qs.back(), pts[i]), i}); std::partial_sort(d.begin(), d.begin() + K, d.end()); std::vector<int> e; for (int i = 0; i < K; i++) e.push_back(d[i].second); exact.push_back(e); }
+        auto recall = [&](std::vector<std::vector<int>>& got) { double r = 0; for (int t = 0; t < Q; t++) { int hit = 0; for (int a : got[t]) hit += std::find(exact[t].begin(), exact[t].end(), a) != exact[t].end(); r += (double)hit / K; } return r / Q; };
+        Graph gr; gr.build(pts, 10); gEv[s] = 1e18; for (int ef : {16, 24, 32, 48, 64, 96, 128, 192, 256}) { gr.evals = 0; std::vector<std::vector<int>> got; for (auto& q : qs) got.push_back(gr.search(q, K, ef)); if (recall(got) >= 0.9) { gEv[s] = (double)gr.evals / Q; break; } }
+        int nlist = (int)std::sqrt((double)n); IVF iv; iv.build(pts, nlist, g); iEv[s] = n; for (int np = 1; np <= nlist; np = np < 4 ? np + 1 : np * 3 / 2) { iv.evals = 0; std::vector<std::vector<int>> got; for (auto& q : qs) got.push_back(iv.search(q, K, np)); if (recall(got) >= 0.9) { iEv[s] = (double)iv.evals / Q; break; } }
+        std::cout << "N=" << n << ": distance evaluations for recall@10>=0.9  flat " << n << " | IVF " << iEv[s] << " | proximity graph " << gEv[s] << std::endl;
+    }
+    assert(gEv[3] < 0.15 * sizes[3] && gEv[3] / gEv[0] < (double)sizes[3] / sizes[0] / 2 && gEv[3] < iEv[3]);        // 그래프: N 이 8 배가 되어도 계산량은 8/2 배보다 훨씬 덜 늘고, IVF 보다 적다
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 그래프 질의 경험적으로 O(log N) 거리 계산, IVF 는 O(√N), 플랫은 O(N)
+// Space Complexity: 그래프 O(N·(D + M)), IVF O(N·D)
 ```
 ## 현대 데이터베이스가 B+Tree와 LSMTree를 함께 사용하는 이유
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <vector>
 #include <cassert>
 
+// B+트리는 읽기에 최적화되어 있다: 점 조회는 잎 페이지 하나(상위는 캐시), 범위 조회는 연결된 잎을 순차로. 그러나 쓰기는 "페이지를 읽고 -> 수정하고 -> 같은 자리에 쓰는" 무작위 I/O 이고 분할이 겹치면 더 든다.
+// LSM 은 쓰기에 최적화되어 있다: 쓰기는 메모리에서 합쳐져 큰 순차 쓰기로 나가지만 읽기는 여러 레벨·파일을 확인해야 한다(블룸 필터로 줄여도 완전히 1 은 아니다) + 병합(compaction)의 쓰기 증폭.
+// 그래서 현대 DB 는 한쪽만 고집하지 않고 워크로드·계층에 맞게 섞는다: 읽기 중심 OLTP 의 기본 저장소는 B+트리(InnoDB, PostgreSQL), 쓰기·로그·시계열은 LSM(RocksDB, Cassandra), 같은 서버 안에서 두 엔진을 고르게 하는 MySQL(InnoDB / MyRocks)과 MongoDB(WiredTiger 의 B-트리 / LSM 옵션),
+// LSM 위에 B-트리식 범위 분할과 SQL 층을 올린 분산 DB(TiDB, CockroachDB), 그리고 두 구조의 중간인 B^ε 트리(프랙탈 트리).  어느 쪽이 이기는지는 "쓰기 비율" 이 정한다 — I/O 비용 모델로 교차점을 구한다 (무작위 I/O 1, 순차 I/O 0.1)
 int main() {
-    std::cout << "B+Tree for fast reads (OLTP); LSM for massive ingest writes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    // LSM 쓰기 증폭을 크기 단계형 병합을 직접 돌려 측정 (T=4)
+    const int T = 4, memEntries = 64, N = 200000; std::vector<long> levelSize; long written = 0; long buffer = 0;
+    for (int i = 0; i < N; i++) { if (++buffer < memEntries) continue; long run = buffer; buffer = 0; written += run; size_t l = 0; levelSize.resize(std::max<size_t>(levelSize.size(), 1)); levelSize[0] += run;
+        for (;;) { if (levelSize.size() <= l + 1) levelSize.resize(l + 2, 0); long runsAtLevel = levelSize[l] / (run * 1); (void)runsAtLevel; break; } }
+    // 위 루프는 단순 누적만 하므로, 크기 단계형 병합의 쓰기 증폭을 정확히 세는 별도 시뮬레이션 (레벨마다 T 개 파일이 모이면 합쳐 다음 레벨로)
+    std::vector<int> files; std::vector<long> fsize; long total = 0; files.assign(32, 0); fsize.assign(32, 0); written = 0; long userWrites = 0;
+    for (int i = 0; i < N; i++) { userWrites++; if (userWrites % memEntries) continue; long sz = memEntries; written += sz; int l = 0;
+        for (;; l++) { files[l]++; fsize[l] += sz; if (files[l] < T) break; sz = fsize[l]; written += sz; files[l] = 0; fsize[l] = 0; } total += 0; }
+    double wa = (double)written / N;                                       // 항목 하나가 평균 몇 번 다시 쓰이는가
+    const double E = 64, RAND = 1.0, SEQ = 0.1, bloomFp = 0.01; int runsPerRead = 12;                    // E: 페이지당 항목 수
+    double btRead = RAND, btWrite = 2 * RAND;                              // 잎 페이지 읽기 / 읽고 쓰기
+    double lsmRead = RAND * (1 + runsPerRead * bloomFp), lsmWrite = wa / E * SEQ;
+    double cross = -1; for (int w = 0; w <= 1000; w++) { double f = w / 1000.0; double bt = (1 - f) * btRead + f * btWrite, lsm = (1 - f) * lsmRead + f * lsmWrite; if (cross < 0 && lsm < bt) cross = f; }
+    assert(wa > 1.5 && wa < 12 && cross > 0.02 && cross < 0.5);            // 읽기 위주면 B+트리, 쓰기가 일정 비율을 넘으면 LSM
+    std::cout << "measured LSM write amplification (size-tiered, T=" << T << "): " << wa << "; I/O cost per op  B+tree read " << btRead << " write " << btWrite << " | LSM read " << lsmRead << " write " << lsmWrite
+              << "; LSM wins once writes exceed " << cross * 100 << "% of operations" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 비용 모델 계산
 // Space Complexity: O(1)
 ```
 ## 생성형 AI 시대의 자료구조
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 대형 언어 모델 서비스에서 자료구조는 곳곳에 있다. ① 토크나이저: 병합 규칙 우선순위 큐(BPE), 트라이/더블 배열 사전(String.md Part 17) ② 임베딩 검색(RAG): HNSW·IVF-PQ 같은 벡터 색인(Part 12) ③ 어텐션의 KV 캐시: 생성할 때마다 모든 층에서
+// 지금까지의 모든 토큰의 키·값 벡터를 저장한다 — 7B 모델 기준 토큰당 약 0.5 MB 라 메모리가 처리량을 정한다 ④ 요청 스케줄링: 우선순위 큐·배칭.  KV 캐시를 요청마다 "최대 길이만큼 연속으로 예약" 하면 실제 생성은 대부분 그보다 짧아 내부 단편화로 메모리 대부분이 낭비된다.
+// vLLM 의 PagedAttention 은 OS 의 가상 메모리 페이징을 그대로 가져와 KV 캐시를 고정 크기 블록(예: 16 토큰)으로 나누고, 요청마다 "블록 테이블"(= 페이지 테이블)이 논리 토큰 위치를 물리 블록에 대응시키게 한다 — 필요할 때 블록을 한 장씩 할당하므로 낭비가 마지막 블록의 빈 칸뿐이고,
+// 같은 시스템 프롬프트를 쓰는 요청들은 접두 블록을 참조 횟수로 공유한다(copy-on-write).  아래는 두 할당 방식의 낭비와 동시 처리 가능한 요청 수를 비교한다
 int main() {
-    std::cout << "Vector DBs and semantic graphs are augmenting traditional relational models." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(4); const int R = 400, MAXLEN = 2048, BLOCK = 16, POOL = 60000; const long layers = 32, heads = 32, dim = 128, bytes = 2; long kvPerToken = 2 * layers * heads * dim * bytes;
+    struct Req { int len; }; std::vector<Req> reqs(R); for (auto& r : reqs) r.len = 20 + g() % 200 + 1 + g() % 500;           // 프롬프트 + 생성 길이 (대부분 MAXLEN 보다 훨씬 짧다)
+    for (auto& r : reqs) r.len = std::min(r.len, MAXLEN);
+    long used = 0, reservedContig = 0, reservedPaged = 0; for (auto& r : reqs) { used += r.len; reservedContig += MAXLEN; reservedPaged += (r.len + BLOCK - 1) / BLOCK * BLOCK; }
+    double wasteContig = 1.0 - (double)used / reservedContig, wastePaged = 1.0 - (double)used / reservedPaged;
+    int admitContig = POOL / MAXLEN, admitPaged = 0; { long free = POOL; for (auto& r : reqs) { long need = (r.len + BLOCK - 1) / BLOCK * BLOCK; if (need > free) break; free -= need; admitPaged++; } }
+    assert(wasteContig > 0.5 && wastePaged < 0.05 && admitPaged >= 2 * admitContig);
+    // 블록 테이블 + 접두 공유: 시스템 프롬프트 128 토큰(8 블록)을 가진 요청 50 개
+    const int SYS = 128, SHARED = 50; std::vector<int> refcount(POOL / BLOCK, 0); std::vector<std::vector<int>> table(SHARED); int nextFree = 0;
+    std::vector<int> sysBlocks; for (int b = 0; b < SYS / BLOCK; b++) sysBlocks.push_back(nextFree++);
+    for (int r = 0; r < SHARED; r++) { for (int b : sysBlocks) { table[r].push_back(b); refcount[b]++; } int own = (reqs[r].len + BLOCK - 1) / BLOCK; for (int b = 0; b < own; b++) { int blk = nextFree++; table[r].push_back(blk); refcount[blk] = 1; } }
+    long withShare = nextFree, withoutShare = 0; for (int r = 0; r < SHARED; r++) withoutShare += SYS / BLOCK + (reqs[r].len + BLOCK - 1) / BLOCK;
+    for (int b : sysBlocks) assert(refcount[b] == SHARED);                 // 접두 블록은 50 개 요청이 하나를 공유
+    assert(withShare < withoutShare && withoutShare - withShare == (long)(SHARED - 1) * (SYS / BLOCK));
+    std::cout << "KV cache per token (7B-class model, fp16): " << kvPerToken / 1024 << " KiB; reserved-max-length waste " << wasteContig * 100 << "% vs paged waste " << wastePaged * 100 << "%; requests admitted in a "
+              << POOL << "-token pool: " << admitContig << " vs " << admitPaged << "; shared 128-token prefix saves " << withoutShare - withShare << " of " << withoutShare << " blocks" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 블록 할당·해제 O(1), 논리 위치 -> 물리 블록 변환 O(1) (블록 테이블 조회)
+// Space Complexity: 요청당 O(길이/블록) 테이블 + 사용한 블록
 ```
