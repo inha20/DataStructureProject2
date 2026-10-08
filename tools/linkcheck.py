@@ -9,7 +9,7 @@ Checks (exit status 1 if any fails):
   2. every heading that appears in more than one book is classified in tools/canonical.json
      (generic / homonym / variant / link); no heading is classified twice; no classification is stale
   3. link: the canonical entry exists at the stated place, and every other entry with that name carries a
-     `정본은 File.md Part N` comment pointing at it
+     `정본은 File.md Part N` comment pointing at it (`정본은 File.md 부록` when the canonical entry is in an appendix; Part 0)
   4. variant: every entry names, by `File.md Part N`, each other book that holds the same-named entry
   5. a heading may not repeat inside one book
 """
@@ -21,20 +21,24 @@ def load():
     books = sorted(f for f in os.listdir(ROOT) if f.endswith('.md') and f not in SKIP)
     entries, parts = [], {}
     for f in books:
-        text = open(os.path.join(ROOT, f), encoding='utf-8-sig', newline='').read().replace('\r\n', '\n')
+        with open(os.path.join(ROOT, f), encoding='utf-8-sig', newline='') as fh: text = fh.read().replace('\r\n', '\n')
         part = 0; parts[f] = set()
         for chunk in re.split(r'(?m)^(?=# |## )', text):
             m = re.match(r'# Part (\d+)\.', chunk)
             if m: part = int(m.group(1)); parts[f].add(part); continue
+            if chunk.startswith('# '): part = 0; parts[f].add(0); continue   # 부록 등 Part 번호가 없는 장 (Part 0)
             if chunk.startswith('## '):
                 name = re.sub(r'\(\)$', '', chunk.split('\n')[0][3:].strip())
                 cm = re.search(r'```cpp\n(.*?)\n```', chunk, re.S)
                 entries.append(dict(file=f, part=part, name=name, code=cm.group(1) if cm else ''))
     return books, parts, entries
 
+def partpat(p):
+    return r'Part\s+' + str(p) + r'\b' if p else '부록'
+
 def main():
     books, parts, entries = load()
-    canon = json.load(open(os.path.join(ROOT, 'tools', 'canonical.json'), encoding='utf-8'))
+    with open(os.path.join(ROOT, 'tools', 'canonical.json'), encoding='utf-8') as fh: canon = json.load(fh)
     generic = set(canon['generic']); homonym = canon['homonym']; variant = canon['variant']; link = canon['link']
     errors = []
     byname = {}
@@ -49,11 +53,11 @@ def main():
             if c > 1 and n not in generic: errors.append(f'{f}: heading "{n}" appears {c} times')
 
     # 1. every File.md Part N mention
-    ref = re.compile(r'([A-Za-z]+\.md)\s+Part\s+(\d+)')
+    ref = re.compile(r'([A-Za-z]+\.md)\s+(?:Part\s+(\d+)|(부록))')
     for e in entries:
         mentioned = {}
-        for f, p in set(ref.findall(e['code'])):
-            p = int(p)
+        for f, p, app in set(ref.findall(e['code'])):
+            p = int(p) if p else 0                                          # 'File.md 부록' 은 Part 0
             if f not in parts: errors.append(f'{e["file"]} Part {e["part"]} {e["name"]}: mentions unknown book {f}'); continue
             if p not in parts[f]: errors.append(f'{e["file"]} Part {e["part"]} {e["name"]}: mentions {f} Part {p}, which does not exist'); continue
             mentioned.setdefault(f, set()).add(p)
@@ -79,8 +83,8 @@ def main():
     for n, spec in sorted(link.items()):
         cfile, cpart = spec[0], spec[1]; target = spec[2] if len(spec) > 2 else n
         if (cfile, target) not in where: errors.append(f'link {n}: canonical entry "{target}" not found in {cfile}'); continue
-        if where[(cfile, target)] != cpart: errors.append(f'link {n}: canonical "{target}" is in {cfile} Part {where[(cfile, target)]}, not Part {cpart}')
-        pat = re.compile(r'정본[은는]?\s+' + re.escape(cfile) + r'\s+Part\s+' + str(cpart) + r'\b')
+        if where[(cfile, target)] != cpart: errors.append(f'link {n}: canonical "{target}" is in {cfile} Part {where[(cfile, target)]}, not Part {cpart} (Part 0 = 부록)')
+        pat = re.compile(r'정본[은는]?\s+' + re.escape(cfile) + r'\s+' + partpat(cpart))
         for e in byname.get(n, []):
             if e['file'] == cfile and e['name'] == target: continue
             if not pat.search(e['code']): errors.append(f'{e["file"]} Part {e["part"]} {n}: missing "정본은 {cfile} Part {cpart}" comment')
@@ -91,7 +95,7 @@ def main():
         for e in es:
             for o in es:
                 if o is e or o['file'] == e['file']: continue
-                if not re.search(re.escape(o['file']) + r'\s+Part\s+' + str(o['part']) + r'\b', e['code']):
+                if not re.search(re.escape(o['file']) + r'\s+' + partpat(o['part']), e['code']):
                     errors.append(f'{e["file"]} Part {e["part"]} {n}: variant does not mention {o["file"]} Part {o["part"]}')
 
     if '--list' in sys.argv:

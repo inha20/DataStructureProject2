@@ -88,7 +88,7 @@ def lint(e):
 
 def main():
     books, parts, entries = linkcheck.load()
-    canon = json.load(open(os.path.join(linkcheck.ROOT, 'tools', 'canonical.json'), encoding='utf-8'))
+    with open(os.path.join(linkcheck.ROOT, 'tools', 'canonical.json'), encoding='utf-8') as fh: canon = json.load(fh)
     ok = canon.get('lint_ok', {})
     want = [a for a in sys.argv[1:] if not a.startswith('--')]
     shown = unrev = total = 0

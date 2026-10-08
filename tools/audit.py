@@ -13,6 +13,7 @@ Usage: python3 -I tools/audit.py [modes] [--only REGEX] [--jobs N] [--repeat N] 
   --repeat N     run thread-using blocks N times (flaky-test hunting)
   --time         list blocks slower than 3 s
   --only         restrict checks to headings matching REGEX
+  --stamp        after a clean run over every book, record date and modes in tools/last_audit.json (used by gen_index.py)
   --list         print the names of placeholder-only entries
   --list-thin    print STL-wrapper / concept-only / trivial-assert entries (`// audit: stl-demo` exempts)
   --list-shallow print entries with <= 4 asserts, <= 40 lines and no randomized check
@@ -302,6 +303,11 @@ def main():
                 for t, b, name in sorted(slow, reverse=True)[:15]:
                     print(f"  SLOW {t:5.1f}s {b}.md :: {name}")
             bad |= bool(fails)
+        if "--stamp" in args and not bad and not files and not only:
+            import datetime
+            (ROOT / "tools" / "last_audit.json").write_text(json.dumps(
+                {"date": datetime.date.today().isoformat(), "modes": modes, "blocks": total["blocks"], "failures": 0},
+                ensure_ascii=False, indent=2) + "\n")
         sys.exit(1 if bad else 0)
 
 

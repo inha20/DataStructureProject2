@@ -36,7 +36,7 @@ def norm(s):
 
 def main():
     books, parts, entries = linkcheck.load()
-    canon = json.load(open(os.path.join(linkcheck.ROOT, 'tools', 'canonical.json'), encoding='utf-8'))
+    with open(os.path.join(linkcheck.ROOT, 'tools', 'canonical.json'), encoding='utf-8') as fh: canon = json.load(fh)
     ok = set(canon.get('drift_ok', []))
     where = {(e['file'], e['name']): e for e in entries}
     byname = {}

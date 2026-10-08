@@ -9456,7 +9456,7 @@ int main() {
 #include <vector>
 #include <cassert>
 
-// (그래프 관점의 요약, 정본은 PathFinding.md Part 16 의 Dijkstra vs A* — 일관성과 재개방까지 다룬다)
+// (그래프 관점의 요약, 정본은 PathFinding.md 부록 의 Dijkstra vs A* — 일관성과 재개방까지 다룬다)
 // Dijkstra 는 출발점에서 가까운 순서로 사방을 확장하고, A* 는 f = g + h (h = 목표까지의 휴리스틱 추정) 가 작은 순서로 확장한다.
 // h 가 허용 가능(실제 비용을 넘지 않음)하면 A* 도 최적해를 보장하면서, 목표 쪽으로 편향되어 훨씬 적은 정점을 방문한다.
 // h = 0 이면 A* 는 Dijkstra 와 같다

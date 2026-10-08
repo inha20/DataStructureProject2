@@ -1,0 +1,50 @@
+name: audit
+
+# fast: seconds, no compiler.  compile: g++ -Wall -Wextra over every code block (cached by block hash, so only
+# changed blocks are rebuilt).  deep (weekly or by hand): sanitizers, ThreadSanitizer, clang and C++20 -pedantic,
+# plus three repeats of every thread-using block to catch flaky tests.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -I tools/check_all.py
+
+  compile:
+    needs: fast
+    runs-on: ubuntu-latest
+    env:
+      AUDIT_CACHE: ${{ github.workspace }}/.audit-cache.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .audit-cache.json
+          key: audit-cache-${{ github.sha }}
+          restore-keys: audit-cache-
+      - run: python3 -I tools/audit.py --strict --jobs 4
+
+  deep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      AUDIT_CACHE: ${{ github.workspace }}/.audit-cache-deep.json
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      - uses: actions/cache@v4
+        with:
+          path: .audit-cache-deep.json
+          key: audit-cache-deep-${{ github.sha }}
+          restore-keys: audit-cache-deep-
+      - run: python3 -I tools/audit.py --strict --san --tsan --portable --time --jobs 4
+      - run: python3 -I tools/audit.py --strict --repeat 3 --jobs 4
