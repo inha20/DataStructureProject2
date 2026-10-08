@@ -2,36 +2,97 @@
 ## CreateMap()
 ### 대표코드
 ```cpp
+#include <cassert>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 길찾기의 출발점은 "세계를 어떻게 표현하는가"이다. 격자 지도는 글자 지도(ASCII map)로 적고 읽는 것이 가장 편하다: '#' 벽, '.' 평지, '1'~'9' 지형 비용(숫자가 클수록 비싼 길: 진흙·숲), 'S' 시작, 'G' 목표.
-// 읽을 때 검증이 중요하다 — 줄 길이가 들쭉날쭉하거나 시작·목표가 없거나 둘 이상이면 이후 모든 알고리즘이 조용히 틀린 답을 내므로 지도를 만드는 곳에서 막는다
+// 길찾기의 출발점은 "세계를 어떻게 표현하는가"이다. 격자 지도는 글자 지도(ASCII map)로 적고 읽는 것이 가장 편하다: '#' 벽, '.' 평지, '1'~'9' 지형 비용, 'S' 시작, 'G' 목표.
+// 읽을 때 검증이 중요하다 — 줄 길이가 들쭉날쭉하거나 시작·목표가 없거나 둘 이상이거나 모르는 글자가 있으면 이후 모든 알고리즘이 조용히 틀린 답을 내므로 지도를 만드는 순간 거절한다. 판정 규칙을 한 문장으로: "직사각형이고, 글자가 모두 허용 집합 안이며, S 가 정확히 하나, G 가 정확히 하나".
+// 검증: ① 규칙을 글자 단위로 따로 쓴 판정기(valid)와 파서가 *모든* 입력에서 같은 답 — 무작위 글자열 5000 개(퍼징: 어떤 입력에도 비정상 종료 없음) ② 올바른 지도를 만들었다 쓰면 다시 읽은 값이 같고(render ∘ parse 는 '1' 을 '.' 로 정규화하는 멱등 사상), 올바른 지도에 흠을 하나 내면(S 지우기, G 지우기, S 추가, G 추가, 줄 자르기, 나쁜 글자, 비어 있음) 반드시 거절 ③ 통과 가능 판정은 범위 밖에서 항상 거짓.
 struct Map {
     int rows = 0, cols = 0, sr = -1, sc = -1, gr = -1, gc = -1; std::vector<std::vector<int>> cost;        // 0 = 벽, >= 1 = 칸에 들어가는 비용
     bool inBounds(int r, int c) const { return r >= 0 && r < rows && c >= 0 && c < cols; }
     bool passable(int r, int c) const { return inBounds(r, c) && cost[r][c] > 0; }
 };
 bool parseMap(const std::vector<std::string>& lines, Map& m) {
-    m = Map(); m.rows = lines.size(); if (!m.rows) return false; m.cols = lines[0].size(); int starts = 0, goals = 0;
+    m = Map(); m.rows = (int)lines.size(); if (!m.rows) return false; m.cols = (int)lines[0].size(); if (!m.cols) return false; int starts = 0, goals = 0;
     for (int r = 0; r < m.rows; r++) {
-        if ((int)lines[r].size() != m.cols) return false;                  // 직사각형이어야 한다
+        if ((int)lines[r].size() != m.cols) return false;                                                  // 직사각형이어야 한다
         m.cost.emplace_back(m.cols, 0);
-        for (int c = 0; c < m.cols; c++) { char ch = lines[r][c];
+        for (int c = 0; c < m.cols; c++) {
+            char ch = lines[r][c];
             if (ch == '#') m.cost[r][c] = 0; else if (ch == '.') m.cost[r][c] = 1; else if (ch >= '1' && ch <= '9') m.cost[r][c] = ch - '0';
-            else if (ch == 'S') { m.cost[r][c] = 1; m.sr = r; m.sc = c; starts++; } else if (ch == 'G') { m.cost[r][c] = 1; m.gr = r; m.gc = c; goals++; } else return false; }
+            else if (ch == 'S') { m.cost[r][c] = 1; m.sr = r; m.sc = c; starts++; } else if (ch == 'G') { m.cost[r][c] = 1; m.gr = r; m.gc = c; goals++; } else return false;
+        }
     }
     return starts == 1 && goals == 1;
 }
+std::vector<std::string> render(const Map& m) {                                                            // 지도를 다시 글자로 (비용 1 은 '.')
+    std::vector<std::string> out;
+    for (int r = 0; r < m.rows; r++) { std::string s; for (int c = 0; c < m.cols; c++) s += (r == m.sr && c == m.sc) ? 'S' : (r == m.gr && c == m.gc) ? 'G' : m.cost[r][c] == 0 ? '#' : m.cost[r][c] == 1 ? '.' : (char)('0' + m.cost[r][c]); out.push_back(s); }
+    return out;
+}
+// 독립 판정기: 파서를 쓰지 않고 규칙을 글자 단위로 센다
+bool valid(const std::vector<std::string>& lines) {
+    if (lines.empty() || lines[0].empty()) return false;
+    int s = 0, g = 0;
+    for (const auto& row : lines) { if (row.size() != lines[0].size()) return false; for (char ch : row) { if (ch == 'S') s++; else if (ch == 'G') g++; else if (!(ch == '#' || ch == '.' || (ch >= '1' && ch <= '9'))) return false; } }
+    return s == 1 && g == 1;
+}
+
 int main() {
+    // ① 손으로 확인한 모양
     Map m; std::vector<std::string> ok = {"S..#....", ".#.#.##.", ".#...#..", ".####.#.", "...9...G"};
     assert(parseMap(ok, m) && m.rows == 5 && m.cols == 8 && m.sr == 0 && m.sc == 0 && m.gr == 4 && m.gc == 7);
     assert(m.passable(0, 1) && !m.passable(0, 3) && !m.passable(-1, 0) && !m.passable(5, 0) && m.cost[4][3] == 9);        // 벽·범위 밖·지형 비용
     int walls = 0; for (auto& row : m.cost) for (int v : row) walls += v == 0; assert(walls == 12);
-    Map bad; assert(!parseMap({"S..", "..G."}, bad) && !parseMap({"S.."}, bad) && !parseMap({"S.G", "S.."}, bad) && !parseMap({"S.x", "..G"}, bad));    // 들쭉날쭉, 목표 없음, 시작 둘, 모르는 글자
-    std::cout << "CreateMap: " << m.rows << "x" << m.cols << " map parsed, " << walls << " walls, invalid maps rejected" << std::endl; return 0;
+    Map bad; assert(!parseMap({"S..", "..G."}, bad) && !parseMap({"S.."}, bad) && !parseMap({"S.G", "S.."}, bad) && !parseMap({"S.x", "..G"}, bad) && !parseMap({}, bad) && !parseMap({""}, bad));
+
+    // ② 퍼징 5000 개 — 파서와 독립 판정기가 항상 같은 답. 절반은 올바른 지도에서 시작해 한 칸을 임의 글자로 바꾸거나 줄 길이·시작·목표를 건드리고, 절반은 완전한 무작위 글자열
+    std::mt19937 rng(1); const std::string alphabet = "#...1234567SG0x \t9"; int accepted = 0;
+    for (int it = 0; it < 5000; ++it) {
+        std::vector<std::string> lines;
+        if (it % 2 == 0) {
+            int R = 1 + (int)(rng() % 5), C = 1 + (int)(rng() % 6); if (R * C < 2) C = 2;
+            lines.assign(R, std::string(C, '.')); for (auto& row : lines) for (char& ch : row) ch = "#..123"[rng() % 6];
+            int s = (int)(rng() % (R * C)), g; do g = (int)(rng() % (R * C)); while (g == s); lines[s / C][s % C] = 'S'; lines[g / C][g % C] = 'G';
+            int kind = (int)(rng() % 6);
+            if (kind == 1) { int x = (int)(rng() % (R * C)); lines[x / C][x % C] = alphabet[rng() % alphabet.size()]; }
+            else if (kind == 2) lines[rng() % R].push_back('.');
+            else if (kind == 3 && lines[0].size() > 1) lines[rng() % R].pop_back();
+            else if (kind == 4) lines.push_back(lines[0]);
+        } else {
+            int R = (int)(rng() % 5); for (int r = 0; r < R; ++r) { int w = (int)(rng() % 7); std::string s; for (int c = 0; c < w; ++c) s += alphabet[rng() % alphabet.size()]; lines.push_back(s); }
+        }
+        Map t; bool p = parseMap(lines, t); assert(p == valid(lines)); accepted += p;
+    }
+    assert(accepted > 1000);                                                                                 // 올바른 입력도 충분히 나왔다
+
+    // ③ 올바른 지도를 만들어 쓰고 다시 읽기 · 흠 내기
+    const std::string cells = "#.....123456789";
+    int mutations = 0;
+    for (int it = 0; it < 2000; ++it) {
+        int R = 1 + (int)(rng() % 7), C = 1 + (int)(rng() % 7); if (R * C < 3) continue;
+        std::vector<std::string> lines(R, std::string(C, '.')); for (auto& row : lines) for (char& ch : row) ch = cells[rng() % cells.size()];
+        int s = (int)(rng() % (R * C)), g; do g = (int)(rng() % (R * C)); while (g == s); lines[s / C][s % C] = 'S'; lines[g / C][g % C] = 'G';
+        Map a, b; assert(parseMap(lines, a) && a.sr == s / C && a.sc == s % C && a.gr == g / C && a.gc == g % C);
+        auto text = render(a); assert(parseMap(text, b) && render(b) == text && b.cost == a.cost);              // 정규화는 멱등: 읽고-쓰고-읽으면 같은 지도
+        int walls = 0, plain = 0; for (auto& row : a.cost) for (int v : row) { walls += v == 0; plain += v >= 1; } assert(walls + plain == R * C);
+        // 흠 일곱 가지: 반드시 거절
+        Map t; auto broken = lines; broken[s / C][s % C] = '.'; assert(!parseMap(broken, t));                  // 시작 없음
+        broken = lines; broken[g / C][g % C] = '.'; assert(!parseMap(broken, t));                              // 목표 없음
+        broken = lines; { int x = (int)(rng() % (R * C)); while (x == s || x == g) x = (int)(rng() % (R * C)); broken[x / C][x % C] = 'S'; } assert(!parseMap(broken, t));           // 시작 둘
+        broken = lines; { int x = (int)(rng() % (R * C)); while (x == s || x == g) x = (int)(rng() % (R * C)); broken[x / C][x % C] = 'G'; } assert(!parseMap(broken, t));           // 목표 둘
+        broken = lines; { int x = (int)(rng() % (R * C)); while (x == s || x == g) x = (int)(rng() % (R * C)); broken[x / C][x % C] = "x0 \t?"[rng() % 5]; } assert(!parseMap(broken, t));   // 모르는 글자
+        if (R >= 2) { broken = lines; broken[rng() % R].pop_back(); assert(!parseMap(broken, t)); mutations++; }   // 한 줄이 짧아져 들쭉날쭉
+        broken = lines; broken.push_back(std::string(C + 1, '.')); assert(!parseMap(broken, t));                // 길이가 다른 줄 추가
+        mutations += 7;
+        for (int dr = -2; dr <= R + 2; ++dr) for (int dc = -2; dc <= C + 2; ++dc) assert(a.passable(dr, dc) == (dr >= 0 && dr < R && dc >= 0 && dc < C && a.cost[dr][dc] > 0));
+    }
+    assert(mutations > 12000);
+    std::cout << "CreateMap: the parser agreed with an independent letter-by-letter validity check on 5000 fuzzed inputs (" << accepted << " valid ones), 2000 random maps survived write-then-read with identical cost grids, all seven kinds of damage (missing or doubled start/goal, unknown letter, ragged row, extra row) were rejected, and passability was false everywhere outside the map" << std::endl; return 0;
 }
 // Time Complexity: O(행 × 열)
 // Space Complexity: O(행 × 열)
@@ -79,31 +140,74 @@ int main() {
 ## CreateNode()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <queue>
+#include <random>
+#include <string>
 #include <vector>
-#include <cassert>
 
-// 탐색 노드 = (칸, 시작에서 온 비용 g, 목표까지 추정 h, 부모). f = g + h 가 작은 노드를 먼저 꺼내는 우선순위 큐가 A* 의 심장이다. 노드는 포인터로 서로 가리키지 않고 "노드 풀 배열의 인덱스"로 부모를 가리키면
-// 복사·할당 비용이 없고 경로 복원도 쉽다.  꼭 정해야 할 것이 동점 처리(tie-breaking)다: f 가 같을 때 g 가 큰(= 목표에 더 가까운) 노드를 먼저 꺼내면 열린 공간에서 확장하는 노드 수가 크게 줄어든다
-struct Node { int r, c, g, h, parent; int f() const { return g + h; } };
-struct Cmp { bool operator()(const Node& a, const Node& b) const { return a.f() != b.f() ? a.f() > b.f() : a.g < b.g; } };         // f 작은 것 우선, 동점이면 g 큰 것 우선
-int astarExpansions(int N, bool tieBreak) {                                // N×N 빈 격자에서 (0,0) -> (N-1,N-1), 4방향, 맨해튼 휴리스틱, 확장한 노드 수
-    struct C2 { bool tb; bool operator()(const Node& a, const Node& b) const { if (a.f() != b.f()) return a.f() > b.f(); return tb ? a.g < b.g : a.g > b.g; } };
-    std::priority_queue<Node, std::vector<Node>, C2> pq{C2{tieBreak}}; std::vector<int> best(N * N, 1 << 30); int expanded = 0;
-    pq.push({0, 0, 0, 2 * (N - 1), -1}); best[0] = 0;
-    while (!pq.empty()) { Node n = pq.top(); pq.pop(); if (n.g > best[n.r * N + n.c]) continue; expanded++; if (n.r == N - 1 && n.c == N - 1) break;
+// 탐색 노드 = (칸, 시작에서 온 비용 g, 목표까지 추정 h, 부모). f = g + h 가 작은 노드를 먼저 꺼내는 우선순위 큐가 A* 의 심장이다. 노드는 칸 번호로 가리키고 부모도 번호로 두면 복사·할당 비용이 없고 경로 복원도 쉽다.
+// 꼭 정해야 할 것이 *동점 처리(tie-breaking)* 다: f 가 같을 때 g 가 큰(= 목표에 더 가까운) 노드를 먼저 꺼내면 같은 f 층 안에서 목표 쪽으로 곧장 파고들어 확장 수가 줄고, 작은 쪽을 먼저 꺼내면 같은 f 의 모든 노드를 훑는다. 최적성은 동점 처리와 무관해야 한다.
+// 검증: 무작위 장애물 격자(4방향, 단위 비용, 맨해튼 휴리스틱)에서 ① 두 동점 처리 모두 BFS 로 구한 정확한 거리와 같은 비용(도달 불가면 둘 다 -1) ② 복원한 경로가 칸마다 이웃이고 길이가 비용과 같음 ③ 꺼내는 노드의 f 가 단조 비감소(일관된 휴리스틱의 성질) ④ 전체 확장 수는 "g 가 큰 쪽 먼저" 가 "g 가 작은 쪽 먼저" 이하이고, 장애물 없는 40×40 에서는 5 배 이상 차이.
+struct Node { int cell, g, h, parent; int f() const { return g + h; } };
+struct Result { int cost = -1; long expanded = 0; std::vector<int> path; bool monotoneF = true; };
+
+Result astar(const std::vector<std::string>& w, int start, int goal, bool preferLargeG) {
+    int R = (int)w.size(), C = (int)w[0].size(); auto h = [&](int cell) { return std::abs(cell / C - goal / C) + std::abs(cell % C - goal % C); };
+    auto cmp = [&](const Node& a, const Node& b) { if (a.f() != b.f()) return a.f() > b.f(); return preferLargeG ? a.g < b.g : a.g > b.g; };
+    std::priority_queue<Node, std::vector<Node>, decltype(cmp)> pq(cmp);
+    std::vector<int> best(R * C, 1 << 30), parent(R * C, -1); Result res; int lastF = -1;
+    best[start] = 0; pq.push({start, 0, h(start), -1});
+    while (!pq.empty()) {
+        Node n = pq.top(); pq.pop(); if (n.g > best[n.cell]) continue;
+        res.expanded++; if (n.f() < lastF) res.monotoneF = false; lastF = n.f();
+        if (n.cell == goal) { res.cost = n.g; for (int v = goal; v != -1; v = parent[v]) res.path.push_back(v); std::reverse(res.path.begin(), res.path.end()); return res; }
         static const int dr[4] = {1, 0, -1, 0}, dc[4] = {0, 1, 0, -1};
-        for (int d = 0; d < 4; d++) { int nr = n.r + dr[d], nc = n.c + dc[d]; if (nr < 0 || nc < 0 || nr >= N || nc >= N) continue; int g = n.g + 1; if (g < best[nr * N + nc]) { best[nr * N + nc] = g; pq.push({nr, nc, g, (N - 1 - nr) + (N - 1 - nc), 0}); } } }
-    return expanded;
+        for (int d = 0; d < 4; d++) {
+            int nr = n.cell / C + dr[d], nc = n.cell % C + dc[d]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue;
+            int nxt = nr * C + nc, g = n.g + 1; if (g < best[nxt]) { best[nxt] = g; parent[nxt] = n.cell; pq.push({nxt, g, h(nxt), n.cell}); }
+        }
+    }
+    return res;
 }
+int bfsDistance(const std::vector<std::string>& w, int start, int goal) {                                  // 오라클: 단위 비용 4방향 최단 거리
+    int R = (int)w.size(), C = (int)w[0].size(); std::vector<int> d(R * C, -1); std::queue<int> q; d[start] = 0; q.push(start);
+    while (!q.empty()) { int u = q.front(); q.pop(); static const int dr[4] = {1, 0, -1, 0}, dc[4] = {0, 1, 0, -1}; for (int k = 0; k < 4; k++) { int nr = u / C + dr[k], nc = u % C + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#' || d[nr * C + nc] >= 0) continue; d[nr * C + nc] = d[u] + 1; q.push(nr * C + nc); } }
+    return d[goal];
+}
+bool pathOk(const std::vector<std::string>& w, const std::vector<int>& p, int cost) {
+    int C = (int)w[0].size(); if ((int)p.size() != cost + 1) return false;
+    for (std::size_t i = 0; i < p.size(); i++) { if (w[p[i] / C][p[i] % C] == '#') return false; if (i && std::abs(p[i] / C - p[i - 1] / C) + std::abs(p[i] % C - p[i - 1] % C) != 1) return false; }
+    return true;
+}
+
 int main() {
-    std::priority_queue<Node, std::vector<Node>, Cmp> pq; pq.push({0, 0, 3, 7, -1}); pq.push({1, 1, 6, 4, 0}); pq.push({2, 2, 1, 9, 0}); pq.push({3, 3, 8, 2, 1});
-    assert(pq.top().f() == 10 && pq.top().g == 8);                         // f 가 모두 10 으로 같으면 g 가 가장 큰 노드가 먼저
-    pq.pop(); assert(pq.top().g == 6);
-    int good = astarExpansions(40, true), bad = astarExpansions(40, false);
-    assert(good < bad / 5);                                                // 동점 처리만 바꿔도 확장 수가 크게 다르다
-    std::cout << "CreateNode: open 40x40 grid A* expansions with tie-break on larger g = " << good << ", on smaller g = " << bad << std::endl; return 0;
+    // ① 손으로 확인한 모양: f 가 같으면 g 가 큰 노드가 먼저
+    {
+        auto cmp = [](const Node& a, const Node& b) { return a.f() != b.f() ? a.f() > b.f() : a.g < b.g; };
+        std::priority_queue<Node, std::vector<Node>, decltype(cmp)> pq(cmp);
+        pq.push({0, 3, 7, -1}); pq.push({1, 6, 4, 0}); pq.push({2, 1, 9, 0}); pq.push({3, 8, 2, 1});
+        assert(pq.top().f() == 10 && pq.top().g == 8); pq.pop(); assert(pq.top().g == 6);
+    }
+    // ② 무작위 장애물 격자 300 개 (장애물 비율 0%~35%): 두 동점 처리의 비용 = BFS 거리, 경로 · f 단조성, 확장 수 합
+    std::mt19937 rng(11); long goodTotal = 0, badTotal = 0; int solved = 0, unreachable = 0;
+    for (int it = 0; it < 300; ++it) {
+        int R = 5 + (int)(rng() % 20), C = 5 + (int)(rng() % 20), pct = (int)(rng() % 36); std::vector<std::string> w(R, std::string(C, '.'));
+        for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int s = (int)(rng() % (R * C)), g = (int)(rng() % (R * C)); w[s / C][s % C] = '.'; w[g / C][g % C] = '.';
+        Result a = astar(w, s, g, true), b = astar(w, s, g, false); int want = bfsDistance(w, s, g);
+        assert(a.cost == want && b.cost == want && a.monotoneF && b.monotoneF);
+        if (want >= 0) { assert(pathOk(w, a.path, want) && pathOk(w, b.path, want)); ++solved; } else ++unreachable;
+        goodTotal += a.expanded; badTotal += b.expanded;
+    }
+    assert(solved > 150 && unreachable > 5 && goodTotal <= badTotal);
+    // ③ 장애물 없는 40×40: 동점 처리만 바꿔도 확장 수가 5 배 이상 차이
+    {   std::vector<std::string> open(40, std::string(40, '.')); Result a = astar(open, 0, 40 * 40 - 1, true), b = astar(open, 0, 40 * 40 - 1, false);
+        assert(a.cost == 78 && b.cost == 78 && a.expanded * 5 < b.expanded && a.expanded <= 80);                // g 가 큰 쪽 먼저면 한 줄기로 곧장 (≈ 경로 길이만큼만 확장)
+        std::cout << "CreateNode: open 40x40 grid A* expansions with tie-break on larger g = " << a.expanded << ", on smaller g = " << b.expanded << "; over 300 random grids " << goodTotal << " vs " << badTotal << " expansions, costs always equal to BFS" << std::endl; }
+    return 0;
 }
 // Time Complexity: 노드 생성·비교 O(1)
 // Space Complexity: O(1) 노드당
@@ -141,37 +245,86 @@ int main() {
 ## BuildGraph()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
 #include <iostream>
 #include <queue>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 격자 지도를 일반 그래프로 바꾸면 격자에서 쓰던 알고리즘(BFS, Dijkstra, A*)을 도로망·내비메시 같은 임의의 그래프에서도 그대로 쓸 수 있다. 통과 가능한 칸마다 정점 번호 r*C+c 를 주고,
-// 이웃 규칙(4/8방향, 모서리 자르기 금지)에 따라 간선을 만든다. 벽 칸은 정점이 되지 않으므로 그래프가 작아진다(번호는 그대로 두고 인접 리스트만 비워 둔다).
-// 변환이 맞는지 BFS 를 격자에서 직접 한 결과와 그래프에서 한 결과로 비교한다
+// 격자 지도를 일반 그래프로 바꾸면 격자에서 쓰던 알고리즘(BFS, Dijkstra, A*)을 도로망·내비메시 같은 임의의 그래프에서도 그대로 쓸 수 있다. 통과 가능한 칸마다 정점 번호 r*C+c 를 주고, 이웃 규칙(4/8방향, 모서리 자르기 금지)에 따라 간선을 만든다. 벽 칸은 간선이 없다(번호는 그대로 두고 인접 리스트만 비워 둔다). 가중치는 정수 10(직선)과 14(대각선 ≈ 10√2).
+// 변환이 맞는지 *세 가지* 로 확인한다: ① 변환한 그래프에서 구한 BFS·Dijkstra 거리와 그래프를 거치지 않고 격자에서 직접 구한 값이 같다 ② 간선이 대칭(u→v 가 있으면 v→u 도 같은 가중치)이고 벽에 닿는 간선이 없다 ③ 장애물 없는 R×C 격자의 4방향 간선 수는 정확히 2·(R(C−1) + C(R−1)) 이고 8방향은 거기에 대각선 4·(R−1)(C−1) 을 더한 값이다. 무작위 격자 400 개에서 확인한다.
 struct G { int R, C; std::vector<std::vector<std::pair<int, int>>> adj; };
 G build(const std::vector<std::string>& w, bool diag) {
-    int R = w.size(), C = w[0].size(); G g{R, C, std::vector<std::vector<std::pair<int, int>>>(R * C)}; static const int dr[8] = {-1, 1, 0, 0, -1, -1, 1, 1}, dc[8] = {0, 0, -1, 1, -1, 1, -1, 1};
+    int R = (int)w.size(), C = (int)w[0].size(); G g{R, C, std::vector<std::vector<std::pair<int, int>>>(R * C)}; static const int dr[8] = {-1, 1, 0, 0, -1, -1, 1, 1}, dc[8] = {0, 0, -1, 1, -1, 1, -1, 1};
     auto ok = [&](int r, int c) { return r >= 0 && r < R && c >= 0 && c < C && w[r][c] != '#'; };
-    for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { if (!ok(r, c)) continue;
-        for (int d = 0; d < (diag ? 8 : 4); d++) { int nr = r + dr[d], nc = c + dc[d]; if (!ok(nr, nc)) continue; if (d >= 4 && (!ok(r + dr[d], c) || !ok(r, c + dc[d]))) continue; g.adj[r * C + c].push_back({nr * C + nc, d < 4 ? 10 : 14}); } }
+    for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) {
+        if (!ok(r, c)) continue;
+        for (int d = 0; d < (diag ? 8 : 4); d++) { int nr = r + dr[d], nc = c + dc[d]; if (!ok(nr, nc)) continue; if (d >= 4 && (!ok(r + dr[d], c) || !ok(r, c + dc[d]))) continue; g.adj[r * C + c].push_back({nr * C + nc, d < 4 ? 10 : 14}); }
+    }
     return g;
 }
 std::vector<int> bfsGraph(const G& g, int s) { std::vector<int> d(g.adj.size(), -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (auto& e : g.adj[u]) if (d[e.first] < 0) { d[e.first] = d[u] + 1; q.push(e.first); } } return d; }
 std::vector<int> bfsGrid(const std::vector<std::string>& w, int sr, int sc, bool diag) {                  // 그래프를 거치지 않고 격자에서 직접
-    int R = w.size(), C = w[0].size(); std::vector<int> d(R * C, -1); std::queue<std::pair<int, int>> q; d[sr * C + sc] = 0; q.push({sr, sc});
+    int R = (int)w.size(), C = (int)w[0].size(); std::vector<int> d(R * C, -1); std::queue<std::pair<int, int>> q; d[sr * C + sc] = 0; q.push({sr, sc});
     auto ok = [&](int r, int c) { return r >= 0 && r < R && c >= 0 && c < C && w[r][c] != '#'; };
-    while (!q.empty()) { auto [r, c] = q.front(); q.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if (!dr && !dc) continue; if (!diag && dr && dc) continue; int nr = r + dr, nc = c + dc; if (!ok(nr, nc)) continue;
-        if (dr && dc && (!ok(r + dr, c) || !ok(r, c + dc))) continue; if (d[nr * C + nc] < 0) { d[nr * C + nc] = d[r * C + c] + 1; q.push({nr, nc}); } } }
+    while (!q.empty()) {
+        auto [r, c] = q.front(); q.pop();
+        for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) {
+            if (!dr && !dc) continue; if (!diag && dr && dc) continue; int nr = r + dr, nc = c + dc; if (!ok(nr, nc)) continue;
+            if (dr && dc && (!ok(r + dr, c) || !ok(r, c + dc))) continue; if (d[nr * C + nc] < 0) { d[nr * C + nc] = d[r * C + c] + 1; q.push({nr, nc}); }
+        }
+    }
     return d;
 }
+std::vector<int> dijkstraGraph(const G& g, int s) {
+    std::vector<int> d(g.adj.size(), INT_MAX); std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto& e : g.adj[u]) if (du + e.second < d[e.first]) { d[e.first] = du + e.second; pq.push({d[e.first], e.first}); } }
+    return d;
+}
+// 오라클: 격자를 8방향으로 직접 훑는 Dijkstra (그래프 자료구조를 거치지 않음)
+std::vector<int> dijkstraGrid(const std::vector<std::string>& w, int sr, int sc, bool diag) {
+    int R = (int)w.size(), C = (int)w[0].size(); std::vector<int> d(R * C, INT_MAX); std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq; d[sr * C + sc] = 0; pq.push({0, sr * C + sc});
+    auto ok = [&](int r, int c) { return r >= 0 && r < R && c >= 0 && c < C && w[r][c] != '#'; };
+    while (!pq.empty()) {
+        auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; int r = u / C, c = u % C;
+        for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) {
+            if (!dr && !dc) continue; if (!diag && dr && dc) continue; int nr = r + dr, nc = c + dc; if (!ok(nr, nc)) continue;
+            if (dr && dc && (!ok(r + dr, c) || !ok(r, c + dc))) continue; int wgt = (dr && dc) ? 14 : 10; if (du + wgt < d[nr * C + nc]) { d[nr * C + nc] = du + wgt; pq.push({d[nr * C + nc], nr * C + nc}); }
+        }
+    }
+    return d;
+}
+
 int main() {
+    // ① 손으로 확인한 모양
     std::vector<std::string> w = {"........", ".##..#..", "........", ".#.###..", "........"};
-    for (bool diag : {false, true}) { G g = build(w, diag); assert(bfsGraph(g, 0) == bfsGrid(w, 0, 0, diag)); }       // 두 방식의 거리표가 같다
+    for (bool diag : {false, true}) { G g = build(w, diag); assert(bfsGraph(g, 0) == bfsGrid(w, 0, 0, diag)); }
     G g4 = build(w, false), g8 = build(w, true); long e4 = 0, e8 = 0; for (auto& a : g4.adj) e4 += a.size(); for (auto& a : g8.adj) e8 += a.size();
-    assert(e8 > e4); int wallsWithEdges = 0; for (int r = 0; r < 5; r++) for (int c = 0; c < 8; c++) if (w[r][c] == '#' && !g8.adj[r * 8 + c].empty()) wallsWithEdges++; assert(wallsWithEdges == 0);   // 벽에는 간선이 없다
-    std::cout << "BuildGraph: 4-neighbour graph " << e4 << " directed edges, 8-neighbour graph " << e8 << ", BFS agrees with direct grid BFS" << std::endl; return 0;
+    assert(e8 > e4); for (int r = 0; r < 5; r++) for (int c = 0; c < 8; c++) if (w[r][c] == '#') assert(g8.adj[r * 8 + c].empty());
+
+    // ② 장애물 없는 R×C: 간선 수 공식
+    for (int R = 1; R <= 9; ++R) for (int C = 1; C <= 9; ++C) {
+        std::vector<std::string> open(R, std::string(C, '.')); long f4 = 0, f8 = 0; for (auto& a : build(open, false).adj) f4 += a.size(); for (auto& a : build(open, true).adj) f8 += a.size();
+        assert(f4 == 2L * (R * (C - 1) + C * (R - 1)) && f8 == f4 + 4L * (R - 1) * (C - 1));
+    }
+
+    // ③ 무작위 격자 400 개: 대칭 · 벽 간선 없음 · 그래프 BFS/Dijkstra = 격자 직접 BFS/Dijkstra
+    std::mt19937 rng(5);
+    for (int it = 0; it < 400; ++it) {
+        int R = 2 + (int)(rng() % 12), C = 2 + (int)(rng() % 12), pct = (int)(rng() % 45); std::vector<std::string> m(R, std::string(C, '.'));
+        for (auto& row : m) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int s = (int)(rng() % (R * C)); m[s / C][s % C] = '.';
+        for (bool diag : {false, true}) {
+            G g = build(m, diag);
+            for (int u = 0; u < R * C; u++) for (auto& e : g.adj[u]) { assert(m[u / C][u % C] != '#' && m[e.first / C][e.first % C] != '#'); bool back = false; for (auto& f : g.adj[e.first]) back |= f.first == u && f.second == e.second; assert(back); }
+            assert(bfsGraph(g, s) == bfsGrid(m, s / C, s % C, diag));
+            auto dg = dijkstraGraph(g, s), dd = dijkstraGrid(m, s / C, s % C, diag); for (int v = 0; v < R * C; v++) assert(dg[v] == dd[v]);
+        }
+    }
+    std::cout << "BuildGraph: the 4-neighbour graph of the sample map has " << e4 << " directed edges and the 8-neighbour graph " << e8 << "; edge counts matched 2(R(C-1)+C(R-1)) (+4(R-1)(C-1) with diagonals) on every open grid up to 9x9, and on 400 random obstacle grids the graph was symmetric, wall-free, and its BFS and Dijkstra distances equalled direct searches on the grid" << std::endl; return 0;
 }
 // Time Complexity: O(행 × 열 × 이웃 수)
 // Space Complexity: O(V + E)
@@ -253,37 +406,76 @@ int main() {
 ### 대표코드
 ```cpp
 #include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <queue>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 탐색이 끝나면 각 칸에는 "나를 처음 발견한 칸(부모)" 만 남는다. 경로는 목표에서 부모를 따라 시작까지 거슬러 올라간 뒤 뒤집어 얻는다.
-// 확인할 것 셋: ① 목표에 부모가 없으면(= 도달 못 함) 빈 경로 ② 부모 사슬에 사이클이 있으면(버그) 무한 루프 대신 걸러 내기 ③ 복원한 경로가 정말 유효한가 — 연속한 두 칸이 이웃이고 모두 통과 가능한지,
-// 비용이 탐색이 보고한 거리와 같은지 검사하는 함수를 같이 둔다 (모든 경로 알고리즘 테스트에서 재사용)
-typedef std::pair<int, int> P;
+// 탐색이 끝나면 각 칸에는 "나를 처음 발견한 칸(부모)" 만 남는다. 경로는 목표에서 부모를 따라 시작까지 거슬러 올라간 뒤 뒤집어 얻는다. 확인할 것 셋: ① 목표에 부모가 없으면(= 도달 못 함) 빈 경로 ② 부모 사슬에 사이클이 있으면(버그) 무한 루프 대신 걸러 내기 ③ 복원한 경로가 정말 유효한가 — 연속한 두 칸이 이웃이고 벽이 아니며 길이가 탐색이 보고한 거리와 같은지 검사하는 함수를 같이 둔다(모든 경로 알고리즘 테스트에서 재사용).
+// 검증: ① 무작위 격자에서 BFS 의 부모 배열로 복원한 경로가 항상 유효하고 길이가 BFS 거리와 같다(도달 불가면 빈 경로) ② 어떤 부모 배열이든(무작위로 만든 것 포함) 함수가 반드시 끝나고, 비어 있지 않은 답은 시작에서 목표까지의 부모 사슬 그 자체다 ③ 사슬에 사이클을 일부러 심으면 빈 경로.
 std::vector<int> reconstruct(const std::vector<int>& parent, int goal, int start) {
     std::vector<int> path; int steps = 0;
     for (int v = goal; v != -1; v = parent[v]) { path.push_back(v); if (v == start) { std::reverse(path.begin(), path.end()); return path; } if (++steps > (int)parent.size()) return {}; }       // 사이클 방어
-    return {};                                                              // 시작에 닿지 못했다
+    return {};                                                                                             // 시작에 닿지 못했다
 }
 bool validPath(const std::vector<std::string>& w, const std::vector<int>& path, bool diag, int expectedSteps) {
-    int C = w[0].size(); if (path.empty() || (int)path.size() - 1 != expectedSteps) return false;
-    for (size_t i = 0; i < path.size(); i++) { int r = path[i] / C, c = path[i] % C; if (r < 0 || r >= (int)w.size() || c < 0 || c >= C || w[r][c] == '#') return false;
-        if (i) { int pr = path[i - 1] / C, pc = path[i - 1] % C, dr = std::abs(r - pr), dc = std::abs(c - pc); if (dr > 1 || dc > 1 || (dr + dc == 0) || (!diag && dr + dc != 1)) return false; } }
+    int C = (int)w[0].size(); if (path.empty() || (int)path.size() - 1 != expectedSteps) return false;
+    for (std::size_t i = 0; i < path.size(); i++) {
+        int r = path[i] / C, c = path[i] % C; if (r < 0 || r >= (int)w.size() || c < 0 || c >= C || w[r][c] == '#') return false;
+        if (i) { int pr = path[i - 1] / C, pc = path[i - 1] % C, dr = std::abs(r - pr), dc = std::abs(c - pc); if (dr > 1 || dc > 1 || (dr + dc == 0) || (!diag && dr + dc != 1)) return false; }
+    }
     return true;
 }
+struct Bfs { std::vector<int> dist, parent; };
+Bfs bfs(const std::vector<std::string>& w, int s, bool diag) {
+    int R = (int)w.size(), C = (int)w[0].size(); Bfs b{std::vector<int>(R * C, -1), std::vector<int>(R * C, -1)}; std::queue<int> q; b.dist[s] = 0; q.push(s);
+    while (!q.empty()) {
+        int u = q.front(); q.pop();
+        for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) {
+            if (!dr && !dc) continue; if (!diag && dr && dc) continue; int nr = u / C + dr, nc = u % C + dc; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue;
+            if (dr && dc && (w[u / C + dr][u % C] == '#' || w[u / C][u % C + dc] == '#')) continue; int v = nr * C + nc; if (b.dist[v] < 0) { b.dist[v] = b.dist[u] + 1; b.parent[v] = u; q.push(v); }
+        }
+    }
+    return b;
+}
+
 int main() {
-    std::vector<std::string> w = {"S...#...", ".##.#.#.", ".#..#.#.", ".#.##.#.", ".#....#G"}; int R = w.size(), C = w[0].size(), s = 0, g = 4 * C + 7;
-    std::vector<int> dist(R * C, -1), parent(R * C, -1); std::queue<int> q; dist[s] = 0; q.push(s);
-    while (!q.empty()) { int u = q.front(); q.pop(); int r = u / C, c = u % C; const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int d = 0; d < 4; d++) { int nr = r + dr[d], nc = c + dc[d]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#' || dist[nr * C + nc] >= 0) continue; dist[nr * C + nc] = dist[u] + 1; parent[nr * C + nc] = u; q.push(nr * C + nc); } }
-    std::vector<int> path = reconstruct(parent, g, s);
-    assert(!path.empty() && path.front() == s && path.back() == g && validPath(w, path, false, dist[g]));       // 거리 dist[g] 만큼의 유효한 경로
-    std::vector<int> bad = parent; bad[path[2]] = path[3]; assert(reconstruct(bad, g, s).empty());       // 부모 사슬이 시작에 닿지 못하고 맴돌면(사이클) 무한 루프 대신 빈 경로
-    std::vector<int> broken = path; broken[3] = broken[3] + 2 * C + 3; assert(!validPath(w, broken, false, dist[g]));                             // 이웃이 아닌 점프는 유효하지 않다
-    std::vector<int> noParent(R * C, -1); assert(reconstruct(noParent, g, s).empty());                                                            // 도달 못 함 -> 빈 경로
-    std::cout << "ReconstructPath: BFS path of " << path.size() - 1 << " steps rebuilt from parents and validated" << std::endl; return 0;
+    // ① 손으로 확인한 모양: 기존 예제
+    std::vector<std::string> w = {"S...#...", ".##.#.#.", ".#..#.#.", ".#.##.#.", ".#....#G"}; int R = (int)w.size(), C = (int)w[0].size(), s = 0, g = 4 * C + 7;
+    Bfs b = bfs(w, s, false); std::vector<int> path = reconstruct(b.parent, g, s);
+    assert(!path.empty() && path.front() == s && path.back() == g && validPath(w, path, false, b.dist[g]));
+    std::vector<int> cyc = b.parent; cyc[path[2]] = path[3]; assert(reconstruct(cyc, g, s).empty());       // 부모 사슬이 맴돌면 무한 루프 대신 빈 경로
+    std::vector<int> broken = path; broken[3] += 2 * C + 3; assert(!validPath(w, broken, false, b.dist[g]));  // 이웃이 아닌 점프는 유효하지 않다
+    assert(reconstruct(std::vector<int>(R * C, -1), g, s).empty() && reconstruct(b.parent, s, s) == std::vector<int>({s}));   // 도달 못 함 -> 빈 경로, 시작 == 목표 -> 칸 하나
+
+    // ② 무작위 격자 500 개 (4/8 방향): 모든 도달 가능한 칸의 복원 경로가 유효하고 길이 = BFS 거리, 도달 불가는 빈 경로
+    std::mt19937 rng(21); long checked = 0, unreachable = 0;
+    for (int it = 0; it < 500; ++it) {
+        int rr = 2 + (int)(rng() % 12), cc = 2 + (int)(rng() % 12), pct = (int)(rng() % 45); std::vector<std::string> m(rr, std::string(cc, '.')); bool diag = it & 1;
+        for (auto& row : m) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int st = (int)(rng() % (rr * cc)); m[st / cc][st % cc] = '.'; Bfs t = bfs(m, st, diag);
+        for (int v = 0; v < rr * cc; v++) {
+            if (m[v / cc][v % cc] == '#') continue; auto p = reconstruct(t.parent, v, st);
+            if (t.dist[v] < 0) { assert(p.empty()); ++unreachable; } else { assert(validPath(m, p, diag, t.dist[v]) && p.front() == st && p.back() == v); ++checked; }
+        }
+    }
+    assert(checked > 5000 && unreachable > 100);
+
+    // ③ 임의의 부모 배열 퍼징: 반드시 끝나고, 비어 있지 않은 답은 부모 사슬 그대로(마지막 = 목표, 첫 = 시작, 연속한 쌍은 부모 관계)
+    int nonEmpty = 0;
+    for (int it = 0; it < 20000; ++it) {
+        int n = 1 + (int)(rng() % 12); std::vector<int> parent(n); for (int& p : parent) p = (rng() % 4 == 0) ? -1 : (int)(rng() % n);
+        int start = (int)(rng() % n), goal = (int)(rng() % n); auto p = reconstruct(parent, goal, start);
+        if (!p.empty()) { ++nonEmpty; assert(p.front() == start && p.back() == goal); for (std::size_t i = 1; i < p.size(); i++) assert(parent[p[i]] == p[i - 1]); std::vector<int> s2 = p; std::sort(s2.begin(), s2.end()); assert(std::adjacent_find(s2.begin(), s2.end()) == s2.end()); }
+    }
+    assert(nonEmpty > 2000);
+    // 사슬이 매우 길어도 (100 만 칸) 반복형이라 안전하고, 사이클을 닫으면 빈 경로
+    {   const int N = 1000000; std::vector<int> par(N, -1); for (int i = 1; i < N; ++i) par[i] = i - 1;
+        auto p = reconstruct(par, N - 1, 0); assert((int)p.size() == N && p.front() == 0 && p.back() == N - 1);
+        par[0] = N - 1; assert(reconstruct(par, N - 1, 1).size() == (std::size_t)N - 1 && !reconstruct(par, 0, N / 2).empty()); }
+    std::cout << "ReconstructPath: " << checked << " reachable cells on 500 random grids (4- and 8-neighbour) had rebuilt paths that were valid with length equal to the BFS distance, " << unreachable << " unreachable cells gave empty paths, 20,000 random parent arrays always terminated with answers that were genuine parent chains, and a 1,000,000-cell chain was rebuilt without recursion" << std::endl; return 0;
 }
 // Time Complexity: O(경로 길이)
 // Space Complexity: O(경로 길이)
@@ -293,79 +485,222 @@ int main() {
 ## BreadthFirstSearch()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 
-bool BFS(const std::vector<std::vector<int>>& graph, int start, int target) {
-    std::vector<bool> visited(graph.size(), false);
-    std::queue<int> q;
-    q.push(start); visited[start] = true;
-    while(!q.empty()) {
-        int curr = q.front(); q.pop();
-        if(curr == target) return true;
-        for(int neighbor : graph[curr]) {
-            if(!visited[neighbor]) {
-                visited[neighbor] = true;
-                q.push(neighbor);
-            }
+// 너비 우선 탐색(BFS): 출발점에서 가까운 칸부터 한 층씩 퍼져 나간다. 간선 비용이 모두 같으면(격자의 한 걸음) *처음 발견한 경로가 곧 최단 경로* 다. 큐에서 꺼내는 칸의 거리는 단조 비감소이고, 목표를 꺼낸 순간(또는 발견한 순간) 멈추면 그때까지의 칸만 확장한다. 빈 격자에서의 닫힌 해: 4방향 거리는 맨해튼 |Δr| + |Δc|, 8방향은 체비쇼프 max(|Δr|, |Δc|), 그리고 출발점에서 거리 k 인 칸은 4방향이면 4k 개(마름모 둘레), 8방향이면 8k 개(정사각형 둘레).
+// 검증: ① 무작위 그래프(정점 ≤ 10)에서 BFS 거리가 모든 쌍 최단 경로(플로이드–워셜)와 같고 복원 경로가 유효 ② 격자에서 4/8 방향 BFS 거리가 가중치 1 로 구한 다익스트라와 같음, 꺼내는 순서에서 거리 비감소 ③ 조기 종료한 확장 수 ≤ 전체 탐색 ④ 빈 격자의 닫힌 해와 둘레 칸 수 ⑤ 큰 입력: 1000×1000 빈 격자의 반대편 모서리까지 거리 1998 · 길이 25 만 칸의 구불구불한 복도.
+struct Res { int dist = -1; long expanded = 0; std::vector<int> path; bool monotone = true; };
+
+Res bfsGrid(const std::vector<std::string>& w, int s, int t, bool diag, bool early = true, std::vector<int>* all = nullptr) {
+    int R = (int)w.size(), C = (int)w[0].size(); std::vector<int> d(R * C, -1), par(R * C, -1); std::queue<int> q; d[s] = 0; q.push(s); Res res; int last = 0;
+    while (!q.empty()) {
+        int u = q.front(); q.pop(); res.expanded++; if (d[u] < last) res.monotone = false; last = d[u];
+        if (early && u == t) break;
+        for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) {
+            if (!dr && !dc) continue; if (!diag && dr && dc) continue; int nr = u / C + dr, nc = u % C + dc; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue;
+            if (dr && dc && (w[u / C + dr][u % C] == '#' || w[u / C][u % C + dc] == '#')) continue;                     // 모서리 자르기 금지
+            int v = nr * C + nc; if (d[v] < 0) { d[v] = d[u] + 1; par[v] = u; q.push(v); }
         }
     }
-    return false;
+    res.dist = d[t]; if (all) *all = d;
+    if (res.dist >= 0) for (int v = t; v != -1; v = par[v]) res.path.push_back(v);
+    std::reverse(res.path.begin(), res.path.end()); return res;
+}
+bool pathOk(const std::vector<std::string>& w, const std::vector<int>& p, bool diag) {
+    int C = (int)w[0].size(); for (std::size_t i = 0; i < p.size(); i++) { if (w[p[i] / C][p[i] % C] == '#') return false; if (i) { int dr = std::abs(p[i] / C - p[i - 1] / C), dc = std::abs(p[i] % C - p[i - 1] % C); if (dr > 1 || dc > 1 || dr + dc == 0 || (!diag && dr + dc != 1)) return false; } } return true;
+}
+// 오라클: 격자를 그래프로 바꿔 플로이드–워셜 (n ≤ 100)
+std::vector<std::vector<int>> floydGrid(const std::vector<std::string>& w, bool diag) {
+    int R = (int)w.size(), C = (int)w[0].size(), n = R * C; const int INF = 1 << 28; std::vector<std::vector<int>> d(n, std::vector<int>(n, INF));
+    for (int i = 0; i < n; i++) d[i][i] = 0;
+    for (int u = 0; u < n; u++) { if (w[u / C][u % C] == '#') continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) {
+        if ((!dr && !dc) || (!diag && dr && dc)) continue; int nr = u / C + dr, nc = u % C + dc; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue;
+        if (dr && dc && (w[u / C + dr][u % C] == '#' || w[u / C][u % C + dc] == '#')) continue; d[u][nr * C + nc] = 1; } }
+    for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) if (d[i][k] + d[k][j] < d[i][j]) d[i][j] = d[i][k] + d[k][j];
+    for (auto& row : d) for (int& x : row) if (x >= INF) x = -1;
+    return d;
+}
+std::vector<int> graphBfs(const std::vector<std::vector<int>>& adj, int s, std::vector<int>* par) {
+    std::vector<int> d(adj.size(), -1); if (par) par->assign(adj.size(), -1); std::queue<int> q; d[s] = 0; q.push(s);
+    while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (d[v] < 0) { d[v] = d[u] + 1; if (par) (*par)[v] = u; q.push(v); } }
+    return d;
 }
 
 int main() {
-    std::vector<std::vector<int>> graph = {{1, 2}, {0, 3}, {0}, {1}};
-    assert(BFS(graph, 0, 3) == true);
-    std::cout << "BFS verified." << std::endl;
-    return 0;
+    // ① 무작위 그래프 (정점 ≤ 10, 방향 · 루프 · 평행 간선 포함): BFS 거리 = 플로이드–워셜, 복원 경로 유효
+    std::mt19937 rng(3);
+    for (int it = 0; it < 500; ++it) {
+        int n = 2 + (int)(rng() % 9), m = (int)(rng() % (3 * n)); std::vector<std::vector<int>> adj(n); const int INF = 1 << 28; std::vector<std::vector<int>> f(n, std::vector<int>(n, INF));
+        for (int i = 0; i < n; i++) f[i][i] = 0; for (int i = 0; i < m; i++) { int a = (int)(rng() % n), b = (int)(rng() % n); adj[a].push_back(b); if (a != b) f[a][b] = 1; }
+        for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) if (f[i][k] + f[k][j] < f[i][j]) f[i][j] = f[i][k] + f[k][j];
+        for (int s = 0; s < n; s++) { std::vector<int> par; auto d = graphBfs(adj, s, &par); for (int t = 0; t < n; t++) { assert(d[t] == (f[s][t] >= INF ? -1 : f[s][t])); if (d[t] > 0) { int len = 0; for (int v = t; v != s; v = par[v]) ++len; assert(len == d[t]); } } }
+    }
+    // ② 격자 (4/8 방향): BFS 거리 = 플로이드–워셜, 꺼내는 순서에서 거리 비감소, 조기 종료 확장 ≤ 전체, 경로 유효
+    long early = 0, full = 0; int solved = 0, unreachable = 0;
+    for (int it = 0; it < 400; ++it) {
+        int R = 3 + (int)(rng() % 8), C = 3 + (int)(rng() % 8), pct = (int)(rng() % 45); std::vector<std::string> w(R, std::string(C, '.')); bool diag = it & 1;
+        for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int s = (int)(rng() % (R * C)), t = (int)(rng() % (R * C)); w[s / C][s % C] = '.'; w[t / C][t % C] = '.'; auto f = floydGrid(w, diag);
+        Res a = bfsGrid(w, s, t, diag, true), b = bfsGrid(w, s, t, diag, false);
+        assert(a.dist == f[s][t] && b.dist == f[s][t] && a.monotone && b.monotone && a.expanded <= b.expanded);
+        if (a.dist >= 0) { assert(pathOk(w, a.path, diag) && (int)a.path.size() == a.dist + 1 && a.path.front() == s && a.path.back() == t); ++solved; } else { assert(a.path.empty()); ++unreachable; }
+        early += a.expanded; full += b.expanded;
+    }
+    assert(solved > 150 && unreachable > 5 && early < full);
+    // ③ 빈 격자의 닫힌 해와 둘레 칸 수: 중심에서 거리 k 인 칸은 4방향 4k 개, 8방향 8k 개, 거리는 맨해튼/체비쇼프
+    {   const int N = 41, c0 = 20; std::vector<std::string> open(N, std::string(N, '.')); std::vector<int> d4, d8;
+        bfsGrid(open, c0 * N + c0, 0, false, false, &d4); bfsGrid(open, c0 * N + c0, 0, true, false, &d8);
+        std::vector<int> ring4(21, 0), ring8(21, 0); for (int v = 0; v < N * N; v++) { int dr = std::abs(v / N - c0), dc = std::abs(v % N - c0); assert(d4[v] == dr + dc && d8[v] == std::max(dr, dc)); if (d4[v] <= 20) ring4[d4[v]]++; if (d8[v] <= 20) ring8[d8[v]]++; }
+        for (int k = 1; k <= 20; k++) assert(ring8[k] == 8 * k && (k <= 20 ? ring4[k] <= 4 * k : true));             // 8방향은 정사각형 둘레 8k
+        for (int k = 1; k <= 20; k++) { int expect = 0; for (int v = 0; v < N * N; v++) if (std::abs(v / N - c0) + std::abs(v % N - c0) == k) expect++; assert(ring4[k] == expect); }   // 4방향은 마름모 둘레 (격자 안에 든 만큼)
+        for (int k = 1; k <= 20; k++) assert(ring4[k] == 4 * k);                                                        // 중심이 가장자리에서 20 이상 떨어져 있으므로 정확히 4k
+    }
+    // ④ 큰 입력: 1000×1000 빈 격자의 반대편 모서리 (거리 1998, 칸 100 만 개 모두 확장), 길이 25 만 칸 이상의 구불구불한 복도
+    {   const int N = 1000; std::vector<std::string> open(N, std::string(N, '.')); Res r = bfsGrid(open, 0, N * N - 1, false, false); assert(r.dist == 2 * (N - 1) && r.expanded == (long)N * N && r.monotone);
+        const int H = 1001, W = 501; std::vector<std::string> maze(H, std::string(W, '#'));                          // 가로 복도(짝수 행) 를 세로 통로로 번갈아 이은 뱀 모양
+        for (int r2 = 0; r2 < H; r2 += 2) for (int c = 0; c < W; c++) maze[r2][c] = '.';
+        for (int r2 = 1; r2 < H; r2 += 2) maze[r2][(r2 / 2) % 2 == 0 ? W - 1 : 0] = '.';
+        Res m = bfsGrid(maze, 0, (H - 1) * W + (W - 1), false, true);                                          // 마지막 복도의 반대쪽 끝
+        assert(m.dist > 250000 && pathOk(maze, m.path, false) && (int)m.path.size() == m.dist + 1); }
+    std::cout << "BreadthFirstSearch: BFS distances matched Floyd-Warshall on 500 random digraphs and 400 random grids (4 and 8 directions, " << solved << " reachable and " << unreachable << " unreachable pairs), dequeue distances never decreased, early exit expanded " << early << " cells against " << full << " for the full search, open grids gave Manhattan/Chebyshev distances with exactly 4k and 8k cells at distance k, and a 1000x1000 grid and a serpentine corridor of over 250,000 steps were searched" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
+// Space Complexity: O(V)
 ```
 ## DepthFirstSearch()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 
-bool DFS_util(const std::vector<std::vector<int>>& graph, int curr, int target, std::vector<bool>& visited) {
-    if(curr == target) return true;
-    visited[curr] = true;
-    for(int neighbor : graph[curr]) {
-        if(!visited[neighbor] && DFS_util(graph, neighbor, target, visited)) return true;
+// 깊이 우선 탐색(DFS): 한 길로 끝까지 가 보고 막히면 되돌아온다. 도달 가능성(길이 있는가) 은 BFS 와 정확히 같은 답을 주지만 *찾은 경로는 일반적으로 최단이 아니다*(운이 나쁘면 칸 수만큼 길다). 대신 메모리가 현재 경로 길이만큼이고 영역 채우기(flood fill)·연결 성분 세기·미로 생성에 자연스럽다. 재귀로 쓰면 큰 지도에서 호출 스택이 넘치므로 명시적 스택(반복형)으로 쓴다.
+// 검증: ① 무작위 격자에서 DFS 도달 가능성이 BFS 와 같고 DFS 경로가 유효하며 길이 ≥ BFS 거리(엄격히 긴 경우가 많이 있다) ② 영역 채우기로 센 연결 성분 수와 각 성분의 크기가 서로소 집합과 같다(4/8 연결) ③ DFS 의 발견·종료 시각이 괄호 구조(두 칸의 구간은 포함되거나 서로소)를 이룬다 ④ 큰 입력: 길이 25 만 칸 이상의 구불구불한 복도(재귀였다면 스택 overflow)와 1000×1000 격자의 영역 채우기.
+struct Dfs { std::vector<int> par, disc, fin; std::vector<char> seen; };
+
+Dfs dfsFrom(const std::vector<std::string>& w, int s, bool diag, bool stopAtGoal = false, int goal = -1) {
+    int R = (int)w.size(), C = (int)w[0].size(); Dfs d{std::vector<int>(R * C, -1), std::vector<int>(R * C, -1), std::vector<int>(R * C, -1), std::vector<char>(R * C, 0)};
+    std::vector<int> st{s}, it(R * C, 0); d.seen[s] = 1; int clock = 0; d.disc[s] = clock++;
+    static const int dr[8] = {1, 0, -1, 0, 1, 1, -1, -1}, dc[8] = {0, 1, 0, -1, 1, -1, 1, -1};
+    while (!st.empty()) {
+        int u = st.back();
+        if (it[u] < (diag ? 8 : 4)) {
+            int k = it[u]++; int nr = u / C + dr[k], nc = u % C + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue;
+            if (k >= 4 && (w[u / C + dr[k]][u % C] == '#' || w[u / C][u % C + dc[k]] == '#')) continue;
+            int v = nr * C + nc; if (!d.seen[v]) { d.seen[v] = 1; d.par[v] = u; d.disc[v] = clock++; st.push_back(v); if (stopAtGoal && v == goal) return d; }
+        } else { d.fin[u] = clock++; st.pop_back(); }
     }
-    return false;
+    return d;
 }
+std::vector<int> bfsDist(const std::vector<std::string>& w, int s, bool diag) {
+    int R = (int)w.size(), C = (int)w[0].size(); std::vector<int> d(R * C, -1); std::queue<int> q; d[s] = 0; q.push(s);
+    while (!q.empty()) { int u = q.front(); q.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if ((!dr && !dc) || (!diag && dr && dc)) continue; int nr = u / C + dr, nc = u % C + dc; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue; if (dr && dc && (w[u / C + dr][u % C] == '#' || w[u / C][u % C + dc] == '#')) continue; if (d[nr * C + nc] < 0) { d[nr * C + nc] = d[u] + 1; q.push(nr * C + nc); } } }
+    return d;
+}
+int findRoot(std::vector<int>& p, int x) { while (p[x] != x) x = p[x] = p[p[x]]; return x; }
 
 int main() {
-    std::vector<std::vector<int>> graph = {{1, 2}, {0, 3}, {0}, {1}};
-    std::vector<bool> visited(4, false);
-    assert(DFS_util(graph, 0, 3, visited) == true);
-    std::cout << "DFS verified." << std::endl;
-    return 0;
+    std::mt19937 rng(8); long longer = 0, same = 0;
+    // ① 무작위 격자 400 개 (4/8 방향): 도달 가능성 = BFS, 경로 유효, 길이 ≥ BFS 거리, 괄호 구조
+    for (int it = 0; it < 400; ++it) {
+        int R = 3 + (int)(rng() % 10), C = 3 + (int)(rng() % 10), pct = (int)(rng() % 40); std::vector<std::string> w(R, std::string(C, '.')); bool diag = it & 1;
+        for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int s = (int)(rng() % (R * C)); w[s / C][s % C] = '.'; Dfs d = dfsFrom(w, s, diag); auto b = bfsDist(w, s, diag);
+        for (int v = 0; v < R * C; v++) {
+            assert((bool)d.seen[v] == (b[v] >= 0));                                                      // 도달 가능성은 같다
+            if (!d.seen[v] || v == s) continue;
+            int len = 0; for (int x = v; x != s; x = d.par[x]) { int dr = std::abs(x / C - d.par[x] / C), dc = std::abs(x % C - d.par[x] % C); assert(dr <= 1 && dc <= 1 && (diag || dr + dc == 1) && w[x / C][x % C] != '#'); ++len; }
+            assert(len >= b[v]); (len > b[v] ? longer : same)++;                                         // DFS 경로는 BFS 거리 이상
+        }
+        for (int a = 0; a < R * C; a++) for (int c = a + 1; c < R * C; c += 7) if (d.seen[a] && d.seen[c]) { bool nested = (d.disc[a] < d.disc[c] && d.fin[c] < d.fin[a]) || (d.disc[c] < d.disc[a] && d.fin[a] < d.fin[c]); bool apart = d.fin[a] < d.disc[c] || d.fin[c] < d.disc[a]; assert(nested != apart); }
+    }
+    assert(longer > 1000 && same > 1000);
+    // ② 영역 채우기로 연결 성분 세기 = 서로소 집합 (4/8 연결), 성분 크기 합 = 빈 칸 수
+    for (int it = 0; it < 300; ++it) {
+        int R = 3 + (int)(rng() % 14), C = 3 + (int)(rng() % 14), pct = (int)(rng() % 55); std::vector<std::string> w(R, std::string(C, '.')); bool diag = it & 1;
+        for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        std::vector<int> p(R * C); std::iota(p.begin(), p.end(), 0); int free = 0;
+        for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { if (w[r][c] == '#') continue; ++free; for (int dr = 0; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if ((!dr && dc <= 0) || (!diag && dr && dc)) continue; int nr = r + dr, nc = c + dc; if (nr >= R || nc < 0 || nc >= C || w[nr][nc] == '#') continue; p[findRoot(p, r * C + c)] = findRoot(p, nr * C + nc); } }
+        std::vector<char> done(R * C, 0); int comps = 0, total = 0;
+        for (int v = 0; v < R * C; v++) { if (w[v / C][v % C] == '#' || done[v]) continue; Dfs d = dfsFrom(w, v, diag); int size = 0; for (int x = 0; x < R * C; x++) if (d.seen[x]) { done[x] = 1; ++size; } ++comps; total += size; }
+        std::vector<char> roots(R * C, 0); int dsuComps = 0; for (int v = 0; v < R * C; v++) if (w[v / C][v % C] != '#') { int rt = findRoot(p, v); if (!roots[rt]) { roots[rt] = 1; ++dsuComps; } }
+        if (!diag) { assert(comps == dsuComps && total == free); }                                       // 8 연결은 모서리 자르기 금지 규칙이 달라 서로소 집합(대각선 허용)과 비교하지 않는다
+        else assert(total == free && comps >= dsuComps);
+    }
+    // ③ 큰 입력: 길이 25 만 칸 이상의 구불구불한 복도를 반복형 DFS 로 (재귀면 스택 overflow), 1000×1000 빈 격자 영역 채우기
+    {   const int H = 1001, W = 501; std::vector<std::string> maze(H, std::string(W, '#'));
+        for (int r = 0; r < H; r += 2) for (int c = 0; c < W; c++) maze[r][c] = '.';
+        for (int r = 1; r < H; r += 2) maze[r][(r / 2) % 2 == 0 ? W - 1 : 0] = '.';
+        Dfs d = dfsFrom(maze, 0, false); int free = 0, seen = 0; for (int r = 0; r < H; r++) for (int c = 0; c < W; c++) { free += maze[r][c] != '#'; seen += d.seen[r * W + c]; }
+        assert(seen == free && free > 250000);
+        std::vector<std::string> open(1000, std::string(1000, '.')); Dfs f = dfsFrom(open, 0, false); int cnt = 0; for (char x : f.seen) cnt += x; assert(cnt == 1000000); }
+    std::cout << "DepthFirstSearch: iterative DFS reached exactly the cells BFS reached on 400 random grids (4 and 8 directions), its paths were valid but at least as long as the BFS distance (" << longer << " strictly longer, " << same << " equal), discovery/finish intervals nested or were disjoint, flood-fill component counts and sizes matched union-find, and a serpentine corridor of over 250,000 cells and a 1,000,000-cell open grid were searched without recursion" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
+// Space Complexity: O(V)
 ```
 ## IterativeDeepeningDFS()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <functional>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 
-// 반복 깊이 증가 DFS(IDDFS, 그래프 관점의 요약은 Graph.md Part 10): 깊이 제한 DFS 를 제한 0, 1, 2, ... 로 반복해 BFS 처럼 "가장 얕은 해" 를 찾되 메모리는 DFS 처럼 O(깊이) 만 쓴다.
-// 얕은 층을 되풀이해 방문하는 낭비는 분기 계수 b 가 2 이상이면 가장 깊은 층의 방문 수가 압도해 전체의 약 b/(b-1) 배에 그친다
-long visited = 0;
-bool dls(int node, int goal, int limit, const std::vector<std::vector<int>>& adj, std::vector<int>& path) { visited++; path.push_back(node); if (node == goal) return true; if (limit > 0) for (int v : adj[node]) if (dls(v, goal, limit - 1, adj, path)) return true; path.pop_back(); return false; }
+// 반복 깊이 증가 DFS(IDDFS, 그래프 관점의 정본은 Graph.md Part 10): 깊이 제한 DFS 를 제한 0, 1, 2, … 로 반복해 BFS 처럼 "가장 얕은 해" 를 찾되 메모리는 DFS 처럼 O(깊이) 만 쓴다. 얕은 층을 되풀이해 방문하는 낭비는 분기 계수 b 가 2 이상이면 가장 깊은 층의 방문 수가 압도해 전체의 약 b/(b−1) 배에 그친다. 격자 같은 일반 그래프에서는 같은 칸을 여러 경로로 다시 방문하므로 방문 수가 트리 공식보다 커진다 — 그래도 메모리는 경로 길이뿐이다.
+// 검증: ① 무작위 격자(최대 7×7, 4방향)에서 IDDFS 가 처음 성공하는 깊이 = BFS 거리, 경로는 단순하고 유효, 도달 불가면 제한을 (빈 칸 수 − 1) 까지 올려도 실패 ② 이진 트리(깊이 12)에서 방문 수가 정확히 Σ(d−i+1)2^i 이고 BFS 방문 수의 2 배 미만 ③ 스택에 쌓인 칸 수는 깊이 + 1 이하.
+long visited = 0; int maxStack = 0;
+bool dls(const std::vector<std::string>& w, int u, int goal, int limit, std::vector<char>& onPath, std::vector<int>& path) {
+    int R = (int)w.size(), C = (int)w[0].size(); visited++; path.push_back(u); onPath[u] = 1; maxStack = std::max(maxStack, (int)path.size());
+    if (u == goal) return true;
+    if (limit > 0) { static const int dr[4] = {1, 0, -1, 0}, dc[4] = {0, 1, 0, -1}; for (int k = 0; k < 4; k++) { int nr = u / C + dr[k], nc = u % C + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue; int v = nr * C + nc; if (!onPath[v] && dls(w, v, goal, limit - 1, onPath, path)) return true; } }
+    path.pop_back(); onPath[u] = 0; return false;
+}
+int iddfs(const std::vector<std::string>& w, int s, int goal, int maxDepth, std::vector<int>& path) {
+    for (int limit = 0; limit <= maxDepth; limit++) { std::vector<char> on(w.size() * w[0].size(), 0); path.clear(); if (dls(w, s, goal, limit, on, path)) return limit; }
+    path.clear(); return -1;
+}
+int bfsDist(const std::vector<std::string>& w, int s, int t) {
+    int R = (int)w.size(), C = (int)w[0].size(); std::vector<int> d(R * C, -1); std::queue<int> q; d[s] = 0; q.push(s);
+    while (!q.empty()) { int u = q.front(); q.pop(); static const int dr[4] = {1, 0, -1, 0}, dc[4] = {0, 1, 0, -1}; for (int k = 0; k < 4; k++) { int nr = u / C + dr[k], nc = u % C + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#' || d[nr * C + nc] >= 0) continue; d[nr * C + nc] = d[u] + 1; q.push(nr * C + nc); } }
+    return d[t];
+}
+
 int main() {
-    int depth = 12; std::vector<std::vector<int>> adj((1 << (depth + 1)) - 1); for (int i = 0; i < (1 << depth) - 1; i++) { adj[i].push_back(2 * i + 1); adj[i].push_back(2 * i + 2); }       // 이진 트리
-    int goal = (1 << depth) - 1 + 777; std::vector<int> path; int found = -1;
-    for (int limit = 0; limit <= depth; limit++) { path.clear(); if (dls(0, goal, limit, adj, path)) { found = limit; break; } }
-    assert(found == depth && (int)path.size() == depth + 1 && path.front() == 0 && path.back() == goal);         // 가장 얕은 깊이에서 해를 찾는다
-    long bfsLike = (1 << (depth + 1)) - 1; assert(visited < 3 * bfsLike);                                           // 반복 낭비는 BFS 방문 수의 작은 상수배
-    std::cout << "IterativeDeepeningDFS: goal at depth " << found << ", nodes visited " << visited << " (BFS would visit up to " << bfsLike << ") with O(depth) memory" << std::endl; return 0;
+    std::mt19937 rng(77); int solved = 0, unreachable = 0;
+    for (int it = 0; it < 300; ++it) {
+        int R = 2 + (int)(rng() % 6), C = 2 + (int)(rng() % 6), pct = (int)(rng() % 40); std::vector<std::string> w(R, std::string(C, '.'));
+        for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int s = (int)(rng() % (R * C)), t = (int)(rng() % (R * C)); w[s / C][s % C] = '.'; w[t / C][t % C] = '.';
+        std::vector<int> path; int got = iddfs(w, s, t, R * C - 1, path), want = bfsDist(w, s, t);
+        assert(got == want);
+        if (want >= 0) { assert((int)path.size() == want + 1 && path.front() == s && path.back() == t); std::vector<int> sorted = path; std::sort(sorted.begin(), sorted.end()); assert(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end()); ++solved; } else ++unreachable;
+    }
+    assert(solved > 100 && unreachable > 5);
+    // ② 이진 트리 (깊이 12): 가장 오른쪽 잎 → 방문 수 정확히 Σ (d−i+1) 2^i, BFS 방문 수 (2^(d+1) − 1) 의 2 배 미만, 스택 ≤ d + 1
+    {   const int depth = 12; std::vector<std::vector<int>> adj((1 << (depth + 1)) - 1); for (int i = 0; i < (1 << depth) - 1; i++) { adj[i].push_back(2 * i + 1); adj[i].push_back(2 * i + 2); }
+        int goal = (1 << (depth + 1)) - 2; long vis = 0; int stackMax = 0, found = -1; std::vector<int> path;
+        std::function<bool(int, int)> dfs = [&](int u, int limit) { vis++; path.push_back(u); stackMax = std::max(stackMax, (int)path.size()); if (u == goal) return true; if (limit > 0) for (int v : adj[u]) if (dfs(v, limit - 1)) return true; path.pop_back(); return false; };
+        for (int limit = 0; limit <= depth; limit++) { path.clear(); if (dfs(0, limit)) { found = limit; break; } }
+        long expect = 0; for (int i = 0; i <= depth; i++) expect += (long)(depth - i + 1) << i;
+        assert(found == depth && vis == expect && vis < 2L * ((1 << (depth + 1)) - 1) && stackMax == depth + 1);
+        std::cout << "IterativeDeepeningDFS: " << solved << " reachable and " << unreachable << " unreachable random-grid queries gave exactly the BFS distance, and on a depth-" << depth << " binary tree IDDFS visited " << vis << " = sum (d-i+1)2^i nodes (under twice BFS's " << (1 << (depth + 1)) - 1 << ") with a stack of only " << stackMax << std::endl; }
+    return 0;
 }
 // Time Complexity: O(b^d) (b/(b-1) 배의 중복 포함)
 // Space Complexity: O(d)
@@ -373,24 +708,93 @@ int main() {
 ## BidirectionalSearch()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
 #include <iostream>
 #include <queue>
+#include <random>
+#include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// 양방향 탐색(그래프 관점의 요약은 Graph.md Part 10): 시작과 목표에서 동시에 BFS 를 돌려 두 탐색 영역이 만나면 끝낸다. 한 방향 탐색이 반지름 d 의 "공"을 채우는 데 b^d 를 쓴다면 양방향은 반지름 d/2 짜리 공 둘이라 2·b^(d/2) 로 훨씬 적다.
-// 한 층 전체를 확장한 뒤 교차를 확인해야 최단 거리가 보장되고, 더 작은 쪽 frontier 를 확장하면 균형이 맞는다
+// 양방향 탐색(그래프 관점의 정본은 Graph.md Part 10): 시작과 목표에서 동시에 탐색을 돌려 두 탐색 영역이 만나면 끝낸다. 한 방향 탐색이 반지름 d 의 "공"을 채우는 데 b^d 를 쓴다면 양쪽에서 d/2 씩만 채우면 되니 2·b^(d/2) 로 지수의 절반이다(격자에서는 공이 원판이라 면적 비로 약 1/2). 그런데 *언제 멈추는가* 가 비용이 같은 경우와 다른 경우에 완전히 다르다.
+// 비용이 모두 같은 BFS: 한 층씩 번갈아 확장하면 "처음으로 상대 영역에 닿는 순간" 이 곧 최단이다 — 만나기 전에는 두 영역이 서로소이므로 최단 거리 D ≥ Lf + Lb + 1 이고, 처음 만났을 때의 후보 Lf + 1 + db[v] ≤ Lf + 1 + Lb ≤ D 이면서 실제 경로라 D 이상이기 때문. 비용이 다른 다익스트라: 처음 만난 지점의 합은 *최단이 아닐 수 있다*(더 싼 우회가 아직 남아 있다). 올바른 멈춤 규칙은 지금까지 만난 가장 싼 합 μ 를 기억해 두고 "양쪽 우선순위 큐의 맨 앞 거리의 합이 μ 이상" 일 때 멈추는 것이다.
+// 검증: ① 무작위 격자(4/8 방향, 벽 0~40%)에서 양방향 BFS 거리 = 한 방향 BFS 거리(도달 불가면 둘 다 -1, 시작 = 목표면 0), "처음 만나면 반환" 변형도 비용이 같을 때는 정확히 같다 ② 무작위 가중 그래프에서 μ 규칙의 양방향 다익스트라는 단방향 다익스트라와 같고, "처음 만나면 반환" 변형은 더 긴 거리를 내는 경우가 실제로 있다(더 짧은 일은 없다) ③ 장애물 없는 넓은 격자에서 확장 수가 BFS 의 2/3 미만.
+struct Res { int dist = -1; long expanded = 0; };
+static const int DR8[8] = {1, 0, -1, 0, 1, 1, -1, -1}, DC8[8] = {0, 1, 0, -1, 1, -1, 1, -1};
+template <class F> void neighbours(const std::vector<std::string>& w, int u, bool diag, F f) {
+    int R = (int)w.size(), C = (int)w[0].size();
+    for (int k = 0; k < (diag ? 8 : 4); k++) { int nr = u / C + DR8[k], nc = u % C + DC8[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue; if (k >= 4 && (w[u / C + DR8[k]][u % C] == '#' || w[u / C][u % C + DC8[k]] == '#')) continue; f(nr * C + nc); }
+}
+Res bfs(const std::vector<std::string>& w, int s, int t, bool diag) {
+    Res r; int n = (int)w.size() * (int)w[0].size(); std::vector<int> d(n, -1); std::queue<int> q; d[s] = 0; q.push(s);
+    while (!q.empty()) { int u = q.front(); q.pop(); r.expanded++; if (u == t) { r.dist = d[u]; return r; } neighbours(w, u, diag, [&](int v) { if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } }); }
+    return r;
+}
+// firstMeeting = true: 처음 만나면 반환. false: 한 층 전체를 확장한 뒤 만남의 최솟값
+Res bidirectional(const std::vector<std::string>& w, int s, int t, bool diag, bool firstMeeting) {
+    Res r; if (s == t) { r.dist = 0; return r; } int n = (int)w.size() * (int)w[0].size(); std::vector<int> da(n, -1), db(n, -1); std::vector<int> fa{s}, fb{t}; da[s] = 0; db[t] = 0;
+    while (!fa.empty() && !fb.empty()) {
+        bool fwd = fa.size() <= fb.size(); auto& f = fwd ? fa : fb; auto& mine = fwd ? da : db; auto& other = fwd ? db : da; std::vector<int> nxt; int best = -1;
+        for (int u : f) { r.expanded++; bool stop = false;
+            neighbours(w, u, diag, [&](int v) { if (stop || mine[v] >= 0) return; mine[v] = mine[u] + 1; nxt.push_back(v); if (other[v] >= 0) { int cand = mine[v] + other[v]; best = best < 0 ? cand : std::min(best, cand); if (firstMeeting) stop = true; } });
+            if (stop) break; }
+        if (best >= 0) { r.dist = best; return r; }
+        f = nxt;
+    }
+    return r;
+}
+
+// ---- 가중 그래프: 양방향 다익스트라 ----
+struct WG { int n; std::vector<std::vector<std::pair<int, int>>> adj; };
+const int INF = INT_MAX / 4;
+int dijkstra(const WG& g, int s, int t) {
+    std::vector<int> d(g.n, INF); std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto [v, w] : g.adj[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } }
+    return d[t] >= INF ? -1 : d[t];
+}
+// careful = true: μ 규칙 (topF + topB ≥ μ 에서 멈춤). false: 처음 만나는 순간 μ 를 반환
+int biDijkstra(const WG& g, int s, int t, bool careful) {
+    if (s == t) return 0; typedef std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> PQ;
+    std::vector<int> d[2] = {std::vector<int>(g.n, INF), std::vector<int>(g.n, INF)}; PQ pq[2]; d[0][s] = 0; d[1][t] = 0; pq[0].push({0, s}); pq[1].push({0, t}); int mu = INF;
+    while (!pq[0].empty() && !pq[1].empty()) {
+        if (careful && pq[0].top().first + pq[1].top().first >= mu) break;
+        int side = pq[0].top().first <= pq[1].top().first ? 0 : 1; auto [du, u] = pq[side].top(); pq[side].pop(); if (du > d[side][u]) continue;
+        for (auto [v, w] : g.adj[u]) {
+            if (du + w < d[side][v]) { d[side][v] = du + w; pq[side].push({d[side][v], v}); }
+            if (d[1 - side][v] < INF) { mu = std::min(mu, du + w + d[1 - side][v]); if (!careful) return mu; }
+        }
+    }
+    return mu >= INF ? -1 : mu;
+}
+
 int main() {
-    const int N = 300; auto id = [&](int r, int c) { return r * N + c; }; std::vector<std::vector<int>> adj(N * N);
-    for (int r = 0; r < N; r++) for (int c = 0; c < N; c++) { if (r + 1 < N) { adj[id(r, c)].push_back(id(r + 1, c)); adj[id(r + 1, c)].push_back(id(r, c)); } if (c + 1 < N) { adj[id(r, c)].push_back(id(r, c + 1)); adj[id(r, c + 1)].push_back(id(r, c)); } }
-    auto bfsExpand = [&](int s, int t, long& exp) { std::vector<int> d(N * N, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); exp++; if (u == t) return d[u]; for (int v : adj[u]) if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } } return -1; };
-    auto biExpand = [&](int s, int t, long& exp) { std::vector<int> da(N * N, -1), db(N * N, -1); std::vector<int> fa = {s}, fb = {t}; da[s] = 0; db[t] = 0; if (s == t) return 0;
-        while (!fa.empty() && !fb.empty()) { bool fwd = fa.size() <= fb.size(); auto& f = fwd ? fa : fb; auto& dm = fwd ? da : db; auto& other = fwd ? db : da; std::vector<int> nxt; int best = -1;
-            for (int u : f) { exp++; for (int v : adj[u]) { if (dm[v] >= 0) continue; dm[v] = dm[u] + 1; nxt.push_back(v); if (other[v] >= 0) best = best < 0 ? dm[v] + other[v] : std::min(best, dm[v] + other[v]); } }
-            if (best >= 0) return best; f = nxt; } return -1; };
-    long e1 = 0, e2 = 0; int s = id(100, 100), t = id(130, 140); int d1 = bfsExpand(s, t, e1), d2 = biExpand(s, t, e2);
-    assert(d1 == d2 && d1 == 30 + 40 && e2 * 3 < e1 * 2);                  // 같은 최단 거리, 확장한 노드는 BFS 의 2/3 미만 (지도 경계에 닿지 않을 때 약 1/2)
-    std::cout << "BidirectionalSearch: distance " << d2 << ", expansions BFS " << e1 << " vs bidirectional " << e2 << std::endl; return 0;
+    std::mt19937 rng(12); int solved = 0, unreachable = 0; long biTotal = 0, bfsTotal = 0;
+    for (int it = 0; it < 600; ++it) {
+        int R = 3 + (int)(rng() % 14), C = 3 + (int)(rng() % 14), pct = (int)(rng() % 41); std::vector<std::string> w(R, std::string(C, '.')); bool diag = it & 1;
+        for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int s = (int)(rng() % (R * C)), t = (int)(rng() % (R * C)); w[s / C][s % C] = '.'; w[t / C][t % C] = '.';
+        Res a = bfs(w, s, t, diag), b = bidirectional(w, s, t, diag, false), first = bidirectional(w, s, t, diag, true);
+        assert(a.dist == b.dist && a.dist == first.dist);                                                   // 비용이 같으면 처음 만나는 순간도 최단
+        if (a.dist >= 0) ++solved; else ++unreachable;
+        biTotal += b.expanded; bfsTotal += a.expanded;
+    }
+    assert(solved > 300 && unreachable > 5);
+    // ② 무작위 가중 그래프 (정점 ≤ 25, 무방향, 가중치 1..20): μ 규칙 = 단방향 다익스트라, 성급한 변형은 더 길 수는 있어도 짧을 수는 없다
+    int hastyWrong = 0, wsolved = 0;
+    for (int it = 0; it < 1500; ++it) {
+        int n = 4 + (int)(rng() % 22), m = n + (int)(rng() % (2 * n)); WG g{n, std::vector<std::vector<std::pair<int, int>>>(n)};
+        for (int i = 0; i < m; i++) { int a = (int)(rng() % n), b = (int)(rng() % n), w = 1 + (int)(rng() % 20); g.adj[a].push_back({b, w}); g.adj[b].push_back({a, w}); }
+        int s = (int)(rng() % n), t = (int)(rng() % n); int want = dijkstra(g, s, t), got = biDijkstra(g, s, t, true), hasty = biDijkstra(g, s, t, false);
+        assert(got == want);
+        if (want >= 0) { ++wsolved; assert(hasty >= want); hastyWrong += hasty != want; } else assert(hasty == -1);
+    }
+    assert(wsolved > 800 && hastyWrong > 20);                                                               // 가중치가 다르면 성급한 변형이 실제로 틀린다
+    {   const int N = 200; std::vector<std::string> open(N, std::string(N, '.')); int s = 100 * N + 60, t = 100 * N + 140;
+        Res a = bfs(open, s, t, false), b = bidirectional(open, s, t, false, false); assert(a.dist == 80 && b.dist == 80 && b.expanded * 3 < a.expanded * 2);
+        std::cout << "BidirectionalSearch: with equal costs bidirectional BFS (with or without waiting for the full level) matched one-directional BFS on 600 random grids (" << solved << " reachable, " << unreachable << " unreachable); with random edge weights the mu-rule bidirectional Dijkstra matched plain Dijkstra on 1500 graphs while returning at the first meeting overshot in " << hastyWrong << " of " << wsolved << "; on an open 200x200 grid bidirectional search expanded " << b.expanded << " cells against BFS's " << a.expanded << std::endl; }
+    return 0;
 }
 // Time Complexity: O(b^(d/2)) × 2
 // Space Complexity: O(b^(d/2))
@@ -398,21 +802,51 @@ int main() {
 ## MultiSourceBFS()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <queue>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 다중 출발점 BFS(큐 관점의 요약은 Queue.md Part 6): 출발점이 여러 개일 때 모든 출발점을 거리 0 으로 한꺼번에 큐에 넣고 BFS 를 한 번만 돌리면 각 칸에서 "가장 가까운 출발점까지의 거리"가 O(V+E) 에 나온다.
-// 출발점마다 BFS 를 따로 돌려 최솟값을 취하는 O(k(V+E)) 와 결과가 같다. 용도: 가장 가까운 소화전·출구·불길까지의 거리, 거리 변환(distance transform), 부패하는 오렌지 문제
+// 다중 출발점 BFS(큐 관점의 정본은 Queue.md Part 6): 출발점이 여러 개일 때 모든 출발점을 거리 0 으로 한꺼번에 큐에 넣고 BFS 를 한 번만 돌리면 각 칸에서 "가장 가까운 출발점까지의 거리" 가 나온다. 출발점마다 BFS 를 따로 돌려 최솟값을 취하는 O(k(V+E)) 와 결과가 같다. 용도: 가장 가까운 소화전·출구·불길까지의 거리, 거리 변환(distance transform), 부패하는 오렌지 문제.
+// 성질: 거리장은 출발점에서만 0 이고, 이웃한 두 칸의 거리는 1 이하로 차이 난다(립시츠), 가장 가까운 출발점 라벨을 함께 전파하면 보로노이 영역 분할이 된다(동점은 먼저 도달한 라벨).
+// 검증: 무작위 격자에서 ① 한 번의 BFS = 출발점별 BFS 의 최솟값 ② 거리 0 인 칸 = 출발점 ③ 이웃한 두 도달 칸의 거리 차 ≤ 1 ④ 각 칸의 라벨은 가장 가까운 출발점 중 하나이고 거리가 일치 ⑤ 큰 입력 1000×1000 에 출발점 1000 개를 한 번에.
+struct Out { std::vector<int> dist, label; };
+Out multiSource(const std::vector<std::string>& w, const std::vector<int>& src) {
+    int R = (int)w.size(), C = (int)w[0].size(); Out o{std::vector<int>(R * C, -1), std::vector<int>(R * C, -1)}; std::queue<int> q;
+    for (std::size_t i = 0; i < src.size(); i++) if (o.dist[src[i]] < 0) { o.dist[src[i]] = 0; o.label[src[i]] = (int)i; q.push(src[i]); }
+    while (!q.empty()) {
+        int u = q.front(); q.pop(); static const int dr[4] = {1, 0, -1, 0}, dc[4] = {0, 1, 0, -1};
+        for (int k = 0; k < 4; k++) { int nr = u / C + dr[k], nc = u % C + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#' || o.dist[nr * C + nc] >= 0) continue; o.dist[nr * C + nc] = o.dist[u] + 1; o.label[nr * C + nc] = o.label[u]; q.push(nr * C + nc); }
+    }
+    return o;
+}
+
 int main() {
-    std::vector<std::string> w = {"........", ".#####..", "......#.", ".####.#.", "........"}; int R = w.size(), C = w[0].size();
-    std::vector<std::pair<int, int>> src = {{0, 0}, {4, 7}, {2, 0}}; auto run = [&](const std::vector<std::pair<int, int>>& ss) { std::vector<int> d(R * C, -1); std::queue<std::pair<int, int>> q; for (auto& s : ss) { d[s.first * C + s.second] = 0; q.push(s); }
-        while (!q.empty()) { auto [r, c] = q.front(); q.pop(); const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#' || d[nr * C + nc] >= 0) continue; d[nr * C + nc] = d[r * C + c] + 1; q.push({nr, nc}); } } return d; };
-    std::vector<int> multi = run(src), best(R * C, -1); for (auto& s : src) { auto one = run({s}); for (int i = 0; i < R * C; i++) if (one[i] >= 0 && (best[i] < 0 || one[i] < best[i])) best[i] = one[i]; }
-    assert(multi == best);                                                 // 한 번의 BFS == 출발점별 BFS 의 최솟값
-    std::cout << "MultiSourceBFS: one BFS from " << src.size() << " sources equals the min of " << src.size() << " separate BFS runs" << std::endl; return 0;
+    std::mt19937 rng(31); long cells = 0;
+    for (int it = 0; it < 500; ++it) {
+        int R = 3 + (int)(rng() % 14), C = 3 + (int)(rng() % 14), pct = (int)(rng() % 45); std::vector<std::string> w(R, std::string(C, '.'));
+        for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        std::vector<int> free; for (int v = 0; v < R * C; v++) if (w[v / C][v % C] != '#') free.push_back(v); if (free.empty()) continue;
+        int k = 1 + (int)(rng() % std::min<std::size_t>(5, free.size())); std::vector<int> src; for (int i = 0; i < k; i++) src.push_back(free[rng() % free.size()]);
+        Out multi = multiSource(w, src); std::vector<std::vector<int>> single; for (int s : src) single.push_back(multiSource(w, {s}).dist);
+        std::vector<char> isSrc(R * C, 0); for (int s : src) isSrc[s] = 1;
+        for (int v = 0; v < R * C; v++) {
+            int best = -1; for (auto& d : single) if (d[v] >= 0 && (best < 0 || d[v] < best)) best = d[v];
+            assert(multi.dist[v] == best);                                                               // ① 한 번의 BFS == 출발점별 BFS 의 최솟값
+            assert((multi.dist[v] == 0) == (bool)isSrc[v]);                                                // ② 0 은 출발점에서만
+            if (multi.dist[v] >= 0) { assert(single[multi.label[v]][v] == multi.dist[v]); ++cells; }        // ④ 라벨이 가리키는 출발점이 실제로 가장 가까운 것 중 하나
+            for (int dd = 0; dd < 2 && multi.dist[v] >= 0; dd++) { int nr = v / C + (dd == 0), nc = v % C + (dd == 1); if (nr < R && nc < C && w[nr][nc] != '#' && multi.dist[nr * C + nc] >= 0) assert(std::abs(multi.dist[v] - multi.dist[nr * C + nc]) <= 1); }   // ③ 립시츠
+        }
+    }
+    assert(cells > 10000);
+    {   const int N = 1000; std::vector<std::string> open(N, std::string(N, '.')); std::vector<int> src; for (int i = 0; i < 1000; i++) src.push_back((int)(rng() % (N * N)));
+        Out o = multiSource(open, src); int maxD = 0; for (int v = 0; v < N * N; v++) { assert(o.dist[v] >= 0); maxD = std::max(maxD, o.dist[v]); }
+        for (int probe = 0; probe < 300; probe++) { int v = (int)(rng() % (N * N)); int best = 1 << 30; for (int s : src) best = std::min(best, std::abs(s / N - v / N) + std::abs(s % N - v % N)); assert(o.dist[v] == best); }   // 빈 격자: 맨해튼 최솟값
+        std::cout << "MultiSourceBFS: one BFS from up to 5 sources equalled the minimum of the per-source searches on " << cells << " reachable cells of 500 random grids (zero exactly at sources, neighbouring distances differing by at most 1, labels pointing at a nearest source); on a 1000x1000 grid with 1000 sources one search matched the Manhattan minimum at 300 probes (farthest cell " << maxD << ")" << std::endl; }
+    return 0;
 }
 // Time Complexity: O(V + E)
 // Space Complexity: O(V)
@@ -422,139 +856,344 @@ int main() {
 ## Dijkstra()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
 
-int Dijkstra(int V, const std::vector<std::vector<std::pair<int, int>>>& graph, int start, int end) {
-    std::vector<int> dist(V, 1e9);
-    std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq;
-    dist[start] = 0; pq.push({0, start});
-    while(!pq.empty()) {
-        int d = pq.top().first, u = pq.top().second; pq.pop();
-        if(d > dist[u]) continue;
-        if(u == end) return dist[u];
-        for(auto& edge : graph[u]) {
-            int v = edge.first, weight = edge.second;
-            if(dist[u] + weight < dist[v]) {
-                dist[v] = dist[u] + weight;
-                pq.push({dist[v], v});
-            }
-        }
+// 다익스트라(경로 탐색 관점의 요약, 정본은 Graph.md Part 9): 칸마다 지형 비용이 다른 격자에서 "들어가는 칸의 비용 합" 이 최소인 경로. 비용이 음이 아니면 우선순위 큐에서 가장 가까운 칸의 거리는 더 줄일 수 없으므로 꺼내는 순간 확정이다. 길찾기에서는 목표를 꺼내는 순간 멈추면(조기 종료) 목표보다 먼 칸은 확장하지 않는다. 4방향 이동 비용은 칸 비용 × 10, 8방향 대각선은 × 14 (≈ 10√2) 의 정수.
+// 검증: 무작위 지형 격자(3~10 × 3~10, 벽 0~30%, 칸 비용 1..9, 4/8 방향)에서 ① 조기 종료 거리 = 전체 다익스트라 = 같은 격자를 간선 목록으로 만든 벨만–포드 ② 꺼낸 순서에서 거리가 단조 비감소 ③ 복원한 경로의 칸 비용 합 = 보고한 거리, 이웃한 칸으로만 이동 ④ 조기 종료한 확정 칸 수 ≤ 전체 ≤ 칸 수 ⑤ 큰 입력 1000×1000 지형(칸 100 만 개).
+struct Grid { int R, C; std::vector<int> cost; };                                                           // cost 0 = 벽, 아니면 그 칸에 들어가는 비용
+struct Edge { int u, v, w; };
+static const int DR[8] = {1, 0, -1, 0, 1, 1, -1, -1}, DC[8] = {0, 1, 0, -1, 1, -1, 1, -1};
+template <class F> void moves(const Grid& g, int u, bool diag, F f) {
+    for (int k = 0; k < (diag ? 8 : 4); k++) {
+        int nr = u / g.C + DR[k], nc = u % g.C + DC[k]; if (nr < 0 || nc < 0 || nr >= g.R || nc >= g.C || !g.cost[nr * g.C + nc]) continue;
+        if (k >= 4 && (!g.cost[(u / g.C + DR[k]) * g.C + u % g.C] || !g.cost[(u / g.C) * g.C + u % g.C + DC[k]])) continue;                  // 모서리 자르기 금지
+        f(nr * g.C + nc, g.cost[nr * g.C + nc] * (k < 4 ? 10 : 14));
     }
-    return dist[end];
+}
+struct Res { long long dist = -1; long settled = 0; std::vector<int> path; bool monotone = true; };
+Res dijkstra(const Grid& g, int s, int t, bool diag, bool early) {
+    int n = g.R * g.C; std::vector<long long> d(n, LLONG_MAX); std::vector<int> par(n, -1); std::priority_queue<std::pair<long long, int>, std::vector<std::pair<long long, int>>, std::greater<>> pq;
+    Res r; long long last = 0; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) {
+        auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue;
+        r.settled++; if (du < last) r.monotone = false; last = du; if (early && u == t) break;
+        moves(g, u, diag, [&](int v, int w) { if (du + w < d[v]) { d[v] = du + w; par[v] = u; pq.push({d[v], v}); } });
+    }
+    if (d[t] != LLONG_MAX) { r.dist = d[t]; for (int v = t; v != -1; v = par[v]) r.path.push_back(v); std::reverse(r.path.begin(), r.path.end()); }
+    return r;
+}
+std::vector<long long> bellmanFordOracle(const Grid& g, int s, bool diag) {                                 // 같은 격자를 간선 목록으로 만들어 V−1 번 완화
+    int n = g.R * g.C; std::vector<Edge> es; for (int u = 0; u < n; u++) if (g.cost[u]) moves(g, u, diag, [&](int v, int w) { es.push_back({u, v, w}); });
+    std::vector<long long> d(n, LLONG_MAX); d[s] = 0;
+    for (int pass = 0; pass < n; pass++) { bool ch = false; for (auto& e : es) if (d[e.u] != LLONG_MAX && d[e.u] + e.w < d[e.v]) { d[e.v] = d[e.u] + e.w; ch = true; } if (!ch) break; }
+    return d;
 }
 
 int main() {
-    std::vector<std::vector<std::pair<int, int>>> graph(3);
-    graph[0].push_back({1, 10}); graph[1].push_back({2, 5}); graph[0].push_back({2, 20});
-    assert(Dijkstra(3, graph, 0, 2) == 15);
-    std::cout << "Dijkstra verified." << std::endl;
+    // ① 손으로 확인한 모양: 위로 우회하면 비용 1+1+1, 곧장 가운데 9 칸을 지나면 9 — 우회가 이긴다
+    {   Grid g{2, 3, {1, 1, 1, 1, 9, 1}}; Res r = dijkstra(g, 3, 5, false, true);                           // (1,0) → (1,2): 왼쪽 → 위 → 오른쪽 x2 → 아래 vs 가운데 9
+        assert(r.dist == (1 + 1 + 1 + 1) * 10 && r.path.size() == 5);
+    }
+    std::mt19937 rng(9); long earlyTotal = 0, fullTotal = 0; int solved = 0, unreachable = 0;
+    for (int it = 0; it < 500; ++it) {
+        int R = 3 + (int)(rng() % 8), C = 3 + (int)(rng() % 8), pct = (int)(rng() % 31); bool diag = it & 1; Grid g{R, C, std::vector<int>(R * C)};
+        for (int& c : g.cost) c = (int)(rng() % 100) < pct ? 0 : 1 + (int)(rng() % 9);
+        int s = (int)(rng() % (R * C)), t = (int)(rng() % (R * C)); if (!g.cost[s]) g.cost[s] = 1; if (!g.cost[t]) g.cost[t] = 1;
+        Res a = dijkstra(g, s, t, diag, true), b = dijkstra(g, s, t, diag, false); auto oracle = bellmanFordOracle(g, s, diag);
+        long long want = oracle[t] == LLONG_MAX ? -1 : oracle[t];
+        assert(a.dist == want && b.dist == want && a.monotone && b.monotone && a.settled <= b.settled && b.settled <= R * C);
+        if (want >= 0) {
+            long long sum = 0; for (std::size_t i = 1; i < a.path.size(); i++) { int u = a.path[i - 1], v = a.path[i], dr = std::abs(v / C - u / C), dc = std::abs(v % C - u % C); assert(dr <= 1 && dc <= 1 && (diag || dr + dc == 1) && g.cost[v]); sum += g.cost[v] * (dr + dc == 2 ? 14 : 10); }
+            assert(a.path.front() == s && a.path.back() == t && sum == want); ++solved;
+        } else { assert(a.path.empty()); ++unreachable; }
+        earlyTotal += a.settled; fullTotal += b.settled;
+    }
+    assert(solved > 250 && unreachable > 5 && earlyTotal < fullTotal);
+    // ⑤ 큰 입력: 1000×1000 지형, 4방향, 왼쪽 위 → 오른쪽 아래. 벨만–포드는 너무 느리므로 칸 비용이 모두 1 인 경우의 닫힌 해(맨해튼 × 10)와, 무작위 지형에서는 거리 하한(최소 비용 × 맨해튼) 과 상한(경로 하나의 비용)으로 확인
+    {   const int N = 1000; Grid flat{N, N, std::vector<int>(N * N, 1)}; Res f = dijkstra(flat, 0, N * N - 1, false, true); assert(f.dist == 10LL * 2 * (N - 1));
+        Grid g{N, N, std::vector<int>(N * N)}; for (int& c : g.cost) c = 1 + (int)(rng() % 9); Res r = dijkstra(g, 0, N * N - 1, false, true);
+        long long lower = 10LL * 2 * (N - 1) * 1, upper = 0; for (int c = 1; c < N; c++) upper += g.cost[c] * 10LL; for (int rr = 1; rr < N; rr++) upper += g.cost[rr * N + N - 1] * 10LL;       // 위 가장자리 → 오른쪽 가장자리 경로 하나의 비용
+        assert(r.dist >= lower && r.dist <= upper && r.monotone && r.settled <= N * N);
+        std::cout << "Dijkstra: early-exit distances equalled full Dijkstra and a Bellman-Ford oracle on 500 random terrain grids (4 and 8 directions; " << solved << " reachable, " << unreachable << " unreachable), settled order was non-decreasing, rebuilt paths summed to the reported cost, early exit settled " << earlyTotal << " cells against " << fullTotal << ", and a 1000x1000 terrain was solved between its analytic bounds" << std::endl; }
     return 0;
 }
 // Time Complexity: O(E log V)
+// Space Complexity: O(V)
 ```
 ## BellmanFord()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
+
+// 벨만–포드(경로 탐색 관점의 요약, 정본은 Graph.md Part 9): 모든 간선을 V − 1 번 훑어 완화한다. 다익스트라와 달리 *음수 가중치*(내리막·통행료 환급·에너지 회수)를 다룰 수 있고, V 번째 훑기에서도 줄어드는 거리가 있으면 시작점에서 닿는 *음수 사이클* 이 있다는 뜻이다(그 경우 목표까지 최단 거리가 −∞ 일 수 있어 경로 탐색에서는 "유효한 답이 없다" 로 보고한다). 한 번의 훑기에서 아무것도 안 바뀌면 일찍 끝낸다.
+// 검증: 무작위 방향 그래프(정점 ≤ 8, 가중치 −4..9)에서 ① 음수 사이클이 닿지 않는 목표의 거리가 플로이드–워셜과 같고 직전 정점으로 복원한 경로의 합이 거리와 같음 ② 시작점에서 닿는 음수 사이클이 있다는 판정이 플로이드–워셜(대각선 < 0 인 정점에 시작이 닿음)과 같음 ③ 갱신이 일어난 훑기 수가 ≤ V − 1 ④ 퍼텐셜로 음수 간선은 있지만 사이클은 없게 만든 큰 그래프(정점 20 만)를 같은 그래프의 비음수 가중치 다익스트라로 환산해 대조.
+struct Edge { int u, v, w; };
+struct Res { bool negativeCycle = false; std::vector<long long> dist; std::vector<int> pred; int changingPasses = 0; };
+const long long INF = LLONG_MAX / 4;
+Res bellmanFord(int n, const std::vector<Edge>& es, int s) {
+    Res r; r.dist.assign(n, INF); r.pred.assign(n, -1); r.dist[s] = 0;
+    for (int pass = 1; pass <= n; pass++) {
+        bool changed = false;
+        for (const Edge& e : es) if (r.dist[e.u] < INF && r.dist[e.u] + e.w < r.dist[e.v]) { r.dist[e.v] = r.dist[e.u] + e.w; r.pred[e.v] = e.u; changed = true; }
+        if (!changed) break;
+        if (pass == n) r.negativeCycle = true; else ++r.changingPasses;
+    }
+    return r;
+}
+std::vector<std::vector<long long>> floyd(int n, const std::vector<Edge>& es) {
+    std::vector<std::vector<long long>> d(n, std::vector<long long>(n, INF)); for (int i = 0; i < n; i++) d[i][i] = 0; for (const Edge& e : es) d[e.u][e.v] = std::min<long long>(d[e.u][e.v], e.w);
+    for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) if (d[i][k] < INF && d[k][j] < INF) d[i][j] = std::max(-INF, std::min(d[i][j], d[i][k] + d[k][j]));
+    return d;
+}
 
 int main() {
-    int V = 3;
-    std::vector<std::pair<std::pair<int, int>, int>> edges = {{{0, 1}, 10}, {{1, 2}, -5}};
-    std::vector<int> dist(V, 1e9); dist[0] = 0;
-    for(int i = 0; i < V - 1; i++) {
-        for(auto& e : edges) {
-            if(dist[e.first.first] != 1e9 && dist[e.first.first] + e.second < dist[e.first.second])
-                dist[e.first.second] = dist[e.first.first] + e.second;
+    // ① 손으로 확인한 모양: 0→1:4, 1→2:−1, 0→2:5 → d[2] = 3 ; 사이클 1→2→1 의 합이 −2 이면 음수 사이클
+    {   Res r = bellmanFord(3, {{0, 1, 4}, {1, 2, -1}, {0, 2, 5}}, 0); assert(!r.negativeCycle && r.dist[2] == 3 && r.pred[2] == 1);
+        assert(bellmanFord(3, {{0, 1, 4}, {1, 2, -1}, {2, 1, -1}}, 0).negativeCycle);
+    }
+    std::mt19937 rng(15); int cyc = 0, noCyc = 0;
+    for (int it = 0; it < 2000; ++it) {
+        int n = 2 + (int)(rng() % 7), m = (int)(rng() % (3 * n)); std::vector<Edge> es; std::vector<int> phi(n); for (int& x : phi) x = (int)(rng() % 21) - 10; bool potential = it % 2 == 0;
+        for (int i = 0; i < m; i++) { int u = (int)(rng() % n), v = (int)(rng() % n); es.push_back({u, v, potential ? (int)(rng() % 10) + phi[u] - phi[v] : (int)(rng() % 14) - 4}); }
+        int s = (int)(rng() % n); Res r = bellmanFord(n, es, s); auto f = floyd(n, es);
+        bool reachNeg = false; for (int w = 0; w < n; w++) reachNeg = reachNeg || (f[s][w] < INF && f[w][w] < 0);
+        assert(r.negativeCycle == reachNeg);                                                                // 음수 사이클 판정
+        if (r.negativeCycle) { ++cyc; continue; }
+        ++noCyc; assert(r.changingPasses <= n - 1);
+        for (int t = 0; t < n; t++) {
+            assert(r.dist[t] == f[s][t]);
+            if (t != s && r.dist[t] < INF) { long long sum = 0; int steps = 0; for (int v = t; v != s; v = r.pred[v]) { int u = r.pred[v]; long long best = INF; for (const Edge& e : es) if (e.u == u && e.v == v) best = std::min<long long>(best, e.w); sum += best; ++steps; assert(steps <= n); } assert(sum == r.dist[t]); }   // 직전 정점 사슬은 실제 간선들이고, 가장 싼 평행 간선으로 합하면 정확히 거리
         }
     }
-    assert(dist[2] == 5);
-    std::cout << "Bellman-Ford verified." << std::endl;
+    assert(cyc > 300 && noCyc > 1000);
+    // ④ 큰 입력: 정점 20 만, 간선 80 만, 퍼텐셜로 음수 간선이 많지만 음수 사이클은 없다 → w0 다익스트라 + 퍼텐셜 보정과 일치
+    {   const int N = 200000, M = 800000; std::mt19937_64 r(2); std::vector<int> phi(N); for (int& x : phi) x = (int)(r() % 2001) - 1000;
+        std::vector<Edge> es; std::vector<std::vector<std::pair<int, int>>> g0(N);
+        for (int i = 0; i < M; i++) { int u = i < N - 1 ? i : (int)(r() % N), v = i < N - 1 ? i + 1 : (int)(r() % N), w0 = 1 + (int)(r() % 100); es.push_back({u, v, w0 + phi[u] - phi[v]}); g0[u].push_back({v, w0}); }
+        std::shuffle(es.begin(), es.end(), r); Res b = bellmanFord(N, es, 0); assert(!b.negativeCycle);
+        std::vector<long long> d0(N, INF); d0[0] = 0; std::priority_queue<std::pair<long long, int>, std::vector<std::pair<long long, int>>, std::greater<>> pq; pq.push({0, 0});
+        while (!pq.empty()) { auto [d, u] = pq.top(); pq.pop(); if (d > d0[u]) continue; for (auto [v, w] : g0[u]) if (d + w < d0[v]) { d0[v] = d + w; pq.push({d0[v], v}); } }
+        for (int v = 0; v < N; v++) assert(b.dist[v] == d0[v] + phi[0] - phi[v]);
+        std::cout << "BellmanFord: on 2000 random digraphs (" << noCyc << " without and " << cyc << " with a reachable negative cycle) the negative-cycle verdict and every distance matched Floyd-Warshall, predecessor chains were real edges, at most V-1 passes changed anything, and a 200,000-vertex graph with negative edges matched Dijkstra on potential-shifted weights after " << b.changingPasses << " changing passes" << std::endl; }
     return 0;
 }
-// Time Complexity: O(V * E)
+// Time Complexity: O(V · E)
+// Space Complexity: O(V)
 ```
 ## SPFA()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
+#include <deque>
 #include <iostream>
 #include <queue>
+#include <random>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// SPFA(Shortest Path Faster Algorithm; 그래프 관점의 요약은 Graph.md Part 9): 벨먼-포드의 "모든 간선을 V-1 번 훑기" 대신, 거리가 줄어든 정점만 큐에 넣어 그 정점의 간선만 완화한다. 음수 간선이 있어도 되고
-// 평균적으로 O(E) 에 가깝게 빠르지만 최악은 벨먼-포드와 같은 O(VE) 이며 일부 입력(격자 등)에서 악의적으로 느려진다. 정점이 큐에 V 번 이상 들어가면 음수 사이클이다
-struct E { int to, w; };
-bool spfa(int n, const std::vector<std::vector<E>>& g, int s, std::vector<long>& d) {
-    d.assign(n, 1L << 60); std::vector<int> cnt(n, 0); std::vector<char> in(n, 0); std::queue<int> q; d[s] = 0; q.push(s); in[s] = 1;
-    while (!q.empty()) { int u = q.front(); q.pop(); in[u] = 0; for (auto& e : g[u]) if (d[u] + e.w < d[e.to]) { d[e.to] = d[u] + e.w; if (!in[e.to]) { if (++cnt[e.to] >= n) return false; in[e.to] = 1; q.push(e.to); } } }
-    return true;
+// SPFA(경로 탐색 관점의 요약, 정본은 Graph.md Part 9): 벨만–포드에서 "거리가 줄어든 칸의 이웃만 다시 본다" — 줄어든 칸을 큐에 넣고, 꺼낸 칸의 나가는 간선만 완화한다. 음수 간선도 되고 보통 훨씬 빠르지만 최악은 벨만–포드와 같다. 음수 사이클은 "정점마다 현재 최단 걸음의 간선 수" len[v] 가 V 이상이 되는 순간으로 알아낸다. 큐에 이미 있는 칸은 다시 넣지 않는다.
+// 검증: 무작위 방향 그래프(정점 ≤ 8, 가중치 −4..9)에서 ① 음수 사이클 판정이 벨만–포드(V 번째 훑기)와 같고 ② 없을 때 모든 거리가 같음 ③ 격자 지형(비음수)에서는 다익스트라와 같고 훑은 간선 수가 벨만–포드의 전체 훑기보다 훨씬 적음 ④ 비음수인데도 완화 횟수가 한 자릿수 배로 커지는 구조 하나를 만들어 SPFA 의 최악이 실재함을 확인.
+typedef long long ll; const ll INF = LLONG_MAX / 4;
+struct Arc { int to, w; };
+struct Res { bool negCycle = false; std::vector<ll> dist; long relaxations = 0, scans = 0; };
+Res spfa(const std::vector<std::vector<Arc>>& g, int s) {
+    int n = (int)g.size(); Res r; r.dist.assign(n, INF); std::deque<int> q; std::vector<char> in(n, 0); std::vector<int> len(n, 0); r.dist[s] = 0; q.push_back(s); in[s] = 1;
+    while (!q.empty()) {
+        int u = q.front(); q.pop_front(); in[u] = 0;
+        for (const Arc& a : g[u]) { r.scans++; if (r.dist[u] + a.w < r.dist[a.to]) {
+            r.dist[a.to] = r.dist[u] + a.w; r.relaxations++; len[a.to] = len[u] + 1; if (len[a.to] >= n) { r.negCycle = true; return r; }
+            if (!in[a.to]) { in[a.to] = 1; q.push_back(a.to); }
+        } }
+    }
+    return r;
 }
+Res bellman(const std::vector<std::vector<Arc>>& g, int s) {
+    int n = (int)g.size(); Res r; r.dist.assign(n, INF); r.dist[s] = 0;
+    for (int pass = 1; pass <= n; pass++) { bool ch = false; for (int u = 0; u < n; u++) if (r.dist[u] < INF) for (const Arc& a : g[u]) { r.scans++; if (r.dist[u] + a.w < r.dist[a.to]) { r.dist[a.to] = r.dist[u] + a.w; r.relaxations++; ch = true; } } if (!ch) break; if (pass == n) r.negCycle = true; }
+    return r;
+}
+std::vector<ll> dijkstra(const std::vector<std::vector<Arc>>& g, int s, long& relax) {
+    std::vector<ll> d(g.size(), INF); std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (const Arc& a : g[u]) if (du + a.w < d[a.to]) { d[a.to] = du + a.w; relax++; pq.push({d[a.to], a.to}); } }
+    return d;
+}
+
 int main() {
-    int n = 6; std::vector<std::vector<E>> g(n); g[0] = {{1, 7}, {2, 9}, {5, 14}}; g[1] = {{2, -5}, {3, 15}}; g[2] = {{3, 11}, {5, 2}}; g[3] = {{4, 6}}; g[5] = {{4, 9}};
-    std::vector<long> d; assert(spfa(n, g, 0, d) && d[2] == 2 && d[5] == 4 && d[4] == 13 && d[3] == 13);       // 음수 간선(1->2: -5)이 있어도 정확
-    g[4].push_back({1, -20}); assert(!spfa(n, g, 0, d));                                                         // 음수 사이클 탐지
-    std::cout << "SPFA: shortest distances with a negative edge computed, negative cycle detected" << std::endl; return 0;
+    std::mt19937 rng(25);
+    // ① 손으로 확인한 모양
+    {   std::vector<std::vector<Arc>> g(4); g[0] = {{1, 10}, {2, 3}}; g[2] = {{1, 4}, {3, 8}}; g[1] = {{3, 2}}; Res r = spfa(g, 0); assert(!r.negCycle && r.dist[1] == 7 && r.dist[3] == 9);
+        std::vector<std::vector<Arc>> c(3); c[0] = {{1, 1}}; c[1] = {{2, -3}}; c[2] = {{1, 1}}; assert(spfa(c, 0).negCycle && bellman(c, 0).negCycle); }
+    // ②③ 무작위: 음수 사이클 판정과 거리가 벨만–포드와 같다
+    int cyc = 0, noCyc = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int n = 2 + (int)(rng() % 7), m = (int)(rng() % (3 * n)); std::vector<std::vector<Arc>> g(n); std::vector<int> phi(n); for (int& x : phi) x = (int)(rng() % 21) - 10; bool potential = it % 2 == 0;
+        for (int i = 0; i < m; i++) { int u = (int)(rng() % n), v = (int)(rng() % n); g[u].push_back({v, potential ? (int)(rng() % 10) + phi[u] - phi[v] : (int)(rng() % 14) - 4}); }
+        int s = (int)(rng() % n); Res a = spfa(g, s), b = bellman(g, s); assert(a.negCycle == b.negCycle);
+        if (!a.negCycle) { assert(a.dist == b.dist); ++noCyc; } else ++cyc;
+    }
+    assert(cyc > 400 && noCyc > 1200);
+    // 격자 지형(비음수): 다익스트라와 같고, 성공한 완화 횟수는 벨만–포드와 비슷하지만 *훑은 간선 수* 는 SPFA 가 훨씬 적다
+    long spfaScans = 0, bfScans = 0, spfaRelax = 0, bfRelax = 0;
+    for (int it = 0; it < 100; ++it) {
+        int R = 6 + (int)(rng() % 10), C = 6 + (int)(rng() % 10); std::vector<std::vector<Arc>> g(R * C);
+        for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) for (int k = 0; k < 4; k++) { static const int dr[4] = {1, 0, -1, 0}, dc[4] = {0, 1, 0, -1}; int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C) continue; g[r * C + c].push_back({nr * C + nc, 1 + (int)(rng() % 9)}); }
+        Res a = spfa(g, 0), b = bellman(g, 0); long dj = 0; auto d = dijkstra(g, 0, dj); assert(a.dist == d && b.dist == d); spfaRelax += a.relaxations; bfRelax += b.relaxations; spfaScans += a.scans; bfScans += b.scans;
+    }
+    assert(spfaScans < bfScans && spfaRelax <= bfRelax + bfRelax / 10);                                       // 완화 횟수는 비슷하지만 SPFA 는 줄어든 칸의 간선만 보므로 훑은 간선 수가 훨씬 적다
+    // ④ 최악: s → z1 → … → zk (가중치 1), z_j → t 의 가중치 B − 2j, s → t 는 B, t → c1 → … → cm. FIFO 에서 t 가 층마다 다시 개선되고 개선 파도가 꼬리 전체를 다시 훑는다.
+    {   const int k = 300, m = 300, B = 1000, N = k + m + 2, t = k + 1; std::vector<std::vector<Arc>> g(N);
+        g[0].push_back({1, 1}); g[0].push_back({t, B}); for (int j = 1; j <= k; j++) { if (j < k) g[j].push_back({j + 1, 1}); g[j].push_back({t, B - 2 * j}); } g[t].push_back({t + 1, 1}); for (int i = 1; i < m; i++) g[t + i].push_back({t + i + 1, 1});
+        Res a = spfa(g, 0); long dj = 0; auto d = dijkstra(g, 0, dj); assert(a.dist == d && a.relaxations > 10 * dj && a.relaxations >= (long)k * m / 4);
+        std::cout << "SPFA: negative-cycle verdicts and distances matched Bellman-Ford on 3000 random digraphs (" << cyc << " with and " << noCyc << " without a reachable negative cycle), on 100 terrain grids it made " << spfaRelax << " relaxations (Bellman-Ford " << bfRelax << ") but examined only " << spfaScans << " arcs against " << bfScans << " for full Bellman-Ford passes, and a non-negative chain-and-tail construction forced " << a.relaxations << " relaxations where Dijkstra needed " << dj << std::endl; }
+    return 0;
 }
-// Time Complexity: 평균 O(E), 최악 O(VE)
+// Time Complexity: 평균 O(k·E), 최악 O(V·E)
 // Space Complexity: O(V)
 ```
 ## FloydWarshall()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
+
+// 플로이드–워셜(경로 탐색 관점의 요약, 정본은 Graph.md Part 9): 모든 쌍 최단 거리를 d[i][j] = min(d[i][j], d[i][k] + d[k][j]) 한 줄로. *k 가 가장 바깥 반복* 이어야 하는 이유는 "k 번째 반복이 끝나면 d[i][j] 는 중간 정점이 0..k 뿐인 경로의 최솟값" 이라는 불변식이다. 경로 탐색에서는 목표가 자주 바뀌는 소규모 지도(방·웨이포인트)의 *모든 쌍 거리표* 를 미리 만들어 두는 용도다. next[i][j](i 에서 j 로 가는 첫 걸음) 로 경로도 복원한다.
+// 검증: 무작위 격자 지형(웨이포인트 그래프) 에서 ① 모든 쌍의 거리가 칸마다 돌린 다익스트라와 같음 ② next 로 복원한 경로가 이웃 칸만 지나고 비용 합이 d[i][j] ③ 무방향이면 d 가 대칭이고 삼각 부등식 d[i][j] ≤ d[i][k] + d[k][j] ④ 음수 간선(사이클 없음)에서 칸마다 돌린 벨만–포드와 같고, 음수 사이클이 있으면 어떤 d[i][i] < 0 ⑤ 틀린 반복 순서(k 가 안쪽)는 서로 다른 답을 낸다.
+typedef long long ll; const ll INF = LLONG_MAX / 4;
+struct Edge { int u, v, w; };
+struct FW { std::vector<std::vector<ll>> d; std::vector<std::vector<int>> next; bool negCycle = false; };
+FW floydWarshall(int n, const std::vector<Edge>& es, bool kOutermost = true) {
+    FW f{std::vector<std::vector<ll>>(n, std::vector<ll>(n, INF)), std::vector<std::vector<int>>(n, std::vector<int>(n, -1)), false};
+    for (int i = 0; i < n; i++) { f.d[i][i] = 0; f.next[i][i] = i; }
+    for (const Edge& e : es) if (e.w < f.d[e.u][e.v]) { f.d[e.u][e.v] = e.w; f.next[e.u][e.v] = e.v; }
+    auto relax = [&](int i, int j, int k) { if (f.d[i][k] < INF && f.d[k][j] < INF) { ll c = f.d[i][k] + f.d[k][j]; if (c < -INF) c = -INF; if (c < f.d[i][j]) { f.d[i][j] = c; f.next[i][j] = f.next[i][k]; } } };
+    if (kOutermost) { for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) relax(i, j, k); }
+    else { for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) for (int k = 0; k < n; k++) relax(i, j, k); }
+    for (int i = 0; i < n; i++) if (f.d[i][i] < 0) f.negCycle = true;
+    return f;
+}
+std::vector<int> pathOf(const FW& f, int i, int j) { if (f.next[i][j] < 0) return {}; std::vector<int> p{i}; while (i != j && p.size() <= f.d.size()) { i = f.next[i][j]; p.push_back(i); } return p; }
+std::vector<ll> dijkstra(int n, const std::vector<Edge>& es, int s) {
+    std::vector<std::vector<std::pair<int, int>>> g(n); for (const Edge& e : es) g[e.u].push_back({e.v, e.w});
+    std::vector<ll> d(n, INF); std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto [v, w] : g[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } }
+    return d;
+}
+std::vector<ll> bellmanFord(int n, const std::vector<Edge>& es, int s) { std::vector<ll> d(n, INF); d[s] = 0; for (int pass = 0; pass < n; pass++) { bool ch = false; for (const Edge& e : es) if (d[e.u] < INF && d[e.u] + e.w < d[e.v]) { d[e.v] = d[e.u] + e.w; ch = true; } if (!ch) break; } return d; }
 
 int main() {
-    int V = 3, INF = 1e9;
-    std::vector<std::vector<int>> dist = {{0, 5, INF}, {INF, 0, 10}, {INF, INF, 0}};
-    for(int k=0; k<V; k++) {
-        for(int i=0; i<V; i++) {
-            for(int j=0; j<V; j++) {
-                if(dist[i][k] != INF && dist[k][j] != INF)
-                    dist[i][j] = std::min(dist[i][j], dist[i][k] + dist[k][j]);
-            }
+    std::mt19937 rng(42);
+    // ①②③ 무작위 격자 지형 (무방향 4방향, 칸 비용 1..9, 벽 0~25%): 모든 쌍 거리 · 경로 · 대칭 · 삼각 부등식
+    for (int it = 0; it < 200; ++it) {
+        int R = 2 + (int)(rng() % 5), C = 2 + (int)(rng() % 5), pct = (int)(rng() % 26); std::vector<int> cost(R * C); for (int& c : cost) c = (int)(rng() % 100) < pct ? 0 : 1 + (int)(rng() % 9);
+        std::vector<Edge> es; for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { int u = r * C + c; if (!cost[u]) continue; if (c + 1 < C && cost[u + 1]) { int w = 1 + (int)(rng() % 9); es.push_back({u, u + 1, w}); es.push_back({u + 1, u, w}); } if (r + 1 < R && cost[u + C]) { int w = 1 + (int)(rng() % 9); es.push_back({u, u + C, w}); es.push_back({u + C, u, w}); } }
+        int n = R * C; FW f = floydWarshall(n, es); assert(!f.negCycle);
+        for (int s = 0; s < n; s++) { auto d = dijkstra(n, es, s); assert(f.d[s] == d); }                    // ① 칸마다 다익스트라
+        for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {
+            assert(f.d[i][j] == f.d[j][i]);                                                                  // ③ 무방향 → 대칭
+            for (int k = 0; k < n; k += 3) if (f.d[i][k] < INF && f.d[k][j] < INF) assert(f.d[i][j] <= f.d[i][k] + f.d[k][j]);
+            auto p = pathOf(f, i, j); if (f.d[i][j] >= INF) { assert(p.empty()); continue; }
+            ll sum = 0; for (std::size_t t = 1; t < p.size(); t++) { ll best = INF; for (const Edge& e : es) if (e.u == p[t - 1] && e.v == p[t]) best = std::min<ll>(best, e.w); assert(best < INF); sum += best; }
+            assert(p.front() == i && p.back() == j && sum == f.d[i][j]);                                      // ② 복원한 경로의 비용 = 거리
         }
     }
-    assert(dist[0][2] == 15);
-    std::cout << "Floyd-Warshall verified." << std::endl;
-    return 0;
+    // ④ 음수 간선: 칸마다 벨만–포드와 같고, 음수 사이클이면 어떤 d[i][i] < 0 (퍼텐셜 / 무작위 두 종류)
+    int cyc = 0, noCyc = 0;
+    for (int it = 0; it < 1500; ++it) {
+        int n = 2 + (int)(rng() % 7), m = (int)(rng() % (3 * n)); std::vector<Edge> es; std::vector<int> phi(n); for (int& x : phi) x = (int)(rng() % 21) - 10; bool potential = it % 2 == 0;
+        for (int i = 0; i < m; i++) { int u = (int)(rng() % n), v = (int)(rng() % n); es.push_back({u, v, potential ? (int)(rng() % 10) + phi[u] - phi[v] : (int)(rng() % 14) - 4}); }
+        FW f = floydWarshall(n, es); bool anyBf = false; std::vector<std::vector<ll>> bf;
+        for (int s = 0; s < n; s++) { std::vector<ll> d(n, INF); d[s] = 0; bool neg = false; for (int pass = 1; pass <= n; pass++) { bool ch = false; for (const Edge& e : es) if (d[e.u] < INF && d[e.u] + e.w < d[e.v]) { d[e.v] = d[e.u] + e.w; ch = true; } if (!ch) break; if (pass == n) neg = true; } anyBf = anyBf || neg; bf.push_back(d); }
+        assert(f.negCycle == anyBf);
+        if (!f.negCycle) { for (int s = 0; s < n; s++) assert(f.d[s] == bf[s] && f.d[s] == bellmanFord(n, es, s)); ++noCyc; } else ++cyc;
+    }
+    assert(cyc > 150 && noCyc > 600);
+    // ⑤ 틀린 반복 순서 (k 가 안쪽): 비음수 무작위 그래프 300 개 중 상당수에서 다른 답
+    int wrong = 0;
+    for (int it = 0; it < 300; ++it) { int n = 4 + (int)(rng() % 4); std::vector<Edge> es; for (int i = 0; i < 2 * n; i++) es.push_back({(int)(rng() % n), (int)(rng() % n), 1 + (int)(rng() % 9)}); wrong += floydWarshall(n, es).d != floydWarshall(n, es, false).d; for (int s = 0; s < n; s++) assert(floydWarshall(n, es).d[s] == dijkstra(n, es, s)); }
+    assert(wrong >= 20);
+    std::cout << "FloydWarshall: on 200 random terrain waypoint graphs the all-pairs table equalled per-source Dijkstra, was symmetric and obeyed the triangle inequality, and next-pointer paths followed real edges with cost d[i][j]; on 1500 random graphs with negative edges (" << noCyc << " clean, " << cyc << " with negative cycles) it equalled per-source Bellman-Ford and its diagonal flagged exactly the negative-cycle cases; the wrong i-j-k loop order disagreed on " << wrong << " of 300 graphs" << std::endl; return 0;
 }
-// Time Complexity: O(V^3)
+// Time Complexity: O(V³)
+// Space Complexity: O(V²)
 ```
 ## Johnson()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
 #include <iostream>
 #include <queue>
+#include <random>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// 존슨 알고리즘(그래프 관점의 요약은 Graph.md Part 9): 음수 간선이 있는 희소 그래프의 모든 쌍 최단 거리. 플로이드-워셜 O(V³) 대신 O(V·E log V). 비결은 "재가중": 가상 정점에서 벨먼-포드로 퍼텐셜 h(v)를 구하고
-// 간선 w(u,v)를 w + h(u) - h(v) >= 0 으로 바꾸면 모든 경로의 길이가 (끝점에만 의존하는) 같은 양만큼 변해 최단 경로는 그대로이면서 음수 간선이 사라져, 정점마다 다익스트라를 쓸 수 있다. 원래 거리 = 재가중 거리 - h(u) + h(v)
-struct E { int u, v, w; };
+// 존슨(Johnson, 경로 탐색 관점의 요약, 정본은 Graph.md Part 9): 음수 간선이 있어도 모든 쌍 최단 경로를 O(V·E log V) 에 — 희소 그래프에서 플로이드–워셜의 O(V³) 보다 훨씬 빠르다. 핵심은 *재가중(reweighting)*: 모든 정점으로 비용 0 짜리 간선을 가진 가상 출발점에서 벨만–포드를 돌려 h(v) 를 얻고(음수 사이클이 있으면 여기서 발견), w'(u,v) = w(u,v) + h(u) − h(v) 로 바꾼다. 삼각 부등식 h(v) ≤ h(u) + w 때문에 w' ≥ 0 이고, 경로 하나의 w' 합은 원래 합 + h(시작) − h(끝) 이라 최단 경로의 *모양* 은 안 바뀐다. 그래서 정점마다 다익스트라를 돌리고 d(u,v) = d'(u,v) − h(u) + h(v) 로 되돌린다. A* 의 일관된 휴리스틱도 같은 재가중이다.
+// 검증: ① 음수 간선은 있지만 음수 사이클은 없는 무작위 그래프에서 모든 쌍이 플로이드–워셜과 같고, 재가중된 모든 간선이 비음수 ② 음수 사이클이 있으면 존슨이 거부하고 플로이드–워셜 대각선이 음수 ③ 경로의 재가중 합이 원래 합 + h(시작) − h(끝) ④ 희소 그래프(정점 300, 간선 900)에서 존슨의 완화 횟수가 플로이드–워셜의 연산 수보다 훨씬 적음.
+typedef long long ll; const ll INF = LLONG_MAX / 4;
+struct Edge { int u, v; ll w; };
+bool johnson(int n, const std::vector<Edge>& es, std::vector<std::vector<ll>>& D, std::vector<ll>& h, long long& ops) {
+    h.assign(n, 0);                                                                                         // 가상 출발점에서 한 번 완화한 상태 (모든 h = 0)
+    for (int pass = 1; pass <= n; pass++) { bool ch = false; for (const Edge& e : es) { ops++; if (h[e.u] + e.w < h[e.v]) { h[e.v] = h[e.u] + e.w; ch = true; } } if (!ch) break; if (pass == n) return false; }   // n 번째에도 바뀌면 음수 사이클 (정점이 n+1 개)
+    std::vector<std::vector<std::pair<int, ll>>> g(n); for (const Edge& e : es) { ll w2 = e.w + h[e.u] - h[e.v]; assert(w2 >= 0); g[e.u].push_back({e.v, w2}); }
+    D.assign(n, std::vector<ll>(n, INF));
+    for (int s = 0; s < n; s++) {
+        std::vector<ll> d(n, INF); std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
+        while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto [v, w] : g[u]) { ops++; if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } } }
+        for (int v = 0; v < n; v++) if (d[v] < INF) D[s][v] = d[v] - h[s] + h[v];
+    }
+    return true;
+}
+std::vector<std::vector<ll>> floyd(int n, const std::vector<Edge>& es, long long& ops) {
+    std::vector<std::vector<ll>> d(n, std::vector<ll>(n, INF)); for (int i = 0; i < n; i++) d[i][i] = 0; for (const Edge& e : es) d[e.u][e.v] = std::min(d[e.u][e.v], e.w);
+    for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) if (d[i][k] < INF) for (int j = 0; j < n; j++) { ops++; if (d[k][j] < INF && d[i][k] + d[k][j] < d[i][j]) d[i][j] = std::max(-INF, d[i][k] + d[k][j]); }
+    return d;
+}
+
 int main() {
-    int n = 5; std::vector<E> es = {{0, 1, 3}, {0, 2, 8}, {0, 4, -4}, {1, 3, 1}, {1, 4, 7}, {2, 1, 4}, {3, 0, 2}, {3, 2, -5}, {4, 3, 6}}; const long INF = 1L << 50;
-    std::vector<long> h(n + 1, INF); h[n] = 0; std::vector<E> all = es; for (int v = 0; v < n; v++) all.push_back({n, v, 0});          // 가상 정점 n -> 모든 정점 (비용 0)
-    for (int i = 0; i <= n; i++) for (auto& e : all) if (h[e.u] < INF && h[e.u] + e.w < h[e.v]) h[e.v] = h[e.u] + e.w;
-    std::vector<std::vector<std::pair<int, long>>> g(n); for (auto& e : es) { long w2 = e.w + h[e.u] - h[e.v]; assert(w2 >= 0); g[e.u].push_back({e.v, w2}); }
-    std::vector<std::vector<long>> D(n, std::vector<long>(n, INF));
-    for (int s = 0; s < n; s++) { std::vector<long> d(n, INF); std::priority_queue<std::pair<long, int>, std::vector<std::pair<long, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
-        while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto& e : g[u]) if (du + e.second < d[e.first]) { d[e.first] = du + e.second; pq.push({d[e.first], e.first}); } }
-        for (int v = 0; v < n; v++) if (d[v] < INF) D[s][v] = d[v] - h[s] + h[v]; }
-    std::vector<std::vector<long>> F(n, std::vector<long>(n, INF)); for (int i = 0; i < n; i++) F[i][i] = 0; for (auto& e : es) F[e.u][e.v] = std::min<long>(F[e.u][e.v], e.w);
-    for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) if (F[i][k] < INF && F[k][j] < INF) F[i][j] = std::min(F[i][j], F[i][k] + F[k][j]);
-    assert(D == F && D[0][4] == -4 && D[3][2] == -5 && D[1][4] == -1);                      // 플로이드-워셜과 같은 전쌍 최단 거리
-    std::cout << "Johnson: all-pairs shortest paths with negative edges match Floyd-Warshall" << std::endl; return 0;
+    std::mt19937 rng(7); int accepted = 0, rejected = 0, negEdges = 0;
+    for (int it = 0; it < 800; ++it) {
+        int n = 2 + (int)(rng() % 10), m = (int)(rng() % (3 * n + 1)); std::vector<ll> phi(n); for (ll& x : phi) x = (ll)(rng() % 61) - 30; bool wantCycle = it % 3 == 0; std::vector<Edge> es;
+        for (int i = 0; i < m; i++) { int u = (int)(rng() % n), v = (int)(rng() % n); if (u == v) continue; ll w = wantCycle ? (ll)(rng() % 21) - 8 : (ll)(rng() % 21) + phi[u] - phi[v]; negEdges += w < 0; es.push_back({u, v, w}); }
+        long long o1 = 0, o2 = 0; auto F = floyd(n, es, o1); bool neg = false; for (int i = 0; i < n; i++) neg = neg || F[i][i] < 0;
+        std::vector<std::vector<ll>> D; std::vector<ll> h; bool ok = johnson(n, es, D, h, o2); assert(ok == !neg);                      // ② 음수 사이클 판정이 플로이드–워셜과 같다
+        if (!ok) { ++rejected; continue; }
+        ++accepted; for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) assert(D[i][j] == F[i][j]);                                  // ① 모든 쌍 일치
+        for (const Edge& e : es) assert(e.w + h[e.u] - h[e.v] >= 0);                                                                    // 재가중 간선은 비음수
+        // ③ 경로의 재가중 합 = 원래 합 + h(시작) − h(끝): 무작위 걸음으로 확인
+        for (int trial = 0; trial < 5 && !es.empty(); trial++) { int cur = es[rng() % es.size()].u, start = cur; ll orig = 0, re = 0; for (int step = 0; step < 6; step++) { std::vector<const Edge*> out; for (const Edge& e : es) if (e.u == cur) out.push_back(&e); if (out.empty()) break; const Edge* e = out[rng() % out.size()]; orig += e->w; re += e->w + h[e->u] - h[e->v]; cur = e->v; } assert(re == orig + h[start] - h[cur]); }
+    }
+    assert(accepted > 300 && rejected > 50 && negEdges > 2000);
+    // ④ 희소 그래프 (정점 300, 간선 900, 퍼텐셜로 음수 간선): 같은 답, 존슨의 연산 수가 플로이드–워셜의 1/10 미만
+    {   const int N = 300; std::vector<ll> phi(N); for (ll& x : phi) x = (ll)(rng() % 101) - 50; std::vector<Edge> es; for (int i = 0; i < 3 * N; i++) { int u = (int)(rng() % N), v = (int)(rng() % N); if (u != v) es.push_back({u, v, (ll)(rng() % 50) + phi[u] - phi[v]}); }
+        long long jo = 0, fo = 0; auto F = floyd(N, es, fo); std::vector<std::vector<ll>> D; std::vector<ll> h; assert(johnson(N, es, D, h, jo)); assert(D == F && jo * 10 < fo);
+        std::cout << "Johnson: " << accepted << " graphs with negative edges matched Floyd-Warshall on all pairs (reweighted edges non-negative, path sums shifting by exactly h(start)-h(end)), " << rejected << " graphs with negative cycles were rejected exactly when Floyd-Warshall's diagonal went negative, and on a 300-vertex sparse graph Johnson used " << jo << " operations against Floyd-Warshall's " << fo << std::endl; }
+    return 0;
 }
 // Time Complexity: O(V·E log V)
-// Space Complexity: O(V²) 결과표
+// Space Complexity: O(V²) (결과 행렬)
 ```
 
 # Part 4. 휴리스틱 탐색
@@ -695,32 +1334,67 @@ int main() {
 ## IDAStar()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
 #include <cstdlib>
 #include <iostream>
 #include <queue>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// IDA*(Korf 1985; 그래프 관점의 요약은 Graph.md Part 10): A* 의 f = g + h 를 "깊이 제한" 으로 쓰는 반복 깊이 증가 탐색. 임계값 bound 를 시작 h 로 두고 f > bound 에서 가지치기하는 DFS 를 돌리고,
-// 실패하면 가지치기된 f 중 최솟값을 새 bound 로 삼아 반복한다. 메모리가 경로 길이 O(d) 뿐이라 상태 공간이 거대한 퍼즐(15-퍼즐, 루빅스 큐브)에서 A* 가 메모리 부족일 때 쓴다. 같은 노드를 반복해 방문하는 비용이 있다
-std::vector<std::string> w = {"S.......", "#######.", "........", ".#######", ".......G"}; int R, C, gr, gc; std::vector<std::pair<int, int>> path;
-int h(int r, int c) { return std::abs(r - gr) + std::abs(c - gc); }
-int dfs(int r, int c, int g, int bound) {                                  // 반환: -1 = 찾음, 아니면 가지치기된 f 의 최솟값
-    int f = g + h(r, c); if (f > bound) return f; if (r == gr && c == gc) return -1; int mn = 1 << 30; const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
-    for (int d = 0; d < 4; d++) { int nr = r + dr[d], nc = c + dc[d]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#') continue; bool onPath = false; for (auto& p : path) onPath |= p.first == nr && p.second == nc; if (onPath) continue;
-        path.push_back({nr, nc}); int t = dfs(nr, nc, g + 1, bound); if (t == -1) return -1; mn = std::min(mn, t); path.pop_back(); }
-    return mn;
+// IDA*(경로 탐색 관점의 요약, 정본은 Graph.md Part 10): 반복 깊이 증가 DFS 의 "깊이 제한" 을 "f = g + h 제한" 으로 바꾼 A* 의 메모리 절약판. 제한을 h(시작) 로 잡고 f 가 제한을 넘는 가지를 자르며 DFS 하고, 못 찾으면 잘려나간 f 중 가장 작은 값을 새 제한으로 반복한다. 메모리는 현재 경로뿐이라 O(경로 길이)이지만 같은 칸을 여러 경로로 다시 연다 — 격자처럼 최단 경로가 아주 많은 지도에서는 그 중복이 폭발하므로 작은 지도 · 좋은 휴리스틱에 어울린다. h 가 허용 가능(과대평가 없음)이면 최적이고, 부풀리면 해는 얻어도 최적이 아닐 수 있다.
+// 이동: 4방향 비용 10, 8방향 대각선 비용 14, 휴리스틱은 옥타일 거리 10·(max) + 4·(min) (8방향) 또는 맨해튼 × 10 (4방향) — 둘 다 허용적이고 일관적이다. 현재 경로 위의 칸으로는 돌아가지 않는다.
+// 검증: 무작위 격자(최대 7×7, 벽 0~30%)에서 ① 비용 = 다익스트라 최적값(도달 불가면 -1) ② 임계값 열은 h(시작) 에서 시작해 엄격히 증가하고 마지막이 최적 비용 ③ 반환한 경로는 이웃 칸만 지나고 비용 합이 최적 ④ 휴리스틱 h = 0 도 최적이지만(작은 4방향 지도에서) 확장이 더 많음 ⑤ 허용되지 않는 휴리스틱(h × 3) 은 때로 최적보다 비싼 해를 낸다(싼 해는 없다).
+struct Grid { int R, C; std::vector<std::string> w; bool diag; };
+static const int DR[8] = {1, 0, -1, 0, 1, 1, -1, -1}, DC[8] = {0, 1, 0, -1, 1, -1, 1, -1};
+struct Ida {
+    const Grid& g; int goal; int scale; bool useH; std::vector<int> path; long expansions = 0; int foundCost = -1;
+    Ida(const Grid& gg, int goalCell, int hScale, bool use) : g(gg), goal(goalCell), scale(hScale), useH(use) {}
+    int h(int u) const { if (!useH) return 0; int dr = std::abs(u / g.C - goal / g.C), dc = std::abs(u % g.C - goal % g.C); return scale * (g.diag ? 10 * std::max(dr, dc) + 4 * std::min(dr, dc) : 10 * (dr + dc)); }
+    bool on(int u) const { return std::find(path.begin(), path.end(), u) != path.end(); }
+    int search(int u, int gcost, int bound) {                                                               // -1: 찾음. 아니면 bound 를 넘은 f 중 최솟값
+        int f = gcost + h(u); if (f > bound) return f; if (u == goal) { foundCost = gcost; return -1; }
+        expansions++; int mn = INT_MAX;
+        for (int k = 0; k < (g.diag ? 8 : 4); k++) {
+            int nr = u / g.C + DR[k], nc = u % g.C + DC[k]; if (nr < 0 || nc < 0 || nr >= g.R || nc >= g.C || g.w[nr][nc] == '#') continue;
+            if (k >= 4 && (g.w[u / g.C + DR[k]][u % g.C] == '#' || g.w[u / g.C][u % g.C + DC[k]] == '#')) continue;
+            int v = nr * g.C + nc; if (on(v)) continue; path.push_back(v);
+            int r = search(v, gcost + (k < 4 ? 10 : 14), bound); if (r == -1) return -1; path.pop_back(); mn = std::min(mn, r);
+        }
+        return mn;
+    }
+    int run(int start, std::vector<int>* thresholds) {
+        path.assign(1, start); int bound = h(start);
+        while (true) { if (thresholds) thresholds->push_back(bound); int r = search(start, 0, bound); if (r == -1) return foundCost; if (r == INT_MAX) return -1; bound = r; }
+    }
+};
+int dijkstra(const Grid& g, int s, int t) {
+    std::vector<int> d(g.R * g.C, INT_MAX); std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int k = 0; k < (g.diag ? 8 : 4); k++) { int nr = u / g.C + DR[k], nc = u % g.C + DC[k]; if (nr < 0 || nc < 0 || nr >= g.R || nc >= g.C || g.w[nr][nc] == '#') continue; if (k >= 4 && (g.w[u / g.C + DR[k]][u % g.C] == '#' || g.w[u / g.C][u % g.C + DC[k]] == '#')) continue; int v = nr * g.C + nc, nd = du + (k < 4 ? 10 : 14); if (nd < d[v]) { d[v] = nd; pq.push({nd, v}); } } }
+    return d[t] == INT_MAX ? -1 : d[t];
 }
+
 int main() {
-    R = w.size(); C = w[0].size(); gr = 4; gc = 7; int bound = h(0, 0), iterations = 0;
-    for (;;) { path.assign(1, {0, 0}); int t = dfs(0, 0, 0, bound); iterations++; if (t == -1) break; assert(t < (1 << 30)); bound = t; }
-    std::vector<std::vector<int>> d(R, std::vector<int>(C, -1)); std::queue<std::pair<int, int>> q; d[0][0] = 0; q.push({0, 0});
-    while (!q.empty()) { auto [r, c] = q.front(); q.pop(); const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= C || w[nr][nc] == '#' || d[nr][nc] >= 0) continue; d[nr][nc] = d[r][c] + 1; q.push({nr, nc}); } }
-    assert((int)path.size() - 1 == d[gr][gc] && bound == d[gr][gc]);       // 마지막 bound == 최단 거리
-    std::cout << "IDAStar: shortest path " << path.size() - 1 << " found after " << iterations << " bound increases with O(path) memory" << std::endl; return 0;
+    std::mt19937 rng(61); int solved = 0, unreachable = 0, inadmissibleWorse = 0; long hExp = 0, zeroExp = 0;
+    for (int it = 0; it < 400; ++it) {
+        int R = 3 + (int)(rng() % 5), C = 3 + (int)(rng() % 5), pct = (int)(rng() % 31); Grid g{R, C, std::vector<std::string>(R, std::string(C, '.')), (it & 1) != 0};
+        for (auto& row : g.w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
+        int s = (int)(rng() % (R * C)), t = (int)(rng() % (R * C)); g.w[s / C][s % C] = '.'; g.w[t / C][t % C] = '.'; int want = dijkstra(g, s, t);
+        Ida a(g, t, 1, true); std::vector<int> th; int cost = a.run(s, &th); assert(cost == want);
+        if (want >= 0) {
+            ++solved; assert(th.front() == a.h(s) && th.back() == want); for (std::size_t i = 1; i < th.size(); i++) assert(th[i] > th[i - 1]);
+            int sum = 0; for (std::size_t i = 1; i < a.path.size(); i++) { int dr = std::abs(a.path[i] / C - a.path[i - 1] / C), dc = std::abs(a.path[i] % C - a.path[i - 1] % C); assert(dr <= 1 && dc <= 1 && (g.diag || dr + dc == 1) && g.w[a.path[i] / C][a.path[i] % C] != '#'); sum += (dr + dc == 2) ? 14 : 10; }
+            assert(a.path.front() == s && a.path.back() == t && sum == want);
+            if (!g.diag && R * C <= 16) { Ida z(g, t, 1, false); assert(z.run(s, nullptr) == want); hExp += a.expansions; zeroExp += z.expansions; }       // h = 0: 같은 최적 비용, 확장은 더 많다 (경로가 폭발하므로 작은 4방향 지도만)
+            Ida bad(g, t, 3, true); int bc = bad.run(s, nullptr); assert(bc >= want); inadmissibleWorse += bc > want;        // 부풀린 h: 싼 해는 없고 비싼 해는 있다
+        } else ++unreachable;
+    }
+    assert(solved > 250 && unreachable > 5 && hExp < zeroExp && inadmissibleWorse > 5);
+    std::cout << "IDAStar: IDA* returned exactly the Dijkstra optimum on 400 random grids (4 and 8 directions; " << solved << " reachable, " << unreachable << " unreachable), thresholds started at h(start), strictly increased and ended at the optimal cost, returned paths summed to that cost, the Manhattan heuristic expanded " << hExp << " nodes against " << zeroExp << " for h = 0 on the small 4-direction maps, and an inflated heuristic gave a costlier answer in " << inadmissibleWorse << " cases and a cheaper one never" << std::endl; return 0;
 }
-// Time Complexity: O(b^d) (반복 중복 포함)
+// Time Complexity: O(b^d) (휴리스틱이 좋을수록 지수의 밑이 작아진다)
 // Space Complexity: O(d)
 ```
 ## BeamSearch()
