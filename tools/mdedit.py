@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def load(path):
     raw = Path(path).read_bytes().decode("utf-8")
-    crlf = "\r\n" in raw
+    crlf = "\r\n" in raw or not raw
     text = raw.replace("﻿", "").replace("\r\n", "\n")
     return text.split("\n"), crlf
 
@@ -78,6 +78,30 @@ def section_end(lines, start):
         if i > start and level(l) <= lv:
             return i
     return len(lines)
+
+
+def dsl(body):
+    """DSL -> markdown. `# ` / `## ` lines are headings, everything else is code of
+    the preceding `##` entry; each entry gets `### 대표코드` and a ```cpp fence."""
+    out, code = [], []
+
+    def flush():
+        while code and not code[0].strip():
+            code.pop(0)
+        while code and not code[-1].strip():
+            code.pop()
+        if code:
+            out.extend(["### 대표코드", "```cpp"] + code + ["```"])
+        code.clear()
+
+    for l in body.split("\n"):
+        if l.startswith("# ") or l.startswith("## "):
+            flush()
+            out.append(l)
+        else:
+            code.append(l)
+    flush()
+    return "\n".join(out)
 
 
 def body_lines(body):
@@ -133,15 +157,18 @@ def main():
     cur = None
     for l in text.split("\n"):
         if l.startswith("@@ "):
-            m = re.match(r"^@@ (\w+)\s+(\S+)(?:\s+::\s+(.*))?$", l.rstrip())
+            use_dsl = l.rstrip().endswith(" --dsl")
+            m = re.match(r"^@@ (\w+)\s+(\S+)(?:\s+::\s+(.*?))?(?:\s+--dsl)?$", l.rstrip())
             if not m:
                 raise SystemExit(f"bad directive: {l}")
-            cur = [m.group(1), m.group(2), (m.group(3) or "").strip(), []]
+            cur = [m.group(1), m.group(2), (m.group(3) or "").strip(), [], use_dsl]
             directives.append(cur)
         elif cur is not None:
             cur[3].append(l)
     state = {}
-    for kind, file, heading, body in directives:
+    for kind, file, heading, body, use_dsl in directives:
+        if use_dsl:
+            body = dsl("\n".join(body)).split("\n")
         if file not in state:
             path = ROOT / file
             state[file] = load(path) if path.exists() else ([], True)
