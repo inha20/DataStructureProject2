@@ -1749,6 +1749,7 @@ int main() {
 #include <string>
 #include <vector>
 #include <cassert>
+#include <random>
 
 // 호출 스택(Call Stack): 함수 호출이 중첩되는 구조를 후입선출로 관리하는 스택이다. 함수를 호출하면 프레임(매개변수, 지역 변수, 반환 위치)이 쌓이고 return 하면 맨 위 프레임이 사라진다. 재귀가 "스스로를 호출하는 함수" 가 아니라 "스택에 프레임을 쌓는 일" 임을 이해하는 것이 스택 항목의 핵심이다.
 // 이 항목은 호출 스택을 직접 만들어 보인다. 실제 재귀 함수의 호출·반환 사건을 기록한 로그와, 같은 계산을 "프레임 구조체의 명시적 스택" 으로 시뮬레이션하며 남긴 로그가 완전히 같음을 확인한다. 피보나치 fib(n)은 호출 수가 2·fib(n+1)−1 이고 최대 깊이가 n 이어서 호출 스택이 "트리 전체" 가 아니라 "현재 루트에서 내려온 경로" 만 담는다는 것도 보인다.
@@ -1776,7 +1777,38 @@ int main() {
         if (n >= 1) assert(realMax == n);                                                                                                       // ③ 최대 깊이 = n
     }
     { int maxDepth = 0; long r = factReal(10, 1, maxDepth); assert(r == 3628800 && maxDepth == 10); }                                           // ④
-    realLog.clear(); realDepth = realMax = 0; fibReal(3); std::cout << "CallStack: trace of fib(3): "; for (auto& l : realLog) std::cout << l << "; "; std::cout << std::endl;
+    // ⑤ 무작위 점화식 f(n) = f(n−a) + f(n−b) (a, b ∈ {1,2,3}, f(n<3) = n) 30 개 × n ≤ 11: 실제 재귀 로그 == 프레임 스택 로그, 호출 수 C(n) = 1 + C(n−a) + C(n−b), 최대 깊이 D(n) = 1 + max(D(n−a), D(n−b))
+    std::mt19937 rng(4); long total = 0;
+    for (int trial = 0; trial < 30; ++trial) {
+        int a = 1 + (int)(rng() % 3), b = 1 + (int)(rng() % 3);
+        struct Rec { int a, b; std::vector<std::string>* log; int depth = 0, maxDepth = 0;
+            long f(int n) { log->push_back("call " + std::to_string(n)); depth++; maxDepth = std::max(maxDepth, depth); long r = n < 3 ? n : f(n - a) + f(n - b); depth--; log->push_back("ret " + std::to_string(n) + "=" + std::to_string(r)); return r; } };
+        struct SimFrame { int n, step; long first; };
+        for (int n = 0; n <= 11; ++n) {
+            std::vector<std::string> real, sim; Rec rec{a, b, &real}; long want = rec.f(n);
+            std::vector<SimFrame> st{{n, 0, 0}}; sim.push_back("call " + std::to_string(n)); long ret = 0; int sdepth = 0;
+            while (!st.empty()) {
+                sdepth = std::max(sdepth, (int)st.size()); SimFrame& f = st.back();
+                if (f.step == 0) { if (f.n < 3) { ret = f.n; sim.push_back("ret " + std::to_string(f.n) + "=" + std::to_string(ret)); st.pop_back(); } else { f.step = 1; int m = f.n - a; st.push_back({m, 0, 0}); sim.push_back("call " + std::to_string(m)); } }
+                else if (f.step == 1) { f.first = ret; f.step = 2; int m = f.n - b; st.push_back({m, 0, 0}); sim.push_back("call " + std::to_string(m)); }
+                else { ret = f.first + ret; sim.push_back("ret " + std::to_string(f.n) + "=" + std::to_string(ret)); st.pop_back(); }
+            }
+            assert(ret == want && real == sim && sdepth == rec.maxDepth);
+            long calls = 0; for (auto& l : real) calls += l[0] == 'c'; long C[16]; int D[16]; for (int k = 0; k <= n; ++k) { if (k < 3) { C[k] = 1; D[k] = 1; } else { C[k] = 1 + C[k - a] + C[k - b]; D[k] = 1 + std::max(D[k - a], D[k - b]); } }
+            assert(calls == C[n] && rec.maxDepth == D[n]); total += calls;
+        }
+    }
+    // ⑥ 하노이 탑: 이동 열 = 재귀 로그, 이동 수 2^n − 1, 호출 스택 깊이 n + 1 — 그리고 깊은 재귀 합계는 명시적 스택이면 호출 스택이 넘치지 않는다(깊이 200 만)
+    for (int n = 1; n <= 12; ++n) {
+        std::vector<std::string> moves; std::vector<int> depthSeen; int maxD = 0;
+        struct H { std::vector<std::string>& m; int& maxD; void go(int k, char from, char to, char via, int d) { maxD = std::max(maxD, d); if (k == 0) return; go(k - 1, from, via, to, d + 1); m.push_back(std::string(1, from) + ">" + to); go(k - 1, via, to, from, d + 1); } } h{moves, maxD};
+        h.go(n, 'A', 'C', 'B', 1);
+        std::vector<std::string> sim; struct F { int k; char from, to, via; int stage; }; std::vector<F> st{{n, 'A', 'C', 'B', 0}};
+        while (!st.empty()) { F f = st.back(); st.pop_back(); if (f.k == 0) continue; if (f.stage == 0) { st.push_back({f.k, f.from, f.to, f.via, 1}); st.push_back({f.k - 1, f.from, f.via, f.to, 0}); } else { sim.push_back(std::string(1, f.from) + ">" + f.to); st.push_back({f.k - 1, f.via, f.to, f.from, 0}); } }
+        assert(moves == sim && moves.size() == (1u << n) - 1 && maxD == n + 1);
+    }
+    { const long N = 2000000; std::vector<long> stack; long acc = 0; for (long k = N; k >= 1; --k) stack.push_back(k); size_t peak = stack.size(); while (!stack.empty()) { acc += stack.back(); stack.pop_back(); } assert(acc == N * (N + 1) / 2 && peak == (size_t)N); }
+    realLog.clear(); realDepth = realMax = 0; fibReal(3); std::cout << "CallStack: " << total << " calls of 30 random recurrences matched the frame-stack simulation, Hanoi moves matched for n <= 12, a 2,000,000-deep sum ran on an explicit stack; trace of fib(3): "; for (auto& l : realLog) std::cout << l << "; "; std::cout << std::endl;
     std::cout << "CallStack: real recursion logs equal the explicit frame-stack simulation for fib(0..12); calls = 2*fib(n+1)-1 and the stack depth stays n" << std::endl; return 0;
 }
 // Time Complexity: fib 호출 수 O(φ^n), 호출 스택 깊이 O(n)
