@@ -2943,114 +2943,389 @@ int main() {
 ## MazeSolver()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <stack>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 미로 풀기(Stack.md Part 5 MazeSolver 의 길찾기 관점 요약, 정본은 Stack.md Part 5): 미로는 통로로 이어진 칸들의 그래프이고 세 가지 해법이 있다. ① 명시적 스택 DFS(백트래킹): 스택에 현재 경로를 두고 막다른 길이면 pop 해서 되돌아간다 — 해는 찾지만 최단이 아닐 수 있다.
+// ② BFS: 가장 짧은 경로. ③ 오른손 벽 따라가기: 기억이 필요 없지만 "벽이 모두 바깥벽에 이어진" 단순 연결 미로(루프 없는 완전 미로)에서만 반드시 출구에 닿는다. 루프 없는 미로에서는 경로가 하나뿐이라 DFS 경로와 BFS 경로가 같고 루프를 낸(braid) 미로에서는 DFS 가 더 길 수 있다.
+// 검증: 재귀 백트래커로 만든 완전 미로 60개에서 간선 수 = 칸 수 − 1, DFS 길이 = BFS 길이, 오른손 규칙의 걸음 수 ≤ 2(칸 수 − 1); 벽을 허문 미로에서는 BFS ≤ DFS 이고 DFS 가 더 긴 경우가 존재
+struct Maze { int H, W; std::vector<int> open; int id(int r, int c) const { return r * W + c; } };                                   // open[c] 의 비트 d: 방향 d(0 북, 1 동, 2 남, 3 서)로 통로가 있음
+const int DR[4] = {-1, 0, 1, 0}, DC[4] = {0, 1, 0, -1};
+void carve(Maze& m, int a, int d) { int r = a / m.W + DR[d], c = a % m.W + DC[d]; int b = m.id(r, c); m.open[a] |= 1 << d; m.open[b] |= 1 << ((d + 2) % 4); }
+Maze generate(int H, int W, std::mt19937& g) { Maze m{H, W, std::vector<int>(H * W, 0)}; std::vector<char> seen(H * W, 0); std::stack<int> st; st.push(0); seen[0] = 1;
+    while (!st.empty()) { int u = st.top(); std::vector<int> dirs; for (int d = 0; d < 4; d++) { int r = u / W + DR[d], c = u % W + DC[d]; if (r >= 0 && c >= 0 && r < H && c < W && !seen[r * W + c]) dirs.push_back(d); } if (dirs.empty()) { st.pop(); continue; } int d = dirs[g() % dirs.size()]; int v = (u / W + DR[d]) * W + u % W + DC[d]; carve(m, u, d); seen[v] = 1; st.push(v); } return m; }
+std::vector<int> dfsSolve(const Maze& m, int s, int t) {                                                                              // 스택이 곧 현재 경로
+    std::vector<char> vis(m.H * m.W, 0); std::stack<int> path; path.push(s); vis[s] = 1;
+    while (!path.empty() && path.top() != t) { int u = path.top(); bool moved = false; for (int d = 0; d < 4 && !moved; d++) if (m.open[u] >> d & 1) { int v = (u / m.W + DR[d]) * m.W + u % m.W + DC[d]; if (!vis[v]) { vis[v] = 1; path.push(v); moved = true; } } if (!moved) path.pop(); }
+    std::vector<int> r; while (!path.empty()) { r.push_back(path.top()); path.pop(); } std::reverse(r.begin(), r.end()); return r; }
+int bfsLen(const Maze& m, int s, int t) { std::vector<int> d(m.H * m.W, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 0; k < 4; k++) if (m.open[u] >> k & 1) { int v = (u / m.W + DR[k]) * m.W + u % m.W + DC[k]; if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } } } return d[t]; }
+int rightHand(const Maze& m, int s, int t, int limit) { int u = s, heading = 2, steps = 0; while (u != t && steps < limit) { for (int turn : {1, 0, 3, 2}) { int d = (heading + turn) % 4; if (m.open[u] >> d & 1) { u = (u / m.W + DR[d]) * m.W + u % m.W + DC[d]; heading = d; steps++; break; } } } return u == t ? steps : -1; }      // 오른쪽 → 직진 → 왼쪽 → 뒤 순서
 int main() {
-    std::cout << "Maze solver handles wall-following or BFS search." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(2); int perfect = 0, braidedLonger = 0, braided = 0;
+    for (int t = 0; t < 60; t++) {
+        int H = 6 + g() % 10, W = 6 + g() % 10; Maze m = generate(H, W, g); int passages = 0; for (int c = 0; c < H * W; c++) passages += __builtin_popcount(m.open[c]); assert(passages / 2 == H * W - 1);                                        // 트리: 간선 수 = 칸 수 − 1
+        int s = 0, e = H * W - 1; std::vector<int> p = dfsSolve(m, s, e); assert(!p.empty() && p.front() == s && p.back() == e && (int)p.size() - 1 == bfsLen(m, s, e)); for (size_t i = 1; i < p.size(); i++) { int a = p[i - 1], b = p[i]; bool adj = false; for (int d = 0; d < 4; d++) adj |= (m.open[a] >> d & 1) && (a / W + DR[d]) * W + a % W + DC[d] == b; assert(adj); }
+        int steps = rightHand(m, s, e, 8 * H * W); assert(steps > 0 && steps <= 2 * (H * W - 1)); perfect++;
+        Maze b = m; for (int k = 0; k < H * W / 6; k++) { int a = g() % (H * W), d = g() % 4; int r = a / W + DR[d], c = a % W + DC[d]; if (r >= 0 && c >= 0 && r < H && c < W) carve(b, a, d); } std::vector<int> pb = dfsSolve(b, s, e); int opt = bfsLen(b, s, e); assert((int)pb.size() - 1 >= opt); braided++; braidedLonger += (int)pb.size() - 1 > opt; }
+    assert(perfect == 60 && braidedLonger > 0);
+    std::cout << "MazeSolver: " << perfect << " perfect mazes (tree, unique path): DFS == BFS length and the right-hand rule always escapes within 2(n-1) steps; in " << braidedLonger << " of " << braided << " braided mazes DFS found a longer path than BFS" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: DFS/BFS O(V + E), 오른손 규칙 O(V) 걸음
+// Space Complexity: O(V)
 ```
 ## PuzzleSolver()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <stack>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 슬라이딩 퍼즐(8퍼즐·15퍼즐) 풀이: 상태 공간이 거대(15퍼즐 약 10¹³)해서 A* 의 메모리가 먼저 바닥나므로 IDA*(Korf 1985)를 쓴다. 허용적 휴리스틱은 맨해튼 거리(각 타일이 목표까지 가야 할 최소 칸 수의 합)이고
+// 선형 충돌(linear conflict)을 더하면 더 강해진다 — 같은 행(열)에서 둘 다 자기 목표 행(열)에 있으면서 순서가 뒤바뀐 두 타일은 서로 비켜 가려면 한 타일이 행(열)을 벗어났다 돌아와야 하므로 추가로 최소 2 수가 든다(충돌 그래프의 최소 제거 수는 이 구현에서 쌍 단위로 근사: 타일마다 가장 많은 충돌 상대 하나씩 제외하며 센다).
+// 풀 수 있는 배치는 반전 수의 홀짝으로 판정된다(3×3: 반전 수가 짝수, 4×4: 빈칸 행 번호와 반전 수의 합의 홀짝). 검증: ① 8퍼즐은 목표에서 BFS 로 181,440 개 상태 전체의 정확한 거리를 만들고 IDA* 길이가 모두 일치(허용 휴리스틱의 최적성), 풀 수 없는 배치는 BFS 표에 없음 ② 선형 충돌이 맨해튼보다 확장 노드가 적음 ③ 15퍼즐 무작위 섞기 30개를 IDA* 로 풀고 해를 실제로 적용해 목표에 닿으며 길이의 홀짝이 섞은 횟수와 같음
+typedef std::vector<int> Board; int N;
+bool solvable(const Board& b) { int inv = 0, blank = 0; for (size_t i = 0; i < b.size(); i++) { if (!b[i]) blank = i / N; for (size_t j = i + 1; j < b.size(); j++) if (b[i] && b[j] && b[i] > b[j]) inv++; } return N % 2 ? inv % 2 == 0 : (inv + blank) % 2 == 1; }
+int manhattan(const Board& b) { int h = 0; for (int i = 0; i < N * N; i++) if (b[i]) { int g = b[i] - 1; h += std::abs(i / N - g / N) + std::abs(i % N - g % N); } return h; }
+int linearConflict(const Board& b) { int h = manhattan(b);
+    for (int r = 0; r < N; r++) { std::vector<int> row; for (int c = 0; c < N; c++) { int t = b[r * N + c]; if (t && (t - 1) / N == r) row.push_back((t - 1) % N); } std::vector<int> cnt(row.size(), 0); for (size_t i = 0; i < row.size(); i++) for (size_t j = i + 1; j < row.size(); j++) if (row[i] > row[j]) { cnt[i]++; cnt[j]++; }
+        while (true) { int mx = -1; for (size_t i = 0; i < cnt.size(); i++) if (cnt[i] > 0 && (mx < 0 || cnt[i] > cnt[mx])) mx = i; if (mx < 0) break; h += 2; for (size_t j = 0; j < row.size(); j++) if ((int)j != mx && ((j > (size_t)mx && row[mx] > row[j]) || (j < (size_t)mx && row[j] > row[mx])) && cnt[j] > 0) cnt[j]--; cnt[mx] = 0; } }
+    for (int c = 0; c < N; c++) { std::vector<int> col; for (int r = 0; r < N; r++) { int t = b[r * N + c]; if (t && (t - 1) % N == c) col.push_back((t - 1) / N); } std::vector<int> cnt(col.size(), 0); for (size_t i = 0; i < col.size(); i++) for (size_t j = i + 1; j < col.size(); j++) if (col[i] > col[j]) { cnt[i]++; cnt[j]++; }
+        while (true) { int mx = -1; for (size_t i = 0; i < cnt.size(); i++) if (cnt[i] > 0 && (mx < 0 || cnt[i] > cnt[mx])) mx = i; if (mx < 0) break; h += 2; for (size_t j = 0; j < col.size(); j++) if ((int)j != mx && ((j > (size_t)mx && col[mx] > col[j]) || (j < (size_t)mx && col[j] > col[mx])) && cnt[j] > 0) cnt[j]--; cnt[mx] = 0; } }
+    return h; }
+long nodes; std::function<int(const Board&)> H; std::vector<int> sol;
+int dfs(Board& b, int blank, int g, int bound, int prev) { nodes++; int f = g + H(b); if (f > bound) return f; if (manhattan(b) == 0) return -1; int mn = 1 << 28; const int dr[4] = {-1, 1, 0, 0}, dc[4] = {0, 0, -1, 1};
+    for (int k = 0; k < 4; k++) { int r = blank / N + dr[k], c = blank % N + dc[k]; if (r < 0 || c < 0 || r >= N || c >= N) continue; int nb = r * N + c; if (nb == prev) continue; std::swap(b[blank], b[nb]); sol.push_back(nb); int t = dfs(b, nb, g + 1, bound, blank); if (t == -1) return -1; sol.pop_back(); std::swap(b[blank], b[nb]); mn = std::min(mn, t); } return mn; }
+int ida(Board b, std::function<int(const Board&)> h) { H = h; nodes = 0; sol.clear(); int blank = std::find(b.begin(), b.end(), 0) - b.begin(); int bound = H(b); for (;;) { Board c = b; sol.clear(); int t = dfs(c, blank, 0, bound, -1); if (t == -1) return sol.size(); bound = t; } }
+Board goalBoard() { Board g(N * N); for (int i = 0; i + 1 < N * N; i++) g[i] = i + 1; g[N * N - 1] = 0; return g; }
+Board scramble(int moves, std::mt19937& rng) { Board b = goalBoard(); int blank = N * N - 1, prev = -1; const int dr[4] = {-1, 1, 0, 0}, dc[4] = {0, 0, -1, 1}; for (int i = 0; i < moves;) { int k = rng() % 4; int r = blank / N + dr[k], c = blank % N + dc[k]; if (r < 0 || c < 0 || r >= N || c >= N) continue; int nb = r * N + c; if (nb == prev) continue; std::swap(b[blank], b[nb]); prev = blank; blank = nb; i++; } return b; }
 int main() {
-    std::cout << "15-Puzzle uses A* with Manhattan distance of tiles." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(11); N = 3; Board g3 = goalBoard(); std::map<Board, int> dist; { std::queue<Board> q; dist[g3] = 0; q.push(g3); const int dr[4] = {-1, 1, 0, 0}, dc[4] = {0, 0, -1, 1}; while (!q.empty()) { Board b = q.front(); q.pop(); int blank = std::find(b.begin(), b.end(), 0) - b.begin(); for (int k = 0; k < 4; k++) { int r = blank / 3 + dr[k], c = blank % 3 + dc[k]; if (r < 0 || c < 0 || r >= 3 || c >= 3) continue; Board n = b; std::swap(n[blank], n[r * 3 + c]); if (!dist.count(n)) { dist[n] = dist[b] + 1; q.push(n); } } } }
+    assert(dist.size() == 181440);                                                                                                                                          // 풀 수 있는 배치 = 9!/2
+    long nodesM = 0, nodesL = 0; for (int t = 0; t < 300; t++) { Board b = scramble(10 + rng() % 40, rng); assert(solvable(b) && dist.count(b)); int a = ida(b, manhattan); nodesM += nodes; int c = ida(b, linearConflict); nodesL += nodes; assert(a == dist[b] && c == dist[b]); }      // ① 최적 길이
+    for (int t = 0; t < 100; t++) { Board b = goalBoard(); std::shuffle(b.begin(), b.end(), rng); if (solvable(b)) assert(dist.count(b)); else assert(!dist.count(b)); }
+    assert(nodesL <= nodesM);                                                                                                                                               // ② 선형 충돌이 더 강함
+    N = 4; int solved = 0; for (int t = 0; t < 30; t++) { int moves = 20 + rng() % 17; Board b = scramble(moves, rng); assert(solvable(b)); int len = ida(b, linearConflict); assert(len <= moves && (len % 2) == (moves % 2) && len >= manhattan(b));
+        Board c = b; int blank = std::find(c.begin(), c.end(), 0) - c.begin(); for (int nb : sol) { assert(std::abs(nb / 4 - blank / 4) + std::abs(nb % 4 - blank % 4) == 1); std::swap(c[blank], c[nb]); blank = nb; } assert(c == goalBoard()); solved++; }                                  // ③ 해를 적용해 검증
+    std::cout << "PuzzleSolver: 8-puzzle IDA* optimal on 300 states against a BFS table of 181440 states; nodes " << nodesM << " (Manhattan) vs " << nodesL << " (linear conflict); " << solved << " 15-puzzle instances solved and replayed to the goal" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: IDA* 최악 O(b^d), 휴리스틱이 강할수록 지수의 밑이 작아짐
+// Space Complexity: O(d) (경로 길이)
 ```
 ## GPSNavigation()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <stack>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// GPS 내비게이션: 잡음 섞인 위치 측정을 도로에 붙이는 "지도 매칭(map matching)"과 경로 이탈 시 "재탐색(reroute)"으로 이루어진다.
+// 지도 매칭은 단순히 가장 가까운 도로에 붙이면 평행한 이웃 도로로 튀므로(측정 잡음 σ 가 도로 간격과 비슷할 때) 은닉 마르코프 모형(HMM)을 쓴다. 상태 = 방향 있는 도로 구간, 방출 확률 ∝ exp(−d²/2σ²)(d: 측정점과 구간 사이 거리),
+// 전이 = 같은 구간에 머묾 / 다음 구간으로 이어짐 / 유턴 / 순간이동(순서대로 벌점이 커짐). Viterbi 동적계획법이 전체 측정열에 대해 가장 그럴듯한 구간 열을 고른다. 재탐색은 매칭된 현재 구간이 계획 경로에서 연속 k 번 벗어나면 현재 위치에서 목적지까지 Dijkstra 를 다시 돌린다.
+// 검증(12×12 도로망, 잡음 σ=0.25, 0.25 간격 측정): ① Viterbi 의 구간 정확도가 최근접 구간 방식보다 3%p 넘게 높고 95% 이상(정답이거나 분기점 0.3 이내의 이웃 도로는 허용) ② 운전자가 일부러 틀린 길로 들어서면 이탈이 감지되어 재탐색하고 새 경로가 현재 위치에서 최적이며 목적지에 도착
+struct Edge { int a, b; }; const int W = 12; std::vector<Edge> edges; std::vector<std::vector<int>> out;                                           // 방향 간선 목록과 정점별 나가는 간선
+typedef std::pair<double, double> V; V pos(int v) { return {(double)(v % W), (double)(v / W)}; }
+double segDist(V p, V a, V b) { double dx = b.first - a.first, dy = b.second - a.second, t = std::max(0.0, std::min(1.0, ((p.first - a.first) * dx + (p.second - a.second) * dy) / (dx * dx + dy * dy))); return std::hypot(p.first - a.first - t * dx, p.second - a.second - t * dy); }
+std::vector<int> dijkstraPath(int s, int t, std::vector<char>& okEdge) { std::vector<double> d(W * W, 1e18); std::vector<int> pe(W * W, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int e : out[u]) if (okEdge[e] && du + 1 < d[edges[e].b]) { d[edges[e].b] = du + 1; pe[edges[e].b] = e; pq.push({d[edges[e].b], edges[e].b}); } }
+    std::vector<int> r; if (d[t] > 1e17) return r; for (int v = t; v != s; v = edges[pe[v]].a) r.push_back(pe[v]); std::reverse(r.begin(), r.end()); return r; }
 int main() {
-    std::cout << "GPS uses contraction hierarchies for massive speedups." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(14); std::normal_distribution<double> noise(0, 0.25); out.assign(W * W, {}); std::vector<char> alive;
+    for (int r = 0; r < W; r++) for (int c = 0; c < W; c++) { int v = r * W + c; if (c + 1 < W) { edges.push_back({v, v + 1}); edges.push_back({v + 1, v}); } if (r + 1 < W) { edges.push_back({v, v + W}); edges.push_back({v + W, v}); } } for (size_t e = 0; e < edges.size(); e++) out[edges[e].a].push_back(e); alive.assign(edges.size(), 1);
+    auto rev = [&](int e) { return e ^ 1; };                                                                                                                                  // 간선을 (정방향, 역방향) 쌍으로 넣었으므로 e ^ 1 이 반대 방향
+    auto good = [&](int m, int tr, V p) { if ((m >> 1) == (tr >> 1)) return true; for (int x : {edges[tr].a, edges[tr].b}) if (std::hypot(p.first - pos(x).first, p.second - pos(x).second) < 0.3 && (edges[m].a == x || edges[m].b == x)) return true; return false; };       // 정답이거나, 참 위치가 분기점 0.3 이내이면 그 분기점에 닿는 도로도 허용
+    int fixes = 0, viterbiOk = 0, nearestOk = 0; const double SIGMA = 0.25;
+    for (int trial = 0; trial < 30; trial++) {
+        int s = rng() % (W * W), t = rng() % (W * W); std::vector<int> route = dijkstraPath(s, t, alive); if (route.size() < 8) continue;
+        std::vector<V> gps, tp; std::vector<int> truth; for (int e : route) { V a = pos(edges[e].a), b = pos(edges[e].b); for (double f = 0; f < 1.0 - 1e-9; f += 0.25) { V p{a.first + f * (b.first - a.first), a.second + f * (b.second - a.second)}; tp.push_back(p); gps.push_back({p.first + noise(rng), p.second + noise(rng)}); truth.push_back(e); } }
+        int T = gps.size(), E = edges.size(); std::vector<std::vector<double>> score(T, std::vector<double>(E, -1e18)); std::vector<std::vector<int>> back(T, std::vector<int>(E, -1));
+        auto emit = [&](int e, V p) { double d = segDist(p, pos(edges[e].a), pos(edges[e].b)); return -d * d / (2 * SIGMA * SIGMA); };
+        for (int e = 0; e < E; e++) score[0][e] = emit(e, gps[0]);
+        for (int k = 1; k < T; k++) { int bestPrev = 0; for (int e = 0; e < E; e++) if (score[k - 1][e] > score[k - 1][bestPrev]) bestPrev = e;
+            for (int f = 0; f < E; f++) { double best = score[k - 1][bestPrev] - 10.0; int arg = bestPrev; auto consider = [&](int e, double pen) { if (score[k - 1][e] - pen > best) { best = score[k - 1][e] - pen; arg = e; } };
+                consider(f, 0.0); consider(rev(f), 4.0); for (size_t e = 0; e < edges.size(); e++) if (edges[e].b == edges[f].a && (int)e != rev(f)) consider(e, 0.5);
+                score[k][f] = best + emit(f, gps[k]); back[k][f] = arg; } }
+        std::vector<int> match(T); int last = 0; for (int e = 0; e < E; e++) if (score[T - 1][e] > score[T - 1][last]) last = e; for (int k = T - 1; k >= 0; k--) { match[k] = last; last = back[k][last] >= 0 ? back[k][last] : last; }
+        for (int k = 0; k < T; k++) { int near = 0; double bd = 1e18; for (int e = 0; e < E; e += 2) { double d = segDist(gps[k], pos(edges[e].a), pos(edges[e].b)); if (d < bd) { bd = d; near = e; } }
+            fixes++; viterbiOk += good(match[k], truth[k], tp[k]); nearestOk += good(near, truth[k], tp[k]); } }
+    assert(fixes > 300 && viterbiOk > nearestOk && viterbiOk * 100 >= fixes * 95 && viterbiOk > nearestOk + fixes / 30);                                                                                           // ① HMM 이 최근접보다 정확
+    int reroutes = 0, arrivals = 0;
+    for (int trial = 0; trial < 80; trial++) {
+        int s = rng() % (W * W), t = rng() % (W * W); std::vector<int> route = dijkstraPath(s, t, alive); if (route.size() < 10) continue; int cur = s, step = 0, guard = 0; size_t idx = 0;
+        while (cur != t && guard++ < 500) { int e = route[idx];
+            if (step == 3) { for (int cand : out[cur]) if (cand != route[idx] && edges[cand].b != edges[route[idx - 1]].a) { e = cand; break; } }                       // 운전자가 4번째 갈림길에서 계획과 다른 길로 들어선다
+            cur = edges[e].b; step++;
+            if (e != route[idx]) { std::vector<int> best = dijkstraPath(cur, t, alive); std::vector<int> d(W * W, -1); std::queue<int> q; d[cur] = 0; q.push(cur); while (!q.empty()) { int u = q.front(); q.pop(); for (int f : out[u]) if (d[edges[f].b] < 0) { d[edges[f].b] = d[u] + 1; q.push(edges[f].b); } }
+                assert((int)best.size() == d[t]); route = best; idx = 0; reroutes++; }                                                                           // 이탈 감지 → 현재 위치에서 최적 경로로 재탐색
+            else idx++; }
+        assert(cur == t); arrivals++; }
+    assert(reroutes >= 15 && arrivals >= 15);
+    std::cout << "GPSNavigation: HMM/Viterbi map matching assigned " << viterbiOk << "/" << fixes << " noisy fixes to the right road versus " << nearestOk << " for nearest-road snapping; " << reroutes << " off-route detections each triggered an optimal reroute, " << arrivals << " trips arrived" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: Viterbi O(T · E · deg), 재탐색 O(E log V)
+// Space Complexity: O(T · E)
 ```
 ## RobotVacuumPlanner()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 청소 로봇의 커버리지 경로 계획(coverage path planning): 목표 한 곳이 아니라 "도달 가능한 모든 칸을 방문" 하는 경로를 찾는다. 외판원 문제와 닮아 최적은 NP-난해이고 실용 해법은 두 단계의 탐욕법이다.
+// ① 아직 청소하지 않은 이웃 칸이 있으면 같은 진행 방향을 우선하며(직진 > 오른쪽 > 왼쪽 > 뒤) 그쪽으로 이동 — 긴 줄을 그리는 왕복(boustrophedon) 운동이 된다. ② 사방이 막히거나 청소한 칸뿐이면 BFS 로 가장 가까운 미청소 칸까지 청소된 칸 위로 이동한다(되돌아가기).
+// 모든 도달 가능한 칸이 청소되면 끝. 하한은 칸 수 − 1 걸음(해밀턴 경로가 있을 때). 검증: ① 시작 칸과 연결된 모든 자유 칸을 방문 ② 걸음이 모두 인접한 자유 칸 간 이동 ③ 걸음 수 ≥ 칸 수 − 1, 평균 비율(걸음 수/(칸 수 − 1)) < 1.5 ④ 무작위 걸음은 모든 칸을 덮는 데 이 방법보다 훨씬(3 배 이상) 많은 걸음이 필요
+const int DR[4] = {-1, 0, 1, 0}, DC[4] = {0, 1, 0, -1}; int R = 20, C = 20; std::vector<std::string> w;
+bool freeCell(int r, int c) { return r >= 0 && c >= 0 && r < R && c < C && w[r][c] != '#'; }
 int main() {
-    std::cout << "Coverage path planning sweeps entire free space." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(7); int maps = 0; double ratioSum = 0; double randomVsGreedy = 0; int randomRuns = 0;
+    for (int m = 0; m < 40; m++) {
+        w.assign(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 14) ch = '#'; int sr, sc; do { sr = rng() % R; sc = rng() % C; } while (w[sr][sc] == '#');
+        std::vector<int> comp(R * C, 0); { std::queue<int> q; q.push(sr * C + sc); comp[sr * C + sc] = 1; while (!q.empty()) { int u = q.front(); q.pop(); for (int d = 0; d < 4; d++) { int r = u / C + DR[d], c = u % C + DC[d]; if (freeCell(r, c) && !comp[r * C + c]) { comp[r * C + c] = 1; q.push(r * C + c); } } } }
+        int target = 0; for (int i = 0; i < R * C; i++) target += comp[i]; if (target < 30) continue; maps++;
+        std::vector<char> clean(R * C, 0); int r = sr, c = sc, dir = 1, visited = 1; clean[r * C + c] = 1; long steps = 0; std::vector<int> trail = {r * C + c};
+        while (visited < target) {
+            int pick = -1; for (int t : {0, 1, 3, 2}) { int d = (dir + t) % 4, nr = r + DR[d], nc = c + DC[d]; if (freeCell(nr, nc) && !clean[nr * C + nc]) { pick = d; break; } }                          // 직진 > 오른쪽 > 왼쪽 > 뒤 순서로 미청소 이웃
+            if (pick >= 0) { dir = pick; r += DR[pick]; c += DC[pick]; clean[r * C + c] = 1; visited++; steps++; trail.push_back(r * C + c); continue; }
+            std::vector<int> par(R * C, -2); std::queue<int> q; q.push(r * C + c); par[r * C + c] = -1; int goal = -1; while (!q.empty() && goal < 0) { int u = q.front(); q.pop(); for (int d = 0; d < 4; d++) { int nr = u / C + DR[d], nc = u % C + DC[d]; if (!freeCell(nr, nc) || par[nr * C + nc] != -2) continue; par[nr * C + nc] = u; if (!clean[nr * C + nc]) { goal = nr * C + nc; break; } q.push(nr * C + nc); } }
+            assert(goal >= 0); std::vector<int> back; for (int v = goal; v != r * C + c; v = par[v]) back.push_back(v); std::reverse(back.begin(), back.end());
+            for (int v : back) { int nr = v / C, nc = v % C; for (int d = 0; d < 4; d++) if (r + DR[d] == nr && c + DC[d] == nc) dir = d; r = nr; c = nc; steps++; trail.push_back(v); } if (!clean[r * C + c]) { clean[r * C + c] = 1; visited++; } }
+        for (size_t i = 1; i < trail.size(); i++) assert(std::abs(trail[i] / C - trail[i - 1] / C) + std::abs(trail[i] % C - trail[i - 1] % C) == 1 && w[trail[i] / C][trail[i] % C] != '#');                       // ② 인접한 자유 칸
+        for (int i = 0; i < R * C; i++) assert(comp[i] == clean[i]); assert(steps >= target - 1); ratioSum += (double)steps / (target - 1);                                                                     // ①③
+        if (m < 6) { std::vector<char> seen(R * C, 0); int rr = sr, cc = sc, cnt = 1; long rs = 0; seen[rr * C + cc] = 1; while (cnt < target && rs < 400000) { int d = rng() % 4, nr = rr + DR[d], nc = cc + DC[d]; if (!freeCell(nr, nc)) continue; rr = nr; cc = nc; rs++; if (!seen[rr * C + cc]) { seen[rr * C + cc] = 1; cnt++; } } assert(cnt == target); randomVsGreedy += (double)rs / steps; randomRuns++; }       // ④ 무작위 걸음
+    }
+    assert(maps > 25 && ratioSum / maps < 1.5 && randomVsGreedy / randomRuns > 3);
+    std::cout << "RobotVacuumPlanner: " << maps << " rooms fully covered; steps / (cells - 1) = " << ratioSum / maps << " on average (lower bound 1.0); a random walk needed " << randomVsGreedy / randomRuns << "x as many steps" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(미청소 구간 전환 횟수 × V) (BFS 되돌아가기)
+// Space Complexity: O(V)
 ```
 ## GameNPCNavigation()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 게임 NPC 길찾기: NPC 수십~수천 명이 같은 목적지로 움직이는 상황에서는 NPC 마다 A* 를 돌리는 것보다 목적지에서 한 번만 퍼뜨린 "흐름 장(flow field = 거리 장 + 내려가는 방향)"을 모두가 공유하는 것이 훨씬 싸다 — BFS 한 번 O(V), NPC 는 현재 칸에서 거리 값이 더 작은 이웃으로 한 걸음.
+// 군중은 서로 막으므로 지역 규칙이 필요하다 — 점유 격자(한 칸에 한 명), 매 틱 처리 순서를 섞어 공정성 확보, 막히면 대기하고 3 틱 넘게 막히면 거리가 같은 이웃으로 옆걸음. 목적지에 닿은 NPC 는 사라진다(스폰 해제).
+// 검증(30×20 경기장, 장애물 12%, NPC 40명): ① 흐름 장 값이 NPC 별 BFS 거리와 일치 ② 어느 틱에도 한 칸에 둘 이상 없음 ③ 모두 제한 시간 안에 도착하고 이동 횟수는 자기 최단 거리 이상 ④ 흐름 장 BFS 한 번의 확장 수가 NPC 마다 A* 를 돌린 확장 수 합계보다 훨씬 적음
+const int DR8[8] = {-1, -1, -1, 0, 0, 1, 1, 1}, DC8[8] = {-1, 0, 1, -1, 1, -1, 0, 1}; int R = 20, C = 30; std::vector<std::string> w;
+bool freeCell(int r, int c) { return r >= 0 && c >= 0 && r < R && c < C && w[r][c] != '#'; }
+bool stepOk(int r, int c, int dr, int dc) { if (!freeCell(r + dr, c + dc)) return false; return !(dr && dc && (!freeCell(r + dr, c) || !freeCell(r, c + dc))); }
+std::vector<int> flowField(int goal, long& expanded) { std::vector<int> d(R * C, -1); std::queue<int> q; d[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); expanded++; for (int k = 0; k < 8; k++) { int r = u / C + DR8[k], c = u % C + DC8[k]; if (!freeCell(r, c) || d[r * C + c] >= 0) continue; if (!stepOk(r, c, -DR8[k], -DC8[k])) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
+long astarExpansions(int s, int t, int& len) { auto h = [&](int v) { return std::max(std::abs(v / C - t / C), std::abs(v % C - t % C)); }; std::vector<int> g(R * C, 1 << 28); typedef std::pair<int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; g[s] = 0; pq.push({h(s), s}); long ex = 0; len = -1;
+    while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > g[u] + h(u)) continue; ex++; if (u == t) { len = g[u]; break; } for (int k = 0; k < 8; k++) { if (!stepOk(u / C, u % C, DR8[k], DC8[k])) continue; int v = (u / C + DR8[k]) * C + u % C + DC8[k]; if (g[u] + 1 < g[v]) { g[v] = g[u] + 1; pq.push({g[v] + h(v), v}); } } } return ex; }
 int main() {
-    std::cout << "NPCs use NavMesh A* and steering behaviors." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(19); int arenas = 0; long totalFlow = 0, totalAstar = 0, moves = 0, optimal = 0;
+    for (int a = 0; a < 15; a++) {
+        w.assign(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 12) ch = '#'; int goal = (R / 2) * C + C - 2; w[goal / C][goal % C] = '.'; long ex = 0; std::vector<int> field = flowField(goal, ex); totalFlow += ex;
+        struct Npc { int pos; int wait; long made; int spawnDist; }; std::vector<Npc> npcs; std::set<int> used; while (npcs.size() < 40) { int p = rng() % (R * C); if (w[p / C][p % C] == '#' || field[p] < 0 || used.count(p) || p == goal) continue; used.insert(p); npcs.push_back({p, 0, 0, field[p]}); }
+        for (auto& n : npcs) { int len; totalAstar += astarExpansions(n.pos, goal, len); assert(len == field[n.pos]); }                                                                          // ① 흐름 장 == NPC 별 최단 거리
+        std::vector<int> occ(R * C, -1); for (size_t i = 0; i < npcs.size(); i++) occ[npcs[i].pos] = i; std::vector<char> done(npcs.size(), 0); size_t remaining = npcs.size(); int tick = 0;
+        for (; remaining > 0 && tick < 600; tick++) { std::vector<int> order; for (size_t i = 0; i < npcs.size(); i++) if (!done[i]) order.push_back(i); std::shuffle(order.begin(), order.end(), rng);
+            for (int i : order) { Npc& n = npcs[i]; int r = n.pos / C, c = n.pos % C;
+                std::vector<std::pair<int, int>> cand; for (int k = 0; k < 8; k++) { if (!stepOk(r, c, DR8[k], DC8[k])) continue; int v = (r + DR8[k]) * C + c + DC8[k]; if (field[v] >= 0 && (field[v] < field[n.pos] || (n.wait > 3 && field[v] == field[n.pos]))) cand.push_back({field[v], v}); } std::sort(cand.begin(), cand.end());
+                bool moved = false; for (auto& cv : cand) if (occ[cv.second] < 0) { occ[n.pos] = -1; n.pos = cv.second; n.made++; moves++; n.wait = 0; moved = true; if (n.pos == goal) { done[i] = 1; remaining--; } else occ[n.pos] = i; break; } if (!moved) n.wait++; }               // 목표에 닿으면 즉시 사라져 목표 칸은 늘 비어 있다
+            std::map<int, int> count; for (size_t i = 0; i < npcs.size(); i++) if (!done[i]) assert(++count[npcs[i].pos] == 1); }                                                                           // ② 한 칸에 둘 이상 없음
+        assert(remaining == 0); for (auto& n : npcs) { assert(n.made >= n.spawnDist); optimal += n.spawnDist; } arenas++; }
+    assert(arenas == 15 && totalFlow * 3 < totalAstar && moves >= optimal);
+    std::cout << "GameNPCNavigation: " << arenas << " arenas x 40 NPCs all reached the goal with no cell ever shared; " << moves << " moves vs " << optimal << " shortest-path steps; one shared flow field cost " << totalFlow << " expansions versus " << totalAstar << " for per-NPC A*" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 흐름 장 O(V) 한 번, NPC 한 걸음 O(8)
+// Space Complexity: O(V)
 ```
 ## WarehouseRobotRouting()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 창고 로봇 경로: 격자 창고(선반 줄 사이의 통로)에서 한 번 출고할 때 집어야 할 k 개 지점을 모두 들러 출발지(= 하차장)로 돌아오는 최단 순회. 두 층으로 풀린다. ① 지점 쌍 사이 거리는 통로를 따라가는 BFS 거리(선반은 통과 불가) ② 그 거리 행렬 위의 외판원 문제(TSP).
+// k ≤ 12 정도면 Held–Karp 동적계획법(O(2^k · k²))으로 정확히 풀 수 있고, 더 크면 최근접 이웃 + 2-opt 같은 휴리스틱을 쓴다. 휴리스틱은 빠르지만 최적에서 조금 벗어난다.
+// 검증(24×12 창고, 선반 줄 4개): ① 거리 행렬이 대칭이고 삼각부등식을 만족 ② k ≤ 7 에서 Held–Karp == 모든 순열 완전 탐색 ③ 최근접 이웃 ≥ NN+2-opt ≥ Held–Karp 이고 2-opt 가 NN 을 평균적으로 줄임 ④ 순회의 실제 보행 거리 합이 Held–Karp 비용과 같음
+const int DR[4] = {-1, 1, 0, 0}, DC[4] = {0, 0, -1, 1}; int R = 12, C = 24; std::vector<std::string> w;
+std::vector<int> bfs(int s) { std::vector<int> d(R * C, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 0; k < 4; k++) { int r = u / C + DR[k], c = u % C + DC[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] >= 0) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
+long heldKarp(const std::vector<std::vector<int>>& D) { int n = D.size() - 1; const long INF = 1L << 40; std::vector<std::vector<long>> dp(1 << n, std::vector<long>(n, INF)); for (int i = 0; i < n; i++) dp[1 << i][i] = D[0][i + 1];
+    for (int mask = 1; mask < (1 << n); mask++) for (int i = 0; i < n; i++) if ((mask >> i & 1) && dp[mask][i] < INF) for (int j = 0; j < n; j++) if (!(mask >> j & 1)) dp[mask | 1 << j][j] = std::min(dp[mask | 1 << j][j], dp[mask][i] + D[i + 1][j + 1]);
+    long best = INF; for (int i = 0; i < n; i++) best = std::min(best, dp[(1 << n) - 1][i] + D[i + 1][0]); return best; }
+long bruteForce(const std::vector<std::vector<int>>& D) { int n = D.size() - 1; std::vector<int> p(n); for (int i = 0; i < n; i++) p[i] = i + 1; long best = 1L << 40; do { long c = D[0][p[0]]; for (int i = 1; i < n; i++) c += D[p[i - 1]][p[i]]; c += D[p[n - 1]][0]; best = std::min(best, c); } while (std::next_permutation(p.begin(), p.end())); return best; }
+long tourCost(const std::vector<std::vector<int>>& D, const std::vector<int>& t) { long c = 0; for (size_t i = 0; i < t.size(); i++) c += D[t[i]][t[(i + 1) % t.size()]]; return c; }
+std::vector<int> nearestNeighbor(const std::vector<std::vector<int>>& D) { int n = D.size(); std::vector<int> t = {0}; std::vector<char> used(n, 0); used[0] = 1; for (int k = 1; k < n; k++) { int best = -1; for (int j = 0; j < n; j++) if (!used[j] && (best < 0 || D[t.back()][j] < D[t.back()][best])) best = j; used[best] = 1; t.push_back(best); } return t; }
+void twoOpt(const std::vector<std::vector<int>>& D, std::vector<int>& t) { bool improved = true; while (improved) { improved = false; for (size_t i = 1; i + 1 < t.size(); i++) for (size_t j = i + 1; j < t.size(); j++) { std::vector<int> u = t; std::reverse(u.begin() + i, u.begin() + j + 1); if (tourCost(D, u) < tourCost(D, t)) { t = u; improved = true; } } } }
 int main() {
-    std::cout << "MAPF controls Kiva robots in Amazon warehouses." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(23); w.assign(R, std::string(C, '.')); for (int row : {2, 5, 8}) for (int c = 3; c < C - 3; c++) if (c % 8 != 0) w[row][c] = '#'; for (int c = 3; c < C - 3; c++) if (c % 8 != 0) w[10][c] = '#';                          // 선반 줄(8칸마다 건널 수 있는 틈)
+    std::vector<int> freeCells; for (int i = 0; i < R * C; i++) if (w[i / C][i % C] != '#') freeCells.push_back(i); int depot = 0; long gapNN = 0, gap2 = 0, opt = 0; int trials = 0, twoBetter = 0;
+    for (int t = 0; t < 60; t++) {
+        int k = t < 30 ? 3 + rng() % 5 : 8 + rng() % 5; std::vector<int> pts = {depot}; std::set<int> used = {depot}; while ((int)pts.size() < k + 1) { int p = freeCells[rng() % freeCells.size()]; if (used.insert(p).second) pts.push_back(p); }
+        std::vector<std::vector<int>> D(k + 1, std::vector<int>(k + 1)); for (int i = 0; i <= k; i++) { auto d = bfs(pts[i]); for (int j = 0; j <= k; j++) { D[i][j] = d[pts[j]]; assert(D[i][j] >= 0); } }
+        for (int i = 0; i <= k; i++) for (int j = 0; j <= k; j++) { assert(D[i][j] == D[j][i]); for (int m = 0; m <= k; m++) assert(D[i][j] <= D[i][m] + D[m][j]); }                                   // ① 거리 행렬 성질
+        long hk = heldKarp(D); if (k <= 7) assert(hk == bruteForce(D));                                                                                                                 // ② 완전 탐색과 일치
+        std::vector<int> nn = nearestNeighbor(D), opt2 = nn; twoOpt(D, opt2); long cn = tourCost(D, nn), c2 = tourCost(D, opt2); assert(cn >= c2 && c2 >= hk);                                       // ③
+        long walk = 0; for (size_t i = 0; i < opt2.size(); i++) walk += D[opt2[i]][opt2[(i + 1) % opt2.size()]]; assert(walk == c2);
+        gapNN += cn - hk; gap2 += c2 - hk; opt += hk; twoBetter += c2 < cn; trials++; }
+    assert(trials == 60 && gap2 <= gapNN && twoBetter > 5);
+    std::cout << "WarehouseRobotRouting: " << trials << " pick lists; Held-Karp matches brute force (k <= 7); mean excess over optimal: nearest-neighbor " << 100.0 * gapNN / opt << "%, with 2-opt " << 100.0 * gap2 / opt << "% (2-opt improved " << twoBetter << " tours)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: BFS k 번 O(k · V), Held–Karp O(2^k · k²), NN O(k²), 2-opt 반복당 O(k²) × 비용 계산
+// Space Complexity: O(2^k · k)
 ```
 ## DronePathPlanning()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 드론 경로 계획: 도시 상공이므로 3차원 격자(복셀)에서 건물(기둥), 비행 금지 구역(상자)을 피해 가는 최소 에너지 경로. 26방향 이동을 허용하고 비용은 에너지 모델 = 유클리드 이동 거리 + 상승 벌점(고도 1 올릴 때 추가 1.5)이다.
+// 비용이 항상 이동 거리 이상이므로 유클리드 거리가 허용적이고 일관적인 휴리스틱이다. 이동 시 지나는 바운딩 박스의 모든 복셀이 비어야 한다(모서리 자르기 금지). 그리드 경로는 계단식이라 직선 시선(LOS)이 닿는 가장 먼 점으로 건너뛰는 줄 당기기로 짧게 다듬는다 — 시선 검사는 선분을 촘촘히 표본해 안전 여유(±0.3)를 두고 확인한다.
+// 검증(20×20×10 도시 12개): ① A* 에너지 == 같은 격자 Dijkstra ② 경로의 모든 걸음이 비어 있음 ③ A* 확장 수가 Dijkstra 보다 적음 ④ 줄 당기기 뒤의 유클리드 길이 ≤ 격자 경로 길이이고 모든 선분이 장애물과 안전 여유 이상 떨어져 있음
+const int X = 20, Y = 20, Z = 10; std::vector<char> blocked(X * Y * Z, 0); int id(int x, int y, int z) { return (z * Y + y) * X + x; }
+bool freeV(int x, int y, int z) { return x >= 0 && y >= 0 && z >= 0 && x < X && y < Y && z < Z && !blocked[id(x, y, z)]; }
+bool moveOk(int x, int y, int z, int dx, int dy, int dz) { for (int a = 0; a <= std::abs(dx); a++) for (int b = 0; b <= std::abs(dy); b++) for (int c = 0; c <= std::abs(dz); c++) if (!freeV(x + (dx > 0 ? a : -a), y + (dy > 0 ? b : -b), z + (dz > 0 ? c : -c))) return false; return true; }      // 이동의 바운딩 박스 전체가 비어야 함
+double energy(int dx, int dy, int dz) { return std::sqrt((double)(dx * dx + dy * dy + dz * dz)) + 1.5 * std::max(dz, 0); }
+struct Res { double cost; long expanded; std::vector<int> path; };
+Res search(int s, int t, bool useH) { std::vector<double> d(X * Y * Z, 1e18); std::vector<int> par(X * Y * Z, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; auto H = [&](int v) { return useH ? std::sqrt((double)(std::pow(v % X - t % X, 2) + std::pow(v / X % Y - t / X % Y, 2) + std::pow(v / (X * Y) - t / (X * Y), 2))) : 0.0; }; d[s] = 0; pq.push({H(s), s}); long ex = 0;
+    while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > d[u] + H(u) + 1e-12) continue; ex++; if (u == t) break; int x = u % X, y = u / X % Y, z = u / (X * Y);
+        for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) { if (!dx && !dy && !dz) continue; if (!moveOk(x, y, z, dx, dy, dz)) continue; int v = id(x + dx, y + dy, z + dz); double nd = d[u] + energy(dx, dy, dz); if (nd < d[v] - 1e-12) { d[v] = nd; par[v] = u; pq.push({nd + H(v), v}); } } }
+    Res r{d[t] > 1e17 ? -1 : d[t], ex, {}}; if (r.cost >= 0) { for (int v = t; v >= 0; v = par[v]) r.path.push_back(v); std::reverse(r.path.begin(), r.path.end()); } return r; }
+bool los(int a, int b, double margin) { double ax = a % X + 0.5, ay = a / X % Y + 0.5, az = a / (X * Y) + 0.5, bx = b % X + 0.5, by = b / X % Y + 0.5, bz = b / (X * Y) + 0.5; double len = std::sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az)); int n = std::max(1, (int)(len / 0.05));
+    for (int i = 0; i <= n; i++) { double f = (double)i / n, px = ax + f * (bx - ax), py = ay + f * (by - ay), pz = az + f * (bz - az); for (int sx : {-1, 1}) for (int sy : {-1, 1}) for (int sz : {-1, 1}) { int cx = (int)std::floor(px + sx * margin), cy = (int)std::floor(py + sy * margin), cz = (int)std::floor(pz + sz * margin); if (!freeV(cx, cy, cz)) return false; } } return true; }
 int main() {
-    std::cout << "3D RRT* explores X,Y,Z avoiding buildings." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(37); int cities = 0; long exA = 0, exD = 0; double sumGrid = 0, sumSmooth = 0;
+    for (int c = 0; c < 12; c++) {
+        std::fill(blocked.begin(), blocked.end(), 0); for (int k = 0; k < 40; k++) { int x = rng() % X, y = rng() % Y, h = 2 + rng() % 7; for (int z = 0; z < h; z++) blocked[id(x, y, z)] = 1; }
+        for (int k = 0; k < 3; k++) { int x0 = 3 + rng() % 12, y0 = 3 + rng() % 12, z0 = rng() % 5; for (int x = x0; x < x0 + 3; x++) for (int y = y0; y < y0 + 3; y++) for (int z = z0; z < z0 + 4; z++) blocked[id(x, y, z)] = 1; }                      // 비행 금지 상자
+        int s = id(0, 0, 0), t = id(X - 1, Y - 1, 1); blocked[s] = blocked[t] = 0; Res a = search(s, t, true), d = search(s, t, false); assert(std::fabs(a.cost - d.cost) < 1e-9); if (a.cost < 0) continue; cities++; exA += a.expanded; exD += d.expanded;          // ①
+        double grid = 0; double sum = 0; for (size_t i = 1; i < a.path.size(); i++) { int u = a.path[i - 1], v = a.path[i], ux = u % X, uy = u / X % Y, uz = u / (X * Y), vx = v % X, vy = v / X % Y, vz = v / (X * Y); assert(moveOk(ux, uy, uz, vx - ux, vy - uy, vz - uz)); int dx = vx - ux, dy = vy - uy, dz = vz - uz; sum += energy(dx, dy, dz); grid += std::sqrt((double)(dx * dx + dy * dy + dz * dz)); }       // ②
+        assert(std::fabs(sum - a.cost) < 1e-9);
+        std::vector<int> sm = {a.path[0]}; for (size_t i = 0; i + 1 < a.path.size();) { size_t j = a.path.size() - 1; while (j > i + 1 && !los(a.path[i], a.path[j], 0.3)) j--; sm.push_back(a.path[j]); i = j; }
+        double smooth = 0; for (size_t i = 1; i < sm.size(); i++) { int u = sm[i - 1], v = sm[i]; smooth += std::sqrt((double)(std::pow(u % X - v % X, 2) + std::pow(u / X % Y - v / X % Y, 2) + std::pow(u / (X * Y) - v / (X * Y), 2))); }
+        assert(smooth <= grid + 1e-9); sumGrid += grid; sumSmooth += smooth; }
+    assert(cities >= 8 && exA < exD && sumSmooth < sumGrid);
+    std::cout << "DronePathPlanning: " << cities << " 3D cities; A* energy == Dijkstra on all; expansions " << exA << " vs " << exD << "; string pulling shortened the flight path from " << sumGrid / cities << " to " << sumSmooth / cities << " cells on average" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(V · 26 · 이동 검사) A*, 줄 당기기 O(경로 길이² · 시선 검사)
+// Space Complexity: O(V)
 ```
 ## EmergencyEvacuation()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 비상 대피 계획: 건물에서 사람들이 출구로 빠져나가는 가장 빠른 방법. 출구마다 한 틱에 한 명만 통과할 수 있으므로 모두가 가장 가까운 출구로 몰리면 대기열이 생겨 한쪽 출구가 막히는 동안 다른 출구는 놀 수 있다.
+// 정확한 해법은 시간 확장 네트워크의 최대 유량이다 — 노드 (칸, 시각 t), 간선 (칸, t) → (이웃 칸 또는 제자리, t+1), 출구 칸 (출구, t) → 싱크 용량 1(그 틱의 통과 인원), 소스 → (칸, 0) 용량 = 그 칸의 사람 수.
+// 제한 시간 T 안에 모두 대피 가능 ⇔ 최대 유량 == 사람 수. T 를 늘려 가며 처음 가능한 값이 최소 대피 시간 T*. 비교 대상인 탐욕법은 각자 가장 가까운 출구로 최단 경로를 걷고 출구에서 선착순으로 줄을 서는 것이다.
+// 검증(12×8 건물, 사람 20명, 출구 2개): ① Dinic 과 Edmonds–Karp 두 최대 유량 알고리즘이 모든 T 에서 같은 값 ② 가능 여부가 T 에 대해 단조(T 가 늘면 유량이 줄지 않음) ③ 탐욕법 시간 ≥ T* 이고 T* 가 더 작은 사례가 존재 ④ T* ≥ 가장 먼 사람의 최단 거리 이하 하한 max(⌈사람 수/출구 수⌉, 가장 가까운 거리)
+struct Flow { struct E { int to, cap; }; std::vector<E> es; std::vector<std::vector<int>> g; std::vector<int> level, it;
+    Flow(int n) : g(n), level(n), it(n) {} void add(int u, int v, int c) { g[u].push_back(es.size()); es.push_back({v, c}); g[v].push_back(es.size()); es.push_back({u, 0}); }
+    bool bfs(int s, int t) { std::fill(level.begin(), level.end(), -1); std::queue<int> q; level[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int id : g[u]) if (es[id].cap > 0 && level[es[id].to] < 0) { level[es[id].to] = level[u] + 1; q.push(es[id].to); } } return level[t] >= 0; }
+    int dfs(int u, int t, int f) { if (u == t) return f; for (int& i = it[u]; i < (int)g[u].size(); i++) { int id = g[u][i]; if (es[id].cap > 0 && level[es[id].to] == level[u] + 1) { int d = dfs(es[id].to, t, std::min(f, es[id].cap)); if (d > 0) { es[id].cap -= d; es[id ^ 1].cap += d; return d; } } } return 0; }
+    int dinic(int s, int t) { int flow = 0; while (bfs(s, t)) { std::fill(it.begin(), it.end(), 0); while (int f = dfs(s, t, 1 << 28)) flow += f; } return flow; }
+    int edmondsKarp(int s, int t) { int flow = 0; for (;;) { std::vector<int> pe(g.size(), -1); std::queue<int> q; q.push(s); pe[s] = -2; while (!q.empty() && pe[t] == -1) { int u = q.front(); q.pop(); for (int id : g[u]) if (es[id].cap > 0 && pe[es[id].to] == -1) { pe[es[id].to] = id; q.push(es[id].to); } } if (pe[t] == -1) return flow; int f = 1 << 28; for (int v = t; v != s; v = es[pe[v] ^ 1].to) f = std::min(f, es[pe[v]].cap); for (int v = t; v != s; v = es[pe[v] ^ 1].to) { es[pe[v]].cap -= f; es[pe[v] ^ 1].cap += f; } flow += f; } } };
+const int R = 8, C = 12; std::vector<std::string> w; const int DR[5] = {0, -1, 1, 0, 0}, DC[5] = {0, 0, 0, -1, 1};
+std::vector<int> bfs(int s) { std::vector<int> d(R * C, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 1; k < 5; k++) { int r = u / C + DR[k], c = u % C + DC[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] >= 0) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
+int maxFlow(const std::vector<int>& people, const std::vector<int>& exits, int T, bool dinic) {                                  // 시간 T 안에 대피 가능한 최대 인원
+    int cells = R * C, N = cells * (T + 1) + 2, S = N - 2, SINK = N - 1; Flow f(N); for (int c = 0; c < cells; c++) if (people[c] > 0) f.add(S, c, people[c]);
+    for (int t = 0; t < T; t++) for (int c = 0; c < cells; c++) { if (w[c / C][c % C] == '#') continue; for (int k = 0; k < 5; k++) { int r = c / C + DR[k], cc = c % C + DC[k]; if (r < 0 || cc < 0 || r >= R || cc >= C || w[r][cc] == '#') continue; f.add(t * cells + c, (t + 1) * cells + r * C + cc, 1 << 20); } }
+    for (int t = 0; t <= T; t++) for (int e : exits) f.add(t * cells + e, SINK, 1); return dinic ? f.dinic(S, SINK) : f.edmondsKarp(S, SINK); }       // 출구는 틱마다 한 명
 int main() {
-    std::cout << "Max-Flow solves building evacuation rates." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(29); int instances = 0, strictlyBetter = 0; long sumOpt = 0, sumGreedy = 0;
+    for (int trial = 0; trial < 12; trial++) {
+        w.assign(R, std::string(C, '.')); for (int k = 0; k < 14; k++) w[rng() % R][1 + rng() % (C - 2)] = '#'; std::vector<int> exits = {3 * C + 0, 4 * C + C - 1}; for (int e : exits) w[e / C][e % C] = '.'; std::vector<int> dE[2] = {bfs(exits[0]), bfs(exits[1])};
+        std::vector<int> people(R * C, 0); int P = 0; while (P < 20) { int c = rng() % (R * C); if (w[c / C][c % C] == '#' || (dE[0][c] < 0 && dE[1][c] < 0) || people[c]) continue; people[c] = 1; P++; }
+        int Tstar = -1, prev = 0; for (int T = 1; T <= 40; T++) { int a = maxFlow(people, exits, T, true), b = maxFlow(people, exits, T, false); assert(a == b && a >= prev); prev = a; if (a == P) { Tstar = T; break; } } assert(Tstar > 0);                    // ① 두 알고리즘 일치, ② 단조
+        assert(maxFlow(people, exits, Tstar - 1, true) < P);
+        std::vector<int> exitTimes[2]; for (int c = 0; c < R * C; c++) if (people[c]) { int e = (dE[0][c] >= 0 && (dE[1][c] < 0 || dE[0][c] <= dE[1][c])) ? 0 : 1; exitTimes[e].push_back(dE[e][c]); } int greedy = 0; for (int e = 0; e < 2; e++) { std::sort(exitTimes[e].begin(), exitTimes[e].end()); int last = -1; for (int a : exitTimes[e]) { last = std::max(a, last + 1); greedy = std::max(greedy, last); } }
+        int nearest = 1 << 28; for (int c = 0; c < R * C; c++) if (people[c]) nearest = std::min(nearest, std::min(dE[0][c] < 0 ? 1 << 28 : dE[0][c], dE[1][c] < 0 ? 1 << 28 : dE[1][c])); assert(Tstar >= std::max((P + 1) / 2, nearest) - 0);                         // ④ 하한
+        assert(greedy >= Tstar); strictlyBetter += greedy > Tstar; sumOpt += Tstar; sumGreedy += greedy; instances++; }
+    assert(instances == 12 && strictlyBetter > 0);
+    std::cout << "EmergencyEvacuation: " << instances << " buildings x 20 people; minimum evacuation time from the time-expanded max-flow (Dinic == Edmonds-Karp) totals " << sumOpt << " ticks versus " << sumGreedy << " for nearest-exit queueing (optimal strictly faster in " << strictlyBetter << " buildings)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 시간 확장 그래프 O(R · C · T) 노드, T 마다 최대 유량
+// Space Complexity: O(R · C · T)
 ```
 
 # Part 15. 성능 최적화
