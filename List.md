@@ -1745,24 +1745,42 @@ int main() {
 ## DummyNode()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node* next; };
-
+// 더미 노드(Dummy Node): 값이 없는 가짜 노드를 리스트 맨 앞에 하나 두는 기법이다. 실제 head 는 dummy->next 가 된다. 이렇게 하면 "첫 노드를 지우거나 앞에 넣을 때만 head 포인터를 고쳐야 하는" 특수 경우가 사라져 모든 노드가 앞 노드를 가진다 — 삭제는 `prev->next = prev->next->next` 하나의 코드로 통일된다. 결과는 dummy->next 를 반환하고 dummy 자신은 반드시 정리한다(스택에 두면 자동).
+// 같은 문제를 더미 없이 풀면 head 가 바뀔 수 있는 경우를 따로 처리하는 반복문이 앞에 붙는다. 이 코드는 head 가 지워질 수 있는 대표 문제 넷을 두 방식으로 구현해 결과가 같음을 확인한다: 값이 같은 노드 모두 지우기, 정렬 유지 삽입, 정렬 리스트에서 중복된 값을 가진 노드를 전부 지우기(II: 중복된 값은 하나도 남기지 않음), x 미만/이상으로 안정 분할해 이어 붙이기.
+// 검증: ① 네 문제 모두 더미 방식 == 더미 없는 방식 == 벡터 모델(무작위 3000 입력, 빈 리스트·전부 삭제되는 리스트 포함) ② 모든 노드가 보존/해제되어 누수 없음 ③ 머리 노드가 지워지는 경우(전부 삭제·머리만 삭제)와 빈 리스트 ④ 반환된 리스트의 머리가 dummy 가 아니라 dummy->next 임을 확인.
+struct Node { int val; Node* next; static int live; Node(int v, Node* n = nullptr) : val(v), next(n) { ++live; } ~Node() { --live; } }; int Node::live = 0;
+Node* build(const std::vector<int>& v) { Node dummy(0); Node* t = &dummy; for (int x : v) { t->next = new Node(x); t = t->next; } Node* h = dummy.next; dummy.next = nullptr; return h; }
+void destroy(Node* h) { while (h) { Node* n = h->next; delete h; h = n; } }
+std::vector<int> items(const Node* h) { std::vector<int> r; for (; h; h = h->next) r.push_back(h->val); return r; }
+Node* removeAllDummy(Node* head, int key) { Node dummy(0, head); for (Node* p = &dummy; p->next;) { if (p->next->val == key) { Node* dead = p->next; p->next = dead->next; delete dead; } else p = p->next; } Node* h = dummy.next; dummy.next = nullptr; return h; }
+Node* removeAllPlain(Node* head, int key) { while (head && head->val == key) { Node* dead = head; head = head->next; delete dead; }          // 머리가 지워지는 경우를 먼저 따로 처리
+    for (Node* p = head; p && p->next;) { if (p->next->val == key) { Node* dead = p->next; p->next = dead->next; delete dead; } else p = p->next; } return head; }
+Node* insertSortedDummy(Node* head, int v) { Node dummy(0, head); Node* p = &dummy; while (p->next && p->next->val <= v) p = p->next; p->next = new Node(v, p->next); Node* h = dummy.next; dummy.next = nullptr; return h; }
+Node* insertSortedPlain(Node* head, int v) { if (!head || v < head->val) return new Node(v, head); Node* p = head; while (p->next && p->next->val <= v) p = p->next; p->next = new Node(v, p->next); return head; }
+Node* deleteDuplicatesDummy(Node* head) { Node dummy(0, head); Node* prev = &dummy; while (prev->next) { Node* c = prev->next; if (c->next && c->next->val == c->val) { int v = c->val; while (prev->next && prev->next->val == v) { Node* dead = prev->next; prev->next = dead->next; delete dead; } } else prev = c; } Node* h = dummy.next; dummy.next = nullptr; return h; }
+Node* deleteDuplicatesPlain(Node* head) { Node* newHead = nullptr; Node* tail = nullptr; while (head) { if (head->next && head->next->val == head->val) { int v = head->val; while (head && head->val == v) { Node* dead = head; head = head->next; delete dead; } }
+        else { Node* keep = head; head = head->next; keep->next = nullptr; if (!tail) newHead = tail = keep; else { tail->next = keep; tail = keep; } } } return newHead; }
+Node* partitionDummy(Node* head, int x) { Node lo(0), hi(0); Node *tl = &lo, *th = &hi; while (head) { Node* nx = head->next; head->next = nullptr; if (head->val < x) { tl->next = head; tl = head; } else { th->next = head; th = head; } head = nx; } tl->next = hi.next; Node* h = lo.next; lo.next = nullptr; hi.next = nullptr; return h; }
+Node* partitionPlain(Node* head, int x) { Node *lh = nullptr, *lt = nullptr, *hh = nullptr, *ht = nullptr; while (head) { Node* nx = head->next; head->next = nullptr; if (head->val < x) { if (!lt) lh = lt = head; else { lt->next = head; lt = head; } } else { if (!ht) hh = ht = head; else { ht->next = head; ht = head; } } head = nx; } if (!lt) return hh; lt->next = hh; return lh; }
 int main() {
-    Node* head = new Node{10, nullptr};
-    Node* dummy = new Node{0, head};
-    Node* curr = dummy;
-    curr->next = curr->next->next; // Removes head safely
-    delete head;
-    
-    assert(dummy->next == nullptr);
-    std::cout << "DummyNode used safely." << std::endl;
-    delete dummy;
-    return 0;
+    std::mt19937 rng(40);
+    for (int rep = 0; rep < 3000; rep++) { int n = (int)(rng() % 14), range = 1 + (int)(rng() % 6); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % range); int key = (int)(rng() % range);
+        { std::vector<int> ref = v; ref.erase(std::remove(ref.begin(), ref.end(), key), ref.end()); Node* a = removeAllDummy(build(v), key); Node* b = removeAllPlain(build(v), key); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }   // ①
+        { std::vector<int> s = v; std::sort(s.begin(), s.end()); std::vector<int> ref = s; ref.insert(std::upper_bound(ref.begin(), ref.end(), key), key); Node* a = insertSortedDummy(build(s), key); Node* b = insertSortedPlain(build(s), key); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }
+        { std::vector<int> s = v; std::sort(s.begin(), s.end()); std::vector<int> ref; for (std::size_t i = 0; i < s.size();) { std::size_t j = i; while (j < s.size() && s[j] == s[i]) j++; if (j - i == 1) ref.push_back(s[i]); i = j; }
+          Node* a = deleteDuplicatesDummy(build(s)); Node* b = deleteDuplicatesPlain(build(s)); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }
+        { std::vector<int> ref; for (int x : v) if (x < key) ref.push_back(x); for (int x : v) if (x >= key) ref.push_back(x); Node* a = partitionDummy(build(v), key); Node* b = partitionPlain(build(v), key); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }
+        assert(Node::live == 0); }                                                                                                                       // ②
+    { Node* h = removeAllDummy(build({7, 7, 7}), 7); assert(h == nullptr && Node::live == 0); h = removeAllDummy(nullptr, 1); assert(h == nullptr); Node* g = build({1, 2}); Node* r = removeAllDummy(g, 1); assert(r->val == 2 && r->next == nullptr); destroy(r); }   // ④ 머리 삭제 뒤 반환값이 새 머리
+    std::cout << "DummyNode: removing a value, sorted insertion, deleting all duplicated values and stable partition were each implemented with a dummy head and with head special-cases; both agreed with a vector model on 3000 random lists (including lists that lose their head entirely) and no node leaked" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: O(N) (더미 노드는 O(1) 추가)
 // Space Complexity: O(1)
 ```
 ## SentinelNode()
@@ -1822,41 +1840,96 @@ int main() {
 ## CircularList()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <deque>
+#include <iostream>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node* next; };
-
+// 원형 연결 리스트(Circular Linked List): 마지막 노드의 next 가 첫 노드를 가리켜 고리를 이룬다. 끝(nullptr)이 없으므로 순회는 "시작 노드로 돌아오면 종료"로 한다. 꼬리 포인터 하나만 들고 있으면 head = tail->next 이므로 앞·뒤 삽입이 모두 O(1)이고, 회전(rotate)은 tail 을 한 칸 전진시키는 것만으로 O(1)이다. 두 원형 리스트의 이어 붙이기(splice)도 next 두 개를 교환해 O(1)이다. 라운드 로빈 스케줄링과 조제푸스 문제가 대표 응용이다.
+// 조제푸스(Josephus) 문제: n 명이 원으로 앉아 k 번째마다 제거할 때 마지막 생존자. 원형 리스트로 시뮬레이션하면 O(n·k), 점화식 J(1) = 0, J(m) = (J(m−1) + k) mod m 으로 O(n), k = 2 이면 n = 2^a + l 일 때 2l + 1(1 기반) 닫힌 꼴이다.
+// 검증: ① 무작위 push_front/push_back/pop_front/rotate 가 std::deque 모델(rotate = 앞을 빼서 뒤에 넣기)과 같음, 빈·한 노드 경계에서 tail->next == tail ② 순회가 정확히 한 바퀴(길이만큼)이고 멈춤 ③ 두 리스트 이어 붙이기가 O(1) 으로 올바름 ④ 조제푸스: 시뮬레이션 == 점화식 (모든 n ≤ 120, k ≤ 10), k=2 닫힌 꼴 ⑤ 노드 누수 없음.
+struct Node { int val; Node* next; static int live; Node(int v) : val(v), next(nullptr) { ++live; } ~Node() { --live; } }; int Node::live = 0;
+class Circular { Node* tail_ = nullptr; std::size_t n_ = 0;                                                         // 꼬리 포인터만 보관: head = tail_->next
+public:
+    Circular() = default; Circular(const Circular&) = delete; Circular& operator=(const Circular&) = delete; ~Circular() { clear(); }
+    void pushFront(int v) { Node* x = new Node(v); if (!tail_) { x->next = x; tail_ = x; } else { x->next = tail_->next; tail_->next = x; } n_++; }
+    void pushBack(int v) { pushFront(v); tail_ = tail_->next; }                                                    // 앞에 넣고 꼬리를 한 칸 전진 → 방금 넣은 노드가 새 꼬리
+    bool popFront(int& out) { if (!tail_) return false; Node* head = tail_->next; out = head->val; if (head == tail_) tail_ = nullptr; else tail_->next = head->next; delete head; n_--; return true; }
+    void rotate() { if (tail_) tail_ = tail_->next; }                                                              // 앞의 것이 뒤로: O(1)
+    void spliceBack(Circular& other) { if (!other.tail_) return; if (!tail_) { tail_ = other.tail_; n_ = other.n_; } else { Node* h1 = tail_->next; tail_->next = other.tail_->next; other.tail_->next = h1; tail_ = other.tail_; n_ += other.n_; } other.tail_ = nullptr; other.n_ = 0; }
+    void clear() { if (!tail_) return; Node* h = tail_->next; tail_->next = nullptr; while (h) { Node* nx = h->next; delete h; h = nx; } tail_ = nullptr; n_ = 0; }
+    std::size_t size() const { return n_; } const Node* tail() const { return tail_; }
+    std::vector<int> items() const { std::vector<int> r; if (!tail_) return r; const Node* c = tail_->next; do { r.push_back(c->val); c = c->next; } while (c != tail_->next); return r; }
+    int survivorOfJosephus(int k) {                                                                                  // 소유 리스트를 소모: k 번째마다 제거
+        Node* prev = tail_; while (n_ > 1) { for (int i = 1; i < k; i++) prev = prev->next; Node* dead = prev->next; if (dead == tail_) tail_ = prev; prev->next = dead->next; delete dead; n_--; } return tail_->val; } };
+int josephusRec(int n, int k) { int r = 0; for (int m = 2; m <= n; m++) r = (r + k) % m; return r; }
 int main() {
-    Node* tail = new Node{10, nullptr};
-    tail->next = tail; // Circular link
-    assert(tail->next == tail);
-    std::cout << "CircularList created." << std::endl;
-    delete tail;
-    return 0;
+    std::mt19937 rng(41);
+    { Circular c; std::deque<int> ref; for (int step = 0; step < 20000; step++) { int op = (int)(rng() % 5), v = (int)(rng() % 1000), out = -1;                                          // ①
+          if (op == 0) { c.pushFront(v); ref.push_front(v); } else if (op == 1) { c.pushBack(v); ref.push_back(v); } else if (op == 2) { bool ok = c.popFront(out); assert(ok == !ref.empty()); if (ok) { assert(out == ref.front()); ref.pop_front(); } }
+          else if (op == 3) { c.rotate(); if (!ref.empty()) { ref.push_back(ref.front()); ref.pop_front(); } } else if (rng() % 8 == 0) { assert(c.size() == ref.size()); }
+          assert(c.size() == ref.size() && (int)c.size() == Node::live); if (step % 97 == 0) assert(c.items() == std::vector<int>(ref.begin(), ref.end())); if (ref.empty()) assert(c.tail() == nullptr); else assert(c.tail()->next->val == ref.front() && (ref.size() != 1 || c.tail()->next == c.tail())); } }
+    assert(Node::live == 0);
+    { Circular c; c.pushBack(5); assert(c.tail()->next == c.tail() && c.items() == std::vector<int>{5}); c.rotate(); assert(c.items() == std::vector<int>{5}); int o; assert(c.popFront(o) && o == 5 && c.tail() == nullptr && !c.popFront(o)); }   // 한 노드 경계
+    for (int rep = 0; rep < 200; rep++) { Circular a, b; std::vector<int> va, vb; int na = (int)(rng() % 8), nb = (int)(rng() % 8); for (int i = 0; i < na; i++) { a.pushBack(i); va.push_back(i); } for (int i = 0; i < nb; i++) { b.pushBack(100 + i); vb.push_back(100 + i); }                                      // ③
+        a.spliceBack(b); va.insert(va.end(), vb.begin(), vb.end()); assert(a.items() == va && b.size() == 0 && b.tail() == nullptr && a.size() == va.size()); if (!va.empty()) assert(a.tail()->val == va.back()); }
+    assert(Node::live == 0);
+    for (int n = 1; n <= 120; n++) for (int k = 1; k <= 10; k++) { Circular c; for (int i = 1; i <= n; i++) c.pushBack(i); int s = c.survivorOfJosephus(k); assert(s == josephusRec(n, k) + 1); if (k == 2) { int p = 1; while (p * 2 <= n) p *= 2; assert(s == 2 * (n - p) + 1); } }   // ④
+    { Circular c; for (int i = 0; i < 1000; i++) c.pushBack(i); assert(c.items().size() == 1000); c.clear(); assert(Node::live == 0 && c.size() == 0); }                                                                             // ②⑤
+    assert(Node::live == 0); std::cout << "CircularList: 20000 random push/pop/rotate operations matched a deque model using only a tail pointer, one full lap visited exactly n nodes, O(1) splicing concatenated correctly, and simulating the Josephus problem matched the recurrence (and the 2l+1 closed form for k=2) for every n<=120, k<=10" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 삽입·삭제·회전·이어붙이기 O(1), 조제푸스 시뮬레이션 O(N·K)
 // Space Complexity: O(1)
 ```
 ## DoublyLinkedList()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <list>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node* prev; Node* next; };
-
+// 이중 연결 리스트(Doubly Linked List): 각 노드가 prev 와 next 를 모두 가진다. 노드를 가리키는 포인터만 있으면 앞뒤 이동, 그 자리에서의 삽입·삭제(O(1))가 모두 가능하다 — 단방향은 앞 노드를 찾으려 O(n) 이 든다. 대가는 노드당 포인터 하나 더. 센티넬 노드 하나를 두고 원형으로 이으면 head/tail 널 검사가 모두 사라진다(모든 노드가 항상 양쪽 이웃을 가짐).
+// 이 코드의 불변식(invariant): 모든 노드 x 에 대해 x->next->prev == x 이고 x->prev->next == x, 센티넬에서 next 로 한 바퀴 돌면 size 개를 지나 센티넬로 돌아오며 prev 로 돌아도 같은 개수. 연산이 끝날 때마다 검사한다. 응용: 노드 핸들로 O(1) 삭제(LRU 캐시), 노드를 다른 위치로 옮기기(moveToFront)와 다른 리스트로 옮기기(splice) — 노드를 다시 할당하지 않고 연결만 바꾼다. reverse 는 모든 노드의 prev/next 를 맞바꾸기만 하면 된다.
+// 검증: ① 무작위 삽입·삭제(핸들 기반)가 std::list 와 같은 내용이며 매 연산 뒤 불변식 성립 ② 앞으로 읽은 순서와 뒤로 읽은 순서가 서로 역순 ③ moveToFront·splice 가 노드를 재사용(주소 보존, 새 할당 0)하고 결과가 모델과 같음 ④ reverse 가 std::reverse 와 같고 두 번 뒤집으면 원래 ⑤ 노드 수 = 생성자−소멸자(누수 없음).
+struct Node { int val; Node *prev, *next; static int live, created; explicit Node(int v) : val(v), prev(nullptr), next(nullptr) { ++live; ++created; } ~Node() { --live; } }; int Node::live = 0, Node::created = 0;
+class DList { Node* s_; std::size_t n_ = 0;
+public:
+    DList() { s_ = new Node(0); s_->prev = s_->next = s_; } DList(const DList&) = delete; DList& operator=(const DList&) = delete; ~DList() { Node* x = s_->next; while (x != s_) { Node* nx = x->next; delete x; x = nx; } delete s_; }
+    Node* sentinel() const { return s_; } Node* first() const { return s_->next; } Node* last() const { return s_->prev; } std::size_t size() const { return n_; }
+    Node* insertBefore(Node* pos, int v) { Node* x = new Node(v); x->prev = pos->prev; x->next = pos; pos->prev->next = x; pos->prev = x; n_++; return x; }                     // 분기 없음
+    Node* pushFront(int v) { return insertBefore(s_->next, v); } Node* pushBack(int v) { return insertBefore(s_, v); }
+    void erase(Node* x) { x->prev->next = x->next; x->next->prev = x->prev; delete x; n_--; }
+    void unlink(Node* x) { x->prev->next = x->next; x->next->prev = x->prev; n_--; }                                                                                             // 해제하지 않고 떼어 냄
+    void linkBefore(Node* pos, Node* x) { x->prev = pos->prev; x->next = pos; pos->prev->next = x; pos->prev = x; n_++; }
+    void moveToFront(Node* x) { unlink(x); linkBefore(s_->next, x); }
+    void spliceBefore(Node* pos, DList& other, Node* x) { other.unlink(x); linkBefore(pos, x); }
+    void reverse() { Node* x = s_; do { std::swap(x->prev, x->next); x = x->prev; } while (x != s_); }                                                                           // 모든 노드의 prev/next 맞바꿈
+    bool invariant() const { std::size_t cnt = 0; const Node* x = s_; do { if (x->next->prev != x || x->prev->next != x) return false; x = x->next; if (x != s_) cnt++; } while (x != s_ && cnt <= n_); if (cnt != n_) return false;
+        cnt = 0; x = s_->prev; while (x != s_ && cnt <= n_) { cnt++; x = x->prev; } return cnt == n_; }
+    std::vector<int> forward() const { std::vector<int> r; for (Node* x = s_->next; x != s_; x = x->next) r.push_back(x->val); return r; }
+    std::vector<int> backward() const { std::vector<int> r; for (Node* x = s_->prev; x != s_; x = x->prev) r.push_back(x->val); return r; } };
 int main() {
-    Node* n1 = new Node{10, nullptr, nullptr};
-    Node* n2 = new Node{20, n1, nullptr};
-    n1->next = n2;
-    assert(n2->prev->data == 10);
-    std::cout << "DoublyLinkedList connected." << std::endl;
-    delete n1; delete n2;
-    return 0;
+    std::mt19937 rng(42);
+    { DList l; std::list<int> ref; std::vector<Node*> h; std::vector<int> hv; for (int step = 0; step < 15000; step++) { int op = (int)(rng() % 5), v = (int)(rng() % 1000);                                         // ①
+          if (op <= 1 || h.empty()) { std::size_t i = rng() % (h.size() + 1); Node* pos = i == h.size() ? l.sentinel() : h[i]; Node* x = l.insertBefore(pos, v); h.insert(h.begin() + i, x); hv.insert(hv.begin() + i, v); auto it = ref.begin(); std::advance(it, i); ref.insert(it, v); }
+          else if (op == 2) { std::size_t i = rng() % h.size(); l.erase(h[i]); h.erase(h.begin() + i); hv.erase(hv.begin() + i); auto it = ref.begin(); std::advance(it, i); ref.erase(it); }
+          else if (op == 3) { std::size_t i = rng() % h.size(); l.moveToFront(h[i]); Node* x = h[i]; int xv = hv[i]; h.erase(h.begin() + i); hv.erase(hv.begin() + i); h.insert(h.begin(), x); hv.insert(hv.begin(), xv); auto it = ref.begin(); std::advance(it, i); ref.splice(ref.begin(), ref, it); }   // ③
+          else { if (rng() % 3 == 0) { l.pushFront(v); h.insert(h.begin(), l.first()); hv.insert(hv.begin(), v); ref.push_front(v); } else { l.pushBack(v); h.push_back(l.last()); hv.push_back(v); ref.push_back(v); } }
+          assert(l.size() == ref.size() && (int)l.size() == Node::live - 1 && l.invariant()); if (step % 53 == 0) { std::vector<int> f = l.forward(), b = l.backward(), want(ref.begin(), ref.end()); assert(f == want); std::reverse(b.begin(), b.end()); assert(b == want); } } }    // ②
+    assert(Node::live == 0);
+    { DList a, b; for (int i = 0; i < 6; i++) { a.pushBack(i); b.pushBack(100 + i); } std::vector<Node*> bn; for (Node* x = b.first(); x != b.sentinel(); x = x->next) bn.push_back(x); int created = Node::created; a.spliceBefore(a.first()->next, b, bn[3]); a.spliceBefore(a.sentinel(), b, bn[0]);     // 노드 이동: 새 할당 0
+      assert(Node::created == created && a.forward() == (std::vector<int>{0, 103, 1, 2, 3, 4, 5, 100}) && b.forward() == (std::vector<int>{101, 102, 104, 105}) && a.invariant() && b.invariant() && a.first()->next == bn[3]); }
+    for (int rep = 0; rep < 300; rep++) { DList l; int n = (int)(rng() % 20); std::vector<int> v(n); for (int& x : v) { x = (int)(rng() % 100); l.pushBack(x); } std::vector<int> rv(v.rbegin(), v.rend()); std::vector<Node*> before; for (Node* x = l.first(); x != l.sentinel(); x = x->next) before.push_back(x);   // ④
+        l.reverse(); assert(l.forward() == rv && l.invariant()); std::vector<Node*> after; for (Node* x = l.first(); x != l.sentinel(); x = x->next) after.push_back(x); std::reverse(after.begin(), after.end()); assert(after == before); l.reverse(); assert(l.forward() == v && l.invariant()); }
+    assert(Node::live == 0); std::cout << "DoublyLinkedList: 15000 handle-based insertions, erasures and move-to-front operations matched std::list while the prev/next invariant held after every step; splicing and moving reused existing nodes without allocating, and reversal by swapping prev/next kept every node and was an involution" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 핸들 기반 삽입·삭제·이동 O(1), 뒤집기 O(N)
+// Space Complexity: 노드당 포인터 2 개 + 센티넬 1 개
 ```
 ## XORLinkedList()
 ### 대표코드
@@ -1989,146 +2062,381 @@ int main() {
 ## Begin()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
+#include <algorithm>
 #include <cassert>
+#include <forward_list>
+#include <iostream>
+#include <iterator>
+#include <numeric>
+#include <random>
+#include <vector>
 
+// begin(): 첫 원소를 가리키는 반복자다. 반열린 범위 [begin, end) 에서 시작 쪽 경계이며, 비어 있으면 begin() == end() 이다. 연결 리스트에서 begin 은 head 노드를 가리키므로 앞에 원소를 넣으면 begin 이 바뀌지만, 이미 얻어 둔 다른 원소의 반복자는 무효가 되지 않는다(노드가 움직이지 않기 때문 — 배열과 다른 점).
+// 단방향 리스트의 큰 난점: "맨 앞에 넣기·지우기" 는 head 포인터를 고쳐야 해서 중간 위치와 다른 코드가 된다. 표준의 해법은 before_begin() — 첫 원소 "앞"의 가상 위치를 가리키는 반복자를 두고 insert_after/erase_after 만 제공해서 맨 앞도 같은 코드로 처리하는 것이다(더미 노드와 같은 발상). 이 코드는 헤더 노드를 내장한 단방향 리스트로 이를 직접 구현한다.
+// 검증: ① 무작위 insert_after/erase_after/push_front/pop_front 가 std::forward_list 와 같은 내용(수천 번) ② 빈 리스트에서 begin() == end(), begin() == std::next(before_begin()) ③ 앞에 넣은 뒤에도 이미 가진 반복자는 같은 원소를 가리키고 std::next(begin()) 가 이전 begin ④ erase_after(before_begin()) 는 새 begin 을 돌려줌 ⑤ 반복자 범주가 forward 이고 std::find/count/accumulate/distance 가 vector 결과와 같음 ⑥ 노드 누수 없음.
+template <class T> class FList {
+    struct Node { T val; Node* next; }; Node before_{T(), nullptr}; std::size_t n_ = 0;                                 // 헤더 노드: before_begin() 이 가리키는 가상 위치
+public:
+    static int live;
+    class iterator { Node* p; friend class FList; public:
+        using iterator_category = std::forward_iterator_tag; using value_type = T; using difference_type = std::ptrdiff_t; using pointer = T*; using reference = T&;
+        iterator() : p(nullptr) {} explicit iterator(Node* q) : p(q) {} T& operator*() const { return p->val; } iterator& operator++() { p = p->next; return *this; } iterator operator++(int) { iterator t = *this; p = p->next; return t; }
+        friend bool operator==(const iterator& a, const iterator& b) { return a.p == b.p; } friend bool operator!=(const iterator& a, const iterator& b) { return a.p != b.p; } };
+    FList() = default; FList(const FList&) = delete; FList& operator=(const FList&) = delete; ~FList() { while (before_.next) erase_after(before_begin()); }
+    iterator before_begin() { return iterator(&before_); } iterator begin() { return iterator(before_.next); } iterator end() { return iterator(nullptr); }
+    iterator insert_after(iterator pos, const T& v) { Node* x = new Node{v, pos.p->next}; ++live; pos.p->next = x; n_++; return iterator(x); }
+    iterator erase_after(iterator pos) { Node* dead = pos.p->next; pos.p->next = dead->next; iterator nx(dead->next); delete dead; --live; n_--; return nx; }
+    void push_front(const T& v) { insert_after(before_begin(), v); } void pop_front() { erase_after(before_begin()); }
+    bool empty() const { return n_ == 0; } std::size_t size() const { return n_; } };
+template <class T> int FList<T>::live = 0;
 int main() {
-    std::list<int> lst = {10, 20};
-    auto it = lst.begin();
-    assert(*it == 10);
-    std::cout << "Begin() tested." << std::endl;
-    return 0;
+    std::mt19937 rng(43); FList<int> a; std::forward_list<int> ref; std::size_t n = 0;
+    for (int step = 0; step < 20000; step++) { int op = (int)(rng() % 4), v = (int)(rng() % 1000);                                                          // ①
+        if (op == 0 || n == 0) { a.push_front(v); ref.push_front(v); n++; }
+        else if (op == 1) { std::size_t i = rng() % (n + 1); auto ia = std::next(a.before_begin(), i); auto ir = std::next(ref.before_begin(), i); a.insert_after(ia, v); ref.insert_after(ir, v); n++; }
+        else if (op == 2) { std::size_t i = rng() % n; auto ia = std::next(a.before_begin(), i); auto ir = std::next(ref.before_begin(), i); auto na = a.erase_after(ia); auto nr = ref.erase_after(ir); assert((na == a.end()) == (nr == ref.end())); if (nr != ref.end()) assert(*na == *nr); n--; }
+        else { a.pop_front(); ref.pop_front(); n--; }
+        assert(a.size() == n && (int)n == FList<int>::live); if (step % 101 == 0) assert(std::equal(a.begin(), a.end(), ref.begin(), ref.end())); }
+    assert(std::equal(a.begin(), a.end(), ref.begin(), ref.end()) && std::distance(a.begin(), a.end()) == (std::ptrdiff_t)n);
+    { FList<int> e; assert(e.begin() == e.end() && e.begin() == std::next(e.before_begin()) && e.empty()); e.push_front(1); assert(e.begin() != e.end() && *e.begin() == 1 && std::next(e.begin()) == e.end()); }                      // ②
+    { FList<int> l; for (int i = 3; i >= 1; i--) l.push_front(i); auto second = std::next(l.begin()); auto oldBegin = l.begin(); assert(*second == 2); l.push_front(0); assert(*second == 2 && *oldBegin == 1 && std::next(l.begin()) == oldBegin && *l.begin() == 0);   // ③ 이미 가진 반복자는 그대로
+      auto nb = l.erase_after(l.before_begin()); assert(nb == l.begin() && *nb == 1 && *second == 2 && std::distance(l.begin(), l.end()) == 3);                                                                                                            // ④
+      assert((std::is_same<std::iterator_traits<FList<int>::iterator>::iterator_category, std::forward_iterator_tag>::value));
+      std::vector<int> v(l.begin(), l.end()); assert(v == (std::vector<int>{1, 2, 3}) && *std::find(l.begin(), l.end(), 3) == 3 && std::count(l.begin(), l.end(), 2) == 1 && std::accumulate(l.begin(), l.end(), 0) == 6); }        // ⑤
+    assert(FList<int>::live == (int)n); { FList<int>* p = new FList<int>; for (int i = 0; i < 100; i++) p->push_front(i); int before = FList<int>::live; delete p; assert(FList<int>::live == before - 100); }                                  // ⑥
+    std::cout << "Begin: a forward list with an embedded header node (before_begin) matched std::forward_list across 20000 random insert_after/erase_after/push_front/pop_front operations; begin() == end() when empty, iterators to existing elements survived insertion at the front, and standard algorithms accepted the forward iterator" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: begin()·before_begin()·end() O(1), insert_after·erase_after O(1) (위치 반복자를 이미 가진 경우)
+// Space Complexity: O(1) 반복자
 ```
 ## End()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <iterator>
+#include <list>
+#include <random>
+#include <stdexcept>
+#include <vector>
 
+// end(): 마지막 원소의 "다음" 위치를 가리키는 반복자다. 반열린 범위 [begin, end) 의 끝 경계로, 원소가 아니므로 역참조하면 안 되고 ++ 도 안 된다. 순회는 `for (it = begin; it != end; ++it)`. 이것이 "찾지 못함"을 표현하는 값이기도 하다(std::find 가 end 를 돌려줌). 센티넬 노드로 만든 원형 이중 연결 리스트에서 end() 는 센티넬 자신이고, 항상 같은 노드라서 삽입·삭제 뒤에도 end() 가 변하지 않는다. --end() 는 마지막 원소다(센티넬의 prev).
+// 배열(vector)의 end() 는 데이터 끝 주소라서 원소를 하나 넣을 때마다 이동하고, 재할당되면 시작 주소째 바뀌어 모든 반복자가 무효가 된다. 연결 리스트는 삭제된 원소를 가리키는 반복자만 무효가 되고 나머지는 유효하다.
+// 이 코드는 잘못된 사용을 잡아내는 "검사하는 반복자"를 만든다: end() 를 역참조하거나 end() 에서 ++ 하거나 begin() 에서 -- 하면 예외를 던진다. 무효 사용은 보통 정의되지 않은 동작이라 조용히 틀리거나 비정상 종료하기 때문에 디버그 빌드에서 이런 검사를 두는 것이 유용하다.
+// 검증: ① 유효한 연산(순회, --end(), erase 가 다음 반복자를 돌려줌, insert(end()) 가 맨 뒤에 추가)이 std::list 와 같은 결과 ② 세 가지 잘못된 사용(*end, ++end, --begin)이 항상 예외이고 리스트는 불변 ③ end() 반복자가 수천 번의 삽입·삭제 뒤에도 같은 값(센티넬) ④ 빈 리스트에서 begin() == end(), --end() 는 예외 ⑤ vector 의 end 주소는 push_back 마다 이동 ⑥ 노드 누수 없음.
+template <class T> class CList {
+    struct Node { T val; Node *prev, *next; }; Node* s_; std::size_t n_ = 0;
+public:
+    static int live;
+    class iterator { const CList* l_; Node* p_; friend class CList; public:
+        using iterator_category = std::bidirectional_iterator_tag; using value_type = T; using difference_type = std::ptrdiff_t; using pointer = T*; using reference = T&;
+        iterator() : l_(nullptr), p_(nullptr) {} iterator(const CList* l, Node* p) : l_(l), p_(p) {}
+        T& operator*() const { if (p_ == l_->s_) throw std::out_of_range("dereference of end()"); return p_->val; }
+        iterator& operator++() { if (p_ == l_->s_) throw std::out_of_range("increment of end()"); p_ = p_->next; return *this; }
+        iterator& operator--() { if (p_ == l_->s_->next) throw std::out_of_range("decrement of begin()"); p_ = p_->prev; return *this; }       // 빈 리스트에서는 begin() == end() 라 역시 예외
+        iterator operator++(int) { iterator t = *this; ++*this; return t; } iterator operator--(int) { iterator t = *this; --*this; return t; }
+        friend bool operator==(const iterator& a, const iterator& b) { return a.p_ == b.p_; } friend bool operator!=(const iterator& a, const iterator& b) { return a.p_ != b.p_; } };
+    CList() { s_ = new Node{T(), nullptr, nullptr}; s_->prev = s_->next = s_; } CList(const CList&) = delete; CList& operator=(const CList&) = delete;
+    ~CList() { Node* x = s_->next; while (x != s_) { Node* nx = x->next; delete x; --live; x = nx; } delete s_; }
+    iterator begin() const { return iterator(this, s_->next); } iterator end() const { return iterator(this, s_); }
+    iterator insert(iterator pos, const T& v) { Node* nx = pos.p_; Node* x = new Node{v, nx->prev, nx}; ++live; nx->prev->next = x; nx->prev = x; n_++; return iterator(this, x); }
+    iterator erase(iterator pos) { if (pos.p_ == s_) throw std::out_of_range("erase of end()"); Node* x = pos.p_; Node* nx = x->next; x->prev->next = nx; nx->prev = x->prev; delete x; --live; n_--; return iterator(this, nx); }
+    std::size_t size() const { return n_; } };
+template <class T> int CList<T>::live = 0;
+template <class F> bool throws(F f) { try { f(); } catch (const std::out_of_range&) { return true; } return false; }
 int main() {
-    std::list<int> lst = {10};
-    auto it = lst.end();
-    assert(it != lst.begin());
-    std::cout << "End() tested." << std::endl;
-    return 0;
+    std::mt19937 rng(44);
+    { CList<int> a; std::list<int> ref; for (int step = 0; step < 15000; step++) { int op = (int)(rng() % 3), v = (int)(rng() % 1000); std::size_t n = ref.size();                                               // ①
+          if (op == 0 || n == 0) { std::size_t i = rng() % (n + 1); auto ia = std::next(a.begin(), i); auto ir = std::next(ref.begin(), i); auto ra = a.insert(ia, v); auto rr = ref.insert(ir, v); assert(*ra == *rr && (i == n ? std::next(ra) == a.end() : true)); }
+          else if (op == 1) { std::size_t i = rng() % n; auto ia = std::next(a.begin(), i); auto ir = std::next(ref.begin(), i); auto na = a.erase(ia); auto nr = ref.erase(ir); assert((na == a.end()) == (nr == ref.end()) && (nr == ref.end() || *na == *nr)); }
+          else { a.insert(a.end(), v); ref.push_back(v); } assert(a.size() == ref.size() && (int)a.size() == CList<int>::live && std::equal(a.begin(), a.end(), ref.begin(), ref.end())); if (!ref.empty()) assert(*std::prev(a.end()) == ref.back()); } }
+    assert(CList<int>::live == 0);
+    { CList<int> l; for (int i = 0; i < 3; i++) l.insert(l.end(), i); auto before = l.end(); std::vector<int> snap(l.begin(), l.end());                                                            // ②
+      assert(throws([&] { *l.end(); }) && throws([&] { ++l.end(); }) && throws([&] { --l.begin(); }) && throws([&] { l.erase(l.end()); }));
+      assert(std::vector<int>(l.begin(), l.end()) == snap && l.size() == 3 && l.end() == before);
+      auto it = l.begin(); ++it; ++it; ++it; assert(it == l.end() && throws([&] { *it; })); --it; assert(*it == 2); assert(!throws([&] { --it; --it; }) && *it == 0 && throws([&] { --it; })); }
+    { CList<int> l; auto e = l.end(); for (int i = 0; i < 2000; i++) { l.insert(l.end(), i); if (i % 3 == 0) l.erase(l.begin()); } assert(l.end() == e);                                              // ③ end 는 변하지 않음
+      for (int k = 0; k < 500; k++) { auto m = std::next(l.begin(), (long)(l.size() / 2)); l.erase(m); l.insert(l.begin(), -k); assert(l.end() == e); } }
+    { CList<int> e; assert(e.begin() == e.end() && throws([&] { --e.end(); }) && throws([&] { *e.begin(); }) && std::distance(e.begin(), e.end()) == 0 && e.size() == 0); }                                         // ④
+    { std::vector<int> v; v.reserve(4); const int* lastEnd = v.data() + v.size(); int moved = 0; for (int i = 0; i < 100; i++) { v.push_back(i); const int* e = v.data() + v.size(); if (e != lastEnd) moved++; lastEnd = e; } assert(moved == 100); }      // ⑤ vector 의 끝 주소는 매번 이동
+    assert(CList<int>::live == 0); std::cout << "End: a sentinel-based list with checked iterators matched std::list on 15000 random operations; dereferencing end(), incrementing end() and decrementing begin() always threw without modifying the list, end() stayed identical across thousands of insertions and erasures, and a vector's end address moved on every push_back" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: end() O(1), 검사 포함 증감·역참조 O(1)
+// Space Complexity: O(1) 반복자 (센티넬 노드 1 개)
 ```
 ## Next()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <iterator>
+#include <algorithm>
 #include <cassert>
+#include <forward_list>
+#include <iostream>
+#include <iterator>
+#include <list>
+#include <random>
+#include <vector>
 
+// next / advance: 반복자를 n 칸 전진시키는 연산이다. 비용은 반복자의 범주(iterator category)에 달려 있다: 순방향·양방향 반복자는 ++ 를 n 번 해야 하므로 O(n), 임의 접근 반복자(vector, 배열)는 `it += n` 한 번이라 O(1) 이다. 같은 `std::next(it, n)` 이라는 호출이 범주에 따라 완전히 다른 구현(태그 디스패치)으로 풀린다. 양방향 반복자는 n 이 음수여도 되고(뒤로), 순방향 반복자는 음수가 안 된다. 범위를 넘어 전진하면 정의되지 않은 동작이라, 안전한 코드에서는 남은 거리와 비교해 잘라(clamp) 쓴다.
+// 이 코드는 std::advance 가 하는 일을 직접 구현한다: 범주 태그로 오버로드를 고르고, 각 구현이 실제로 몇 번의 기본 연산(증감 또는 덧셈)을 쓰는지 센다. 그 뒤 std::next 와 같은 결과인지 확인하고, 끝을 넘지 않도록 자르는 안전 버전과 이동 거리 계산(distance)도 만든다.
+// 검증: ① 리스트(양방향)의 advance 가 정확히 |n| 번의 증감, vector(임의 접근)는 정확히 1 번의 덧셈을 쓰며 둘 다 std::next 와 같은 위치 ② forward_list(순방향)도 같은 위치이고 |n| 번 증가 ③ 양방향의 음수 n(뒤로) ④ 자르는 버전이 min(n, 남은 거리) 만큼만 이동하고 실제 이동 칸 수를 돌려줌 ⑤ distance 도 범주별 비용(O(n) vs O(1)) ⑥ n = 0 은 연산 0 회.
+struct Ops { long incs = 0, decs = 0, adds = 0; };
+template <class It> void advanceImpl(It& it, long n, Ops& o, std::input_iterator_tag) { while (n-- > 0) { ++it; o.incs++; } }
+template <class It> void advanceImpl(It& it, long n, Ops& o, std::bidirectional_iterator_tag) { if (n >= 0) while (n-- > 0) { ++it; o.incs++; } else while (n++ < 0) { --it; o.decs++; } }
+template <class It> void advanceImpl(It& it, long n, Ops& o, std::random_access_iterator_tag) { if (n != 0) { it += n; o.adds++; } }
+template <class It> void myAdvance(It& it, long n, Ops& o) { advanceImpl(it, n, o, typename std::iterator_traits<It>::iterator_category()); }                   // 범주 태그로 디스패치
+template <class It> long advanceClamped(It& it, It last, long n, Ops& o, std::bidirectional_iterator_tag) { long moved = 0; while (moved < n && it != last) { ++it; o.incs++; moved++; } return moved; }
+template <class It> long myDistance(It first, It last, Ops& o, std::input_iterator_tag) { long d = 0; while (first != last) { ++first; o.incs++; d++; } return d; }
+template <class It> long myDistance(It first, It last, Ops& o, std::random_access_iterator_tag) { o.adds++; return last - first; }
 int main() {
-    std::list<int> lst = {10, 20, 30};
-    auto next_it = std::next(lst.begin(), 1);
-    assert(*next_it == 20);
-    std::cout << "std::next() tested." << std::endl;
-    return 0;
+    std::mt19937 rng(45);
+    for (int rep = 0; rep < 400; rep++) { int n = 1 + (int)(rng() % 60); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % 100); std::list<int> l(v.begin(), v.end()); std::forward_list<int> f(v.begin(), v.end());
+        long k = (long)(rng() % (n + 1)); Ops ol, ov, of; auto il = l.begin(); auto iv = v.begin(); auto iff = f.begin(); myAdvance(il, k, ol); myAdvance(iv, k, ov); myAdvance(iff, k, of);                // ① ②
+        assert(il == std::next(l.begin(), k) && iv == std::next(v.begin(), k) && iff == std::next(f.begin(), k) && std::distance(l.begin(), il) == k && iv - v.begin() == k);
+        assert(ol.incs == k && ol.decs == 0 && ol.adds == 0 && ov.adds == (k ? 1 : 0) && ov.incs == 0 && of.incs == k);                                                                  // ⑥ k = 0 이면 연산 0
+        long back = (long)(rng() % (k + 1)); Ops ob; myAdvance(il, -back, ob); assert(il == std::next(l.begin(), k - back) && ob.decs == back && ob.incs == 0);                          // ③ 양방향의 음수
+        Ops ov2; myAdvance(iv, -back, ov2); assert(iv == std::next(v.begin(), k - back) && ov2.adds == (back ? 1 : 0));
+        Ops oc; auto ic = l.begin(); long over = (long)(rng() % (2 * n)); long moved = advanceClamped(ic, l.end(), over, oc, std::bidirectional_iterator_tag()); assert(moved == std::min<long>(over, n) && oc.incs == moved && std::distance(l.begin(), ic) == moved);      // ④
+        Ops d1, d2, d3; assert(myDistance(l.begin(), l.end(), d1, std::bidirectional_iterator_tag()) == n && d1.incs == n && myDistance(v.begin(), v.end(), d2, std::random_access_iterator_tag()) == n && d2.adds == 1 && d2.incs == 0);   // ⑤
+        assert(myDistance(f.begin(), f.end(), d3, std::forward_iterator_tag()) == n && d3.incs == n); }
+    { std::list<int> l = {1, 2, 3}; Ops o; auto e = l.end(); long moved = advanceClamped(e, l.end(), 5, o, std::bidirectional_iterator_tag()); assert(moved == 0 && o.incs == 0 && e == l.end()); std::list<int> empty; auto b = empty.begin(); assert(advanceClamped(b, empty.end(), 3, o, std::bidirectional_iterator_tag()) == 0); }
+    { std::vector<int> big(1000000, 1); std::list<int> lbig(big.begin(), big.end()); Ops ov, ol; auto iv = big.begin(); auto il = lbig.begin(); myAdvance(iv, 999999, ov); myAdvance(il, 999999, ol); assert(ov.adds == 1 && ov.incs == 0 && ol.incs == 999999); }                   // 100 만 칸: 1 회 vs 999999 회
+    std::cout << "Next: tag-dispatched advance used exactly |n| increments for list and forward_list iterators and a single addition for vector iterators, always landing where std::next lands (including backwards steps on bidirectional iterators); the clamped version never passed end(), and distance cost n steps versus one subtraction" << std::endl; return 0;
 }
-// Time Complexity: O(1) for random access, O(N) for list
+// Time Complexity: 순방향·양방향 O(n), 임의 접근 O(1)
+// Space Complexity: O(1)
 ```
 ## Prev()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <iterator>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <iterator>
+#include <list>
+#include <random>
+#include <vector>
 
+// prev(): 반복자를 한 칸 뒤로 물린다. 양방향 반복자(이중 연결 리스트)는 노드의 prev 포인터 하나를 따라가면 되어 O(1) 이다. 단방향 연결 리스트에는 prev 가 없어서, 노드의 앞 노드를 알려면 head 에서부터 걸어와야 한다 — O(n). 단방향 리스트의 모든 노드를 뒤에서부터 방문하는 데 걸리는 총 걸음은 (n−1)(n−2)/2 (≈ n²/2) 이고 양방향은 0 이다.
+// `std::prev(end())` 는 마지막 원소이다(end 는 마지막의 다음이므로). 역방향 반복자 `std::reverse_iterator` 는 정방향 반복자 하나를 감싸 `*rit` 가 `*std::prev(rit.base())` 가 되도록 한 어댑터다: rbegin() 의 base() 는 end() 이고 rend() 의 base() 는 begin() 이다. 한 칸의 어긋남 때문에 역방향 반복자로 원소를 지울 때는 `list.erase(std::next(rit).base())` 로 써야 한다(`rit.base()` 는 다음 원소를 가리킨다).
+// 검증: ① 이중 연결 리스트에서 prev 가 O(1)(추가 걸음 0)이며 뒤로 순회가 vector 의 역순과 같음 ② 단방향의 prev(node) 걸음이 정확히 노드의 위치 인덱스, 마지막에서 처음까지 모두 거치는 총 걸음 (n−1)(n−2)/2 vs 양방향 0 ③ std::prev(end()) == 마지막, begin() 앞으로 가려는 시도를 검사 버전이 잡아냄 ④ reverse_iterator 의 base() 관계와 `*rit == *prev(rit.base())` ⑤ 역방향 반복자로 원소 지우기가 모델과 같음 ⑥ 빈 리스트·원소 1개 경계.
+struct SNode { int val; SNode* next; }; struct DNode { int val; DNode *prev, *next; };
+SNode* prevOf(SNode* head, SNode* node, long& hops) { if (node == head) return nullptr; SNode* c = head; while (c->next != node) { c = c->next; hops++; } return c; }              // 단방향: 앞 노드를 찾아 걷는다
 int main() {
-    std::list<int> lst = {10, 20, 30};
-    auto prev_it = std::prev(lst.end(), 1);
-    assert(*prev_it == 30);
-    std::cout << "std::prev() tested." << std::endl;
-    return 0;
+    std::mt19937 rng(46);
+    for (int rep = 0; rep < 200; rep++) { int n = (int)(rng() % 40); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % 1000);
+        DNode* dhead = nullptr; DNode* dtail = nullptr; SNode* shead = nullptr; SNode* stail = nullptr; std::vector<DNode*> dn; std::vector<SNode*> sn;
+        for (int x : v) { DNode* d = new DNode{x, dtail, nullptr}; if (dtail) dtail->next = d; else dhead = d; dtail = d; dn.push_back(d); SNode* s = new SNode{x, nullptr}; if (stail) stail->next = s; else shead = s; stail = s; sn.push_back(s); }
+        std::vector<int> back; long dhops = 0; for (DNode* c = dtail; c; c = c->prev) back.push_back(c->val); std::vector<int> rv(v.rbegin(), v.rend()); assert(back == rv && dhops == 0 && (dhead == nullptr) == (n == 0));                                // ①
+        long shops = 0; std::vector<int> sback; for (SNode* c = stail; c; c = prevOf(shead, c, shops)) sback.push_back(c->val); assert(sback == rv);                                                          // ②
+        assert(shops == (n >= 2 ? (long)(n - 1) * (n - 2) / 2 : 0)); for (int i = 0; i < n; i++) { long h = 0; SNode* p = prevOf(shead, sn[i], h); assert(i == 0 ? p == nullptr : p == sn[i - 1]); assert(h == (i >= 1 ? i - 1 : 0)); }
+        for (DNode* d : dn) delete d; for (SNode* s : sn) delete s; }
+    for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 30); std::list<int> l; for (int i = 0; i < n; i++) l.push_back((int)(rng() % 100)); std::vector<int> v(l.begin(), l.end());                                                       // ③ ④
+        assert(*std::prev(l.end()) == v.back() && *std::prev(l.end(), n) == v.front()); auto rb = l.rbegin(); assert(rb.base() == l.end() && l.rend().base() == l.begin() && *rb == v.back());
+        int idx = 0; for (auto rit = l.rbegin(); rit != l.rend(); ++rit, ++idx) assert(*rit == *std::prev(rit.base()) && *rit == v[n - 1 - idx]); assert(idx == n);
+        std::vector<int> viaRev(l.rbegin(), l.rend()); std::reverse(v.begin(), v.end()); assert(viaRev == v); std::reverse(v.begin(), v.end()); }
+    for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 25); std::list<int> l; std::vector<int> ref; for (int i = 0; i < n; i++) { int x = (int)(rng() % 10); l.push_back(x); ref.push_back(x); } int k = (int)(rng() % n);                          // ⑤ 뒤에서 k 번째 지우기
+        auto rit = std::next(l.rbegin(), k); int want = ref[n - 1 - k]; assert(*rit == want); auto nextAfter = l.erase(std::next(rit).base()); ref.erase(ref.begin() + (n - 1 - k)); assert(std::equal(l.begin(), l.end(), ref.begin(), ref.end()));
+        assert((nextAfter == l.end()) == (k == 0)); if (k > 0) assert(*nextAfter == ref[n - 1 - k]); }
+    { std::list<int> e; assert(e.rbegin() == e.rend() && e.rbegin().base() == e.end()); std::list<int> one = {7}; assert(*std::prev(one.end()) == 7 && std::prev(one.end()) == one.begin() && *one.rbegin() == 7 && std::next(one.rbegin()) == one.rend()); }  // ⑥
+    std::cout << "Prev: doubly linked prev pointers walked a list backwards with no extra hops, while finding a node's predecessor in a singly linked list cost exactly its index ((n-1)(n-2)/2 hops to walk the whole list backwards); std::prev(end()), reverse_iterator base() relations and erase-through-reverse-iterator behaved as specified" << std::endl; return 0;
 }
-// Time Complexity: O(1) or O(N)
+// Time Complexity: 이중 연결 O(1), 단방향 O(N)
+// Space Complexity: O(1)
 ```
 
 # Part 8. 메모리
 ## ShallowCopy()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <cassert>
+#include <cstddef>
+#include <iostream>
+#include <memory>
+#include <vector>
 
-struct Node { int data; };
-
+// 얕은 복사(Shallow Copy): 객체의 멤버를 값 그대로 복사한다. 포인터 멤버는 주소만 복사되므로 원본과 복사본이 같은 메모리 블록을 가리킨다(별칭, alias). 장점은 O(1) 이라는 것, 단점은 (1) 한쪽을 고치면 다른 쪽이 바뀌고, (2) 둘 다 소멸자에서 해제하면 같은 블록을 두 번 해제(이중 해제)하며, (3) 한쪽이 먼저 해제하면 다른 쪽은 해제된 메모리를 가리키는 매달린 포인터(dangling)가 된다는 것이다. 컴파일러가 만드는 기본 복사 생성자가 바로 얕은 복사다.
+// 실제 이중 해제·해제 후 사용은 정의되지 않은 동작이라 안전하게 보여 줄 수 없으므로, 이 코드는 "메모리 장부(Registry)"로 가짜 힙을 만든다. 블록마다 살아 있는지 기록하고, 이미 해제된 블록을 해제하면 이중 해제 횟수를, 해제된 블록을 읽으면 해제 후 사용 횟수를 센다. 이렇게 하면 세 가지 설계를 같은 시험으로 비교할 수 있다: (A) 기본 얕은 복사, (B) 참조 횟수(shared_ptr)로 안전하게 공유하는 얕은 복사 — 마지막 소유자가 한 번만 해제, (C) 깊은 복사.
+// 검증: ① (A) 복사본을 고치면 원본에 보이고(별칭), 둘 다 소멸하면 이중 해제가 정확히 1 번, 원본이 먼저 죽으면 복사본의 읽기가 해제 후 사용으로 기록 ② (B) 같은 블록을 공유하지만 use_count 가 소유자 수를 따라가고 해제는 정확히 1 번, 이중 해제·해제 후 사용 0 ③ (C) 서로 독립이고 해제 각 1 번 ④ 복사 비용: 얕은 복사는 원소 복사 0, 깊은 복사는 정확히 n ⑤ 장부가 새는 블록(누수)을 정확히 보고.
+struct Registry { struct Block { std::vector<int> data; bool live; }; std::vector<Block> blocks; int doubleReleases = 0, usesAfterRelease = 0; long elementCopies = 0;
+    int alloc(std::size_t n) { blocks.push_back({std::vector<int>(n, 0), true}); return (int)blocks.size() - 1; }
+    void release(int id) { if (!blocks[id].live) { doubleReleases++; return; } blocks[id].live = false; }
+    int read(int id, std::size_t i) { if (!blocks[id].live) { usesAfterRelease++; return -1; } return blocks[id].data[i]; }
+    void write(int id, std::size_t i, int v) { blocks[id].data[i] = v; }
+    int leaks() const { int c = 0; for (const Block& b : blocks) c += b.live; return c; } };
+struct ShallowBuf { Registry* r; int id; std::size_t n;                                                             // (A) 기본 복사 생성자 = 멤버별 복사(얕은 복사)
+    ShallowBuf(Registry& reg, std::size_t size) : r(&reg), id(reg.alloc(size)), n(size) {} ~ShallowBuf() { r->release(id); } int get(std::size_t i) const { return r->read(id, i); } void set(std::size_t i, int v) { r->write(id, i, v); } };
+struct DeepBuf { Registry* r; int id; std::size_t n;                                                                // (C) 깊은 복사
+    DeepBuf(Registry& reg, std::size_t size) : r(&reg), id(reg.alloc(size)), n(size) {}
+    DeepBuf(const DeepBuf& o) : r(o.r), id(o.r->alloc(o.n)), n(o.n) { for (std::size_t i = 0; i < n; i++) { r->write(id, i, r->read(o.id, i)); r->elementCopies++; } }
+    DeepBuf& operator=(const DeepBuf&) = delete; ~DeepBuf() { r->release(id); } int get(std::size_t i) const { return r->read(id, i); } void set(std::size_t i, int v) { r->write(id, i, v); } };
+struct SharedBlock { Registry* r; int id; SharedBlock(Registry& reg, std::size_t n) : r(&reg), id(reg.alloc(n)) {} ~SharedBlock() { r->release(id); } };   // (B) 마지막 소유자가 해제
 int main() {
-    Node* lst1 = new Node{10};
-    Node* lst2 = lst1; // Shallow copy
-    lst2->data = 20;
-    assert(lst1->data == 20);
-    std::cout << "Shallow Copy observed." << std::endl;
-    delete lst1;
-    return 0;
+    { Registry reg; { ShallowBuf a(reg, 4); a.set(0, 7); ShallowBuf b = a; assert(a.id == b.id && b.get(0) == 7); b.set(1, 9); assert(a.get(1) == 9); } assert(reg.doubleReleases == 1 && reg.leaks() == 0 && reg.usesAfterRelease == 0); }   // ① 별칭 + 이중 해제
+    { Registry reg; ShallowBuf* a = new ShallowBuf(reg, 4); a->set(2, 5); ShallowBuf b = *a; delete a; assert(reg.blocks[b.id].live == false && b.get(2) == -1 && reg.usesAfterRelease == 1); }                              // 원본이 먼저 죽으면 복사본은 매달림
+    { Registry reg; { std::shared_ptr<SharedBlock> a = std::make_shared<SharedBlock>(reg, 4); reg.write(a->id, 0, 3); { std::shared_ptr<SharedBlock> b = a; std::shared_ptr<SharedBlock> c = b; assert(a.use_count() == 3 && a->id == c->id && reg.read(c->id, 0) == 3); reg.write(c->id, 1, 8); }   // ②
+          assert(a.use_count() == 1 && reg.read(a->id, 1) == 8 && reg.blocks[a->id].live && reg.doubleReleases == 0); } assert(reg.doubleReleases == 0 && reg.usesAfterRelease == 0 && reg.leaks() == 0 && reg.blocks.size() == 1); }
+    { Registry reg; { DeepBuf a(reg, 4); a.set(0, 1); DeepBuf b = a; b.set(0, 99); assert(a.get(0) == 1 && b.get(0) == 99 && a.id != b.id && reg.blocks.size() == 2); } assert(reg.doubleReleases == 0 && reg.leaks() == 0 && reg.usesAfterRelease == 0); }                // ③
+    { Registry reg; const std::size_t n = 1000; ShallowBuf s(reg, n); long before = reg.elementCopies; ShallowBuf* alias = new ShallowBuf(s); assert(reg.elementCopies == before);                                                  // ④ 얕은 복사는 원소를 하나도 복사하지 않는다
+      DeepBuf d(reg, n); DeepBuf d2 = d; assert(reg.elementCopies == (long)n); delete alias; assert(reg.doubleReleases == 0); }   // (alias 가 먼저 해제하고 s 가 곧 같은 블록을 다시 해제 → 범위를 벗어날 때 이중 해제가 기록된다)
+    { Registry reg; ShallowBuf* kept = new ShallowBuf(reg, 3); (void)kept; assert(reg.leaks() == 1); delete kept; assert(reg.leaks() == 0); }                                                                                   // ⑤ 장부의 누수 보고
+    std::cout << "ShallowCopy: with a bookkeeping heap the default member-wise copy aliased its block (writes visible through both copies), produced exactly one double release when both died and a use-after-release when the original died first; reference-counted sharing released once and a deep copy cost exactly n element copies versus zero for the shallow copy" << std::endl; return 0;
 }
-// Time/Space: O(1)
-// Time Complexity: O(1)
-// Space Complexity: O(N)
+// Time Complexity: 얕은 복사 O(1), 깊은 복사 O(N)
+// Space Complexity: 얕은 복사 O(1), 깊은 복사 O(N)
 ```
 ## DeepCopy()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <iostream>
+#include <memory>
+#include <new>
+#include <random>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-struct Node { int data; Node* next; };
-
+// 깊은 복사(Deep Copy): 포인터가 가리키는 대상까지 새로 만들어 복사본이 원본과 완전히 독립이 되게 한다. 자원을 소유하는 클래스는 소멸자·복사 생성자·복사 대입(3 의 규칙), 이동 생성자·이동 대입(5 의 규칙)을 직접 정의해야 한다. 복사 대입은 "복사본을 만들고 교환하기"(copy-and-swap)로 쓰면 자기 대입에 안전하고 중간에 예외가 나도 대상이 바뀌지 않는다(강한 예외 보장).
+// 객체의 실제 타입을 모르는 채 복사해야 하면(기반 클래스 포인터) 가상 `clone()` 이 필요하다. 그래프처럼 노드가 서로를 가리키면 단순 재귀 복사는 순환에서 영원히 돌고 공유된 노드를 여러 번 복사한다. 원본 노드 → 복사본 노드 대응표(memo)를 두면 순환이 있어도 끝나고, 공유 구조(두 노드가 같은 노드를 가리킴)가 복사본에서도 그대로 유지되며 노드 수가 늘지 않는다.
+// 검증: ① 배열 소유 클래스의 복사 생성·복사 대입이 독립적이고 원소 복사 횟수가 n, 자기 대입 안전, 복사 중 k 번째 원소 복사가 예외를 던져도(모든 k) 대상의 크기·내용·생존 객체 수 불변 ② 이동은 복사 0 회 ③ 가상 clone 이 실제 파생 타입을 보존하고 독립 ④ 무작위 방향 그래프(순환·자기 루프·공유 포함)의 대응표 방식 깊은 복사가 구조 동형이고 노드 수가 같으며 복사본이 원본 노드를 가리키지 않음, 원본 변경이 복사본에 영향 없음 ⑤ 누수 없음.
+struct Elem { int v; static int live, copies, failAt; Elem(int x = 0) : v(x) { ++live; } Elem(const Elem& o) : v(o.v) { if (failAt == 0) throw std::bad_alloc(); if (failAt > 0) failAt--; ++live; copies++; } Elem(Elem&& o) noexcept : v(o.v) { ++live; } ~Elem() { --live; } };
+int Elem::live = 0, Elem::copies = 0, Elem::failAt = -1;
+class Array { Elem* d_; std::size_t n_;
+public:
+    explicit Array(std::size_t n = 0) : d_(n ? static_cast<Elem*>(::operator new(n * sizeof(Elem))) : nullptr), n_(0) { for (; n_ < n; n_++) new (d_ + n_) Elem((int)n_); }
+    Array(const Array& o) : d_(o.n_ ? static_cast<Elem*>(::operator new(o.n_ * sizeof(Elem))) : nullptr), n_(0) { try { for (; n_ < o.n_; n_++) new (d_ + n_) Elem(o.d_[n_]); } catch (...) { destroy(); throw; } }   // 깊은 복사
+    Array(Array&& o) noexcept : d_(o.d_), n_(o.n_) { o.d_ = nullptr; o.n_ = 0; }                                       // 이동 = 포인터만 훔침
+    Array& operator=(Array o) noexcept { swap(o); return *this; }                                                    // 복사 후 교환(값으로 받음): 복사는 호출 전에 끝나므로 예외가 나도 *this 불변
+    ~Array() { destroy(); } void swap(Array& o) noexcept { std::swap(d_, o.d_); std::swap(n_, o.n_); }
+    std::size_t size() const { return n_; } int at(std::size_t i) const { return d_[i].v; } void set(std::size_t i, int v) { d_[i].v = v; } const Elem* data() const { return d_; }
+private: void destroy() { while (n_) d_[--n_].~Elem(); ::operator delete(d_); d_ = nullptr; } };
+struct Shape { virtual ~Shape() { --live; } virtual std::unique_ptr<Shape> clone() const = 0; virtual int area() const = 0; static int live; Shape() { ++live; } Shape(const Shape&) { ++live; } };
+int Shape::live = 0;
+struct Square : Shape { int s; explicit Square(int x) : s(x) {} std::unique_ptr<Shape> clone() const override { return std::unique_ptr<Shape>(new Square(*this)); } int area() const override { return s * s; } };
+struct Rect : Shape { int w, h; Rect(int a, int b) : w(a), h(b) {} std::unique_ptr<Shape> clone() const override { return std::unique_ptr<Shape>(new Rect(*this)); } int area() const override { return w * h; } };
+struct GNode { int val; std::vector<GNode*> out; };
+struct Graph { std::vector<GNode*> nodes; Graph() = default; Graph(const Graph&) = delete; ~Graph() { for (GNode* n : nodes) delete n; } GNode* add(int v) { nodes.push_back(new GNode{v, {}}); return nodes.back(); } };
+GNode* cloneInto(const GNode* n, Graph& g, std::unordered_map<const GNode*, GNode*>& memo) { auto it = memo.find(n); if (it != memo.end()) return it->second; GNode* c = g.add(n->val); memo[n] = c; for (const GNode* m : n->out) c->out.push_back(cloneInto(m, g, memo)); return c; }   // 대응표로 순환·공유 처리
 int main() {
-    Node* lst1 = new Node{10, nullptr};
-    Node* lst2 = new Node{lst1->data, nullptr}; // Deep Copy
-    lst2->data = 20;
-    assert(lst1->data == 10);
-    std::cout << "Deep Copy observed." << std::endl;
-    delete lst1; delete lst2;
-    return 0;
+    { Array a(8); Array b(a); assert(Elem::live == 16 && Elem::copies == 8); b.set(0, 99); assert(a.at(0) == 0 && b.at(0) == 99 && a.data() != b.data()); Array c; c = a; assert(c.size() == 8 && c.at(7) == 7 && Elem::copies == 16);      // ①
+      c.set(3, -1); assert(a.at(3) == 3); a = a; assert(a.size() == 8 && a.at(5) == 5 && Elem::live == 24); }
+    assert(Elem::live == 0);
+    for (int k = 0; k < 6; k++) { Array src(5), dst(3); Elem::failAt = k; bool threw = false; try { dst = src; } catch (const std::bad_alloc&) { threw = true; } Elem::failAt = -1; if (k < 5) { assert(threw && dst.size() == 3 && dst.at(2) == 2 && Elem::live == 8); } else assert(!threw && dst.size() == 5); }   // 모든 k: 복사 도중 예외 → 대상 불변
+    assert(Elem::live == 0);
+    { Array a(1000); Elem::copies = 0; Array b(std::move(a)); assert(Elem::copies == 0 && b.size() == 1000 && a.size() == 0); Array c; c = std::move(b); assert(Elem::copies == 0 && c.size() == 1000 && b.size() == 0); }                             // ② 이동 = 복사 0
+    assert(Elem::live == 0);
+    { std::vector<std::unique_ptr<Shape>> shapes; shapes.emplace_back(new Square(3)); shapes.emplace_back(new Rect(2, 5)); std::vector<std::unique_ptr<Shape>> copy; for (auto& s : shapes) copy.push_back(s->clone());   // ③
+      assert(copy[0]->area() == 9 && copy[1]->area() == 10 && copy[0].get() != shapes[0].get() && dynamic_cast<Square*>(copy[0].get()) && dynamic_cast<Rect*>(copy[1].get()) && Shape::live == 4); static_cast<Square*>(shapes[0].get())->s = 10; assert(copy[0]->area() == 9); }
+    assert(Shape::live == 0);
+    std::mt19937 rng(47);
+    for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 12); Graph g; for (int i = 0; i < n; i++) g.add(i * 10); int edges = (int)(rng() % (3 * n)); for (int e = 0; e < edges; e++) g.nodes[rng() % n]->out.push_back(g.nodes[rng() % n]);        // ④ 순환·자기 루프·중복 간선
+        Graph h; std::unordered_map<const GNode*, GNode*> memo; for (const GNode* s : g.nodes) cloneInto(s, h, memo); assert(h.nodes.size() == g.nodes.size() && memo.size() == g.nodes.size());
+        std::unordered_map<const GNode*, bool> inG, inH; for (GNode* x : g.nodes) inG[x] = true; for (GNode* x : h.nodes) inH[x] = true;
+        for (int i = 0; i < n; i++) { const GNode* o = g.nodes[i]; GNode* c = memo.at(o); assert(c->val == o->val && c != o && inH.count(c) && !inG.count(c) && c->out.size() == o->out.size());            // 값·간선 수가 같고 복사본은 원본이 아님
+            for (std::size_t j = 0; j < o->out.size(); j++) assert(c->out[j] == memo.at(o->out[j]) && inH.count(c->out[j]) && !inG.count(c->out[j])); }                                                        // 간선이 대응표대로(공유·순환 보존), 원본을 가리키지 않음
+        GNode* c0 = memo.at(g.nodes[0]); int v0 = c0->val, e0 = (int)c0->out.size(); g.nodes[0]->val = -5; g.nodes[0]->out.clear(); assert(c0->val == v0 && (int)c0->out.size() == e0); }
+    std::cout << "DeepCopy: a Rule-of-Five array class copied independently with exactly n element copies, survived self-assignment and copy failure at every position without changing its target, and moved with zero copies; virtual clone() preserved dynamic types; memoized graph cloning handled cycles, self-loops and shared nodes on 300 random graphs" << std::endl; return 0;
 }
-// Time/Space: O(N)
-// Time Complexity: O(1)
-// Space Complexity: O(N)
+// Time Complexity: O(노드 수 + 간선 수)
+// Space Complexity: O(노드 수) (대응표)
 ```
 ## Move()
 ### 대표코드
 ```cpp
+#include <cassert>
+#include <cstddef>
 #include <iostream>
 #include <list>
+#include <memory>
 #include <utility>
-#include <cassert>
+#include <vector>
 
+// 이동(Move): 복사 대신 자원의 소유권을 넘긴다. 이동 생성자는 원본의 포인터를 훔치고 원본을 "빈 상태"로 만든다 — 원소를 하나도 복사하지 않으므로 크기와 무관하게 O(1) 이다. 이동된 객체는 "유효하지만 값은 미지정"인 상태로 소멸·대입은 안전해야 한다. `std::move` 자체는 아무것도 옮기지 않는 형변환(rvalue 로)이고, 실제 이동은 이동 생성자/대입이 한다.
+// 구현 요령: 이동 연산은 가능하면 noexcept 로 표시한다(std::vector 가 재할당할 때 이동 생성자가 noexcept 가 아니면 강한 예외 보장을 위해 복사를 택한다). 이동 대입은 자기 이동(a = std::move(a))에도 안전해야 하고 기존 자원을 먼저 해제한다. std::exchange(p, nullptr) 로 "가져오고 비우기"를 한 줄에 쓴다. 연결 리스트를 이동하면 노드는 그대로이므로 원소를 가리키던 반복자·포인터가 이동 후에도 유효하며 이제 새 컨테이너의 것이다.
+// 검증: ① 직접 만든 소유 클래스의 이동 생성·이동 대입이 복사 0 회, 원본은 빈 상태, 자기 이동 안전 ② 이동된 객체를 다시 대입하고 사용 가능 ③ 이동이 noexcept 면 vector 성장이 이동만 쓰고 noexcept 가 아니면 복사 ④ std::list 이동 뒤 반복자·원소 주소 유지, 크기가 아무리 커도(100 만) 상수 시간(연산 비용 면 복사 0) ⑤ std::swap 이 이동 세 번으로 두 객체를 O(1) 교환 ⑥ 반환값 이동(복사 없음).
+struct Probe { static long copies, moves; };
+long Probe::copies = 0, Probe::moves = 0;
+class Buffer { int* d_; std::size_t n_;
+public:
+    explicit Buffer(std::size_t n = 0) : d_(n ? new int[n]() : nullptr), n_(n) {}
+    Buffer(const Buffer& o) : d_(o.n_ ? new int[o.n_] : nullptr), n_(o.n_) { for (std::size_t i = 0; i < n_; i++) d_[i] = o.d_[i]; Probe::copies += (long)n_; }                                        // 복사: n 개 복사
+    Buffer(Buffer&& o) noexcept : d_(std::exchange(o.d_, nullptr)), n_(std::exchange(o.n_, 0)) { Probe::moves++; }                                                                       // 이동: 소유권 이전
+    Buffer& operator=(Buffer&& o) noexcept { if (this != &o) { delete[] d_; d_ = std::exchange(o.d_, nullptr); n_ = std::exchange(o.n_, 0); Probe::moves++; } return *this; }                // 자기 이동 안전, 기존 자원 해제
+    Buffer& operator=(const Buffer& o) { if (this != &o) { Buffer t(o); *this = std::move(t); } return *this; } ~Buffer() { delete[] d_; }
+    std::size_t size() const { return n_; } int* data() { return d_; } int& operator[](std::size_t i) { return d_[i]; } };
+struct ThrowingMove { int v = 0; ThrowingMove() = default; ThrowingMove(const ThrowingMove& o) : v(o.v) { Probe::copies++; } ThrowingMove(ThrowingMove&& o) noexcept(false) : v(o.v) { Probe::moves++; } };
+struct NoexceptMove { int v = 0; NoexceptMove() = default; NoexceptMove(const NoexceptMove& o) : v(o.v) { Probe::copies++; } NoexceptMove(NoexceptMove&& o) noexcept : v(o.v) { Probe::moves++; } };
+Buffer make(std::size_t n) { Buffer b(n); for (std::size_t i = 0; i < n; i++) b[i] = (int)i; return b; }                                                                   // 반환: 복사 생략 또는 이동
 int main() {
-    std::list<int> lst1 = {1, 2, 3};
-    std::list<int> lst2 = std::move(lst1);
-    assert(lst1.empty() && lst2.size() == 3);
-    std::cout << "Move Semantics observed." << std::endl;
-    return 0;
+    { Buffer a(1000); a[5] = 42; Probe::copies = 0; Buffer b(std::move(a)); assert(Probe::copies == 0 && b.size() == 1000 && b[5] == 42 && a.size() == 0 && a.data() == nullptr);                          // ①
+      Buffer c(10); c = std::move(b); assert(Probe::copies == 0 && c.size() == 1000 && c[5] == 42 && b.size() == 0); Buffer& self = c; c = std::move(self); assert(c.size() == 1000 && c[5] == 42);                     // 자기 이동 안전
+      Buffer d; d = c; assert(Probe::copies == 1000 && d[5] == 42 && d.data() != c.data()); }
+    { Buffer a(5); Buffer b(std::move(a)); a = Buffer(3); a[0] = 7; assert(a.size() == 3 && a[0] == 7 && b.size() == 5); Buffer e(std::move(a)); e = std::move(b); assert(e.size() == 5 && a.size() == 0 && b.size() == 0); }                    // ② 이동된 객체의 재사용
+    { Probe::copies = Probe::moves = 0; std::vector<NoexceptMove> v; for (int i = 0; i < 100; i++) v.emplace_back(); assert(Probe::copies == 0 && Probe::moves > 0);                                                  // ③
+      Probe::copies = Probe::moves = 0; std::vector<ThrowingMove> w; for (int i = 0; i < 100; i++) w.emplace_back(); assert(Probe::moves == 0 && Probe::copies > 0); }
+    { std::list<int> a; for (int i = 0; i < 1000000; i++) a.push_back(i); auto it = std::next(a.begin(), 123456); const int* addr = &*it; std::list<int> b = std::move(a); assert(&*it == addr && *it == 123456 && b.size() == 1000000 && a.empty() && std::distance(b.begin(), it) == 123456);  // ④
+      a = std::move(b); assert(&*it == addr && a.size() == 1000000 && b.empty()); }
+    { Buffer x(3), y(4); x[0] = 1; y[0] = 2; Probe::copies = 0; std::swap(x, y); assert(Probe::copies == 0 && x.size() == 4 && y.size() == 3 && x[0] == 2 && y[0] == 1); }                                     // ⑤
+    { Probe::copies = 0; Buffer r = make(100000); assert(Probe::copies == 0 && r.size() == 100000 && r[99999] == 99999); std::unique_ptr<int[]> p(new int[3]{1, 2, 3}); std::unique_ptr<int[]> q = std::move(p); assert(!p && q[2] == 3); }   // ⑥ 소유권 이전
+    std::cout << "Move: a hand-written owner class moved with zero element copies (source left empty, safe under self-move and reusable); vector growth moved noexcept types and copied throwing-move types; moving a 1,000,000-node std::list kept every element address and iterator valid; std::swap exchanged two buffers without copying" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 이동 O(1), 복사 O(N)
 // Space Complexity: O(1)
 ```
 ## Alloc()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <list>
+#include <memory>
+#include <new>
+#include <random>
+#include <vector>
 
+// 할당(Alloc): 연결 리스트는 노드마다 `new` 를 부르면 할당자 호출이 원소 수만큼이고, 노드가 메모리 여기저기에 흩어지며, 노드마다 할당자의 부가 정보(헤더)가 붙는다. 풀(pool) 할당자는 같은 크기의 노드를 위한 큰 덩어리(chunk)를 한꺼번에 받아 두고 노드를 자유 목록(free list)으로 관리한다: 할당 = 목록 맨 앞을 떼기, 해제 = 목록 맨 앞에 달기, 둘 다 O(1) 이고 시스템 할당은 덩어리당 한 번뿐이다. 방금 해제한 노드를 가장 먼저 재사용(LIFO)해 캐시에 유리하다.
+// 요점: 덩어리는 이동하지 않으므로 노드 포인터가 안정적이고, 정렬(alignment)을 지켜야 하며, 풀 자체가 소멸할 때 덩어리를 모두 돌려주어야 누수가 없다. 객체 생성은 `new (슬롯) Node(...)`(배치 new) 로 하고 파괴는 소멸자를 직접 호출한다. 생성자가 예외를 던지면 슬롯을 자유 목록으로 돌려놓는다.
+// 검증: ① 풀 위에 만든 연결 리스트가 std::list 와 무작위 삽입·삭제에서 같은 내용이고 모든 노드가 정렬 조건을 만족 ② n 개를 할당하면 시스템 할당이 정확히 ⌈n/덩어리 크기⌉ 번 ③ 해제한 노드가 가장 먼저 재사용(LIFO)되고 해제·재할당을 반복해도 덩어리 수가 늘지 않음 ④ 모든 노드를 반납하면 live == 0 ⑤ 생성자가 던지면 슬롯이 반납(live 불변, 다음 할당이 같은 슬롯 재사용) ⑥ 노드 주소가 덩어리 안에서만 나오고 서로 겹치지 않음.
+template <class T, std::size_t ChunkSize = 64> class Pool {
+    union Slot { Slot* next; alignas(T) unsigned char storage[sizeof(T)]; }; struct Chunk { std::unique_ptr<Slot[]> slots; };
+    std::vector<Chunk> chunks_; Slot* freeList_ = nullptr; std::size_t live_ = 0;
+    void grow() { chunks_.push_back({std::unique_ptr<Slot[]>(new Slot[ChunkSize])}); Slot* base = chunks_.back().slots.get(); for (std::size_t i = ChunkSize; i-- > 0;) { base[i].next = freeList_; freeList_ = &base[i]; } }   // 새 덩어리를 자유 목록에 잇는다
+public:
+    std::size_t systemAllocs = 0;
+    Pool() = default; Pool(const Pool&) = delete; Pool& operator=(const Pool&) = delete;
+    template <class... A> T* create(A&&... args) { if (!freeList_) { grow(); systemAllocs++; } Slot* s = freeList_; freeList_ = s->next; try { T* p = new (static_cast<void*>(s->storage)) T(std::forward<A>(args)...); live_++; return p; } catch (...) { s->next = freeList_; freeList_ = s; throw; } }
+    void destroy(T* p) { p->~T(); Slot* s = reinterpret_cast<Slot*>(p); s->next = freeList_; freeList_ = s; live_--; }
+    std::size_t live() const { return live_; } std::size_t chunks() const { return chunks_.size(); }
+    bool owns(const void* p) const { for (const Chunk& c : chunks_) { const unsigned char* b = reinterpret_cast<const unsigned char*>(c.slots.get()); if ((const unsigned char*)p >= b && (const unsigned char*)p < b + ChunkSize * sizeof(Slot)) return true; } return false; } };
+struct Node { int val; Node* next; static int failAt, created; explicit Node(int v, Node* nx = nullptr) : val(v), next(nx) { if (failAt >= 0 && created++ >= failAt) throw std::bad_alloc(); } };
+int Node::failAt = -1, Node::created = 0;
+struct PooledList { Pool<Node, 32> pool; Node* head = nullptr; std::size_t n = 0; ~PooledList() { clear(); }
+    void insertAt(std::size_t pos, int v) { Node** l = &head; for (std::size_t i = 0; i < pos; i++) l = &(*l)->next; *l = pool.create(v, *l); n++; }
+    void eraseAt(std::size_t pos) { Node** l = &head; for (std::size_t i = 0; i < pos; i++) l = &(*l)->next; Node* dead = *l; *l = dead->next; pool.destroy(dead); n--; }
+    void clear() { while (head) { Node* nx = head->next; pool.destroy(head); head = nx; } n = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (Node* c = head; c; c = c->next) r.push_back(c->val); return r; } };
 int main() {
-    int* arr = new int[5];
-    arr[0] = 10;
-    assert(arr[0] == 10);
-    std::cout << "Alloc new[] verified." << std::endl;
-    delete[] arr;
-    return 0;
+    std::mt19937 rng(48);
+    { PooledList a; std::list<int> ref; for (int step = 0; step < 20000; step++) { std::size_t n = ref.size(); if (n == 0 || rng() % 3) { std::size_t pos = rng() % (n + 1); int v = (int)rng(); a.insertAt(pos, v); auto it = ref.begin(); std::advance(it, pos); ref.insert(it, v); }       // ①
+          else { std::size_t pos = rng() % n; a.eraseAt(pos); auto it = ref.begin(); std::advance(it, pos); ref.erase(it); } assert(a.n == ref.size() && a.pool.live() == ref.size()); if (step % 997 == 0) assert(a.items() == std::vector<int>(ref.begin(), ref.end())); }
+      for (Node* c = a.head; c; c = c->next) { assert(reinterpret_cast<std::uintptr_t>(c) % alignof(Node) == 0 && a.pool.owns(c)); } }                                                     // ⑥ 정렬 + 풀 소유
+    for (int n : {1, 31, 32, 33, 64, 1000}) { Pool<Node, 32> p; std::vector<Node*> v; for (int i = 0; i < n; i++) v.push_back(p.create(i)); assert(p.systemAllocs == (std::size_t)((n + 31) / 32) && p.chunks() == p.systemAllocs && p.live() == (std::size_t)n);   // ②
+      std::vector<std::uintptr_t> addr; for (Node* x : v) addr.push_back(reinterpret_cast<std::uintptr_t>(x)); std::sort(addr.begin(), addr.end()); for (std::size_t i = 1; i < addr.size(); i++) assert(addr[i] - addr[i - 1] >= sizeof(Node));    // 겹치지 않음
+      for (Node* x : v) p.destroy(x); assert(p.live() == 0); }                                                                                                                         // ④
+    { Pool<Node, 8> p; Node* a = p.create(1); Node* b = p.create(2); p.destroy(a); Node* c = p.create(3); assert(c == a && p.chunks() == 1); p.destroy(b); p.destroy(c); Node* d = p.create(4); assert(d == c); p.destroy(d);   // ③ LIFO 재사용
+      for (int i = 0; i < 100000; i++) { Node* x = p.create(i); p.destroy(x); } assert(p.chunks() == 1 && p.systemAllocs == 1 && p.live() == 0); }
+    { Pool<Node, 8> p; Node* a = p.create(1); Node* keep = p.create(2); p.destroy(a); Node::created = 0; Node::failAt = 0; bool threw = false; try { p.create(3); } catch (const std::bad_alloc&) { threw = true; } Node::failAt = -1;                      // ⑤
+      assert(threw && p.live() == 1); Node* again = p.create(4); assert(again == a && again->val == 4 && p.live() == 2); p.destroy(again); p.destroy(keep); assert(p.live() == 0); }
+    std::cout << "Alloc: a free-list pool allocator backed list matched std::list across 20000 random operations, made exactly ceil(n/chunk) system allocations, reused freed nodes in LIFO order without growing, stayed aligned and non-overlapping, and returned the slot when a constructor threw" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 할당·해제 O(1), 덩어리 확보 분할상환 O(1)
+// Space Complexity: O(노드 수) (덩어리 단위)
 ```
 ## Free()
 ### 대표코드
@@ -2184,74 +2492,179 @@ int main() {
 ## GarbageCollection()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
 #include <iostream>
 #include <memory>
-#include <cassert>
+#include <random>
+#include <set>
+#include <vector>
 
-struct Node { int data; };
-
+// 가비지 컬렉션(Garbage Collection): 쓰이지 않는 메모리를 자동으로 회수한다. 방식 둘. (1) 참조 계수: 객체마다 가리키는 참조 수를 세어 0 이 되면 즉시 해제(C++ 의 shared_ptr). 단순하고 즉시 회수되지만 순환 참조(a 가 b 를, b 가 a 를 소유)는 계수가 0 이 되지 않아 영원히 샌다 — 한쪽을 weak_ptr 로 바꿔 끊어야 한다. (2) 추적(mark–sweep): 루트에서 도달 가능한 객체를 표시(mark)하고 표시되지 않은 것을 모두 해제(sweep). 순환도 문제없다.
+// 연결 리스트에서 shared_ptr 의 흔한 함정: 노드 사슬을 shared_ptr 로 이으면 머리를 놓는 순간 소멸자가 다음 노드의 소멸자를 재귀로 부른다 — 깊이가 노드 수라 긴 리스트에서 스택이 넘친다. 반복문으로 하나씩 풀어 해제해야 한다. 이중 연결 리스트의 prev 는 weak_ptr(또는 원시 포인터)로 해야 순환 소유가 생기지 않는다.
+// 검증: ① 단방향 shared_ptr 사슬의 소멸 재귀 깊이가 노드 수와 같음(작은 사슬로 측정), 반복 해제는 1,000,000 노드를 스택 없이 처리 ② 순환 shared_ptr 은 누수(생존 노드 수가 외부 참조를 놓은 뒤에도 남음), weak_ptr 로 끊으면 0 ③ 이중 연결 리스트(next 는 shared, prev 는 weak)는 누수 없음 ④ mark–sweep: 무작위 객체 그래프(순환 포함)에서 해제 후 남은 집합이 루트에서의 도달 가능 집합(독립 BFS)과 같고, 해제 횟수가 도달 불가능 객체 수와 같음 ⑤ 같은 GC 를 반복 실행해도 안정적(두 번째 sweep 은 아무것도 해제 안 함).
+struct SNode { int val; std::shared_ptr<SNode> next; static int live, depth, maxDepth; explicit SNode(int v) : val(v) { ++live; } ~SNode() { ++depth; if (depth > maxDepth) maxDepth = depth; next.reset(); --depth; --live; } };       // next.reset() 이 재귀 소멸
+int SNode::live = 0, SNode::depth = 0, SNode::maxDepth = 0;
+void releaseIteratively(std::shared_ptr<SNode>& head) { while (head && head.use_count() == 1) { std::shared_ptr<SNode> nx = std::move(head->next); head = std::move(nx); } head.reset(); }              // 하나씩 풀어 해제(재귀 없음)
+struct CNode : std::enable_shared_from_this<CNode> { int id; std::shared_ptr<CNode> peer; static int live; explicit CNode(int i) : id(i) { ++live; } ~CNode() { --live; } }; int CNode::live = 0;
+struct DNode { int val; std::shared_ptr<DNode> next; std::weak_ptr<DNode> prev; static int live; explicit DNode(int v) : val(v) { ++live; } ~DNode() { --live; } }; int DNode::live = 0;
+struct Obj { std::vector<int> refs; bool marked = false; bool freed = false; };
+struct Heap { std::vector<Obj> objs; std::vector<int> roots; long swept = 0;
+    void mark(int start) { std::vector<int> st{start}; while (!st.empty()) { int x = st.back(); st.pop_back(); if (objs[x].freed || objs[x].marked) continue; objs[x].marked = true; for (int r : objs[x].refs) st.push_back(r); } }          // 반복 DFS
+    long collect() { for (Obj& o : objs) o.marked = false; for (int r : roots) mark(r); long freed = 0; for (Obj& o : objs) if (!o.freed && !o.marked) { o.freed = true; o.refs.clear(); freed++; } swept += freed; return freed; }
+    std::set<int> alive() const { std::set<int> s; for (std::size_t i = 0; i < objs.size(); i++) if (!objs[i].freed) s.insert((int)i); return s; } };
 int main() {
-    std::shared_ptr<Node> head = std::make_shared<Node>();
-    head->data = 100;
-    assert(head.use_count() == 1);
-    std::cout << "Shared Ptr Garbage Collection verified." << std::endl;
-    return 0;
+    { std::shared_ptr<SNode> head; for (int i = 0; i < 1500; i++) { auto n = std::make_shared<SNode>(i); n->next = head; head = n; } assert(SNode::live == 1500); SNode::maxDepth = 0; head.reset(); assert(SNode::live == 0 && SNode::maxDepth == 1500); }   // ① 재귀 소멸 깊이 = 노드 수
+    { std::shared_ptr<SNode> head; for (int i = 0; i < 1000000; i++) { auto n = std::make_shared<SNode>(i); n->next = std::move(head); head = std::move(n); } assert(SNode::live == 1000000); releaseIteratively(head); assert(SNode::live == 0 && !head); }
+    { CNode* leaked; { std::shared_ptr<CNode> a = std::make_shared<CNode>(1), b = std::make_shared<CNode>(2); a->peer = b; b->peer = a; assert(a.use_count() == 2 && CNode::live == 2); leaked = a.get(); }               // ② 순환: 외부 참조를 모두 놓아도 남는다
+      assert(CNode::live == 2);                                                                                                                                                                       // 누수
+      { std::shared_ptr<CNode> rescue = leaked->shared_from_this(); rescue->peer.reset(); } assert(CNode::live == 0); }                                                                              // 순환을 끊으면 연쇄 해제
+    { std::shared_ptr<DNode> head; std::shared_ptr<DNode> tail; for (int i = 0; i < 100; i++) { auto n = std::make_shared<DNode>(i); if (!head) head = tail = n; else { tail->next = n; n->prev = tail; tail = n; } } assert(DNode::live == 100 && head->next->prev.lock() == head);          // ③ prev 는 weak
+      tail.reset(); head.reset(); assert(DNode::live == 0); }
+    std::mt19937 rng(49);
+    for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 30); Heap h; h.objs.resize(n); for (int i = 0; i < n; i++) { int deg = (int)(rng() % 3); for (int d = 0; d < deg; d++) h.objs[i].refs.push_back((int)(rng() % n)); } int nr = (int)(rng() % 3); for (int r = 0; r < nr; r++) h.roots.push_back((int)(rng() % n));    // ④
+        std::set<int> reach; std::vector<int> q(h.roots.begin(), h.roots.end()); for (int r : q) reach.insert(r); for (std::size_t i = 0; i < q.size(); i++) for (int t : h.objs[q[i]].refs) if (reach.insert(t).second) q.push_back(t);                  // 독립 BFS
+        long freed = h.collect(); assert(h.alive() == reach && freed == (long)(n - (int)reach.size()));
+        assert(h.collect() == 0 && h.alive() == reach); }                                                                                                                                                // ⑤
+    std::cout << "GarbageCollection: a shared_ptr chain's destructor recursed to depth n (1500) and an iterative release freed 1,000,000 nodes without recursion; shared_ptr cycles leaked until one side was broken or made weak, doubly linked lists with weak prev pointers leaked nothing, and mark-and-sweep on 300 random object graphs freed exactly the unreachable objects (cycles included)" << std::endl; return 0;
 }
-// Time Complexity: O(1) overhead
+// Time Complexity: 참조 계수 갱신 O(1), mark–sweep O(전체 객체 + 참조)
+// Space Complexity: 참조 계수 O(1) 추가, mark–sweep O(표시 비트 + DFS 스택)
 ```
 
 # Part 9. 함수형 리스트
 ## Map()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
 #include <algorithm>
 #include <cassert>
+#include <functional>
+#include <iostream>
+#include <iterator>
+#include <memory>
+#include <random>
+#include <vector>
 
+// 맵(Map): 리스트의 모든 원소에 같은 함수를 적용해 같은 길이의 새 리스트를 만든다 — map(f, [a, b, c]) = [f(a), f(b), f(c)]. 원본은 바뀌지 않는다(불변 리스트에서는 새 리스트를 돌려주고, 제자리 버전은 std::transform 으로 덮어씀). 순서와 길이가 보존되고 원소 하나의 결과는 다른 원소에 의존하지 않으므로 병렬화가 자연스럽다.
+// 법칙(함수자 법칙): map(항등) = 항등, map(f∘g) = map(f)∘map(g) — 두 번 훑는 대신 합성해서 한 번만 훑어도 같다(융합, fusion). 길이 보존 |map(f, xs)| = |xs|. 게으른 맵은 새 리스트를 만들지 않고 읽는 순간에만 f 를 적용하는 뷰라서, 앞의 k 개만 쓰면 f 호출도 k 번뿐이다(즉시 맵은 n 번).
+// 이 코드는 불변 단방향 리스트(cons 셀 + shared_ptr, 꼬리 공유)를 쓴다: 셀은 만들어진 뒤 바뀌지 않으므로 여러 리스트가 같은 꼬리를 안전하게 공유한다.
+// 검증: ① 무작위 입력에서 map 이 std::transform 결과와 같고 원본이 불변 ② 함자 법칙: map(id) = id, map(f∘g) = map(f)∘map(g), 길이 보존 ③ 빈 리스트 ④ 게으른 뷰: 앞 k 개만 소비하면 f 가 정확히 k 번 호출, 즉시 맵은 n 번 ⑤ 새 셀 수가 정확히 n(원본 셀 재사용 없음, 원본은 그대로 살아 있음), 모든 셀 해제 후 누수 없음 ⑥ 서로 다른 타입으로의 변환(int → 문자열 길이 등).
+struct Cell; typedef std::shared_ptr<const Cell> L;
+struct Cell { int head; L tail; static int live; Cell(int h, L t) : head(h), tail(std::move(t)) { ++live; } ~Cell() { --live; } }; int Cell::live = 0;
+L cons(int h, L t) { return std::make_shared<const Cell>(h, std::move(t)); }
+L fromVector(const std::vector<int>& v) { L r; for (std::size_t i = v.size(); i-- > 0;) r = cons(v[i], r); return r; }
+std::vector<int> toVector(L l) { std::vector<int> r; for (const Cell* c = l.get(); c; c = c->tail.get()) r.push_back(c->head); return r; }
+template <class F> L mapL(const L& l, F f) { std::vector<int> out; for (const Cell* c = l.get(); c; c = c->tail.get()) out.push_back(f(c->head)); return fromVector(out); }       // 새 리스트: 원본 불변
+template <class F> struct MapView { const L& src; F f; mutable long* calls;                                                                        // 게으른 맵: 읽을 때 적용
+    struct It { const Cell* c; const MapView* v; int operator*() const { ++*v->calls; return v->f(c->head); } It& operator++() { c = c->tail.get(); return *this; } bool operator!=(const It& o) const { return c != o.c; } };
+    It begin() const { return It{src.get(), this}; } It end() const { return It{nullptr, this}; } };
 int main() {
-    std::list<int> lst = {1, 2, 3};
-    std::transform(lst.begin(), lst.end(), lst.begin(), [](int x) { return x * 2; });
-    assert(lst.front() == 2);
-    std::cout << "Map / Transform verified." << std::endl;
-    return 0;
+    std::mt19937 rng(50);
+    for (int rep = 0; rep < 500; rep++) { int n = (int)(rng() % 40); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % 2001) - 1000; L l = fromVector(v); auto f = [](int x) { return x * 3 - 1; }; auto g = [](int x) { return x / 2 + 7; };
+        std::vector<int> want(n); std::transform(v.begin(), v.end(), want.begin(), f); L m = mapL(l, f); assert(toVector(m) == want && toVector(l) == v);                                                   // ① 원본 불변
+        assert(toVector(mapL(l, [](int x) { return x; })) == v);                                                                                                                             // ② map(id) = id
+        std::vector<int> composed(n); for (int i = 0; i < n; i++) composed[i] = f(g(v[i])); assert(toVector(mapL(mapL(l, g), f)) == composed && toVector(mapL(l, [&](int x) { return f(g(x)); })) == composed);        // map(f∘g) = map f ∘ map g
+        assert((int)toVector(m).size() == n); }
+    { L e; assert(mapL(e, [](int x) { return x + 1; }) == nullptr && toVector(mapL(e, [](int x) { return x; })).empty()); }                                                                  // ③
+    { std::vector<int> v(1000); for (int i = 0; i < 1000; i++) v[i] = i; L l = fromVector(v); long lazyCalls = 0; MapView<std::function<int(int)>> view{l, [](int x) { return x * x; }, &lazyCalls}; int taken = 0; long sum = 0; for (auto it = view.begin(); it != view.end() && taken < 10; ++it, ++taken) sum += *it;   // ④
+      assert(lazyCalls == 10 && sum == 285); long eagerCalls = 0; mapL(l, [&](int x) { ++eagerCalls; return x * x; }); assert(eagerCalls == 1000); }
+    { std::vector<int> v(200, 5); L l = fromVector(v); assert(Cell::live == 200); L m = mapL(l, [](int x) { return x + 1; }); assert(Cell::live == 400); m.reset(); assert(Cell::live == 200 && toVector(l) == v); l.reset(); assert(Cell::live == 0);       // ⑤
+      L shared = fromVector({1, 2, 3}); L a = cons(0, shared), b = cons(9, shared); assert(a->tail == b->tail && a->tail == shared && Cell::live == 5); L ma = mapL(a, [](int x) { return x * 10; }); assert(toVector(ma) == (std::vector<int>{0, 10, 20, 30}) && toVector(b) == (std::vector<int>{9, 1, 2, 3})); }
+    { std::vector<int> v = {1, 22, 333}; std::vector<std::size_t> lens; for (int x : v) lens.push_back(std::to_string(x).size()); L l = fromVector(v); auto m = mapL(l, [](int x) { return (int)std::to_string(x).size(); }); assert(toVector(m) == (std::vector<int>{1, 2, 3}) && lens.size() == 3); }    // ⑥
+    assert(Cell::live == 0); std::cout << "Map: on an immutable cons list, map matched std::transform without touching its input, satisfied the functor laws (identity and composition) and preserved length, shared tails between lists stayed intact, a lazy view called the function exactly as often as elements were read (10 versus 1000 for the eager map), and no cell leaked" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: O(N) (게으른 뷰는 읽는 만큼)
+// Space Complexity: 즉시 맵 O(N) 새 셀, 게으른 뷰 O(1)
 ```
 ## Filter()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
 #include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <iterator>
+#include <memory>
+#include <random>
+#include <vector>
 
+// 필터(Filter): 조건(술어)을 만족하는 원소만 남긴다 — filter(p, xs) 는 xs 의 부분열(순서 유지, 안정적)이다. 길이는 줄어들 수 있고, filter(참) = 항등, filter(거짓) = 빈 리스트. 법칙: filter(p)∘filter(q) = filter(p ∧ q) (두 번 훑을 것을 한 번으로 융합), filter(p) 와 filter(¬p) 의 길이 합 = n 이며 둘을 합치면 원래 원소의 다중집합.
+// 불변 리스트에서의 최적화: 어떤 위치부터 끝까지 모든 원소가 조건을 통과하면 그 꼬리 셀들을 새로 만들지 않고 원본 꼬리를 그대로 공유한다. 전부 통과하면 원본 리스트를 그대로 돌려줄 수 있고(새 셀 0), 전부 거르면 빈 리스트다. 공유는 불변이기 때문에 안전하다.
+// 검증: ① 무작위 입력에서 filter 가 std::copy_if 와 같고 순서 유지(안정) ② 법칙: filter(p)∘filter(q) = filter(p∧q), |filter(p)| + |filter(¬p)| = n, 항등·빈 결과 ③ 꼬리 공유: 새 셀 수가 (마지막으로 걸러진 원소까지의 앞부분 중 통과 개수)이고, 전부 통과하면 같은 포인터를 반환, 공유된 꼬리는 원본 셀의 주소와 같음 ④ 원본 불변·누수 없음 ⑤ 전부 거르기·빈 리스트 ⑥ 연속 적용(체인)이 같은 결과.
+struct Cell; typedef std::shared_ptr<const Cell> L;
+struct Cell { int head; L tail; static int live; Cell(int h, L t) : head(h), tail(std::move(t)) { ++live; } ~Cell() { --live; } }; int Cell::live = 0;
+L cons(int h, L t) { return std::make_shared<const Cell>(h, std::move(t)); }
+L fromVector(const std::vector<int>& v) { L r; for (std::size_t i = v.size(); i-- > 0;) r = cons(v[i], r); return r; }
+std::vector<int> toVector(const L& l) { std::vector<int> r; for (const Cell* c = l.get(); c; c = c->tail.get()) r.push_back(c->head); return r; }
+template <class P> L filterL(const L& l, P p) {                                                                     // 꼬리 공유 최적화 포함
+    std::vector<const Cell*> cells; for (const Cell* c = l.get(); c; c = c->tail.get()) cells.push_back(c);
+    std::size_t lastDropped = cells.size();                                                                         // 마지막으로 걸러진 위치 (없으면 n)
+    for (std::size_t i = cells.size(); i-- > 0;) if (!p(cells[i]->head)) { lastDropped = i; break; }
+    if (lastDropped == cells.size()) return l;                                                                      // 전부 통과 → 원본 그대로
+    L tail; if (lastDropped + 1 < cells.size()) { const L* cursor = &l; for (std::size_t i = 0; i < lastDropped + 1; i++) cursor = &(*cursor)->tail; tail = *cursor; }   // lastDropped 뒤의 원본 꼬리를 공유
+    std::vector<int> kept; for (std::size_t i = 0; i <= lastDropped; i++) if (p(cells[i]->head)) kept.push_back(cells[i]->head);
+    L r = tail; for (std::size_t i = kept.size(); i-- > 0;) r = cons(kept[i], r); return r; }
 int main() {
-    std::list<int> lst = {1, 2, 3, 4};
-    auto it = std::remove_if(lst.begin(), lst.end(), [](int x) { return x % 2 != 0; });
-    lst.erase(it, lst.end());
-    assert(lst.size() == 2 && lst.front() == 2);
-    std::cout << "Filter verified." << std::endl;
-    return 0;
+    std::mt19937 rng(51);
+    for (int rep = 0; rep < 500; rep++) { int n = (int)(rng() % 40); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % 100); L l = fromVector(v); int m = 2 + (int)(rng() % 5);
+        auto p = [m](int x) { return x % m == 0; }; auto q = [](int x) { return x > 30; }; auto notp = [m](int x) { return x % m != 0; };
+        std::vector<int> want; std::copy_if(v.begin(), v.end(), std::back_inserter(want), p); L f = filterL(l, p); assert(toVector(f) == want && toVector(l) == v);                                         // ①
+        std::vector<int> both; std::copy_if(v.begin(), v.end(), std::back_inserter(both), [&](int x) { return p(x) && q(x); }); assert(toVector(filterL(filterL(l, p), q)) == both && toVector(filterL(l, [&](int x) { return p(x) && q(x); })) == both);   // ②
+        L neg = filterL(l, notp); assert(toVector(f).size() + toVector(neg).size() == (std::size_t)n); std::vector<int> merged = toVector(f), r2 = toVector(neg); merged.insert(merged.end(), r2.begin(), r2.end()); std::vector<int> sortedV = v; std::sort(sortedV.begin(), sortedV.end()); std::sort(merged.begin(), merged.end()); assert(merged == sortedV);
+        assert(toVector(filterL(l, [](int) { return true; })) == v && filterL(l, [](int) { return false; }) == nullptr); }
+    { std::vector<int> v = {1, 2, 3, 4, 5, 6, 7, 8}; L l = fromVector(v); int before = Cell::live; L all = filterL(l, [](int) { return true; }); assert(all == l && Cell::live == before);                                                            // ③ 전부 통과
+      L f = filterL(l, [](int x) { return x != 3; }); assert(toVector(f) == (std::vector<int>{1, 2, 4, 5, 6, 7, 8}) && Cell::live == before + 2);                                                                              // 3 이 마지막으로 걸러짐 → 앞의 1, 2 만 새 셀
+      const Cell* origFour = l->tail->tail->tail.get(); const Cell* c = f.get(); c = c->tail.get(); c = c->tail.get(); assert(c == origFour);                                                                                  // 꼬리 [4..8] 은 원본 셀을 그대로 공유
+      L g = filterL(l, [](int x) { return x != 8; }); assert(toVector(g) == (std::vector<int>{1, 2, 3, 4, 5, 6, 7}) && Cell::live == before + 2 + 7); }                                                                         // 마지막 원소가 걸러지면 공유할 꼬리가 없다
+    assert(Cell::live == 0);
+    { L e; assert(filterL(e, [](int) { return true; }) == nullptr); std::vector<int> v(100, 1); L l = fromVector(v); L none = filterL(l, [](int x) { return x != 1; }); assert(none == nullptr && toVector(l) == v); }                  // ④ ⑤
+    { std::vector<int> v(60); for (int i = 0; i < 60; i++) v[i] = i; L l = fromVector(v); L c = filterL(filterL(filterL(l, [](int x) { return x % 2 == 0; }), [](int x) { return x % 3 == 0; }), [](int x) { return x > 10; }); assert(toVector(c) == (std::vector<int>{12, 18, 24, 30, 36, 42, 48, 54})); }   // ⑥
+    assert(Cell::live == 0); std::cout << "Filter: on an immutable cons list, filter matched std::copy_if (stable, input untouched), obeyed the fusion and partition laws, returned the original pointer when nothing was removed, and shared the unfiltered tail cells with the source instead of copying them" << std::endl; return 0;
 }
 // Time Complexity: O(N)
+// Space Complexity: 새 셀 O(통과한 앞부분), 공유 꼬리 O(1)
 ```
 ## Reduce()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <numeric>
+#include <algorithm>
 #include <cassert>
+#include <functional>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
+// 리듀스(Reduce / fold): 리스트를 이항 연산으로 하나의 값으로 접는다. foldLeft(f, init, [a, b, c]) = f(f(f(init, a), b), c), foldRight(f, [a, b, c], init) = f(a, f(b, f(c, init))). 초기값을 주면 빈 리스트도 처리하고(결과 = init), 초기값 없이는 빈 리스트에서 정의되지 않는다(예외나 optional). 합·곱·최댓값·연결이 모두 fold 이고, 길이·map·filter·reverse 도 fold 로 쓸 수 있다.
+// 연산이 결합 법칙(associative)을 만족하면 foldLeft = foldRight 이고, 리스트를 조각으로 나누어 각각 접은 뒤 결과를 접어도 같다 — 병렬 리듀스(트리 리듀스)의 근거다. 뺄셈처럼 결합 법칙이 없으면 접는 방향과 조각 나누기에 따라 결과가 달라진다. 부동소수점 덧셈은 이름만 결합적이고 실제로는 아니다: 단순 누적은 큰 합 앞에서 작은 값을 잃어 오차가 쌓이고, 두 조각씩 짝지어 합치는 쌍대 합(pairwise)은 오차가 O(log n) 이다.
+// 검증: ① foldLeft/foldRight 가 std::accumulate 와 같은 결과(합·곱·최댓값·문자열 연결) ② fold 로 쓴 length/map/filter/reverse 가 직접 구현과 같음 ③ 결합 연산(+, max, 연결)에서 foldLeft = foldRight = 조각 병렬 리듀스(2~7 조각), 비결합(−)에서는 서로 다른 결과가 실제로 존재 ④ 초기값 없는 리듀스가 빈 리스트에서 예외, 원소 1개에서는 그 원소 ⑤ float 100 만 개(0.1f)의 단순 누적 오차가 쌍대 합의 100 배 이상 ⑥ 10 만 원소도 재귀 없이 처리.
+template <class A, class T, class F> A foldLeft(const std::vector<T>& v, A init, F f) { for (const T& x : v) init = f(init, x); return init; }
+template <class A, class T, class F> A foldRight(const std::vector<T>& v, A init, F f) { for (std::size_t i = v.size(); i-- > 0;) init = f(v[i], init); return init; }
+template <class T, class F> T reduceNoInit(const std::vector<T>& v, F f) { if (v.empty()) throw std::invalid_argument("reduce of empty list with no initial value"); T acc = v[0]; for (std::size_t i = 1; i < v.size(); i++) acc = f(acc, v[i]); return acc; }
+template <class T, class F> T chunkedReduce(const std::vector<T>& v, int chunks, T identity, F f) { std::size_t n = v.size(); std::vector<T> partial; for (int c = 0; c < chunks; c++) { std::size_t lo = n * c / chunks, hi = n * (c + 1) / chunks; T acc = identity; for (std::size_t i = lo; i < hi; i++) acc = f(acc, v[i]); partial.push_back(acc); } T r = identity; for (const T& p : partial) r = f(r, p); return r; }
+float pairwiseSum(const float* a, std::size_t n) { if (n <= 8) { float s = 0; for (std::size_t i = 0; i < n; i++) s += a[i]; return s; } std::size_t h = n / 2; return pairwiseSum(a, h) + pairwiseSum(a + h, n - h); }
 int main() {
-    std::list<int> lst = {1, 2, 3, 4};
-    int sum = std::accumulate(lst.begin(), lst.end(), 0);
-    assert(sum == 10);
-    std::cout << "Reduce / Accumulate verified." << std::endl;
-    return 0;
+    std::mt19937 rng(52);
+    for (int rep = 0; rep < 400; rep++) { int n = (int)(rng() % 30); std::vector<long long> v(n); for (auto& x : v) x = (long long)(rng() % 21) - 10; auto add = [](long long a, long long b) { return a + b; }; auto mx = [](long long a, long long b) { return std::max(a, b); };           // ①
+        assert(foldLeft<long long>(v, 0, add) == std::accumulate(v.begin(), v.end(), 0LL) && foldRight<long long>(v, 0, add) == std::accumulate(v.begin(), v.end(), 0LL)); long long prod = 1; for (auto x : v) prod *= (x % 3); assert(foldLeft<long long>(v, 1, [](long long a, long long b) { return a * (b % 3); }) == prod);
+        if (n) { assert(foldLeft<long long>(v, v[0], mx) == *std::max_element(v.begin(), v.end()) && reduceNoInit<long long>(v, mx) == *std::max_element(v.begin(), v.end())); }
+        std::vector<std::string> s; for (auto x : v) s.push_back(std::to_string(x)); std::string cat; for (auto& t : s) cat += t; assert(foldLeft<std::string>(s, "", [](std::string a, const std::string& b) { return a + b; }) == cat && foldRight<std::string>(s, "", [](const std::string& a, std::string b) { return a + b; }) == cat);
+        auto lenFold = foldLeft<long long>(v, 0, [](long long a, long long) { return a + 1; }); assert(lenFold == n);                                                                         // ② fold 로 length/map/filter/reverse
+        std::vector<long long> mapped = foldRight<std::vector<long long>>(v, {}, [](long long x, std::vector<long long> acc) { acc.insert(acc.begin(), x * 2); return acc; }); std::vector<long long> wantMap; for (auto x : v) wantMap.push_back(x * 2); assert(mapped == wantMap);
+        std::vector<long long> filtered = foldLeft<std::vector<long long>>(v, {}, [](std::vector<long long> acc, long long x) { if (x > 0) acc.push_back(x); return acc; }); std::vector<long long> wantFilt; for (auto x : v) if (x > 0) wantFilt.push_back(x); assert(filtered == wantFilt);
+        std::vector<long long> rev = foldLeft<std::vector<long long>>(v, {}, [](std::vector<long long> acc, long long x) { acc.insert(acc.begin(), x); return acc; }); assert(rev == std::vector<long long>(v.rbegin(), v.rend()));
+        for (int chunks = 2; chunks <= 7; chunks++) { assert(chunkedReduce<long long>(v, chunks, 0, add) == foldLeft<long long>(v, 0, add)); assert(chunkedReduce<long long>(v, chunks, std::numeric_limits<long long>::min(), mx) == (n ? *std::max_element(v.begin(), v.end()) : std::numeric_limits<long long>::min())); } }   // ③ 결합 연산: 조각 병렬 리듀스 = 순차
+    { auto sub = [](long long a, long long b) { return a - b; }; std::vector<long long> v = {10, 3, 2, 1}; assert(foldLeft<long long>(v, 0, sub) == -16 && foldRight<long long>(v, 0, [](long long a, long long b) { return a - b; }) == 10 - (3 - (2 - (1 - 0))) && foldLeft<long long>(v, 0, sub) != foldRight<long long>(v, 0, sub));       // 비결합: 방향마다 다름
+      assert(chunkedReduce<long long>(v, 2, 0, sub) != foldLeft<long long>(v, 0, sub)); }
+    { bool threw = false; try { reduceNoInit<int>({}, [](int a, int b) { return a + b; }); } catch (const std::invalid_argument&) { threw = true; } assert(threw && reduceNoInit<int>({7}, [](int a, int b) { return a + b; }) == 7 && foldLeft<int>(std::vector<int>{}, 42, [](int a, int b) { return a + b; }) == 42); }       // ④
+    { std::size_t n = 1000000; std::vector<float> a(n, 0.1f); float naive = 0; for (float x : a) naive += x; float pair = pairwiseSum(a.data(), n); double exact = (double)0.1f * (double)n; double errNaive = std::abs((double)naive - exact), errPair = std::abs((double)pair - exact); assert(errNaive > 100 * errPair && errPair < 1.0 && errNaive > 100.0); }      // ⑤
+    { std::vector<long long> big(100000); std::iota(big.begin(), big.end(), 1); assert(foldLeft<long long>(big, 0, [](long long a, long long b) { return a + b; }) == 100000LL * 100001 / 2 && foldRight<long long>(big, 0, [](long long a, long long b) { return a + b; }) == 100000LL * 100001 / 2); }   // ⑥
+    std::cout << "Reduce: foldLeft and foldRight matched std::accumulate for sums, products, maxima and string concatenation; length, map, filter and reverse written as folds matched direct versions; associative operators gave identical results sequentially and as 2-7 parallel chunks while subtraction did not; float summation drifted by a factor over 100 in the naive loop compared with pairwise summation" << std::endl; return 0;
 }
 // Time Complexity: O(N)
+// Space Complexity: O(1) (쌍대 합은 재귀 O(log N))
 ```
 ## Zip()
 ### 대표코드
@@ -2301,19 +2714,42 @@ int main() {
 ## Flatten()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <vector>
 
+// 평탄화(Flatten): 중첩된 구조를 한 줄로 편다. (1) 한 단계: 리스트의 리스트를 이어 붙인 하나의 리스트로 — flatten([[1,2],[3],[],[4,5]]) = [1,2,3,4,5], flatMap(f) = flatten(map(f)). (2) 깊이를 모르는 중첩: 원소가 숫자이거나 다시 리스트인 구조를 깊이 우선 순서의 숫자열로. 재귀가 쉽지만 깊이가 깊으면 호출 스택이 넘치므로 명시적 스택으로 바꾼다. (3) 연결 리스트의 자식 포인터: 노드가 next/prev 외에 child(아래 층 리스트의 머리)를 가질 때 모든 층을 한 줄의 이중 연결 리스트로 편다 — 노드의 자식 리스트를 그 노드 바로 뒤에 끼워 넣는 일이다.
+// 다층 연결 리스트 평탄화는 자식이 있는 노드를 만나면 자식 리스트를 그 노드와 그 노드의 next 사이에 잇고 child 를 비운다. 새 노드를 만들지 않고 연결만 바꾸므로 O(n) 시간, 명시적 스택(또는 반복 처리)이면 추가 공간 O(깊이). 결과는 깊이 우선 전위 순서다.
+// 검증: ① 한 단계 평탄화·flatMap 이 직접 이어 붙이기와 같고 길이 합이 보존(빈 안쪽 리스트 포함) ② 무작위 중첩 구조(깊이 ≤ 6)에서 반복(명시적 스택) 평탄화 == 재귀 평탄화 == 정의에 따른 전위 열거 ③ 깊이 3000 의 사슬도 반복 평탄화는 스택을 쓰지 않고 처리 ④ 다층 연결 리스트 평탄화: 결과 순서가 전위 순회와 같고 prev/next 가 서로 일치하며 child 가 모두 비워지고 노드가 보존 ⑤ 빈 구조·한 단계도 없는 구조.
+struct Nested { bool leaf; int v; std::vector<Nested> kids; static Nested num(int x) { return Nested{true, x, {}}; } static Nested list(std::vector<Nested> k) { return Nested{false, 0, std::move(k)}; } };
+void flattenRec(const Nested& n, std::vector<int>& out) { if (n.leaf) { out.push_back(n.v); return; } for (const Nested& k : n.kids) flattenRec(k, out); }
+std::vector<int> flattenIter(const Nested& root) { std::vector<int> out; std::vector<std::pair<const Nested*, std::size_t>> st; st.push_back({&root, 0}); if (root.leaf) { out.push_back(root.v); return out; }
+    while (!st.empty()) { auto& top = st.back(); if (top.second == top.first->kids.size()) { st.pop_back(); continue; } const Nested* k = &top.first->kids[top.second++]; if (k->leaf) out.push_back(k->v); else st.push_back({k, 0}); } return out; }
+Nested randomNested(std::mt19937& rng, int depth) { if (depth == 0 || rng() % 3 == 0) return Nested::num((int)(rng() % 100)); std::vector<Nested> k; int n = (int)(rng() % 4); for (int i = 0; i < n; i++) k.push_back(randomNested(rng, depth - 1)); return Nested::list(std::move(k)); }
+std::vector<int> oracle(const Nested& n) { if (n.leaf) return {n.v}; std::vector<int> r; for (const Nested& k : n.kids) { std::vector<int> s = oracle(k); r.insert(r.end(), s.begin(), s.end()); } return r; }
+template <class T> std::vector<T> flatten1(const std::vector<std::vector<T>>& vv) { std::vector<T> out; std::size_t total = 0; for (auto& v : vv) total += v.size(); out.reserve(total); for (auto& v : vv) out.insert(out.end(), v.begin(), v.end()); return out; }
+struct MNode { int val; MNode *prev, *next, *child; static int live; explicit MNode(int v) : val(v), prev(nullptr), next(nullptr), child(nullptr) { ++live; } ~MNode() { --live; } }; int MNode::live = 0;
+MNode* buildLevel(std::mt19937& rng, int depth, int& counter, std::vector<MNode*>& all) { int n = 1 + (int)(rng() % 4); MNode *head = nullptr, *tail = nullptr; for (int i = 0; i < n; i++) { MNode* x = new MNode(counter++); all.push_back(x); x->prev = tail; if (tail) tail->next = x; else head = x; tail = x; if (depth > 0 && rng() % 3 == 0) x->child = buildLevel(rng, depth - 1, counter, all); } return head; }
+void preorder(const MNode* h, std::vector<int>& out) { for (; h; h = h->next) { out.push_back(h->val); preorder(h->child, out); } }
+MNode* flattenMulti(MNode* head) { std::vector<MNode*> st; MNode* cur = head; while (cur) { if (cur->child) { if (cur->next) st.push_back(cur->next); cur->next = cur->child; cur->child->prev = cur; cur->child = nullptr; }
+        if (!cur->next && !st.empty()) { cur->next = st.back(); st.pop_back(); cur->next->prev = cur; } cur = cur->next; } return head; }                                       // 자식 리스트를 노드 뒤에 끼우고, 나중에 원래 next 로 이어 줌
 int main() {
-    std::vector<std::vector<int>> nested = {{1,2}, {3,4}};
-    std::vector<int> flat;
-    for (auto& v : nested) flat.insert(flat.end(), v.begin(), v.end());
-    assert(flat.size() == 4);
-    std::cout << "Flatten verified." << std::endl;
-    return 0;
+    std::mt19937 rng(53);
+    for (int rep = 0; rep < 300; rep++) { int k = (int)(rng() % 6); std::vector<std::vector<int>> vv(k); std::size_t total = 0; for (auto& v : vv) { v.resize(rng() % 5); for (int& x : v) x = (int)(rng() % 100); total += v.size(); } std::vector<int> want; for (auto& v : vv) for (int x : v) want.push_back(x);   // ①
+        std::vector<int> f = flatten1(vv); assert(f == want && f.size() == total); std::vector<int> fm; for (int i = 0; i < k; i++) { std::vector<int> r = {i, i * 10}; fm.insert(fm.end(), r.begin(), r.end()); } std::vector<std::vector<int>> mapped; for (int i = 0; i < k; i++) mapped.push_back({i, i * 10}); assert(flatten1(mapped) == fm); }
+    for (int rep = 0; rep < 800; rep++) { Nested n = randomNested(rng, 6); std::vector<int> a, b = oracle(n); flattenRec(n, a); assert(a == b && flattenIter(n) == b); }                                                                  // ②
+    assert(flattenIter(Nested::list({})).empty() && flattenIter(Nested::list({Nested::list({}), Nested::list({Nested::list({})})})).empty() && flattenIter(Nested::num(5)) == std::vector<int>{5});                                  // ⑤
+    { Nested chain = Nested::num(7); for (int i = 0; i < 3000; i++) { std::vector<Nested> k; k.push_back(Nested::num(i)); k.push_back(std::move(chain)); chain = Nested::list(std::move(k)); } std::vector<int> r = flattenIter(chain); assert(r.size() == 3001 && r.front() == 2999 && r.back() == 7); }   // ③ 깊이 3000
+    for (int rep = 0; rep < 400; rep++) { std::vector<MNode*> all; int counter = 0; MNode* head = buildLevel(rng, 4, counter, all); std::vector<int> want; preorder(head, want); flattenMulti(head);                                    // ④
+        std::vector<int> got; MNode* last = nullptr; for (MNode* c = head; c; c = c->next) { assert(c->child == nullptr && (c == head ? c->prev == nullptr : c->prev == last)); got.push_back(c->val); last = c; } assert(got == want && got.size() == all.size() && (int)all.size() == MNode::live);
+        for (MNode* x : all) delete x; assert(MNode::live == 0); }
+    { MNode* n = nullptr; assert(flattenMulti(n) == nullptr); }
+    std::cout << "Flatten: one-level flatten and flatMap matched manual concatenation; iterative flattening with an explicit stack equalled the recursive version and the definition on 800 random nested structures and handled a depth-3000 chain; flattening multilevel doubly linked lists relinked 400 random lists into preorder with consistent prev/next, no child pointers left and no node lost" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: O(전체 원소 수)
+// Space Complexity: 한 단계 O(N), 반복 중첩 평탄화 O(깊이), 다층 연결 리스트 O(깊이)
 ```
 
 # Part 10. 학사과정을 넘어
@@ -2392,13 +2828,16 @@ int main() {
 ## Rope()
 ### 대표코드
 ```cpp
+#include <cassert>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <string>
 #include <utility>
-#include <cassert>
+#include <vector>
 
-// 로프(리스트 관점의 요약, 정본은 String.md Part 4): 긴 문자열을 이진 트리로 나타내고 연결은 새 루트 하나, 분할·색인은 O(깊이).  노드가 불변이라 편집 전 버전과 구조를 공유한다
+// 로프(리스트 관점의 요약, 정본은 String.md Part 4): 긴 문자열을 이진 트리로 나타내고 연결은 새 루트 하나, 분할·색인은 O(깊이). 노드가 불변이라 편집 전 버전과 구조를 공유한다 — 편집은 분할(split)과 연결(concat)의 조합이다: 삽입 = 분할 + 연결 + 연결, 삭제 = 분할 두 번 + 연결. 문자열(연속 메모리)에서 중간 삽입이 O(n) 이동인 것에 비해 로프는 O(깊이)에 노드 몇 개만 만든다.
+// 검증: 무작위 삽입·삭제·연결을 std::string 모델과 비교하고(길이·내용·임의 위치의 문자), 편집 전에 찍어 둔 스냅샷(이전 버전)이 이후 수백 번의 편집이 끝난 뒤에도 그대로임을 확인한다(영속성). 정본의 균형 잡기·병합 최적화는 String.md 참조.
 struct Node; typedef std::shared_ptr<const Node> P;
 struct Node { P l, r; std::string s; size_t n; };                          // 잎: s, 내부: l/r, n = 전체 길이
 P leaf(const std::string& s) { return std::make_shared<const Node>(Node{nullptr, nullptr, s, s.size()}); }
@@ -2411,11 +2850,22 @@ std::pair<P, P> split(const P& p, size_t i) {
     auto t = split(p->r, i - len(p->l)); return {cat(p->l, t.first), t.second};
 }
 std::string str(const P& p) { return !p ? "" : !p->l ? p->s : str(p->l) + str(p->r); }
+char at(const P& p, size_t i) { return !p->l ? p->s[i] : i < len(p->l) ? at(p->l, i) : at(p->r, i - len(p->l)); }
+P insertAt(const P& doc, size_t pos, const std::string& text) { auto t = split(doc, pos); return cat(cat(t.first, leaf(text)), t.second); }
+P eraseRange(const P& doc, size_t pos, size_t count) { auto a = split(doc, pos); auto b = split(a.second, count); return cat(a.first, b.second); }
 int main() {
     P doc = cat(leaf("Hello, "), leaf("world!")); auto [a, b] = split(doc, 7);
     P edited = cat(cat(a, leaf("rope ")), b);                              // 중간 삽입 = 분할 + 연결
     assert(str(edited) == "Hello, rope world!" && str(doc) == "Hello, world!");
-    std::cout << "Rope: " << str(edited) << std::endl; return 0;
+    std::mt19937 rng(54); P cur = leaf("seed text"); std::string ref = "seed text"; std::vector<std::pair<P, std::string>> snaps;
+    for (int step = 0; step < 600; step++) { int op = (int)(rng() % 4);
+        if (step % 25 == 0) snaps.push_back({cur, ref});                                                          // 버전 스냅샷
+        if (op <= 1 || ref.empty()) { size_t pos = rng() % (ref.size() + 1); std::string t; for (int i = 0, k = 1 + (int)(rng() % 6); i < k; i++) t += (char)('a' + rng() % 26); cur = insertAt(cur, pos, t); ref.insert(pos, t); }
+        else if (op == 2) { size_t pos = rng() % ref.size(), cnt = rng() % (ref.size() - pos + 1); cur = eraseRange(cur, pos, cnt); ref.erase(pos, cnt); }
+        else { std::string t = "[" + std::to_string(step) + "]"; cur = cat(cur, leaf(t)); ref += t; }
+        assert(len(cur) == ref.size()); if (step % 7 == 0 && !ref.empty()) { size_t i = rng() % ref.size(); assert(at(cur, i) == ref[i]); } if (step % 50 == 0) assert(str(cur) == ref); }
+    assert(str(cur) == ref); for (auto& s : snaps) assert(str(s.first) == s.second);                                  // 영속성: 이전 버전은 그대로
+    std::cout << "Rope: " << str(edited) << " (600 random edits matched std::string and " << snaps.size() << " earlier versions stayed intact)" << std::endl; return 0;
 }
 // Time Complexity: 연결 O(1), 분할 O(깊이)
 // Space Complexity: O(노드 수), 편집 후에도 원본 공유
@@ -2477,25 +2927,36 @@ int main() {
 ## GapBuffer()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <string>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <string>
 
 // 갭 버퍼(리스트 관점의 요약, 정본은 String.md Part 4): 글자 배열 가운데에 "빈 틈(gap)"을 두고 커서가 있는 곳에 틈을 놓는다. 커서 위치에서의 삽입·삭제는 O(1),
 // 커서를 옮기면 틈을 따라 옮기는 데 이동 거리만큼의 복사가 든다. 편집은 지역적이라는 관찰에 기대는 Emacs 의 버퍼 구조
+// 검증: 무작위 커서 이동·삽입·뒤로 지우기를 std::string 모델과 비교하고(내용·커서 위치·길이), 커서 이동의 복사 비용이 정확히 이동 거리와 같음을 센다. 같은 자리에서 연속 입력하면 이동이 한 번도 없다(지역성).
 struct GapBuffer {
-    std::string b; size_t gs, ge;                                          // 틈 [gs, ge)
+    std::string b; size_t gs, ge; long copies = 0;                         // 틈 [gs, ge)
     GapBuffer() : b(8, '_'), gs(0), ge(8) {}
-    void moveTo(size_t pos) { while (gs > pos) b[--ge] = b[--gs]; while (gs < pos) b[gs++] = b[ge++]; }
+    void moveTo(size_t pos) { while (gs > pos) { b[--ge] = b[--gs]; copies++; } while (gs < pos) { b[gs++] = b[ge++]; copies++; } }
     void insert(char c) { if (gs == ge) { size_t add = b.size(); b.insert(ge, add, '_'); ge += add; } b[gs++] = c; }
     void erase() { if (gs) gs--; }                                         // 커서 앞 글자 삭제
     std::string text() const { return b.substr(0, gs) + b.substr(ge); }
+    size_t cursor() const { return gs; } size_t length() const { return b.size() - (ge - gs); }
 };
 int main() {
     GapBuffer g; for (char c : std::string("Hello world")) g.insert(c);
     g.moveTo(5); g.insert(','); g.moveTo(g.text().size()); g.insert('!');
     assert(g.text() == "Hello, world!"); g.moveTo(5); g.erase(); assert(g.text() == "Hell, world!");
-    std::cout << "GapBuffer: " << g.text() << std::endl; return 0;
+    std::mt19937 rng(55); GapBuffer h; std::string ref; size_t cur = 0;
+    for (int step = 0; step < 20000; step++) { int op = (int)(rng() % 6);
+        if (op <= 2) { char c = (char)('a' + rng() % 26); h.insert(c); ref.insert(cur, 1, c); cur++; }
+        else if (op == 3) { h.erase(); if (cur) { ref.erase(cur - 1, 1); cur--; } }
+        else { size_t pos = rng() % (ref.size() + 1); long before = h.copies; size_t dist = pos > cur ? pos - cur : cur - pos; h.moveTo(pos); cur = pos; assert(h.copies - before == (long)dist); }   // 이동 비용 = 거리
+        assert(h.cursor() == cur && h.length() == ref.size()); if (step % 97 == 0) assert(h.text() == ref); }
+    assert(h.text() == ref);
+    { GapBuffer t; long moved = t.copies; for (int i = 0; i < 5000; i++) t.insert('x'); assert(t.copies == moved && t.length() == 5000); }       // 같은 자리 연속 입력: 이동 0
+    std::cout << "GapBuffer: " << g.text() << " (20000 random edits matched std::string; a cursor move copied exactly its distance, typing in place copied nothing)" << std::endl; return 0;
 }
 // Time Complexity: 커서 위치 삽입·삭제 O(1), 이동 O(거리)
 // Space Complexity: O(N + 틈)
@@ -2503,33 +2964,45 @@ int main() {
 ## PieceTable()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
 // 피스 테이블(리스트 관점의 요약, 정본은 String.md Part 4): 원본 파일은 수정하지 않고 "추가 전용" 버퍼에 새 글자를 덧붙이며, 문서 = (버퍼, 시작, 길이) 조각들의 목록.
-// 삽입은 조각을 둘로 쪼개고 새 조각 하나를 끼우는 일이고, 조각 목록의 복사본이 곧 실행 취소(undo) 기록이다 (VS Code 의 텍스트 버퍼가 이 계열)
+// 삽입은 조각을 둘로 쪼개고 새 조각 하나를 끼우는 일이고, 삭제는 두 지점에서 조각을 쪼갠 뒤 사이의 조각을 목록에서 빼는 일이다. 글자는 한 번도 옮기거나 지우지 않으므로 조각 목록의 복사본이 곧 실행 취소(undo) 기록이다 (VS Code 의 텍스트 버퍼가 이 계열)
+// 검증: 무작위 삽입·삭제를 std::string 모델과 비교하고, 도중에 찍은 조각 목록 스냅샷으로 복원하면 정확히 그 시점의 문서가 되며(원본·추가 버퍼는 그대로), 추가 버퍼는 줄지 않고 삽입한 글자 수만큼만 늘어난다.
 struct Piece { bool add; size_t start, len; };
 struct PT {
     std::string orig, added; std::vector<Piece> pieces;
     explicit PT(const std::string& s) : orig(s), pieces{{false, 0, s.size()}} {}
-    void insert(size_t pos, const std::string& t) {
+    size_t splitAt(size_t pos) {                                           // pos 에서 조각을 쪼개고 pos 직전까지의 조각 수를 돌려줌
         size_t off = 0, i = 0; while (i < pieces.size() && off + pieces[i].len <= pos) off += pieces[i++].len;
-        Piece n{true, added.size(), t.size()}; added += t;
-        if (i < pieces.size() && pos > off) { Piece p = pieces[i]; size_t k = pos - off; pieces[i] = {p.add, p.start, k}; pieces.insert(pieces.begin() + i + 1, {p.add, p.start + k, p.len - k}); i++; }
-        pieces.insert(pieces.begin() + i, n);
-    }
+        if (i < pieces.size() && pos > off) { Piece p = pieces[i]; size_t k = pos - off; pieces[i] = {p.add, p.start, k}; pieces.insert(pieces.begin() + i + 1, Piece{p.add, p.start + k, p.len - k}); return i + 1; }
+        return i; }
+    void insert(size_t pos, const std::string& t) { if (t.empty()) return; size_t i = splitAt(pos); Piece n{true, added.size(), t.size()}; added += t; pieces.insert(pieces.begin() + i, n); }
+    void erase(size_t pos, size_t count) { if (!count) return; size_t a = splitAt(pos); size_t b = splitAt(pos + count); pieces.erase(pieces.begin() + a, pieces.begin() + b); }
     std::string text() const { std::string r; for (auto& p : pieces) r += (p.add ? added : orig).substr(p.start, p.len); return r; }
+    size_t length() const { size_t n = 0; for (auto& p : pieces) n += p.len; return n; }
 };
 int main() {
     PT d("Hello world"); auto undo = d.pieces;                             // 조각 목록의 복사본 = 문서의 한 시점
     d.insert(5, ","); d.insert(0, ">> ");
     assert(d.text() == ">> Hello, world" && d.orig == "Hello world");        // 원본은 그대로
     d.pieces = undo; assert(d.text() == "Hello world");                    // 실행 취소 = 조각 목록 복원
-    std::cout << "PieceTable: undo restores \"" << d.text() << "\"" << std::endl; return 0;
+    std::mt19937 rng(56); PT p("The quick brown fox jumps over the lazy dog"); std::string ref = p.orig; std::vector<std::pair<std::vector<Piece>, std::string>> snaps; size_t inserted = 0;
+    for (int step = 0; step < 2000; step++) { if (step % 100 == 0) snaps.push_back({p.pieces, ref});
+        if (ref.empty() || rng() % 3 == 0) { size_t pos = rng() % (ref.size() + 1); std::string t; for (int i = 0, k = 1 + (int)(rng() % 5); i < k; i++) t += (char)('A' + rng() % 26); p.insert(pos, t); ref.insert(pos, t); inserted += t.size(); }
+        else { size_t pos = rng() % ref.size(), cnt = rng() % std::min<size_t>(6, ref.size() - pos + 1); p.erase(pos, cnt); ref.erase(pos, cnt); }
+        assert(p.length() == ref.size() && p.added.size() == inserted); if (step % 41 == 0) assert(p.text() == ref); }
+    assert(p.text() == ref && p.orig == "The quick brown fox jumps over the lazy dog");
+    for (auto& s : snaps) { std::vector<Piece> keep = p.pieces; p.pieces = s.first; assert(p.text() == s.second); p.pieces = keep; }       // 모든 시점으로 되돌릴 수 있다(버퍼는 추가 전용)
+    assert(p.text() == ref);
+    std::cout << "PieceTable: undo restores \"" << d.text() << "\" (2000 random edits matched std::string and all " << snaps.size() << " saved piece lists restored their exact documents)" << std::endl; return 0;
 }
-// Time Complexity: 삽입 O(조각 수), 텍스트 조립 O(길이)
+// Time Complexity: 삽입·삭제 O(조각 수), 텍스트 조립 O(길이)
 // Space Complexity: 원본 + 추가 버퍼 + 조각 목록
 ```
 ## FingerTree()
