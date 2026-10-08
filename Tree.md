@@ -3939,6 +3939,7 @@ int main() {
 #include <vector>
 #include <cassert>
 
+// (정수 키·고정 폭 조각의 기수 트리는 AdvancedDataStructures.md Part 14.)
 // 기수 트리(압축 트라이, radix tree): 자식이 하나뿐인 경로를 하나의 간선(문자열 레이블)으로 합친 트라이.  노드 수가 단어 수에 비례(O(n))하고, 단어를 넣을 때
 // 간선 레이블이 중간에서 갈라지면 그 자리에서 둘로 쪼갠다.  리눅스 커널의 페이지 캐시·IP 라우팅 테이블(LPM)·Redis 의 rax 가 쓴다
 struct Node { std::map<char, std::pair<std::string, Node*>> kids; bool end = false; ~Node() { for (auto& kv : kids) delete kv.second.second; } };
@@ -4439,6 +4440,7 @@ int main() {
 
 // 세그먼트 트리(반복형, 아래에서 위로): 배열 d[1 .. 2·size) 에 완전 이진 트리를 담고 잎은 d[size + i].  한 점 갱신 O(log n), 구간 [l, r) 질의 O(log n).
 //  *모노이드*(결합 법칙 + 항등원) 이면 무엇이든 담을 수 있다 — 합·최솟값·gcd 뿐 아니라 교환 법칙이 없는 문자열 연결·행렬 곱·"최대 부분 배열 합"까지.  교환 법칙이 없으므로 질의는 왼쪽 누적(sl)과 오른쪽 누적(sr)을 따로 두어 순서를 지킨다.
+//  (구간 아핀 변환 지연 전파 판은 AdvancedDataStructures.md Part 6, 일반 지연 전파는 Tree.md Part 12.)
 //  maxRight(l, f): f(구간 값) 이 참인 가장 긴 [l, r) 의 r 을 트리 *내려가기*로 O(log n) 에 찾는다 (f 는 단조).  ① n = 1..70 에서 *모든* 구간 [l, r) 을 순진한 왼쪽→오른쪽 접기와 대조 (합·최솟값·gcd·문자열 연결·2×2 행렬 곱 mod p·최대 부분 배열 합)
 //  ② maxRight 를 모든 (l, K) 에서 순진한 선형 탐색과 대조  ③ build(O(n)) 결과 = 점 갱신 n 번의 결과  ④ n = 10^6, 갱신 10^6 번 — 10^5 번마다 접두사 합 배열로 질의를 대조.
 template <class T, class Op> struct SegTree {
@@ -4510,6 +4512,7 @@ int main() {
 #include <vector>
 
 // 펜윅 트리(이진 인덱스 트리): t[i] 가 구간 (i − lowbit(i), i] 의 합을 담는다 (lowbit(i) = i & −i).  갱신은 i += lowbit(i) 로 올라가고 접두사 합은 i −= lowbit(i) 로 내려간다 — 둘 다 O(log n).  세그먼트 트리의 절반 메모리, 상수도 작지만 *역원이 있는 연산*(합)에 한정된다.
+//  (2 차원 확장은 AdvancedDataStructures.md Part 6.)
 //  ① 구조 성질: 모든 i 에서 t[i] 가 정확히 (i − lowbit(i), i] 의 합  ② 선형 시간 구성(각 칸을 부모에게 한 번 더하기) = 갱신 n 번의 결과  ③ lowerBound(target): 접두사 합이 target 이상이 되는 첫 인덱스를 트리 내려가기로 O(log n) (값은 음이 아님)
 //  ④ 구간 갱신·구간 합(두 BIT)  ⑤ 응용: 역전 수(inversions) 를 병합 정렬 계수와 대조, 동적 k 번째 작은 값을 정렬 벡터와 대조  ⑥ n = 10^6 에서 갱신 10^6 번, 10^5 번마다 접두사 합 배열로 대조.
 struct Fenwick {
