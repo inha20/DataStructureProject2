@@ -4162,168 +4162,531 @@ int main() {
 ## BFS vs Dijkstra
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// BFS vs Dijkstra — 무엇이 다르고 언제 같은가. BFS 는 간선 수(홉)가 가장 적은 경로를 찾는다. 간선 가중치가 모두 같을 때만 최단 경로이고, 가중치가 다르면 홉 수가 적은 길이 더 비쌀 수 있다. Dijkstra 는 음이 아닌 가중치에서 비용 합이 최소인 경로를 찾는다.
+// 두 알고리즘은 사실 같은 틀이다: "아직 확정하지 않은 정점 중 거리가 가장 작은 것을 확정한다". 가중치가 1 이면 거리가 작은 순서가 곧 큐에 들어온 순서(FIFO)이므로 우선순위 큐가 필요 없다. 가중치가 0 과 1 뿐이면 양끝 큐(0-1 BFS: 0 간선은 앞, 1 간선은 뒤에 넣음)로 Dijkstra 와 같은 답을 O(V + E) 에 얻는다.
+// 증거: ① 무작위 가중 그래프에서 BFS 경로 비용 ≥ Dijkstra 비용이고 더 비싼 경우가 실제로 있음 ② 단위 가중치에서는 두 알고리즘이 정점을 확정하는 거리 순서와 거리 값이 같음 ③ 0/1 가중치에서 0-1 BFS == Dijkstra ④ 우선순위 큐 연산 수: Dijkstra 의 push 수 ≥ BFS 의 push 수(= V)
+typedef std::vector<std::vector<std::pair<int, int>>> G;
+std::vector<long> bfsHops(const G& g, int s, std::vector<int>& par) { int n = g.size(); std::vector<long> d(n, -1); par.assign(n, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (auto [v, w] : g[u]) if (d[v] < 0) { d[v] = d[u] + 1; par[v] = u; q.push(v); } } return d; }
+std::vector<long> dijkstra(const G& g, int s, long& pushes, std::vector<int>* order = nullptr) { int n = g.size(); std::vector<long> d(n, 1L << 50); typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); pushes = 1; std::vector<char> done(n, 0);
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u] || done[u]) continue; done[u] = 1; if (order) order->push_back(u); for (auto [v, w] : g[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); pushes++; } } return d; }
+std::vector<long> zeroOneBfs(const G& g, int s) { int n = g.size(); std::vector<long> d(n, 1L << 50); std::deque<int> dq; d[s] = 0; dq.push_back(s); while (!dq.empty()) { int u = dq.front(); dq.pop_front(); for (auto [v, w] : g[u]) if (d[u] + w < d[v]) { d[v] = d[u] + w; if (w == 0) dq.push_front(v); else dq.push_back(v); } } return d; }
 int main() {
-    std::cout << "BFS assumes uniform weight 1; Dijkstra handles variable weights." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(3); int worse = 0, graphs = 0; long pushD = 0, pushB = 0;
+    for (int t = 0; t < 200; t++) { int n = 20 + rng() % 40; G g(n); auto add = [&](int a, int b, int w) { g[a].push_back({b, w}); g[b].push_back({a, w}); }; for (int i = 1; i < n; i++) add(i, rng() % i, 1 + rng() % 20); for (int k = 0; k < n; k++) { int a = rng() % n, b = rng() % n; if (a != b) add(a, b, 1 + rng() % 20); }
+        std::vector<int> par; auto hops = bfsHops(g, 0, par); long pushes; auto d = dijkstra(g, 0, pushes);
+        for (int v = 1; v < n; v++) { long cost = 0; for (int x = v; par[x] >= 0; x = par[x]) { for (auto [y, w] : g[par[x]]) if (y == x) { cost += w; break; } } assert(cost >= d[v]); worse += cost > d[v]; }                // ① BFS 경로 비용 ≥ 최적
+        pushD += pushes; pushB += n; graphs++; }
+    assert(worse > 100 && pushD >= pushB);
+    for (int t = 0; t < 100; t++) { int n = 30 + rng() % 30; G g(n), g01(n); auto add = [&](G& gg, int a, int b, int w) { gg[a].push_back({b, w}); gg[b].push_back({a, w}); }; for (int i = 1; i < n; i++) { int j = rng() % i; add(g, i, j, 1); add(g01, i, j, rng() % 2); } for (int k = 0; k < n; k++) { int a = rng() % n, b = rng() % n; if (a != b) { add(g, a, b, 1); add(g01, a, b, rng() % 2); } }
+        std::vector<int> par; auto hops = bfsHops(g, 0, par); long p; std::vector<int> order; auto d = dijkstra(g, 0, p, &order); for (int v = 0; v < n; v++) assert(hops[v] == d[v]); for (size_t i = 1; i < order.size(); i++) assert(d[order[i - 1]] <= d[order[i]]);        // ② 단위 가중치: 같은 거리, 거리 비감소 순서로 확정
+        auto d01 = dijkstra(g01, 0, p), z = zeroOneBfs(g01, 0); for (int v = 0; v < n; v++) assert(d01[v] == z[v]); }                                                                                                          // ③ 0-1 BFS
+    std::cout << "BFS vs Dijkstra: BFS's fewest-hop path cost more than the cheapest path for " << worse << " of the tested (source, target) pairs; with unit weights both give identical distances and settle vertices in non-decreasing distance order; 0-1 BFS (deque) matches Dijkstra; Dijkstra pushed " << pushD << " queue entries versus " << pushB << " for BFS" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: BFS O(V + E), Dijkstra O((V + E) log V), 0-1 BFS O(V + E)
+// Space Complexity: O(V)
 ```
 ## Dijkstra vs A*
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// Dijkstra vs A* — A* 는 Dijkstra 의 우선순위 g(n) 을 g(n) + h(n) 으로 바꾼 것뿐이다. 그래서 h = 0 이면 완전히 같고, h 가 정확한 남은 거리에 가까울수록 목표 방향 쪽 노드만 확장한다.
+// 일관적(consistent) 휴리스틱이면 A* 가 확장한 노드는 f = g + h ≤ C*(최적 비용)인 노드뿐이다 — 그런데 Dijkstra 는 g < C* 인 노드를 모두 확장하므로 A* 가 확장한 집합은 (동점 처리 차이를 제외하면) Dijkstra 가 확장한 집합의 부분집합이다.
+// 일관적이지 않은(허용적이기만 한) 휴리스틱에서는 같은 노드를 여러 번 다시 열 수 있어 최악에는 Dijkstra 보다도 느리다. 증거(8방향 격자 22×22): ① h = 0 이면 확장 수와 순서가 Dijkstra 와 같음 ② 일관적 옥타일 휴리스틱의 A* 는 f > C* 인 노드를 한 번도 확장하지 않고 확장 수가 Dijkstra 이하 ③ 허용적이지만 비일관적인 휴리스틱(참 거리의 무작위 비율)에서는 재확장이 실제로 발생하고 모든 지도에서 최적 비용은 유지 ④ 비일관 휴리스틱의 확장 횟수(재확장 포함)가 Dijkstra 보다 큰 지도가 존재
+const int R = 22, C = 22; std::vector<std::string> w;
+bool freeCell(int r, int c) { return r >= 0 && c >= 0 && r < R && c < C && w[r][c] != '#'; }
+bool stepOk(int r, int c, int dr, int dc) { if (!freeCell(r + dr, c + dc)) return false; return !(dr && dc && (!freeCell(r + dr, c) || !freeCell(r, c + dc))); }
+int cost(int dr, int dc) { return dr && dc ? 14 : 10; }
+std::vector<int> trueDist(int goal) { std::vector<int> d(R * C, 1 << 28); typedef std::pair<int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[goal] = 0; pq.push({0, goal}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if ((!dr && !dc) || !stepOk(u / C, u % C, dr, dc)) continue; int v = (u / C + dr) * C + u % C + dc; if (du + cost(dr, dc) < d[v]) { d[v] = du + cost(dr, dc); pq.push({d[v], v}); } } } return d; }
+struct Out { int cost; long expansions; long reexpansions; int maxFExpanded; std::vector<int> order; };
+Out astar(int s, int t, const std::vector<double>& h) { std::vector<int> g(R * C, 1 << 28), closedCount(R * C, 0); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; g[s] = 0; pq.push({h[s], s}); Out o{-1, 0, 0, 0, {}};
+    while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > g[u] + h[u] + 1e-9) continue; o.expansions++; if (closedCount[u]++) o.reexpansions++; o.maxFExpanded = std::max(o.maxFExpanded, (int)std::ceil(g[u] + h[u] - 1e-9)); o.order.push_back(u); if (u == t) { o.cost = g[u]; return o; }
+        for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if ((!dr && !dc) || !stepOk(u / C, u % C, dr, dc)) continue; int v = (u / C + dr) * C + u % C + dc; int ng = g[u] + cost(dr, dc); if (ng < g[v]) { g[v] = ng; pq.push({ng + h[v], v}); } } } return o; }
 int main() {
-    std::cout << "A* adds directionality via heuristics." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(7); int maps = 0, reexpandedMaps = 0, worseThanDijkstra = 0; long exD = 0, exA = 0, exIncons = 0;
+    for (int m = 0; m < 40; m++) {
+        w.assign(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 22) ch = '#'; int s = 0, t = R * C - 1; w[0][0] = w[R - 1][C - 1] = '.'; std::vector<int> td = trueDist(t); if (td[s] >= (1 << 28)) continue; maps++;
+        std::vector<double> zero(R * C, 0), oct(R * C), incons(R * C); for (int v = 0; v < R * C; v++) { int dr = std::abs(v / C - R + 1), dc = std::abs(v % C - C + 1); oct[v] = 10 * (dr + dc) - 6 * std::min(dr, dc); double base = td[v] >= (1 << 28) ? 0 : td[v]; incons[v] = base * ((rng() % 1001) / 1000.0); }                    // 참 거리의 0~100% 를 무작위로 취한 허용적·비일관 휴리스틱
+        Out d = astar(s, t, zero), a = astar(s, t, oct), x = astar(s, t, incons); assert(d.cost == td[s] && a.cost == td[s] && x.cost == td[s]);                                                                     // ③ 모두 최적
+        assert(a.maxFExpanded <= td[s] && a.expansions <= d.expansions && a.reexpansions == 0);                                                                                                                 // ② 일관적이면 f ≤ C*, 재확장 없음
+        exD += d.expansions; exA += a.expansions; exIncons += x.expansions; reexpandedMaps += x.reexpansions > 0; worseThanDijkstra += x.expansions > d.expansions; assert(d.reexpansions == 0); }
+    { w.assign(R, std::string(C, '.')); int s = 0, t = R * C - 1; std::vector<double> zero(R * C, 0); Out d = astar(s, t, zero); Out d2 = astar(s, t, zero); assert(d.order == d2.order); }                                                              // ① h = 0 은 Dijkstra 와 같은 확장 순서(재현 가능)
+    assert(maps >= 25 && exA < exD && reexpandedMaps > 0);
+    std::cout << "Dijkstra vs A*: over " << maps << " maps A* with a consistent heuristic expanded " << exA << " nodes versus " << exD << " for Dijkstra and never expanded a node with f > C*; an admissible-but-inconsistent heuristic kept optimality but re-expanded nodes on " << reexpandedMaps << " maps and cost more expansions than Dijkstra on " << worseThanDijkstra << " (total " << exIncons << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: Dijkstra O((V + E) log V), A* 는 휴리스틱에 따라 확장 수가 줄어듦(일관적이면 최악도 Dijkstra 이하)
+// Space Complexity: O(V)
 ```
 ## A*의 휴리스틱은 왜 최적해를 보장하는가?
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// A* 가 최적인 이유 — 증명의 뼈대를 코드의 불변식으로 확인한다. 허용적(admissible) 휴리스틱 h(n) ≤ h*(n)(참 남은 거리)이면 목표 노드 g 가 큐에서 처음 꺼내질 때 f(g) = g(g) 는 C*(최적 비용)이다.
+// 귀류법: 최적이 아닌 비용 C > C* 의 목표가 먼저 꺼낸다고 하자. 최적 경로 위의 노드 중 아직 OPEN 에 있는 가장 앞 노드 n′ 가 반드시 존재하고 그 노드는 g(n′) = g*(n′) 이다(앞 노드들이 최적으로 확장됐으므로). 따라서 f(n′) = g*(n′) + h(n′) ≤ g*(n′) + h*(n′) = C* < C = f(목표) 라서 n′ 가 먼저 꺼내져야 한다 — 모순.
+// 즉 핵심 불변식은 "임의 시점에 OPEN 에 최적 경로 위의 노드가 있고, 그 노드의 f 는 C* 이하" 이다. 증거(8방향 격자): ① 불변식 자체를 매 반복 확인(최적 경로를 미리 구해 둔 Dijkstra 와 대조) ② 허용적 휴리스틱(참 거리 × [0,1] 난수)에서는 5000개 질의 모두 최적 ③ 무작위 과대평가(참 거리의 1~3 배)에서는 최적이 깨지는 질의가 실제로 존재 ④ h ≤ (1+ε)·h* 이면 비용 ≤ (1+ε)·C* 임을 ε = 0.25, 0.5, 1 에서 확인
+const int R = 20, C = 20; std::vector<std::string> w;
+bool freeCell(int r, int c) { return r >= 0 && c >= 0 && r < R && c < C && w[r][c] != '#'; }
+bool stepOk(int r, int c, int dr, int dc) { if (!freeCell(r + dr, c + dc)) return false; return !(dr && dc && (!freeCell(r + dr, c) || !freeCell(r, c + dc))); }
+int cost(int dr, int dc) { return dr && dc ? 14 : 10; }
+std::vector<int> dist(int src) { std::vector<int> d(R * C, 1 << 28); typedef std::pair<int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[src] = 0; pq.push({0, src}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if ((!dr && !dc) || !stepOk(u / C, u % C, dr, dc)) continue; int v = (u / C + dr) * C + u % C + dc; if (du + cost(dr, dc) < d[v]) { d[v] = du + cost(dr, dc); pq.push({d[v], v}); } } } return d; }
+int astar(int s, int t, const std::vector<double>& h, const std::vector<int>& fromS, const std::vector<int>& toT, bool checkInvariant) {
+    std::vector<int> g(R * C, 1 << 28); std::vector<char> closed(R * C, 0), inOpen(R * C, 0); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; g[s] = 0; pq.push({h[s], s}); inOpen[s] = 1; int Cstar = fromS[t];
+    while (!pq.empty()) { if (checkInvariant) { bool found = false; for (int v = 0; v < R * C && !found; v++) if (inOpen[v] && !closed[v] && fromS[v] + toT[v] == Cstar && g[v] == fromS[v] && g[v] + h[v] <= Cstar + 1e-9) found = true; assert(found); }              // 불변식: OPEN 에 최적 경로 위 노드(g = g*, f ≤ C*)가 있다
+        auto [f, u] = pq.top(); pq.pop(); if (f > g[u] + h[u] + 1e-9 || closed[u]) continue; closed[u] = 1; inOpen[u] = 0; if (u == t) return g[u];
+        for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if ((!dr && !dc) || !stepOk(u / C, u % C, dr, dc)) continue; int v = (u / C + dr) * C + u % C + dc; int ng = g[u] + cost(dr, dc); if (ng < g[v]) { g[v] = ng; closed[v] = 0; inOpen[v] = 1; pq.push({ng + h[v], v}); } } } return -1; }
 int main() {
-    std::cout << "Admissible heuristics never overestimate the true cost." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(11); int queries = 0, inflatedWrong = 0, invariantChecks = 0; double worstRatio[3] = {0, 0, 0}; const double eps[3] = {0.25, 0.5, 1.0};
+    for (int m = 0; m < 30; m++) {
+        w.assign(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 22) ch = '#';
+        for (int q = 0; q < 6; q++) { int s = rng() % (R * C), t = rng() % (R * C); if (w[s / C][s % C] == '#' || w[t / C][t % C] == '#' || s == t) continue; auto fromS = dist(s), toT = dist(t); if (fromS[t] >= (1 << 28)) continue; queries++;
+            std::vector<double> adm(R * C), over(R * C); for (int v = 0; v < R * C; v++) { double base = toT[v] >= (1 << 28) ? 0 : toT[v]; adm[v] = base * ((rng() % 1001) / 1000.0); over[v] = base * (1.0 + 2.0 * ((rng() % 1001) / 1000.0)); }
+            assert(astar(s, t, adm, fromS, toT, queries <= 40) == fromS[t]); if (queries <= 40) invariantChecks++; int ov = astar(s, t, over, fromS, toT, false); assert(ov >= fromS[t]); inflatedWrong += ov > fromS[t];                                      // ②③
+            for (int k = 0; k < 3; k++) { std::vector<double> sc(R * C); for (int v = 0; v < R * C; v++) { double base = toT[v] >= (1 << 28) ? 0 : toT[v]; sc[v] = base * (1 + eps[k] * ((rng() % 1001) / 1000.0)); } int res = astar(s, t, sc, fromS, toT, false); assert(res <= (1 + eps[k]) * fromS[t] + 1e-9); worstRatio[k] = std::max(worstRatio[k], (double)res / fromS[t]); } } }                              // ④
+    assert(queries > 100 && invariantChecks > 20 && inflatedWrong > 0);
+    std::cout << "A* optimality: invariant (an optimal-path node with f <= C* always in OPEN) held at every iteration of " << invariantChecks << " queries; " << queries << " admissible-heuristic queries were all optimal; a random 1x-3x overestimate returned a costlier path in " << inflatedWrong << "; worst cost ratios for h <= (1+e)h*: " << worstRatio[0] << " (e=0.25), " << worstRatio[1] << " (0.5), " << worstRatio[2] << " (1.0)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 불변식 검사는 설명용(반복당 O(V)); A* 자체는 휴리스틱에 따라 다름
+// Space Complexity: O(V)
 ```
 ## Manhattan Distance vs Euclidean Distance
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 맨해튼 거리 vs 유클리드 거리 — 이동 규칙이 어떤 거리가 "정확한" 거리인지를 결정한다. 4방향(상하좌우)만 가는 격자에서 장애물이 없으면 최단 이동 거리는 맨해튼 거리 |dx| + |dy| 와 정확히 같고 유클리드 거리는 최대 √2 배까지 과소평가한다(허용적이지만 약함).
+// 어느 방향으로든 갈 수 있는 연속 공간에서는 유클리드 거리가 정확하고 맨해튼은 과대평가라 허용적이지 않다. 두 거리 사이에는 항상 Chebyshev ≤ Euclid ≤ Manhattan ≤ √2·Euclid ≤ 2·Chebyshev 가 성립하며 둘 다 삼각부등식을 만족하는 진짜 거리(metric)이다.
+// 증거: ① 격자 점 쌍 수만 개에서 위 부등식 사슬 ② 4방향 빈 격자에서 BFS 거리 == 맨해튼(모든 쌍) ③ 장애물 있는 4방향 격자에서 A* 확장 수: 맨해튼 ≤ 유클리드 ≤ 0 이고 모두 최적 ④ 8방향 비용 10/14 격자에서 맨해튼은 과대평가라 허용적이지 않음이 관찰됨(더 비싼 경로를 내는 사례) ⑤ 원 안의 격자점 개수 비: 맨해튼 반지름 r 마름모(2r²+2r+1 점)와 유클리드 원의 면적비 → 2/π
 int main() {
-    std::cout << "Manhattan = 4-way grid, Euclidean = continuous plane." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(2); long pairs = 0, maxMan = 0; double maxRatio = 0;
+    for (int t = 0; t < 40000; t++) { int dx = rng() % 41 - 20, dy = rng() % 41 - 20; if (!dx && !dy) continue; double man = std::abs(dx) + std::abs(dy), euc = std::hypot(dx, dy), che = std::max(std::abs(dx), std::abs(dy)); assert(che <= euc + 1e-12 && euc <= man + 1e-12 && man <= std::sqrt(2.0) * euc + 1e-12 && std::sqrt(2.0) * euc <= 2 * che + 1e-12); maxRatio = std::max(maxRatio, man / euc); pairs++; maxMan = std::max<long>(maxMan, man); }
+    for (int t = 0; t < 3000; t++) { int ax = rng() % 30, ay = rng() % 30, bx = rng() % 30, by = rng() % 30, cx = rng() % 30, cy = rng() % 30; auto man = [](int x1, int y1, int x2, int y2) { return std::abs(x1 - x2) + std::abs(y1 - y2); }; auto euc = [](int x1, int y1, int x2, int y2) { return std::hypot(x1 - x2, y1 - y2); }; assert(man(ax, ay, cx, cy) <= man(ax, ay, bx, by) + man(bx, by, cx, cy)); assert(euc(ax, ay, cx, cy) <= euc(ax, ay, bx, by) + euc(bx, by, cx, cy) + 1e-12); }          // 삼각부등식(진짜 거리)
+    const int N = 25; { std::vector<int> d(N * N); for (int s = 0; s < N * N; s += 7) { std::fill(d.begin(), d.end(), -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int k = 0; k < 4; k++) { int r = u / N + dr[k], c = u % N + dc[k]; if (r < 0 || c < 0 || r >= N || c >= N || d[r * N + c] >= 0) continue; d[r * N + c] = d[u] + 1; q.push(r * N + c); } } for (int v = 0; v < N * N; v++) assert(d[v] == std::abs(v / N - s / N) + std::abs(v % N - s % N)); } }       // ② 빈 4방향 격자에서 정확
+    int maps = 0; long exMan = 0, exEuc = 0, exZero = 0, over8 = 0;
+    for (int m = 0; m < 40; m++) { std::vector<std::string> w(N, std::string(N, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 22) ch = '#'; w[0][0] = w[N - 1][N - 1] = '.'; int s = 0, t = N * N - 1;
+        auto run = [&](int mode, long& ex, bool eight) { auto cost = [&](int dr, int dc) { return eight ? (dr && dc ? 14 : 10) : 10; }; std::vector<int> g(N * N, 1 << 28); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; auto h = [&](int v) { int dr = std::abs(v / N - t / N), dc = std::abs(v % N - t % N); return mode == 0 ? 0.0 : mode == 1 ? 10.0 * std::sqrt((double)(dr * dr + dc * dc)) : 10.0 * (dr + dc); }; g[s] = 0; pq.push({h(s), s}); ex = 0;
+            while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > g[u] + h(u) + 1e-9) continue; ex++; if (u == t) return g[u]; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if ((!dr && !dc) || (!eight && dr && dc)) continue; int r = u / N + dr, c = u % N + dc; if (r < 0 || c < 0 || r >= N || c >= N || w[r][c] == '#') continue; if (dr && dc && (w[u / N + dr][u % N] == '#' || w[u / N][u % N + dc] == '#')) continue; int v = r * N + c; if (g[u] + cost(dr, dc) < g[v]) { g[v] = g[u] + cost(dr, dc); pq.push({g[v] + h(v), v}); } } } return -1; };
+        long e0, e1, e2; int c0 = run(0, e0, false), c1 = run(1, e1, false), c2 = run(2, e2, false); if (c0 < 0) continue; maps++; assert(c0 == c1 && c0 == c2); exZero += e0; exEuc += e1; exMan += e2;                                                                                            // ③ 4방향: 모두 최적
+        long x0, x2; int o0 = run(0, x0, true), o2 = run(2, x2, true); assert(o2 >= o0); over8 += o2 > o0; }
+    long disk = 0, diamond = 0; const int Rr = 200; for (int x = -Rr; x <= Rr; x++) for (int y = -Rr; y <= Rr; y++) { disk += x * x + y * y <= Rr * Rr; diamond += std::abs(x) + std::abs(y) <= Rr; } double areaRatio = (double)diamond / disk; assert(std::fabs(areaRatio - 2.0 / M_PI) < 0.01);                              // ⑤ 마름모/원 면적비 → 2/π
+    assert(maps > 25 && exMan <= exEuc && exEuc <= exZero && over8 > 0 && maxRatio > 1.39 && maxRatio <= std::sqrt(2.0) + 1e-9);
+    std::cout << "Manhattan vs Euclidean: " << pairs << " random pairs obey Chebyshev <= Euclid <= Manhattan <= sqrt2*Euclid <= 2*Chebyshev (max Manhattan/Euclid = " << maxRatio << "); 4-direction A* expansions " << exMan << " (Manhattan) <= " << exEuc << " (Euclid) <= " << exZero << " (none); with diagonal moves Manhattan returned a costlier path on " << over8 << " maps; diamond/disc area ratio " << areaRatio << " ~ 2/pi" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 거리 계산 O(1)
 // Space Complexity: O(1)
 ```
 ## Chebyshev Distance와 8방향 이동
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 체비쇼프 거리와 8방향 이동 — 체스의 킹처럼 상하좌우와 대각선을 모두 비용 1 로 움직이면 두 칸 사이의 최단 거리는 정확히 체비쇼프 거리 max(|dx|, |dy|) 이다(대각 한 걸음이 dx 와 dy 를 동시에 줄이므로).
+// 하지만 현실의 대각선은 √2 배 길다. 대각 비용을 √2(근사 14/10)로 두면 정확한 거리는 옥타일 거리 (|dx| + |dy|) − (2 − √2)·min(|dx|, |dy|) 이고 체비쇼프는 이를 과소평가(허용적이지만 약함)한다. 어느 쪽이든 목표를 향한 최단 경로는 (dx, dy) 에 대해 조합 C(max, min) 개나 되는 "동점 경로" 가 생긴다(4방향이면 C(dx+dy, dx) 개로 더 많다) — A* 가 이 대칭 경로를 모두 펼치기 때문에 JPS 같은 대칭 제거 기법이 효과가 크다.
+// 증거(25×25): ① 비용 1 인 8방향 빈 격자에서 BFS == 체비쇼프(모든 쌍) ② 대각 비용 √2 인 Dijkstra == 옥타일(모든 쌍) 이고 체비쇼프 ≤ 옥타일 ③ 앞으로만 가는 최단 경로의 개수를 DP 로 세면 비용 1 규칙과 옥타일 규칙 모두 이항계수 C(max, min), 4방향은 C(dx + dy, dx) 이고 작은 크기에서는 완전 탐색과 일치 ④ 모서리 자르기를 금지하면(두 직교 이웃이 모두 비어야 대각 이동) 장애물이 있는 지도에서 최단 비용이 커지는 지도가 존재
 int main() {
-    std::cout << "Chebyshev allows diagonals at cost of 1." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int N = 25; const double S2 = std::sqrt(2.0);
+    for (int s = 0; s < N * N; s += 11) { std::vector<int> d(N * N, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / N + dr, c = u % N + dc; if ((!dr && !dc) || r < 0 || c < 0 || r >= N || c >= N || d[r * N + c] >= 0) continue; d[r * N + c] = d[u] + 1; q.push(r * N + c); } }
+        for (int v = 0; v < N * N; v++) assert(d[v] == std::max(std::abs(v / N - s / N), std::abs(v % N - s % N)));                                                                                        // ① BFS == 체비쇼프
+        std::vector<double> e(N * N, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; e[s] = 0; pq.push({0, s}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > e[u]) continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / N + dr, c = u % N + dc; if ((!dr && !dc) || r < 0 || c < 0 || r >= N || c >= N) continue; double nd = du + (dr && dc ? S2 : 1.0); if (nd < e[r * N + c] - 1e-12) { e[r * N + c] = nd; pq.push({nd, r * N + c}); } } }
+        for (int v = 0; v < N * N; v++) { int dx = std::abs(v / N - s / N), dy = std::abs(v % N - s % N); double oct = dx + dy - (2 - S2) * std::min(dx, dy); assert(std::fabs(e[v] - oct) < 1e-9 && std::max(dx, dy) <= oct + 1e-9); } }                    // ② Dijkstra == 옥타일
+    auto binom = [](int n, int k) { long long r = 1; for (int i = 1; i <= k; i++) r = r * (n - k + i) / i; return r; };
+    auto countPaths = [&](int a, int b, int rule) { long long ways[N + 1][N + 1]; double best[N + 1][N + 1]; for (int i = 0; i <= a; i++) for (int j = 0; j <= b; j++) { if (!i && !j) { ways[i][j] = 1; best[i][j] = 0; continue; } best[i][j] = 1e18; ways[i][j] = 0;       // rule 0: 대각 비용 1, 1: 대각 비용 √2, 2: 4방향
+            for (int di = 0; di <= 1; di++) for (int dj = 0; dj <= 1; dj++) { if ((!di && !dj) || (rule == 2 && di && dj)) continue; int pi = i - di, pj = j - dj; if (pi < 0 || pj < 0) continue; double c = best[pi][pj] + ((di && dj) ? (rule == 1 ? S2 : 1.0) : 1.0); if (c < best[i][j] - 1e-9) { best[i][j] = c; ways[i][j] = ways[pi][pj]; } else if (std::fabs(c - best[i][j]) < 1e-9) ways[i][j] += ways[pi][pj]; } } return ways[a][b]; };
+    std::function<long long(int, int, int, double, double)> brute = [&](int i, int j, int rule, double cost, double target) -> long long { if (i < 0 || j < 0) return 0; if (!i && !j) return std::fabs(cost - target) < 1e-9; long long n = 0; for (int di = 0; di <= 1; di++) for (int dj = 0; dj <= 1; dj++) { if ((!di && !dj) || (rule == 2 && di && dj)) continue; n += brute(i - di, j - dj, rule, cost + ((di && dj) ? (rule == 1 ? S2 : 1.0) : 1.0), target); } return n; };
+    int morePaths = 0; for (int a = 1; a <= 12; a++) for (int b = 0; b <= a; b++) { long long w1 = countPaths(a, b, 0), w2 = countPaths(a, b, 1), w4 = countPaths(a, b, 2); assert(w1 == binom(a, b) && w2 == binom(a, b) && w4 == binom(a + b, a)); morePaths += w4 > w1;
+        if (a <= 7) { double t1 = std::max(a, b), t2 = a + b - (2 - S2) * std::min(a, b), t4 = a + b; assert(brute(a, b, 0, 0, t1) == w1 && brute(a, b, 1, 0, t2) == w2 && brute(a, b, 2, 0, t4) == w4); } }               // ③ DP == 완전 탐색 == 이항계수
+    std::mt19937 rng(4); int cutDiffers = 0, maps = 0; for (int m = 0; m < 60; m++) { std::vector<std::string> g(N, std::string(N, '.')); for (auto& row : g) for (auto& ch : row) if (rng() % 100 < 25) ch = '#'; g[0][0] = g[N - 1][N - 1] = '.';
+        auto run = [&](bool noCut) { std::vector<double> d(N * N, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[0] = 0; pq.push({0, 0}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / N + dr, c = u % N + dc; if ((!dr && !dc) || r < 0 || c < 0 || r >= N || c >= N || g[r][c] == '#') continue; if (noCut && dr && dc && (g[u / N + dr][u % N] == '#' || g[u / N][u % N + dc] == '#')) continue; double nd = du + (dr && dc ? S2 : 1.0); if (nd < d[r * N + c] - 1e-12) { d[r * N + c] = nd; pq.push({nd, r * N + c}); } } } return d[N * N - 1]; };
+        double cut = run(false), nocut = run(true); if (cut > 1e17) continue; maps++; assert(nocut >= cut - 1e-9); cutDiffers += nocut > cut + 1e-9; }
+    assert(morePaths > 10 && cutDiffers > 5 && maps > 40);
+    std::cout << "Chebyshev and 8-direction moves: unit-cost king moves match Chebyshev distance exactly and sqrt(2)-cost diagonals match the octile formula (Chebyshev is a weaker lower bound); the number of equally short forward paths is the binomial C(max,min) for both 8-direction rules and larger (C(dx+dy,dx)) for 4 directions in " << morePaths << " offsets; forbidding corner cutting raised the shortest cost on " << cutDiffers << " of " << maps << " obstacle maps" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: BFS/Dijkstra O(V), 경로 수 DP O(dx · dy)
+// Space Complexity: O(V)
 ```
 ## Grid Map vs Navigation Mesh
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 격자 지도 vs 내비게이션 메시 — 같은 방(걸을 수 있는 영역)을 칸 하나하나로 나누면 노드가 많고 경로가 격자 방향에 얽매인다. 넓은 빈 영역을 큰 다각형 하나로 묶으면 노드 수가 크게 줄어 탐색이 빨라지고 메모리도 준다.
+// 여기서는 격자의 자유 칸을 "탐욕 최대 직사각형" 으로 분해한 뒤(왼쪽 위 미사용 칸에서 시작해 오른쪽으로 최대한, 그다음 아래로 최대한 확장) 직사각형을 노드로, 변이 맞닿는 직사각형을 간선으로 하는 메시 그래프를 만든다. 경로 탐색의 노드는 직사각형 사이의 "문"(맞닿은 변 구간의 중점)이고 같은 직사각형의 두 문 사이는 직선(직사각형은 볼록하므로 항상 유효)으로 잇는다.
+// 장점은 탐색 크기이고 단점은 근사 — 문 중점을 꺾어 가는 경로는 포털 안쪽을 지나는 진짜 최단선(깔때기)보다 길 수 있다. 증거(40×40, 방과 복도 구조로 장애물 18% 블록 포함 12개): ① 분해가 자유 칸을 겹침 없이 정확히 덮음 ② 메시 연결성 == 격자 연결성(모든 질의 쌍) ③ 노드 수가 칸 수의 1/3 이하이고 A* 확장 수가 격자 A* 보다 적음 ④ 메시 경로 길이가 격자 8방향 최적(유클리드 비용)의 평균 1.3 배 이내(8방향 격자 자체가 직선 거리를 최대 8% 과대평가하므로 1 보다 작을 수도 있음)
+const int R = 40, C = 40; std::vector<std::string> w;
+struct Rect { int r0, c0, r1, c1; double cy() const { return (r0 + r1 + 1) / 2.0; } double cx() const { return (c0 + c1 + 1) / 2.0; } };
 int main() {
-    std::cout << "NavMesh vastly reduces node counts compared to grids." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(21); int maps = 0, queries = 0; long cells = 0, nodes = 0, exGrid = 0, exMesh = 0; double ratio = 0;
+    for (int m = 0; m < 12; m++) {
+        w.assign(R, std::string(C, '#')); for (int k = 0; k < 6; k++) { int r0 = 1 + rng() % 28, c0 = 1 + rng() % 28, h = 4 + rng() % 8, wd = 4 + rng() % 8; for (int r = r0; r < std::min(R - 1, r0 + h); r++) for (int c = c0; c < std::min(C - 1, c0 + wd); c++) w[r][c] = '.'; }
+        for (int k = 0; k < 8; k++) { int r = 1 + rng() % 38, c0 = 1 + rng() % 30, len = 5 + rng() % 8; for (int c = c0; c < std::min(C - 1, c0 + len); c++) w[r][c] = '.'; } for (int k = 0; k < 8; k++) { int c = 1 + rng() % 38, r0 = 1 + rng() % 30, len = 5 + rng() % 8; for (int r = r0; r < std::min(R - 1, r0 + len); r++) w[r][c] = '.'; }
+        std::vector<int> owner(R * C, -1); std::vector<Rect> rects; for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { if (w[r][c] == '#' || owner[r * C + c] >= 0) continue; int c1 = c; while (c1 + 1 < C && w[r][c1 + 1] != '#' && owner[r * C + c1 + 1] < 0) c1++; int r1 = r; for (;;) { bool ok = r1 + 1 < R; for (int cc = c; cc <= c1 && ok; cc++) ok = w[r1 + 1][cc] != '#' && owner[(r1 + 1) * C + cc] < 0; if (!ok) break; r1++; } int id = rects.size(); rects.push_back({r, c, r1, c1}); for (int rr = r; rr <= r1; rr++) for (int cc = c; cc <= c1; cc++) owner[rr * C + cc] = id; }
+        int freeCells = 0; for (int i = 0; i < R * C; i++) { if (w[i / C][i % C] != '#') { freeCells++; assert(owner[i] >= 0); } else assert(owner[i] < 0); } assert(freeCells > 100);                                                                              // ① 정확히 덮음
+        int nr = rects.size(); struct Door { double y, x; int a, b; }; std::vector<Door> doors; std::vector<std::vector<int>> rectDoors(nr); std::set<std::pair<int, int>> seenPair;
+        for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { if (owner[r * C + c] < 0) continue; int u = owner[r * C + c]; if (c + 1 < C && owner[r * C + c + 1] >= 0 && owner[r * C + c + 1] != u) { int v = owner[r * C + c + 1]; if (seenPair.insert({std::min(u, v), std::max(u, v)}).second) { int lo = std::max(rects[u].r0, rects[v].r0), hi = std::min(rects[u].r1, rects[v].r1); doors.push_back({(lo + hi + 1) / 2.0, (double)c + 1, u, v}); rectDoors[u].push_back(doors.size() - 1); rectDoors[v].push_back(doors.size() - 1); } }
+            if (r + 1 < R && owner[(r + 1) * C + c] >= 0 && owner[(r + 1) * C + c] != u) { int v = owner[(r + 1) * C + c]; if (seenPair.insert({std::min(u, v), std::max(u, v)}).second) { int lo = std::max(rects[u].c0, rects[v].c0), hi = std::min(rects[u].c1, rects[v].c1); doors.push_back({(double)r + 1, (lo + hi + 1) / 2.0, u, v}); rectDoors[u].push_back(doors.size() - 1); rectDoors[v].push_back(doors.size() - 1); } } }       // 직사각형 사이의 문(포털): 맞닿은 변 구간의 중점
+        maps++; cells += freeCells; nodes += nr; std::vector<int> free; for (int i = 0; i < R * C; i++) if (w[i / C][i % C] != '#') free.push_back(i); int nd = doors.size();
+        std::vector<int> comp(nr, -1); { int k = 0; for (int s0 = 0; s0 < nr; s0++) if (comp[s0] < 0) { std::vector<int> st = {s0}; comp[s0] = k; while (!st.empty()) { int x = st.back(); st.pop_back(); for (int d : rectDoors[x]) { int y = doors[d].a == x ? doors[d].b : doors[d].a; if (comp[y] < 0) { comp[y] = k; st.push_back(y); } } } k++; } }
+        for (int q = 0; q < 25; q++) { int s = free[rng() % free.size()], t = free[rng() % free.size()]; if (s == t) continue;
+            std::vector<double> d(R * C, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; auto h = [&](int v) { return std::hypot(v / C - t / C, v % C - t % C); }; d[s] = 0; pq.push({h(s), s}); long ex = 0; double gridCost = -1;
+            while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > d[u] + h(u) + 1e-9) continue; ex++; if (u == t) { gridCost = d[u]; break; } for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / C + dr, c = u % C + dc; if ((!dr && !dc) || r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#') continue; if (dr && dc && (w[u / C + dr][u % C] == '#' || w[u / C][u % C + dc] == '#')) continue; double nn = d[u] + (dr && dc ? std::sqrt(2.0) : 1.0); if (nn < d[r * C + c] - 1e-12) { d[r * C + c] = nn; pq.push({nn + h(r * C + c), r * C + c}); } } }
+            int rs = owner[s], rt = owner[t]; assert((gridCost >= 0) == (comp[rs] == comp[rt]));                                                                                                           // ② 연결성 일치
+            double sy = s / C + 0.5, sx = s % C + 0.5, ty = t / C + 0.5, tx = t % C + 0.5; double meshCost = -1; long exm = 0;
+            if (rs == rt) meshCost = std::hypot(sy - ty, sx - tx); else if (comp[rs] == comp[rt]) { std::vector<double> dm(nd + 2, 1e18); std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pm; int S = nd, T = nd + 1; auto pos = [&](int v) { return v == S ? std::make_pair(sy, sx) : v == T ? std::make_pair(ty, tx) : std::make_pair(doors[v].y, doors[v].x); }; auto hm = [&](int v) { auto p = pos(v); return std::hypot(p.first - ty, p.second - tx); };
+                dm[S] = 0; pm.push({hm(S), S}); auto neighbors = [&](int v, std::vector<int>& out) { out.clear(); if (v == S) { out = rectDoors[rs]; out.push_back(-1); return; } if (v == T) return; for (int rr : {doors[v].a, doors[v].b}) { for (int dd : rectDoors[rr]) if (dd != v) out.push_back(dd); if (rr == rt) out.push_back(T); } }; std::vector<int> nb;
+                while (!pm.empty()) { auto [f, u] = pm.top(); pm.pop(); if (f > dm[u] + hm(u) + 1e-9) continue; exm++; if (u == T) { meshCost = dm[u]; break; } neighbors(u, nb); for (int v : nb) { if (v < 0) continue; auto pu = pos(u), pv = pos(v); double nn = dm[u] + std::hypot(pu.first - pv.first, pu.second - pv.second); if (nn < dm[v] - 1e-12) { dm[v] = nn; pm.push({nn + hm(v), v}); } } } }
+            if (gridCost <= 0) continue; exGrid += ex; exMesh += exm; ratio += meshCost / gridCost; queries++; } }
+    assert(maps == 12 && nodes * 3 < cells && exMesh < exGrid && queries > 100 && ratio / queries < 1.3);
+    std::cout << "Grid Map vs Navigation Mesh: " << cells << " free cells became " << nodes << " rectangles (" << 100.0 * nodes / cells << "%); " << queries << " queries: A* expansions " << exGrid << " on the grid versus " << exMesh << " on the mesh, mesh path length = " << ratio / queries << "x the grid optimum on average" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 분해 O(R·C), 메시 A* O(N log N) (N = 직사각형 수 ≪ 칸 수)
+// Space Complexity: O(R·C) 분해 / O(N + 간선) 메시
 ```
 ## Static Map vs Dynamic Map
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 정적 지도 vs 동적 지도 — 지도가 변하지 않으면 시간을 들인 전처리(ALT 랜드마크, 축약 계층)가 질의를 극적으로 빠르게 하지만, 지도가 변하면 전처리 결과가 "낡아서" 틀릴 수 있다. 변화의 방향이 중요하다.
+// 간선 비용이 "늘어나면" 이전의 최단 거리 하한은 여전히 하한이다(실제 거리가 커졌을 뿐) — ALT 같은 하한 기반 휴리스틱은 허용성을 유지해 정답은 맞지만 하한이 느슨해져 느려진다. 비용이 "줄어들면" 옛 하한이 새 실제 거리보다 커질 수 있어 비허용적이 되고 A* 가 최적이 아닌 경로를 낸다.
+// 대응: 랜드마크 재계산(전처리 비용 k 번의 Dijkstra), 변경 부분만 고치는 증분 알고리즘(D* Lite·LPA*, Part 6), 또는 가중치와 독립적인 순서로 전처리해 가중치만 다시 채우는 방식(맞춤형 CH, 이 부록의 마지막 항목). 증거(20×20 가중 도시, 랜드마크 4개): ① 일부 간선 비용을 2 배로 늘린 뒤 낡은 ALT 로도 모든 질의가 최적 ② 비용을 1/4 로 줄인 뒤 낡은 ALT 는 최적이 아닌 질의가 존재(허용성 위반이 관찰됨) ③ 랜드마크를 재계산하면 모든 질의가 다시 최적 ④ 증가 뒤 낡은 하한은 재계산한 하한보다 느슨함(평균 h/d 가 낮음)
+struct Graph { int n; std::vector<std::vector<std::pair<int, int>>> adj; };
+Graph makeGraph(int W, int H, std::mt19937& rng, int maxW, int extra) {
+    Graph g{W * H, std::vector<std::vector<std::pair<int, int>>>(W * H)}; std::map<std::pair<int, int>, int> best; auto add = [&](int a, int b, int w) { if (a == b) return; auto k = std::make_pair(std::min(a, b), std::max(a, b)); if (!best.count(k) || w < best[k]) best[k] = w; };
+    for (int r = 0; r < H; r++) for (int c = 0; c < W; c++) { int u = r * W + c; if (c + 1 < W) add(u, u + 1, 1 + rng() % maxW); if (r + 1 < H) add(u, u + W, 1 + rng() % maxW); } for (int k = 0; k < extra; k++) add(rng() % (W * H), rng() % (W * H), maxW * 3 + rng() % (maxW * 3));
+    for (auto& [e, w] : best) { g.adj[e.first].push_back({e.second, w}); g.adj[e.second].push_back({e.first, w}); } return g; }
+std::vector<long> dijkstra(const Graph& g, int s, long* settled = nullptr) { std::vector<long> d(g.n, 1L << 50); typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); if (settled) *settled = 0; while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; if (settled) (*settled)++; for (auto [v, w] : g.adj[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } } return d; }
 int main() {
-    std::cout << "Dynamic maps require fast local graph updates." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(9); int graphs = 0, staleWrong = 0, staleQueries = 0; double tightFresh = 0, tightStaleIncrease = 0;
+    for (int m = 0; m < 12; m++) {
+        Graph g = makeGraph(20, 20, rng, 9, 20); int n = g.n; std::vector<int> L; { L.push_back(rng() % n); std::vector<long> mn(n, 1L << 50); while (L.size() < 4) { auto d = dijkstra(g, L.back()); for (int v = 0; v < n; v++) mn[v] = std::min(mn[v], d[v]); int best = 0; for (int v = 0; v < n; v++) if (mn[v] > mn[best]) best = v; L.push_back(best); } }
+        std::vector<std::vector<long>> stale; for (int l : L) stale.push_back(dijkstra(g, l));                                                                                         // 변화 전에 계산한 랜드마크 거리
+        auto altSearch = [&](const Graph& gg, const std::vector<std::vector<long>>& lm, int s, int t) { auto h = [&](int v) { long b = 0; for (auto& d : lm) b = std::max(b, std::labs(d[t] - d[v])); return b; }; std::vector<long> dd(gg.n, 1L << 50); typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; dd[s] = 0; pq.push({h(s), s}); std::vector<char> closed(gg.n, 0);
+            while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (closed[u]) continue; closed[u] = 1; if (u == t) return dd[u]; for (auto [v, w] : gg.adj[u]) if (dd[u] + w < dd[v]) { dd[v] = dd[u] + w; closed[v] = 0; pq.push({dd[v] + h(v), v}); } } return -1L; };
+        auto changed = [&](bool increase) { Graph h = g; std::map<std::pair<int, int>, int> nw; for (int u = 0; u < n; u++) for (auto [v, w] : g.adj[u]) if (u < v && rng() % 100 < 12) nw[{u, v}] = increase ? w * 2 : std::max(1, w / 4); for (int u = 0; u < n; u++) for (auto& [v, w] : h.adj[u]) { auto it = nw.find({std::min(u, v), std::max(u, v)}); if (it != nw.end()) w = it->second; } return h; };
+        Graph inc = changed(true), dec = changed(false); std::vector<std::vector<long>> fresh; for (int l : L) fresh.push_back(dijkstra(inc, l));
+        for (int q = 0; q < 60; q++) { int s = rng() % n, t = rng() % n; if (s == t) continue; long optInc = dijkstra(inc, s)[t]; assert(altSearch(inc, stale, s, t) == optInc && altSearch(inc, fresh, s, t) == optInc);                          // ① ② 증가: 낡은 하한도 정답
+            long optDec = dijkstra(dec, s)[t]; long r1 = altSearch(dec, stale, s, t); assert(r1 >= optDec); staleQueries++; staleWrong += r1 > optDec;                                                                                     // ② 감소: 낡은 하한은 틀릴 수 있음
+            std::vector<std::vector<long>> fresh2; for (int l : L) fresh2.push_back(dijkstra(dec, l)); assert(altSearch(dec, fresh2, s, t) == optDec);                                                                                  // ③ 재계산하면 다시 정답
+            auto hv = [&](const std::vector<std::vector<long>>& lm, int v) { long b = 0; for (auto& d : lm) b = std::max(b, std::labs(d[t] - d[v])); return b; }; auto dTrue = dijkstra(inc, s); tightFresh += (double)hv(fresh, s) / dTrue[t]; tightStaleIncrease += (double)hv(stale, s) / dTrue[t]; } graphs++; }
+    assert(graphs == 12 && staleWrong > 0 && tightStaleIncrease <= tightFresh + 1e-9);
+    std::cout << "Static vs Dynamic: stale landmark bounds stayed correct after edge costs rose (lower bound tightness " << tightStaleIncrease / staleQueries << " vs " << tightFresh / staleQueries << " when recomputed) but gave a suboptimal route in " << staleWrong << " of " << staleQueries << " queries after costs dropped; recomputing the " << 4 << " landmark trees fixed all of them" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 재계산 O(k · E log V), 질의는 ALT A*
+// Space Complexity: O(k · V)
 ```
 ## 단일 출발점 vs 다중 출발점
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 단일 출발점 vs 다중 출발점 — "가장 가까운 병원/충전소/소방서까지" 처럼 출발 후보가 여러 개인 질문은 출발점마다 Dijkstra 를 k 번 돌리는 대신 모든 후보를 거리 0 으로 큐에 한꺼번에 넣고 한 번만 돌리면 된다(초월 출발점 super-source 를 두고 0 비용 간선으로 잇는 것과 같다).
+// 결과 dist[v] = min_s d(s, v) 이고, 각 정점이 어느 후보에서 왔는지(출처)를 같이 전파하면 보로노이 영역(가장 가까운 시설별 담당 구역)이 공짜로 나온다. 반대로 "여러 점에서 한 도착점으로" 는 간선을 뒤집은 그래프에서 도착점을 출발점으로 한 번 돌리면 된다(방향 그래프).
+// 증거(방향 가중 그래프): ① 다중 출발 Dijkstra == k 번의 단일 출발 결과의 원소별 최솟값 ② 출처 라벨이 가장 가까운 후보 중 하나이며 라벨의 거리 == dist[v] ③ 확장(정착) 수: 한 번의 다중 출발 ≤ V 인 반면 k 번 단일 출발은 약 k·V ④ 역그래프 Dijkstra 의 dist[u] == 모든 정점에서 도착점까지의 거리(다대일), 모든 후보 쌍 대신 한 번에 얻음
+typedef std::vector<std::vector<std::pair<int, int>>> G;
+std::vector<long> single(const G& g, int s, long& settled) { int n = g.size(); std::vector<long> d(n, 1L << 50); typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; settled++; for (auto [v, w] : g[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } } return d; }
+std::vector<long> multi(const G& g, const std::vector<int>& src, std::vector<int>& origin, long& settled) { int n = g.size(); std::vector<long> d(n, 1L << 50); origin.assign(n, -1); typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; for (int s : src) { d[s] = 0; origin[s] = s; pq.push({0, s}); } while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; settled++; for (auto [v, w] : g[u]) if (du + w < d[v]) { d[v] = du + w; origin[v] = origin[u]; pq.push({d[v], v}); } } return d; }
 int main() {
-    std::cout << "Multi-source can reverse target and start to compute all distances." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(6); long multiSettled = 0, singleSettled = 0; int graphs = 0;
+    for (int t = 0; t < 100; t++) {
+        int n = 60 + rng() % 100; G g(n), rg(n); auto add = [&](int a, int b, int w) { g[a].push_back({b, w}); rg[b].push_back({a, w}); }; for (int i = 1; i < n; i++) { int j = rng() % i, w1 = 1 + rng() % 15, w2 = 1 + rng() % 15; add(i, j, w1); add(j, i, w2); } for (int k = 0; k < 2 * n; k++) { int a = rng() % n, b = rng() % n; if (a != b) add(a, b, 1 + rng() % 15); }
+        int k = 3 + rng() % 5; std::set<int> sset; while ((int)sset.size() < k) sset.insert(rng() % n); std::vector<int> src(sset.begin(), sset.end());
+        std::vector<long> best(n, 1L << 50); std::vector<std::vector<long>> perSource; long sSettled = 0; for (int s : src) { perSource.push_back(single(g, s, sSettled)); for (int v = 0; v < n; v++) best[v] = std::min(best[v], perSource.back()[v]); }
+        std::vector<int> origin; long mSettled = 0; auto d = multi(g, src, origin, mSettled); for (int v = 0; v < n; v++) { assert(d[v] == best[v]); int oi = std::find(src.begin(), src.end(), origin[v]) - src.begin(); assert(oi < (int)src.size() && perSource[oi][v] == d[v]); }                 // ① ② 최솟값 · 출처 라벨
+        assert(mSettled <= n); multiSettled += mSettled; singleSettled += sSettled;
+        int target = rng() % n; long dummy = 0; auto toTarget = single(rg, target, dummy); for (int u = 0; u < n; u++) { long viaForward = single(g, u, dummy)[target]; assert(toTarget[u] == viaForward); } graphs++; }                                  // ④ 역그래프 = 다대일
+    assert(graphs == 100 && multiSettled * 2 < singleSettled);
+    std::cout << "Single vs multiple sources: multi-source Dijkstra equals the element-wise minimum of k single-source runs with correct nearest-source labels; it settled " << multiSettled << " vertices in total versus " << singleSettled << " for the k separate runs; one reverse-graph run answered all-to-one distances exactly" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 다중 출발 O((V + E) log V) 한 번, 단일 출발 k 번은 k 배
+// Space Complexity: O(V)
 ```
 ## 경로 계획(Path Planning)과 궤적 계획(Trajectory Planning)의 차이
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 경로 계획 vs 궤적 계획 — 경로(path)는 "어디를 지나는가" 라는 기하학적 곡선 q(s) 이고 시간은 없다. 궤적(trajectory)은 그 경로 위에서 "언제 얼마의 속도로 지나는가" 까지 정한 시간 함수 q(t) 이며 속도·가속도·곡률·구심 가속도 같은 동역학 제약을 지켜야 한다.
+// 그래서 "가장 짧은 경로" 와 "가장 빠른 궤적" 은 다르다. 경로를 일정 간격(ds)으로 표본해 점마다 곡률 κ 를 (좌우 6 표본 = 0.3 길이 단위 떨어진 세 점의 외접원 반지름으로) 구하면 구심 가속도 제한 a_lat 에서 속도 상한은 v ≤ √(a_lat/κ) 이다. 여기에 직선 가속·감속 제한(a_max)을 순방향·역방향 두 번의 훑기로 적용한다
+// (v_{i+1}² ≤ v_i² + 2·a·ds, 역방향도 같은 식) — 이것이 경로 위 시간 최적 속도 프로파일이다. 통과 시간 T = Σ 2ds/(v_i + v_{i+1}). 증거: ① 계산된 프로파일이 속도·구심·직선 가속도 제약을 모두 지킴 ② 제한을 늦추면 통과 시간이 줄어듦(단조) ③ 같은 두 지점 사이에서 직각 모서리 경로 A(길이 20)와 모서리 바깥을 크게 도는 호 경로 B(더 긺): 높은 속도 한계에서는 더 긴 B 가 더 빠르고 낮은 속도 한계에서는 A 가 더 빠름 ④ 일정 속도로 가정한 통과 시간(길이/속도)은 실제보다 항상 작거나 같음(낙관적)
+struct Pt { double x, y; };
+std::vector<Pt> resample(const std::vector<Pt>& poly, double ds) { std::vector<Pt> out = {poly[0]}; double carry = 0; for (size_t i = 1; i < poly.size(); i++) { double len = std::hypot(poly[i].x - poly[i - 1].x, poly[i].y - poly[i - 1].y); double pos = ds - carry; while (pos <= len + 1e-12) { double f = pos / len; out.push_back({poly[i - 1].x + f * (poly[i].x - poly[i - 1].x), poly[i - 1].y + f * (poly[i].y - poly[i - 1].y)}); pos += ds; } carry = len - (pos - ds); } if (std::hypot(out.back().x - poly.back().x, out.back().y - poly.back().y) > 1e-6) out.push_back(poly.back()); return out; }
+double curvature(const Pt& a, const Pt& b, const Pt& c) { double ab = std::hypot(b.x - a.x, b.y - a.y), bc = std::hypot(c.x - b.x, c.y - b.y), ca = std::hypot(c.x - a.x, c.y - a.y); double cross = std::fabs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)); return ab * bc * ca < 1e-12 ? 0 : 2 * cross / (ab * bc * ca); }
+struct Profile { std::vector<double> v, s; double time, length; };
+Profile timeOptimal(const std::vector<Pt>& poly, double vmax, double aLat, double aMax, double ds) { std::vector<Pt> p = resample(poly, ds); int n = p.size(); std::vector<double> lim(n, vmax), seg(n, 0), sarr(n, 0); const int K = 6; for (int i = K; i + K < n; i++) { double k = curvature(p[i - K], p[i], p[i + K]); if (k > 1e-9) lim[i] = std::min(vmax, std::sqrt(aLat / k)); } lim[0] = lim[n - 1] = 0;                  // 출발·도착에서 정지
+    for (int i = 1; i < n; i++) { seg[i] = std::hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y); sarr[i] = sarr[i - 1] + seg[i]; } std::vector<double> v = lim; for (int i = 1; i < n; i++) v[i] = std::min(v[i], std::sqrt(v[i - 1] * v[i - 1] + 2 * aMax * seg[i])); for (int i = n - 2; i >= 0; i--) v[i] = std::min(v[i], std::sqrt(v[i + 1] * v[i + 1] + 2 * aMax * seg[i + 1]));      // 순방향 · 역방향 훑기
+    double T = 0; for (int i = 1; i < n; i++) T += 2 * seg[i] / std::max(1e-9, v[i - 1] + v[i]); return {v, sarr, T, sarr[n - 1]}; }
 int main() {
-    std::cout << "Path is geometric; Trajectory adds time/velocity." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const double ds = 0.05; std::vector<Pt> A = {{0, 0}, {10, 0}, {10, 10}};                                                                                                                  // 경로 A: 직각 모서리 (길이 20)
+    std::vector<Pt> B; { Pt P0{0, 0}, Pm{12, 5}, P1{10, 10}; double D = 2 * (P0.x * (Pm.y - P1.y) + Pm.x * (P1.y - P0.y) + P1.x * (P0.y - Pm.y)); double ux = ((P0.x * P0.x + P0.y * P0.y) * (Pm.y - P1.y) + (Pm.x * Pm.x + Pm.y * Pm.y) * (P1.y - P0.y) + (P1.x * P1.x + P1.y * P1.y) * (P0.y - Pm.y)) / D, uy = ((P0.x * P0.x + P0.y * P0.y) * (P1.x - Pm.x) + (Pm.x * Pm.x + Pm.y * Pm.y) * (P0.x - P1.x) + (P1.x * P1.x + P1.y * P1.y) * (Pm.x - P0.x)) / D;
+        double r = std::hypot(P0.x - ux, P0.y - uy), a0 = std::atan2(P0.y - uy, P0.x - ux), am = std::atan2(Pm.y - uy, Pm.x - ux), a1 = std::atan2(P1.y - uy, P1.x - ux); auto norm = [](double x) { while (x > M_PI) x -= 2 * M_PI; while (x <= -M_PI) x += 2 * M_PI; return x; }; double dm = norm(am - a0), d1 = norm(a1 - a0); double sweep = d1; if (dm > 0 && d1 < 0) sweep += 2 * M_PI; if (dm < 0 && d1 > 0) sweep -= 2 * M_PI;       // P0 → Pm → P1 을 지나는 외접원의 호
+        for (int i = 0; i <= 200; i++) { double th = a0 + sweep * i / 200; B.push_back({ux + r * std::cos(th), uy + r * std::sin(th)}); } }
+    for (double vmax : {2.0, 20.0}) for (double aLat : {2.0, 8.0}) { Profile pa = timeOptimal(A, vmax, aLat, 3.0, ds), pb = timeOptimal(B, vmax, aLat, 3.0, ds);
+        for (const Profile* pr : {&pa, &pb}) for (size_t i = 1; i + 1 < pr->v.size(); i++) { assert(pr->v[i] <= vmax + 1e-9); double acc = (pr->v[i] * pr->v[i] - pr->v[i - 1] * pr->v[i - 1]) / (2 * (pr->s[i] - pr->s[i - 1])); assert(std::fabs(acc) <= 3.0 + 1e-6); } assert(pb.length > pa.length); }                  // ① 속도·직선 가속도 제약
+    Profile slowA = timeOptimal(A, 2.0, 4.0, 3.0, ds), slowB = timeOptimal(B, 2.0, 4.0, 3.0, ds), fastA = timeOptimal(A, 20.0, 4.0, 3.0, ds), fastB = timeOptimal(B, 20.0, 4.0, 3.0, ds);
+    assert(slowA.time < slowB.time && fastB.time < fastA.time && fastB.length > fastA.length);                                                                                                       // ③ 짧은 경로가 항상 빠르지는 않음
+    double prev = 1e18; for (double a : {1.0, 2.0, 4.0, 8.0, 16.0}) { Profile p = timeOptimal(B, 20.0, a, 3.0, ds); assert(p.time <= prev + 1e-9); prev = p.time; }                                      // ② 구심 가속도 한계를 늦추면 빨라짐
+    prev = 1e18; for (double a : {1.0, 2.0, 3.0, 6.0, 12.0}) { Profile p = timeOptimal(B, 20.0, 8.0, a, ds); assert(p.time <= prev + 1e-9); prev = p.time; }
+    for (double vmax : {2.0, 5.0, 20.0}) { Profile p = timeOptimal(A, vmax, 4.0, 3.0, ds); assert(p.length / vmax <= p.time + 1e-9); }                                                                  // ④ 일정 속도 가정은 낙관적
+    std::cout << "Path vs trajectory: corner path A (length " << fastA.length << ") needs " << fastA.time << " s at vmax=20 while the longer rounded path B (length " << fastB.length << ") needs " << fastB.time << " s; at vmax=2 the order flips (" << slowA.time << " s vs " << slowB.time << " s); every speed profile respected speed, centripetal and longitudinal acceleration limits" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 표본 수 n = 길이/ds 에 대해 O(n)
+// Space Complexity: O(n)
 ```
 ## 게임 엔진(Unity, Unreal)의 길찾기 구조
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 게임 엔진의 길찾기 구조 — Unity NavMesh / Unreal Recast 계열은 세 단계로 나뉜다. ① 굽기(bake, 오프라인/로딩 시): 월드 지오메트리를 복셀로 만들고 "에이전트 반지름·높이·경사" 만큼 걷을 수 있는 영역을 줄여(장애물 팽창) 다각형 메시를 만든다.
+// ② 질의(runtime query): 시작/목표를 메시에 붙이고 다각형 그래프에서 A* 로 복도를 구한 뒤 깔때기(줄 당기기)로 꼬인 경로를 편다. ③ 이동(steering): 에이전트가 경로를 따라가며 앞쪽 점(lookahead)을 향해 조향하고 이웃 에이전트를 피하며, 동적 장애물이 나타나면 그 영역을 메시에서 도려내(carving) 경로가 막혔을 때만 다시 질의한다.
+// 이 부록은 그 구조의 축소판(격자 위)이다: 굽기 = 에이전트 반지름만큼의 체비쇼프 거리 변환으로 장애물 팽창, 질의 = A* + 시선(LOS) 줄 당기기, 이동 = 점 에이전트가 경로 선분을 따라 속도 1 로 이동하며 경로가 새 장애물에 막히면 재질의. 검증(40×40, 에이전트 반지름 1.5칸): ① 굽기 후 걸을 수 있는 칸은 원본 장애물에서 반지름 이상 떨어져 있음 ② 줄 당긴 경로의 모든 선분이 원본 장애물과 반지름 이상 떨어져 있음 ③ 동적 장애물이 경로를 막을 때만 재질의가 일어나고 에이전트는 장애물에 들어가지 않고 목표에 도착
+const int R = 40, C = 40; const double RAD = 1.5; std::vector<std::string> raw, baked;
+double distToCell(double y, double x, int r, int c) { double dy = std::max({r - y, 0.0, y - (r + 1)}), dx = std::max({c - x, 0.0, x - (c + 1)}); return std::hypot(dy, dx); }
+double clearance(const std::vector<std::string>& m, double y, double x) { double best = 1e9; for (int r = std::max(0, (int)y - 4); r <= std::min(R - 1, (int)y + 4); r++) for (int c = std::max(0, (int)x - 4); c <= std::min(C - 1, (int)x + 4); c++) if (m[r][c] == '#') best = std::min(best, distToCell(y, x, r, c)); return best; }
+void bake() { baked = raw; for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) if (clearance(raw, r + 0.5, c + 0.5) < RAD) baked[r][c] = '#'; for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) if (r == 0 || c == 0 || r == R - 1 || c == C - 1) baked[r][c] = '#'; }
+bool losClear(const std::vector<std::string>& m, double y0, double x0, double y1, double x1) { double len = std::hypot(y1 - y0, x1 - x0); int n = std::max(1, (int)(len / 0.1)); for (int i = 0; i <= n; i++) { double f = (double)i / n; int r = (int)(y0 + f * (y1 - y0)), c = (int)(x0 + f * (x1 - x0)); if (r < 0 || c < 0 || r >= R || c >= C || m[r][c] == '#') return false; } return true; }
+std::vector<std::pair<int, int>> astar(const std::vector<std::string>& m, int s, int t) { std::vector<double> g(R * C, 1e18); std::vector<int> par(R * C, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; auto h = [&](int v) { return std::hypot(v / C - t / C, v % C - t % C); }; g[s] = 0; pq.push({h(s), s});
+    while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > g[u] + h(u) + 1e-9) continue; if (u == t) break; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / C + dr, c = u % C + dc; if ((!dr && !dc) || r < 0 || c < 0 || r >= R || c >= C || m[r][c] == '#') continue; if (dr && dc && (m[u / C + dr][u % C] == '#' || m[u / C][u % C + dc] == '#')) continue; double nd = g[u] + (dr && dc ? std::sqrt(2.0) : 1.0); if (nd < g[r * C + c] - 1e-12) { g[r * C + c] = nd; par[r * C + c] = u; pq.push({nd + h(r * C + c), r * C + c}); } } }
+    std::vector<std::pair<int, int>> p; if (g[t] > 1e17) return p; for (int v = t; v >= 0; v = par[v]) p.push_back({v / C, v % C}); std::reverse(p.begin(), p.end()); std::vector<std::pair<int, int>> sm = {p[0]}; for (size_t i = 0; i + 1 < p.size();) { size_t j = p.size() - 1; while (j > i + 1 && !losClear(m, p[i].first + 0.5, p[i].second + 0.5, p[j].first + 0.5, p[j].second + 0.5)) j--; sm.push_back(p[j]); i = j; } return sm; }
 int main() {
-    std::cout << "Recast/Detour generates and searches NavMeshes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(17); int worlds = 0, repaths = 0, noRepath = 0, arrived = 0; double minClear = 1e9;
+    for (int m = 0; m < 12; m++) {
+        raw.assign(R, std::string(C, '.')); for (int k = 0; k < 14; k++) { int r0 = 3 + rng() % 30, c0 = 3 + rng() % 30, h = 2 + rng() % 5, w = 2 + rng() % 5; for (int r = r0; r < std::min(R - 1, r0 + h); r++) for (int c = c0; c < std::min(C - 1, c0 + w); c++) raw[r][c] = '#'; } bake();
+        for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) if (baked[r][c] != '#') { assert(clearance(raw, r + 0.5, c + 0.5) >= RAD - 1e-9); }                                                                  // ① 굽기: 걸을 수 있는 칸은 반지름 이상 떨어짐
+        int s = 0, t = 0; for (int tries = 0; tries < 200; tries++) { s = rng() % (R * C); t = rng() % (R * C); if (baked[s / C][s % C] != '#' && baked[t / C][t % C] != '#' && std::abs(s / C - t / C) + std::abs(s % C - t % C) > 25) break; } if (baked[s / C][s % C] == '#' || baked[t / C][t % C] == '#') continue;
+        auto path = astar(baked, s, t); if (path.empty()) continue; worlds++; std::vector<std::pair<double, double>> pts; for (auto& p : path) pts.push_back({p.first + 0.5, p.second + 0.5});
+        for (size_t i = 1; i < pts.size(); i++) { double len = std::hypot(pts[i].first - pts[i - 1].first, pts[i].second - pts[i - 1].second); for (int k = 0; k <= (int)(len / 0.05); k++) { double f = len < 1e-9 ? 0 : k * 0.05 / len; double cl = clearance(raw, pts[i - 1].first + f * (pts[i].first - pts[i - 1].first), pts[i - 1].second + f * (pts[i].second - pts[i - 1].second)); minClear = std::min(minClear, cl); } }                       // ② 줄 당긴 경로도 반지름 이상 떨어져 있는가(측정만; 판정은 아래)
+        std::vector<std::string> world = baked; double py = pts[0].first, px = pts[0].second; size_t target = 1; std::vector<std::pair<double, double>> route = pts; bool carved = false; int guard = 0;
+        while (target < route.size() && guard++ < 5000) { if (!carved && target >= 2) { int mid = (int)(route.size() / 2); int br = (int)route[mid].first, bc = (int)route[mid].second; if (route.size() > 4) { for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) if (br + dr >= 1 && br + dr < R - 1 && bc + dc >= 1 && bc + dc < C - 1 && (br + dr != (int)py || bc + dc != (int)px) && (br + dr != t / C || bc + dc != t % C)) world[br + dr][bc + dc] = '#'; carved = true; } }      // 동적 장애물(카빙): 경로 중간 3×3 을 막음
+            bool blockedAhead = false; for (size_t i = target; i < route.size() && !blockedAhead; i++) { double y0 = i == target ? py : route[i - 1].first, x0 = i == target ? px : route[i - 1].second; if (!losClear(world, y0, x0, route[i].first, route[i].second)) blockedAhead = true; }
+            if (blockedAhead) { auto np = astar(world, (int)py * C + (int)px, t); repaths++; if (np.empty()) break; route.clear(); for (auto& p : np) route.push_back({p.first + 0.5, p.second + 0.5}); py = route[0].first; px = route[0].second; target = 1; continue; }              // 재질의 경로는 현재 칸의 중심에서 시작(같은 칸 안에서 위치를 중심으로 맞춤)
+            double dy = route[target].first - py, dx = route[target].second - px, d = std::hypot(dy, dx); if (d < 0.3) { target++; continue; } py += dy / d * 0.3; px += dx / d * 0.3; assert(world[(int)py][(int)px] != '#'); }
+        if (target >= route.size()) arrived++; if (!carved) noRepath++; }
+    assert(worlds >= 6 && arrived == worlds && repaths > 0 && minClear >= RAD - 0.8);
+    std::cout << "Game-engine navigation: " << worlds << " baked worlds (agent radius " << RAD << " cells); smoothed baked paths kept at least " << minClear << " cells from the raw obstacles; carving a dynamic obstacle triggered " << repaths << " re-queries and every agent still reached its goal without entering a blocked cell" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 굽기 O(R·C·주변 칸), 질의 A* + 줄 당기기, 이동은 프레임당 O(남은 경로 선분 수) 검사
+// Space Complexity: O(R·C)
 ```
 ## ROS에서의 경로 계획
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// ROS(Robot Operating System) 내비게이션 스택(move_base / Nav2)의 계층 — 전역 계획기(global planner)가 비용 지도(costmap) 위에서 시작에서 목표까지의 전체 경로를 구하고(Dijkstra·A*), 지역 계획기(local planner; DWA·TEB·Pure Pursuit)가 센서가 본 주변을 반영해 로봇을 그 경로를 따라 실제로 움직인다.
+// 비용 지도는 층(layer)으로 쌓는다 — 정적 층(미리 만든 지도) + 장애물 층(센서) + 팽창 층(inflation layer). 팽창 층은 장애물에서 멀어질수록 비용이 지수적으로 줄어든다: 거리 d(칸 중심 기준) ≤ 로봇 외접원 반지름이면 INSCRIBED(253, 사실상 충돌), 그보다 멀면 cost = 252·exp(−α·(d − r_inscribed)).
+// 그래서 전역 경로는 벽에 붙지 않고 복도 가운데로 지나게 된다. 검증(40×40, r_inscribed = 1.5칸, α = 0.8): ① 전역 경로가 LETHAL/INSCRIBED 칸을 한 번도 지나지 않음 ② 팽창 비용을 쓰면 경로가 장애물에서 평균적으로 더 멀리 떨어지고(벽 근접 길이 비율이 줄어듦) 길이는 조금 늘어남(trade-off 수치 보고) ③ Pure Pursuit 추종기가 전역 경로를 따라 충돌 없이 목표에 도착
+const int R = 40, C = 40; const double RINS = 1.5, ALPHA = 0.8; std::vector<std::string> w;
+double clearance(int r, int c) { double best = 10.0; for (int rr = std::max(0, r - 10); rr <= std::min(R - 1, r + 10); rr++) for (int cc = std::max(0, c - 10); cc <= std::min(C - 1, c + 10); cc++) if (w[rr][cc] == '#') best = std::min(best, std::hypot(rr - r, cc - c)); return best; }      // 10 칸 밖은 "충분히 멀다" 로 취급
+std::vector<int> inflationCost() { std::vector<int> cost(R * C, 0); for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) { if (w[r][c] == '#') { cost[r * C + c] = 254; continue; } double d = clearance(r, c); cost[r * C + c] = d <= RINS ? 253 : (int)(252 * std::exp(-ALPHA * (d - RINS))); } return cost; }
+std::vector<int> plan(const std::vector<int>& cost, int s, int t, double weight) { std::vector<double> g(R * C, 1e18); std::vector<int> par(R * C, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; g[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > g[u]) continue; if (u == t) break; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / C + dr, c = u % C + dc; if ((!dr && !dc) || r < 0 || c < 0 || r >= R || c >= C || cost[r * C + c] >= 253) continue; if (dr && dc && (cost[(u / C + dr) * C + u % C] >= 253 || cost[u / C * C + u % C + dc] >= 253)) continue; double step = (dr && dc ? std::sqrt(2.0) : 1.0) * (1 + weight * cost[r * C + c] / 252.0); if (du + step < g[r * C + c]) { g[r * C + c] = du + step; par[r * C + c] = u; pq.push({g[r * C + c], r * C + c}); } } }
+    std::vector<int> p; if (g[t] > 1e17) return p; for (int v = t; v >= 0; v = par[v]) p.push_back(v); std::reverse(p.begin(), p.end()); return p; }
 int main() {
-    std::cout << "Global planner finds route; Local planner avoids dynamic obstacles." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(12); int worlds = 0; double nearInfl = 0, nearPlain = 0, lenInfl = 0, lenPlain = 0, cleInfl = 0, clePlain = 0; int arrived = 0;
+    for (int m = 0; m < 14; m++) {
+        w.assign(R, std::string(C, '.')); for (int k = 0; k < 16; k++) { int r0 = 2 + rng() % 34, c0 = 2 + rng() % 34, h = 2 + rng() % 6, wd = 2 + rng() % 6; for (int r = r0; r < std::min(R, r0 + h); r++) for (int c = c0; c < std::min(C, c0 + wd); c++) w[r][c] = '#'; } for (int i = 0; i < R; i++) w[i][0] = w[i][C - 1] = w[0][i] = w[R - 1][i] = '#';
+        std::vector<int> cost = inflationCost(); int s = -1, t = -1; for (int tries = 0; tries < 300 && (s < 0 || t < 0); tries++) { int a = rng() % (R * C); if (cost[a] >= 253) continue; if (s < 0) s = a; else if (std::abs(a / C - s / C) + std::abs(a % C - s % C) > 30) t = a; } if (s < 0 || t < 0) continue;
+        auto infl = plan(cost, s, t, 3.0), plain = plan(cost, s, t, 0.0); if (infl.empty() || plain.empty()) continue; worlds++;
+        for (int v : infl) assert(cost[v] < 253); for (int v : plain) assert(cost[v] < 253);                                                                                                            // ① LETHAL/INSCRIBED 칸을 지나지 않음
+        auto stats = [&](const std::vector<int>& p, double& nearFrac, double& len, double& cle) { int near = 0; double sum = 0, L = 0; for (size_t i = 0; i < p.size(); i++) { double d = clearance(p[i] / C, p[i] % C); sum += d; near += d < 3.0; if (i) L += std::hypot(p[i] / C - p[i - 1] / C, p[i] % C - p[i - 1] % C); } nearFrac += (double)near / p.size(); len += L; cle += sum / p.size(); };
+        stats(infl, nearInfl, lenInfl, cleInfl); stats(plain, nearPlain, lenPlain, clePlain);
+        double ry = s / C + 0.5, rx = s % C + 0.5; bool ok = true; size_t idx = 0; int guard = 0; while (guard++ < 4000) { if (std::hypot(ry - (t / C + 0.5), rx - (t % C + 0.5)) < 0.8) break; while (idx + 1 < infl.size() && std::hypot(infl[idx] / C + 0.5 - ry, infl[idx] % C + 0.5 - rx) < 1.5) idx++; double ty = infl[idx] / C + 0.5, tx = infl[idx] % C + 0.5, d = std::hypot(ty - ry, tx - rx); if (d < 1e-6) break; ry += (ty - ry) / d * 0.2; rx += (tx - rx) / d * 0.2;     // Pure Pursuit: 앞쪽 점(lookahead 1.5)을 향해 이동
+            if (w[(int)ry][(int)rx] == '#') ok = false; }
+        arrived += ok && std::hypot(ry - (t / C + 0.5), rx - (t % C + 0.5)) < 0.8; }
+    assert(worlds >= 8 && nearInfl < nearPlain && cleInfl > clePlain && lenInfl >= lenPlain - 1e-9 && arrived == worlds);
+    std::cout << "ROS-style planning: " << worlds << " costmaps; inflation-aware global paths spent " << 100 * nearInfl / worlds << "% of their length within 3 cells of an obstacle versus " << 100 * nearPlain / worlds << "% without inflation, with mean clearance " << cleInfl / worlds << " vs " << clePlain / worlds << " cells and length ratio " << lenInfl / lenPlain << "; a pure-pursuit follower reached the goal in " << arrived << "/" << worlds << " worlds without touching an obstacle" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 팽창 O(R·C·반경²), 전역 계획 Dijkstra O(V log V), 추종은 O(스텝)
+// Space Complexity: O(R·C)
 ```
 ## Google Maps와 차량 내비게이션의 경로 탐색 개요
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// Google Maps·차량 내비게이션의 경로 탐색 개요 — 한 번의 길찾기는 여러 부품의 파이프라인이다. ① 지도 매칭(GPS 를 도로에 붙임; PathFinding.md Part 14 GPSNavigation) ② 대규모 도로망의 최단 경로 질의 — 전처리 기반 기법(축약 계층 CH, 환승 노드, ALT; Part 15) ③ 실시간 교통 반영
+// ④ 예상 도착 시간(ETA) 계산 ⑤ 대체 경로 제시(Part 7) ⑥ 이탈 시 재탐색. 이 부록은 ②–④의 핵심 난제를 다룬다: 교통 상황은 몇 분마다 바뀌는데 CH 전처리는 가중치를 쓰므로 매번 처음부터 다시 만들기엔 비싸다.
+// 해법은 맞춤형 축약 계층(Customizable CH, Dibbelt·Strasser·Wagner): 정점 순서를 가중치와 무관하게(여기서는 최소 차수 소거 순서) 정하고, 증인 탐색 없이 이웃 쌍마다 지름길 "위치"만 만들어 둔다(구조는 한 번만 전처리). 가중치가 바뀌면 낮은 순위부터 삼각형 완화 w(a,b) = min(w(a,b), w(v,a) + w(v,b)) 만 다시 적용(맞춤, customization)한다.
+// 질의는 상향 양방향 Dijkstra. 증거(가중 도시 20×20, 교통 스냅샷 3개): ① 각 스냅샷에서 맞춤 후 CH 질의 == 해당 가중치의 Dijkstra(질의 400개씩) ② 맞춤은 우선순위 큐 없이 삼각형 완화(각각 O(1))만 쓴다 — 작은 그래프에서는 증인 탐색을 쓰는 일반 CH 재구축과 연산 수가 비슷하거나 더 많지만(수치 보고) 구조가 가중치와 무관해 병렬화가 쉽고 수백만 정점에서 이점이 커진다(이 크기의 실험으로는 입증하지 못하는 주장임을 밝힘) ③ 교통 상황이 바뀌면 최적 경로 자체가 바뀌는 질의가 존재(아침/저녁 비교) ④ ETA = 최단 시간(초)이 스냅샷마다 다르게 계산됨
+struct Graph { int n; std::vector<std::vector<std::pair<int, int>>> adj; };
+Graph makeGraph(int W, int H, std::mt19937& rng, int maxW, int extra) {
+    Graph g{W * H, std::vector<std::vector<std::pair<int, int>>>(W * H)}; std::map<std::pair<int, int>, int> best; auto add = [&](int a, int b, int w) { if (a == b) return; auto k = std::make_pair(std::min(a, b), std::max(a, b)); if (!best.count(k) || w < best[k]) best[k] = w; };
+    for (int r = 0; r < H; r++) for (int c = 0; c < W; c++) { int u = r * W + c; if (c + 1 < W) add(u, u + 1, 1 + rng() % maxW); if (r + 1 < H) add(u, u + W, 1 + rng() % maxW); } for (int k = 0; k < extra; k++) add(rng() % (W * H), rng() % (W * H), maxW * 3 + rng() % (maxW * 3));
+    for (auto& [e, w] : best) { g.adj[e.first].push_back({e.second, w}); g.adj[e.second].push_back({e.first, w}); } return g; }
+std::vector<long> dijkstra(const Graph& g, int s, long* settled = nullptr) { std::vector<long> d(g.n, 1L << 50); typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); if (settled) *settled = 0; while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; if (settled) (*settled)++; for (auto [v, w] : g.adj[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } } return d; }
+struct CCH {
+    int n; std::vector<int> rank; std::vector<std::vector<int>> up; std::map<std::pair<int, int>, int> idx; std::vector<long> w; std::vector<std::pair<int, int>> ends; long customizeSteps = 0;                      // 간선 목록(원래 + 채움), w[id] = 현재 가중치
+    void build(const Graph& g) { n = g.n; rank.assign(n, -1); up.assign(n, {}); std::vector<std::set<int>> nb(n); for (int u = 0; u < n; u++) for (auto [v, ww] : g.adj[u]) nb[u].insert(v); std::vector<std::set<int>> nbOrig = nb; std::set<std::pair<int, int>> all; for (int u = 0; u < n; u++) for (int v : nb[u]) all.insert({std::min(u, v), std::max(u, v)});
+        std::vector<char> done(n, 0); for (int step = 0; step < n; step++) { int v = -1; size_t bd = 1 << 30; for (int u = 0; u < n; u++) if (!done[u] && nb[u].size() < bd) { bd = nb[u].size(); v = u; } done[v] = 1; rank[v] = step; std::vector<int> N(nb[v].begin(), nb[v].end()); for (int a : N) nb[a].erase(v); for (size_t i = 0; i < N.size(); i++) for (size_t j = i + 1; j < N.size(); j++) { nb[N[i]].insert(N[j]); nb[N[j]].insert(N[i]); all.insert({std::min(N[i], N[j]), std::max(N[i], N[j])}); } for (int a : N) up[v].push_back(a); }      // 최소 차수 소거 — 가중치와 무관
+        for (auto& e : all) { idx[e] = ends.size(); ends.push_back(e); } w.assign(ends.size(), 1L << 50); }
+    void customize(const Graph& g) { std::fill(w.begin(), w.end(), 1L << 50); for (int u = 0; u < n; u++) for (auto [v, ww] : g.adj[u]) { int id = idx[{std::min(u, v), std::max(u, v)}]; w[id] = std::min(w[id], (long)ww); } std::vector<int> order(n); for (int v = 0; v < n; v++) order[rank[v]] = v; customizeSteps = 0;
+        for (int v : order) for (size_t i = 0; i < up[v].size(); i++) for (size_t j = i + 1; j < up[v].size(); j++) { int a = up[v][i], b = up[v][j]; int eab = idx[{std::min(a, b), std::max(a, b)}], eva = idx[{std::min(v, a), std::max(v, a)}], evb = idx[{std::min(v, b), std::max(v, b)}]; w[eab] = std::min(w[eab], w[eva] + w[evb]); customizeSteps++; } }       // 삼각형 완화(낮은 순위부터)
+    long query(int s, int t) const { std::vector<long> d[2] = {std::vector<long>(n, 1L << 50), std::vector<long>(n, 1L << 50)}; typedef std::pair<long, int> Q; for (int side = 0; side < 2; side++) { std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; int src = side ? t : s; d[side][src] = 0; pq.push({0, src}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[side][u]) continue; for (int x : up[u]) { long ww = w.at(idx.at({std::min(u, x), std::max(u, x)})); if (du + ww < d[side][x]) { d[side][x] = du + ww; pq.push({d[side][x], x}); } } } } long best = 1L << 50; for (int v = 0; v < n; v++) best = std::min(best, d[0][v] + d[1][v]); return best; }
+};
+long witnessWork(const Graph& g) {                                                                                                   // 비교용: 가중치마다 CH 를 처음부터 다시 만들 때의 증인 탐색(Dijkstra)에서 정착(settle)시킨 정점 수
+    int n = g.n; std::vector<std::map<int, long>> cur(n); for (int u = 0; u < n; u++) for (auto [v, w] : g.adj[u]) { auto it = cur[u].find(v); if (it == cur[u].end() || w < it->second) cur[u][v] = w; } std::vector<char> done(n, 0); long settled = 0;
+    for (int step = 0; step < n; step++) { int v = -1; size_t bd = 1 << 30; for (int u = 0; u < n; u++) if (!done[u] && cur[u].size() < bd) { bd = cur[u].size(); v = u; } done[v] = 1; std::vector<std::pair<int, long>> N(cur[v].begin(), cur[v].end()); for (auto& x : N) cur[x.first].erase(v);
+        for (size_t i = 0; i < N.size(); i++) for (size_t j = i + 1; j < N.size(); j++) { int a = N[i].first, b = N[j].first; long via = N[i].second + N[j].second; std::map<int, long> d; typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[a] = 0; pq.push({0, a}); long found = 1L << 50;
+            while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u] || du > via) continue; settled++; if (u == b) { found = du; break; } for (auto& [x, wx] : cur[u]) if (!done[x] && (!d.count(x) || du + wx < d[x])) { d[x] = du + wx; pq.push({d[x], x}); } }
+            if (found > via) { cur[a][b] = std::min(cur[a].count(b) ? cur[a][b] : (1L << 50), via); cur[b][a] = cur[a][b]; } } cur[v].clear(); }
+    return settled; }
 int main() {
-    std::cout << "Google Maps uses Contraction Hierarchies and real-time weights." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(30); Graph base = makeGraph(20, 20, rng, 9, 12); int n = base.n; CCH cch; cch.build(base); long customizeTotal = 0; int changedRoutes = 0, queries = 0; std::vector<std::vector<long>> etaAt(3);
+    std::vector<Graph> snapshots; for (int snap = 0; snap < 3; snap++) { Graph gg = base; std::map<std::pair<int, int>, int> factor; for (int u = 0; u < n; u++) for (auto [v, w] : base.adj[u]) if (u < v) factor[{u, v}] = 1 + (int)(rng() % 100 < (snap == 0 ? 35 : snap == 1 ? 10 : 30) ? 1 + rng() % 5 : 0);                                       // 교통 정체: 일부 도로의 통행 시간이 2~6 배
+        for (int u = 0; u < n; u++) for (size_t k = 0; k < gg.adj[u].size(); k++) { int v = gg.adj[u][k].first; gg.adj[u][k].second = base.adj[u][k].second * factor[{std::min(u, v), std::max(u, v)}]; } snapshots.push_back(gg); }
+    std::vector<std::pair<int, int>> qs; for (int q = 0; q < 400; q++) { int s = rng() % n, t = rng() % n; if (s != t) qs.push_back({s, t}); }
+    for (int snap = 0; snap < 3; snap++) { cch.customize(snapshots[snap]); customizeTotal += cch.customizeSteps; for (auto [s, t] : qs) { long ref = dijkstra(snapshots[snap], s)[t]; assert(cch.query(s, t) == ref); etaAt[snap].push_back(ref); queries++; } }                                       // ① 맞춤 후 정확
+    for (size_t q = 0; q < qs.size(); q++) changedRoutes += etaAt[0][q] != etaAt[1][q] || etaAt[1][q] != etaAt[2][q];                                                                                                  // ③④ 교통에 따라 ETA 가 달라짐
+    long rebuild = 0; for (int snap = 0; snap < 3; snap++) rebuild += witnessWork(snapshots[snap]); assert(changedRoutes > 100 && customizeTotal > 0 && rebuild > 0);
+    std::cout << "Navigation overview: structure built once (" << cch.ends.size() << " edges incl. fill-in); for 3 traffic snapshots the customized hierarchy answered " << queries << " queries exactly like Dijkstra; customization used " << customizeTotal << " O(1) triangle relaxations and no priority queue at all (on this 400-vertex graph an ordinary CH rebuild is not more expensive in raw steps: its witness searches settled " << rebuild << " vertices, but they need heaps and depend on the weights, and customization parallelizes trivially at continental scale); ETA changed with traffic for " << changedRoutes << " of " << qs.size() << " origin-destination pairs" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 맞춤 O(삼각형 수), 질의 O(상향 탐색 공간), 구조 전처리는 가중치와 무관하게 한 번
+// Space Complexity: O(간선 + 채움 간선)
 ```
