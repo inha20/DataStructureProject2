@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git add *)",
-      "Bash(git commit -q -m 'ADS: implement Part 5-6 \\(ball tree, BVH, BK/VP/Cover tree, sparse table, range tree\\)' -m 'Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com> *)",
-      "Bash(git push *)"
-    ]
-  }
-}
