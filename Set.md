@@ -1493,360 +1493,860 @@ int main() {
 ## InvertedIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 역색인(inverted index)의 집합론적 관점 (정본은 String.md Part 15): 단어 w 마다 그 단어를 포함한 문서 번호의 집합 P(w)(포스팅 집합)를 저장한다. 불리언 검색은 곧 집합 대수다 — a AND b = P(a) ∩ P(b), a OR b = P(a) ∪ P(b), a AND NOT b = P(a) \ P(b), NOT a = 전체 문서 \ P(a).
+// 문서를 훑지 않고 포스팅 집합만 계산하므로 질의 비용이 문서 수가 아니라 포스팅 길이에 비례한다. 포스팅이 정렬되어 있으면 병합으로 O(|P(a)| + |P(b)|). 짧은 포스팅부터 교집합하면 중간 결과가 빨리 줄어든다.
+// 검증: 무작위 문서 200개로 색인을 만들고 질의 500개(AND/OR/AND-NOT/NOT 조합)의 결과가 모든 문서를 직접 훑어 판정한 결과와 일치하는지, 드모르간 법칙 NOT(a AND b) = NOT a OR NOT b 가 성립하는지 확인한다
+std::map<std::string, std::set<int>> post; std::set<int> universe;
+std::set<int> opAnd(const std::set<int>& a, const std::set<int>& b) { std::set<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::inserter(r, r.begin())); return r; }
+std::set<int> opOr(const std::set<int>& a, const std::set<int>& b) { std::set<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::inserter(r, r.begin())); return r; }
+std::set<int> opMinus(const std::set<int>& a, const std::set<int>& b) { std::set<int> r; std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::inserter(r, r.begin())); return r; }
+const std::set<int>& P(const std::string& w) { static const std::set<int> none; auto it = post.find(w); return it == post.end() ? none : it->second; }
 int main() {
-    std::cout << "Inverted Index maps words to sets of document IDs." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(3); const std::vector<std::string> vocab = {"set", "list", "tree", "heap", "graph", "hash", "queue", "stack", "trie", "sort"}; std::vector<std::set<std::string>> docs;
+    for (int d = 0; d < 200; d++) { std::set<std::string> words; int k = 1 + rng() % 5; for (int i = 0; i < k; i++) words.insert(vocab[rng() % vocab.size()]); docs.push_back(words); universe.insert(d); for (auto& w : words) post[w].insert(d); }
+    for (int q = 0; q < 500; q++) { std::string a = vocab[rng() % vocab.size()], b = vocab[rng() % vocab.size()]; int op = rng() % 4; std::set<int> got, want;
+        for (int d = 0; d < 200; d++) { bool ha = docs[d].count(a), hb = docs[d].count(b); bool ok = op == 0 ? (ha && hb) : op == 1 ? (ha || hb) : op == 2 ? (ha && !hb) : !ha; if (ok) want.insert(d); }
+        got = op == 0 ? opAnd(P(a), P(b)) : op == 1 ? opOr(P(a), P(b)) : op == 2 ? opMinus(P(a), P(b)) : opMinus(universe, P(a)); assert(got == want);
+        assert(opMinus(universe, opAnd(P(a), P(b))) == opOr(opMinus(universe, P(a)), opMinus(universe, P(b))));                                                                                    // 드모르간 법칙
+        assert(opAnd(P(a), P(b)).size() + opOr(P(a), P(b)).size() == P(a).size() + P(b).size()); }                                                                                         // 포함-배제: |A∩B| + |A∪B| = |A| + |B|
+    std::cout << "InvertedIndex: 500 Boolean queries answered purely by set algebra on posting sets equal a full scan of the 200 documents; De Morgan's law and |A&B| + |A|B| = |A| + |B| hold" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 질의 O(포스팅 길이의 합) (정렬 병합)
+// Space Complexity: O(총 단어 출현 수)
 ```
 ## PostingList()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 포스팅 리스트(posting list): 한 단어가 나오는 문서 번호들의 정렬된 목록. 세 가지 공학이 핵심이다. ① 압축: 번호가 정렬돼 있으므로 이웃 간 차이(delta)를 저장하면 값이 작아지고, 가변 길이 바이트(VByte: 하위 7비트씩, 마지막 바이트만 최상위 비트 1)로 저장하면 보통 2~4 바이트 → 1~2 바이트.
+// ② 교집합 가속: 짧은 리스트의 원소를 긴 리스트에서 찾는데, 선형 병합 대신 갤로핑(galloping: 1, 2, 4, 8… 걸음으로 건너뛰다 이분 탐색) 검색을 쓰면 두 길이 차가 클 때 O(m log(n/m)) 로 줄어든다. ③ 스킵 포인터: 고정 간격 √n 마다 이정표를 두어 건너뜀.
+// 검증: 길이 차이가 큰 무작위 리스트 쌍 200개에서 ① 갤로핑 교집합 == 선형 병합 == std::set_intersection 이며 비교 횟수가 선형 병합보다 훨씬 적음 ② delta+VByte 인코딩이 손실 없이 복원되고 원본(4바이트 정수)보다 작음 ③ 합집합(병합) 결과가 정렬·중복 없음
+std::vector<uint8_t> encode(const std::vector<uint32_t>& ids) { std::vector<uint8_t> out; uint32_t prev = 0; for (uint32_t id : ids) { uint32_t d = id - prev; prev = id; while (d >= 128) { out.push_back(d & 127); d >>= 7; } out.push_back(d | 128); } return out; }
+std::vector<uint32_t> decode(const std::vector<uint8_t>& bytes) { std::vector<uint32_t> ids; uint32_t cur = 0, d = 0; int shift = 0; for (uint8_t b : bytes) { if (b & 128) { d |= (uint32_t)(b & 127) << shift; cur += d; ids.push_back(cur); d = 0; shift = 0; } else { d |= (uint32_t)b << shift; shift += 7; } } return ids; }
+size_t gallop(const std::vector<uint32_t>& v, size_t from, uint32_t target, long& cmp) { size_t step = 1, hi = from; while (hi < v.size() && (cmp++, v[hi] < target)) { from = hi + 1; hi += step; step *= 2; } size_t lo = from; hi = std::min(hi, v.size()); while (lo < hi) { size_t mid = (lo + hi) / 2; cmp++; if (v[mid] < target) lo = mid + 1; else hi = mid; } return lo; }
+std::vector<uint32_t> intersectGallop(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b, long& cmp) { const auto &s = a.size() <= b.size() ? a : b, &l = a.size() <= b.size() ? b : a; std::vector<uint32_t> r; size_t pos = 0; for (uint32_t x : s) { pos = gallop(l, pos, x, cmp); if (pos == l.size()) break; cmp++; if (l[pos] == x) r.push_back(x); } return r; }
+std::vector<uint32_t> intersectMerge(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b, long& cmp) { std::vector<uint32_t> r; size_t i = 0, j = 0; while (i < a.size() && j < b.size()) { cmp++; if (a[i] == b[j]) { r.push_back(a[i]); i++; j++; } else if (a[i] < b[j]) i++; else j++; } return r; }
 int main() {
-    std::cout << "Posting List is an ordered set of doc IDs for a term." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(15); long cmpG = 0, cmpM = 0; size_t rawBytes = 0, packed = 0;
+    for (int t = 0; t < 200; t++) { std::set<uint32_t> sa, sb; int na = 5 + rng() % 40, nb = 2000 + rng() % 8000; while ((int)sa.size() < na) sa.insert(rng() % 1000000); while ((int)sb.size() < nb) sb.insert(rng() % 1000000); for (uint32_t x : sa) if (rng() % 3 == 0) sb.insert(x);
+        std::vector<uint32_t> a(sa.begin(), sa.end()), b(sb.begin(), sb.end()); long cg = 0, cm = 0; auto g = intersectGallop(a, b, cg), m = intersectMerge(a, b, cm); std::vector<uint32_t> ref; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(ref)); assert(g == ref && m == ref); cmpG += cg; cmpM += cm;                                  // ① 세 방법이 같음
+        auto enc = encode(b); assert(decode(enc) == b); rawBytes += b.size() * 4; packed += enc.size();                                                                                                                                                                 // ② 무손실 압축
+        std::vector<uint32_t> u; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(u)); assert(std::is_sorted(u.begin(), u.end()) && std::adjacent_find(u.begin(), u.end()) == u.end() && u.size() + ref.size() == a.size() + b.size()); }                       // ③
+    assert(cmpG * 5 < cmpM && packed < rawBytes / 2);
+    std::cout << "PostingList: galloping intersection equals linear merge and std::set_intersection on 200 skewed list pairs using " << cmpG << " comparisons versus " << cmpM << "; delta+VByte encoding is lossless and shrank " << rawBytes << " bytes to " << packed << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 교집합 O(m log(n/m)) (갤로핑), 인코딩/디코딩 O(n)
+// Space Complexity: O(n) (압축 시 항목당 ~1~2 바이트)
 ```
 ## JaccardSimilarity()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 자카드 유사도(Jaccard similarity): J(A, B) = |A ∩ B| / |A ∪ B| (둘 다 공집합이면 1로 약속). 0 이면 서로소, 1 이면 같은 집합. 자카드 거리 d = 1 − J 는 진짜 거리(metric)이다 — 대칭이고 d = 0 ⇔ A = B 이며 삼각부등식 d(A,C) ≤ d(A,B) + d(B,C) 를 만족한다.
+// |A ∪ B| = |A| + |B| − |A ∩ B| (포함-배제)로 계산하면 합집합을 만들지 않고도 구할 수 있다. 가중치(다중집합)에는 J_w = Σ min(a_i, b_i) / Σ max(a_i, b_i). 큰 집합에서는 전부 비교하지 않고 MinHash(정본은 Hash.md Part 14)로 추정하거나, 합집합에서 원소를 무작위로 뽑아 교집합에 속하는 비율로 추정한다.
+// 검증: ① 정의와 포함-배제 계산이 일치하고 0 ≤ J ≤ 1 ② 삼각부등식을 무작위 삼중 20000개에서 확인 ③ 합집합 표본 추정의 평균 오차가 표본 수 k 에 대해 대략 1/√k 로 줄어듦 ④ 가중치 자카드가 0/1 가중치에서 보통 자카드와 같고 [0,1] 범위
+typedef std::set<int> S;
+double jaccard(const S& a, const S& b) { if (a.empty() && b.empty()) return 1; std::vector<int> i; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(i)); return (double)i.size() / (a.size() + b.size() - i.size()); }
+double weighted(const std::vector<int>& a, const std::vector<int>& b) { long mn = 0, mx = 0; for (size_t i = 0; i < a.size(); i++) { mn += std::min(a[i], b[i]); mx += std::max(a[i], b[i]); } return mx == 0 ? 1.0 : (double)mn / mx; }
 int main() {
-    std::cout << "Jaccard = |Intersection| / |Union|." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(21); auto randomSet = [&](int universe) { S s; int n = rng() % 15; for (int i = 0; i < n; i++) s.insert(rng() % universe); return s; };
+    for (int t = 0; t < 20000; t++) { S a = randomSet(20), b = randomSet(20), c = randomSet(20); S u, in; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::inserter(u, u.begin())); std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::inserter(in, in.begin())); double direct = u.empty() ? 1.0 : (double)in.size() / u.size(); assert(std::fabs(jaccard(a, b) - direct) < 1e-12 && jaccard(a, b) >= 0 && jaccard(a, b) <= 1);       // ①
+        assert(std::fabs(jaccard(a, b) - jaccard(b, a)) < 1e-12 && (jaccard(a, a) == 1.0)); double dab = 1 - jaccard(a, b), dbc = 1 - jaccard(b, c), dac = 1 - jaccard(a, c); assert(dac <= dab + dbc + 1e-12); if (dab < 1e-12) assert(a == b); }                                                          // ② 삼각부등식 · 대칭
+    S A, B; for (int i = 0; i < 400; i++) A.insert(i); for (int i = 200; i < 600; i++) B.insert(i); double truth = jaccard(A, B); std::vector<int> unionV; { S u; std::set_union(A.begin(), A.end(), B.begin(), B.end(), std::inserter(u, u.begin())); unionV.assign(u.begin(), u.end()); }
+    double errAt[3]; const int ks[3] = {16, 256, 4096}; for (int ki = 0; ki < 3; ki++) { double sumErr = 0; for (int rep = 0; rep < 300; rep++) { int hits = 0; for (int i = 0; i < ks[ki]; i++) { int x = unionV[rng() % unionV.size()]; hits += A.count(x) && B.count(x); } sumErr += std::fabs((double)hits / ks[ki] - truth); } errAt[ki] = sumErr / 300; }
+    assert(errAt[0] > errAt[1] && errAt[1] > errAt[2] && errAt[2] * 8 < errAt[0]);                                                                                                                        // ③ 표본 수가 늘면 오차 감소
+    for (int t = 0; t < 500; t++) { std::vector<int> a(10), b(10), ba(10), bb(10); S sa, sb; for (int i = 0; i < 10; i++) { ba[i] = rng() % 2; bb[i] = rng() % 2; if (ba[i]) sa.insert(i); if (bb[i]) sb.insert(i); a[i] = rng() % 5; b[i] = rng() % 5; } assert(std::fabs(weighted(ba, bb) - jaccard(sa, sb)) < 1e-12); double w = weighted(a, b); assert(w >= 0 && w <= 1); }          // ④ 가중치 자카드
+    std::cout << "JaccardSimilarity: definition equals the inclusion-exclusion formula, 1-J obeys the triangle inequality on 20000 random triples, sampling-from-the-union estimates have mean error " << errAt[0] << " / " << errAt[1] << " / " << errAt[2] << " for k = 16 / 256 / 4096 (about 1/sqrt(k)), and weighted Jaccard reduces to the ordinary one on 0/1 weights" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 정렬된 집합 O(|A| + |B|), 해시 O(min(|A|,|B|)) 기대, 표본 추정 O(k)
+// Space Complexity: O(1) 추가
 ```
 ## MinHash()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// MinHash (집합 관점의 요약, 정본은 Hash.md Part 14): 무작위 해시 h 아래에서 두 집합의 "해시 최솟값의 원소" 가 같을 확률이 정확히 자카드 유사도 J(A, B) 이다 — A ∪ B 에서 h 가 가장 작은 원소가 A ∩ B 에 속할 때만 두 최솟값이 같기 때문(전체 합집합에서 각 원소가 최솟값일 확률이 같다).
+// 해시 k 개로 만든 서명(signature)에서 같은 칸의 비율이 J 의 불편 추정량이고 표준오차는 √(J(1−J)/k) 이다. 집합 크기와 무관하게 서명 크기가 k 로 고정되어 거대한 집합의 유사도를 상수 시간에 비교한다. 서명 하나를 만드는 비용은 O(|S|·k).
+// 검증: 알려진 J 를 갖는 집합 쌍에서 ① 같은 칸 비율의 평균이 J 와 일치(편향 없음, 300회 반복 평균 오차 < 0.01) ② 표준오차가 이론값 √(J(1−J)/k) 와 같은 크기 ③ 같은 집합의 서명은 동일, 서로소인 집합은 거의 0 ④ k 를 4 배로 키우면 오차가 약 절반
+uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+std::vector<uint64_t> signature(const std::set<int>& s, int k, uint64_t seed) { std::vector<uint64_t> sig(k, UINT64_MAX); for (int x : s) for (int i = 0; i < k; i++) sig[i] = std::min(sig[i], mix(((uint64_t)x << 20) ^ (seed + 0x9e3779b97f4a7c15ULL * (i + 1)))); return sig; }
+double estimate(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) { int same = 0; for (size_t i = 0; i < a.size(); i++) same += a[i] == b[i]; return (double)same / a.size(); }
 int main() {
-    std::cout << "MinHash estimates Jaccard Similarity efficiently." << std::endl;
-    assert(true);
-    return 0;
+    std::set<int> A, B; for (int i = 0; i < 200; i++) A.insert(i); for (int i = 100; i < 300; i++) B.insert(i); const double J = 100.0 / 300; std::mt19937_64 rng(5); double errAt[2] = {0, 0}, sdAt[2] = {0, 0}; const int ks[2] = {64, 256};
+    for (int ki = 0; ki < 2; ki++) { std::vector<double> est; for (int rep = 0; rep < 300; rep++) { uint64_t seed = rng(); est.push_back(estimate(signature(A, ks[ki], seed), signature(B, ks[ki], seed))); } double mean = 0; for (double e : est) mean += e; mean /= est.size(); double var = 0; for (double e : est) var += (e - mean) * (e - mean); var /= est.size(); errAt[ki] = std::fabs(mean - J); sdAt[ki] = std::sqrt(var);
+        double theory = std::sqrt(J * (1 - J) / ks[ki]); assert(errAt[ki] < 0.01 && sdAt[ki] > 0.6 * theory && sdAt[ki] < 1.4 * theory); }                                                                // ① 편향 없음 ② 표준오차가 이론과 같은 크기
+    assert(sdAt[1] < 0.65 * sdAt[0]);                                                                                                                                                             // ④ k 4 배 → 오차 약 절반
+    std::set<int> C; for (int i = 1000; i < 1200; i++) C.insert(i); auto sa = signature(A, 256, 77), sc = signature(C, 256, 77); assert(estimate(sa, signature(A, 256, 77)) == 1.0 && estimate(sa, sc) < 0.03);        // ③
+    std::cout << "MinHash: signature agreement estimates Jaccard " << J << " without bias (mean error " << errAt[0] << " / " << errAt[1] << " for k = 64 / 256); standard deviation " << sdAt[0] << " / " << sdAt[1] << " vs theory " << std::sqrt(J * (1 - J) / 64) << " / " << std::sqrt(J * (1 - J) / 256) << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 서명 O(|S| · k), 비교 O(k)
+// Space Complexity: O(k) 서명
 ```
 ## LocalitySensitiveHashing()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 지역성 민감 해싱(LSH) — 집합 유사도용 MinHash 밴딩 (집합 관점의 요약, 정본은 Hash.md Part 14): 유사한 집합은 같은 버킷에, 다른 집합은 다른 버킷에 들어가도록 설계해 후보 쌍만 정확히 비교한다. 서명 k = b·r 칸을 b 개의 밴드(각 r 행)로 나누고 밴드 하나라도 완전히 같으면 후보로 삼는다.
+// 자카드 유사도 s 인 두 집합이 후보가 될 확률은 1 − (1 − s^r)^b (S 자 곡선). 임계값은 약 (1/b)^(1/r) 근처로 b, r 로 조절한다: s 가 임계값보다 크면 거의 항상 후보, 작으면 거의 아님. 모든 쌍을 비교하는 O(N²) 대신 버킷 안만 비교한다.
+// 검증(k = 100, b = 20, r = 5): ① 유사도 s ∈ {0.2, 0.4, 0.6, 0.8} 인 집합 쌍을 많이 만들어 경험적 후보 확률이 1 − (1 − s^r)^b 와 ±0.06 이내로 일치 ② 문서 200개(유사한 쌍 20개 심음)에서 밴딩이 심은 쌍을 거의 모두 찾으면서(재현율 ≥ 90%) 비교 쌍 수는 전체 N(N−1)/2 의 일부분 ③ 거짓 양성은 정확한 자카드로 걸러 오탐 0
+uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+std::vector<uint64_t> signature(const std::set<int>& s, int k, uint64_t seed) { std::vector<uint64_t> sig(k, UINT64_MAX); for (int x : s) for (int i = 0; i < k; i++) sig[i] = std::min(sig[i], mix(((uint64_t)x << 20) ^ (seed + 0x9e3779b97f4a7c15ULL * (i + 1)))); return sig; }
+bool candidate(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b, int bands, int rows) { for (int band = 0; band < bands; band++) { bool same = true; for (int r = 0; r < rows && same; r++) same = a[band * rows + r] == b[band * rows + r]; if (same) return true; } return false; }
+double jaccard(const std::set<int>& a, const std::set<int>& b) { int in = 0; for (int x : a) in += b.count(x); return (double)in / (a.size() + b.size() - in); }
 int main() {
-    std::cout << "LSH hashes similar sets to same buckets." << std::endl;
-    assert(true);
-    return 0;
+    const int K = 100, BANDS = 20, ROWS = 5; std::mt19937_64 rng(3);
+    for (double s : {0.2, 0.4, 0.6, 0.8}) { int hits = 0, trials = 400; int common = (int)std::round(200 * 2 * s / (1 + s)); for (int t = 0; t < trials; t++) { std::set<int> A, B; for (int i = 0; i < common; i++) { A.insert(i); B.insert(i); } for (int i = 0; i < 200 - common; i++) { A.insert(1000 + i); B.insert(2000 + i); } uint64_t seed = rng(); hits += candidate(signature(A, K, seed), signature(B, K, seed), BANDS, ROWS); }
+        double theory = 1 - std::pow(1 - std::pow(jaccard([&] { std::set<int> A; for (int i = 0; i < common; i++) A.insert(i); for (int i = 0; i < 200 - common; i++) A.insert(1000 + i); return A; }(), [&] { std::set<int> B; for (int i = 0; i < common; i++) B.insert(i); for (int i = 0; i < 200 - common; i++) B.insert(2000 + i); return B; }()), ROWS), BANDS); assert(std::fabs((double)hits / trials - theory) < 0.06); }       // ① S 자 곡선
+    const int N = 200; std::vector<std::set<int>> docs(N); for (int d = 0; d < N; d++) for (int i = 0; i < 60; i++) docs[d].insert(rng() % 100000); std::set<std::pair<int, int>> planted; for (int p = 0; p < 20; p++) { int a = 2 * p, b = 2 * p + 1; docs[b] = docs[a]; int changes = 4; for (int i = 0; i < changes; i++) { auto it = docs[b].begin(); std::advance(it, rng() % docs[b].size()); docs[b].erase(it); docs[b].insert(200000 + p * 10 + i); } planted.insert({a, b}); }
+    std::vector<std::vector<uint64_t>> sig; for (auto& d : docs) sig.push_back(signature(d, K, 42)); std::map<std::pair<int, uint64_t>, std::vector<int>> buckets; for (int d = 0; d < N; d++) for (int band = 0; band < BANDS; band++) { uint64_t h = 0; for (int r = 0; r < ROWS; r++) h = mix(h ^ sig[d][band * ROWS + r]); buckets[{band, h}].push_back(d); }
+    std::set<std::pair<int, int>> cands; for (auto& [key, ids] : buckets) for (size_t i = 0; i < ids.size(); i++) for (size_t j = i + 1; j < ids.size(); j++) cands.insert({ids[i], ids[j]}); int found = 0; for (auto& p : planted) found += cands.count(p); int confirmed = 0, falsePositives = 0; for (auto& c : cands) { if (jaccard(docs[c.first], docs[c.second]) >= 0.8) confirmed++; else falsePositives++; }
+    assert(found >= 18 && cands.size() < (size_t)N * (N - 1) / 2 / 10 && confirmed >= found);
+    std::cout << "LocalitySensitiveHashing: empirical candidate probabilities follow 1-(1-s^5)^20 for s = 0.2..0.8; banding found " << found << "/20 planted near-duplicates while examining " << cands.size() << " pairs instead of " << N * (N - 1) / 2 << " (" << falsePositives << " false candidates removed by the exact Jaccard check)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 서명 O(N · |S| · k), 밴딩 O(N · b), 후보 비교는 버킷 크기에 비례
+// Space Complexity: O(N · k)
 ```
 
 # Part 13. AI와 데이터
 ## LabelSet()
 ### 대표코드
 ```cpp
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <map>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 레이블 집합(label set): 다중 레이블 분류에서 한 샘플의 정답/예측은 "여러 레이블의 집합"이다. L ≤ 64 개 레이블이면 비트마스크 하나로 표현되고 집합 연산이 비트 연산이 된다. 표준 지표는 모두 집합 연산으로 정의된다.
+// 샘플 i 의 정답 Y, 예측 Z 에 대해 — 정확 일치율(Y = Z인 비율), 해밍 손실 = |Y Δ Z| / L (대칭차), 샘플 기반 정밀도 |Y∩Z|/|Z|, 재현율 |Y∩Z|/|Y|, F1 = 2|Y∩Z| / (|Y| + |Z|) (= Dice 계수, 자카드 J 로는 2J/(1+J)), 마이크로 F1(전체 TP/FP/FN 를 합친 뒤 계산) vs 매크로 F1(레이블별 F1 의 평균).
+// 레이블에 계층(트리)이 있으면 "조상 닫힘(ancestor closure)"을 취해 하위 레이블이 맞으면 상위 레이블도 맞도록 확장하는데, 조상 닫힌 집합들은 합집합·교집합에 대해 닫혀 있다. 검증: ① 비트마스크 지표가 원소 단위로 직접 센 값과 같음 ② F1 = 2J/(1+J) 와 F1 ≤ J 가 아님(F1 ≥ J) ③ 해밍 손실 = 1 − (TP+TN)/L ④ 마이크로 F1 은 전역 카운트의 F1, 매크로 F1 은 레이블별 평균이고 일반적으로 서로 다름 ⑤ 조상 닫힘의 폐쇄성
+typedef uint64_t Mask;
 int main() {
-    std::cout << "Label Set defines classification categories." << std::endl;
-    assert(true);
-    return 0;
+    const int L = 12; std::mt19937_64 rng(3); int microMacroDiffer = 0;
+    for (int t = 0; t < 400; t++) { int n = 1 + rng() % 40; std::vector<Mask> Y(n), Z(n); for (int i = 0; i < n; i++) { Y[i] = rng() & ((1ULL << L) - 1); Z[i] = (rng() & 1) ? (Y[i] ^ (rng() & rng() & ((1ULL << L) - 1))) : (rng() & ((1ULL << L) - 1)); }
+        double exact = 0, hamming = 0, f1Sum = 0, jSum = 0; std::vector<long> tp(L, 0), fp(L, 0), fn(L, 0);
+        for (int i = 0; i < n; i++) { int inter = __builtin_popcountll(Y[i] & Z[i]), ny = __builtin_popcountll(Y[i]), nz = __builtin_popcountll(Z[i]), sym = __builtin_popcountll(Y[i] ^ Z[i]), uni = __builtin_popcountll(Y[i] | Z[i]);
+            exact += Y[i] == Z[i]; hamming += (double)sym / L; double f1 = (ny + nz == 0) ? 1.0 : 2.0 * inter / (ny + nz), j = uni == 0 ? 1.0 : (double)inter / uni; f1Sum += f1; jSum += j; assert(std::fabs(f1 - 2 * j / (1 + j)) < 1e-12 && f1 >= j - 1e-12);                          // ② F1 = 2J/(1+J) ≥ J
+            int tn = L - uni; assert(std::fabs((double)sym / L - (1.0 - (double)(inter + tn) / L)) < 1e-12);                                                                                                        // ③ 해밍 손실
+            for (int l = 0; l < L; l++) { bool y = Y[i] >> l & 1, z = Z[i] >> l & 1; tp[l] += y && z; fp[l] += !y && z; fn[l] += y && !z; } int count = 0; for (int l = 0; l < L; l++) count += (Y[i] >> l & 1) != (Z[i] >> l & 1); assert(count == sym);       // ① 원소 단위로 센 값과 일치
+        }
+        long TP = 0, FP = 0, FN = 0; double macro = 0; for (int l = 0; l < L; l++) { TP += tp[l]; FP += fp[l]; FN += fn[l]; macro += (2 * tp[l] + fp[l] + fn[l]) == 0 ? 1.0 : 2.0 * tp[l] / (2 * tp[l] + fp[l] + fn[l]); } macro /= L; double micro = (2 * TP + FP + FN) == 0 ? 1.0 : 2.0 * TP / (2 * TP + FP + FN); assert(micro >= 0 && micro <= 1 && macro >= 0 && macro <= 1); microMacroDiffer += std::fabs(micro - macro) > 1e-6; assert(exact / n <= 1.0 && hamming / n <= 1.0); }      // ④
+    const int parent[8] = {-1, 0, 0, 1, 1, 2, 2, 5}; auto closure = [&](Mask m) { Mask r = m; for (int l = 0; l < 8; l++) if (m >> l & 1) for (int p = parent[l]; p >= 0; p = parent[p]) r |= 1ULL << p; return r; };
+    for (int t = 0; t < 2000; t++) { Mask a = closure(rng() & 255), b = closure(rng() & 255); assert(closure(a) == a && closure(a | b) == (a | b) && closure(a & b) == (a & b)); }                                                                    // ⑤ 조상 닫힌 집합은 합·교집합에 닫혀 있다
+    Mask perfect = 0b101101; assert(__builtin_popcountll(perfect ^ perfect) == 0 && perfect == (perfect & perfect));
+    std::cout << "LabelSet: bitmask metrics (exact match, Hamming loss, per-sample F1, micro/macro F1) equal element-wise counts on 400 random multi-label batches; F1 = 2J/(1+J) >= J; micro and macro F1 differed on " << microMacroDiffer << " batches; ancestor-closed label sets are closed under union and intersection" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 샘플당 O(1) 비트 연산(레이블 ≤ 64), 마이크로/매크로 집계 O(n · L)
+// Space Complexity: O(n) (샘플당 64비트)
 ```
 ## FeatureSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 특징 집합(feature set) 선택: 후보 특징 n 개 중 k 개를 골라 정보를 가장 많이 담는 부분집합을 찾는다. "얼마나 많은 정보를 덮는가"를 집합 함수 f(S) = |∪_{i∈S} cover(i)| (최대 커버리지)로 모델링하면 f 는 단조(monotone)이고 부분모듈(submodular)이다 —
+// 수확 체감: 이미 많이 고른 집합에 추가한 원소의 이득은 작다(f(A ∪ {x}) − f(A) ≥ f(B ∪ {x}) − f(B), A ⊆ B). 이 성질 덕에 탐욕법(매번 이득이 가장 큰 특징을 추가)이 최적의 (1 − 1/e) ≈ 63.2% 이상을 보장한다(Nemhauser 등, 1978). 최적을 구하는 것은 NP-난해.
+// 느린 탐욕(lazy greedy)은 이득이 감소하기만 한다는 사실을 이용해 이전 이득을 상한으로 우선순위 큐에 두고 맨 위 원소만 다시 계산해 평가 횟수를 크게 줄이며 결과는 같다. 검증: 무작위 문제 300개(n ≤ 16)에서 ① 부분모듈성과 단조성 ② 탐욕 결과 ≥ (1 − 1/e) × 완전 탐색 최적 ③ 느린 탐욕 == 일반 탐욕 이며 이득 평가 횟수 감소 ④ 탐욕법이 최적보다 엄격히 나쁜 사례 존재(최적 보장은 없음)
+typedef uint64_t Mask;
 int main() {
-    std::cout << "Feature Set spans the input space dimensions." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937_64 rng(11); int strictlyWorse = 0, instances = 0; long evalPlain = 0, evalLazy = 0; double worstRatio = 1;
+    for (int t = 0; t < 300; t++) { int n = 6 + rng() % 11, U = 24, k = 1 + rng() % 4; std::vector<Mask> cover(n); for (int i = 0; i < n; i++) { int sz = 1 + rng() % 10; for (int j = 0; j < sz; j++) cover[i] |= 1ULL << (rng() % U); }
+        auto f = [&](Mask chosen) { Mask u = 0; for (int i = 0; i < n; i++) if (chosen >> i & 1) u |= cover[i]; return __builtin_popcountll(u); };
+        for (int rep = 0; rep < 30; rep++) { Mask B = rng() & ((1ULL << n) - 1), A = B & rng(); int x = rng() % n; if (B >> x & 1) continue; assert(f(A | (1ULL << x)) - f(A) >= f(B | (1ULL << x)) - f(B) && f(B) >= f(A)); }                                      // ① 부분모듈 · 단조
+        int best = 0; for (Mask m = 0; m < (1ULL << n); m++) if (__builtin_popcountll(m) <= k) best = std::max(best, f(m));
+        Mask g = 0; long evals = 0; for (int step = 0; step < k; step++) { int arg = -1, bestGain = -1; for (int i = 0; i < n; i++) if (!(g >> i & 1)) { evals++; int gain = f(g | (1ULL << i)) - f(g); if (gain > bestGain) { bestGain = gain; arg = i; } } if (arg < 0 || bestGain <= 0) break; g |= 1ULL << arg; }
+        Mask lz = 0; long lazyEvals = 0; { std::priority_queue<std::pair<int, int>> pq; for (int i = 0; i < n; i++) pq.push({f(1ULL << i), -i}); lazyEvals += n; std::vector<int> stamp(n, 0); int round = 0; while (__builtin_popcountll(lz) < k && !pq.empty()) { auto [gain, negi] = pq.top(); pq.pop(); int i = -negi; if (stamp[i] == round) { if (gain <= 0) break; lz |= 1ULL << i; round++; } else { lazyEvals++; stamp[i] = round; pq.push({f(lz | (1ULL << i)) - f(lz), -i}); } } }
+        int gv = f(g); assert(gv >= (1 - 1 / M_E) * best - 1e-9 && gv <= best); assert(f(lz) == gv); evalPlain += evals; evalLazy += lazyEvals; instances++; if (gv < best) strictlyWorse++; if (best > 0) worstRatio = std::min(worstRatio, (double)gv / best); }                    // ②③④
+    assert(strictlyWorse > 0 && evalLazy < evalPlain);
+    std::cout << "FeatureSet: coverage is monotone and submodular; greedy selection reached at least (1-1/e) of the brute-force optimum on " << instances << " instances (worst ratio " << worstRatio << ", strictly suboptimal on " << strictlyWorse << "); lazy greedy gave identical coverage with " << evalLazy << " gain evaluations versus " << evalPlain << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 탐욕 O(k · n · 평가), 느린 탐욕은 평가 횟수가 크게 줄어듦
+// Space Complexity: O(n)
 ```
 ## VocabularySet()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <random>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include <cassert>
 
+// 어휘 집합(vocabulary set): 텍스트를 모델이 읽는 정수열로 바꾸는 사전 — 토큰 문자열의 집합에 0..V−1 번호를 매긴 것(전단사). 만드는 규칙 ① 빈도 순 정렬(동률은 사전순으로 결정적) ② 최소 빈도 cutoff / 최대 크기 V 제한 ③ 특수 토큰 <pad>=0, <unk>=1 을 항상 포함.
+// 사전에 없는 단어(OOV)는 <unk> 로 보낸다 — 정보가 사라지므로 encode 후 decode 가 원문을 복원하지 못한다. 어휘가 클수록 커버리지(토큰 중 OOV 가 아닌 비율)가 오르지만 한계 이득이 줄어든다(Zipf 법칙). 해결책의 하나는 "바이트 대체(fallback)": 256개 바이트 토큰을 어휘에 넣으면 어떤 문자열도 OOV 없이 인코딩 된다.
+// 검증(Zipf 분포 코퍼스): ① 번호가 0..V−1 에서 정확히 한 번씩, encode/decode 가 서로 역함수(어휘 내 토큰) ② 어휘를 키울수록 커버리지가 단조 비감소 ③ OOV 는 <unk> 로 가고 decode 뒤 원문과 다름 ④ 바이트 대체를 켜면 모든 문자열에서 decode(encode(x)) == x
+struct Vocab { std::vector<std::string> itos; std::unordered_map<std::string, int> stoi; bool byteFallback = false;
+    static std::string byteToken(unsigned char c) { return std::string("<0x") + "0123456789ABCDEF"[c >> 4] + "0123456789ABCDEF"[c & 15] + ">"; }
+    Vocab(const std::map<std::string, long>& freq, size_t maxSize, long minFreq, bool fallback) : byteFallback(fallback) { add("<pad>"); add("<unk>"); if (fallback) for (int b = 0; b < 256; b++) add(byteToken(b));                   // 특수 토큰 → 바이트 토큰 → 빈도 순 단어
+        std::vector<std::pair<std::string, long>> items(freq.begin(), freq.end()); std::sort(items.begin(), items.end(), [](const auto& a, const auto& b) { return a.second != b.second ? a.second > b.second : a.first < b.first; }); for (auto& [w, c] : items) { if (itos.size() >= maxSize) break; if (c >= minFreq) add(w); } }
+    void add(const std::string& w) { if (stoi.count(w)) return; stoi[w] = itos.size(); itos.push_back(w); }
+    std::vector<int> encode(const std::string& text) const {                                                                                                                                        // 공백으로 나눈 단어 → 어휘에 있으면 단어 토큰, 없으면 <unk> 또는 바이트 토큰들
+        std::vector<int> ids; size_t start = 0; for (size_t i = 0; i <= text.size(); i++) if (i == text.size() || text[i] == ' ') { std::string w = text.substr(start, i - start); if (start > 0 && byteFallback) ids.push_back(stoi.at(byteToken(' '))); auto it = stoi.find(w);
+                if (it != stoi.end()) ids.push_back(it->second); else if (byteFallback) { for (unsigned char c : w) ids.push_back(stoi.at(byteToken(c))); } else ids.push_back(1); start = i + 1; } return ids; }
+    std::string decode(const std::vector<int>& ids) const { std::string out; for (size_t i = 0; i < ids.size(); i++) { const std::string& t = itos[ids[i]]; bool isByte = byteFallback && t.size() == 6 && t.compare(0, 3, "<0x") == 0; if (!byteFallback && i) out += ' '; if (isByte) out += (char)std::stoi(t.substr(3, 2), nullptr, 16); else out += t; } return out; } };
 int main() {
-    std::cout << "Vocabulary Set contains all unique tokens." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(8); std::vector<std::string> words; for (int i = 0; i < 2000; i++) words.push_back("w" + std::to_string(i)); std::vector<double> cum; double total = 0; for (int i = 0; i < 2000; i++) { total += 1.0 / (i + 1); cum.push_back(total); }
+    auto sample = [&]() { double r = (rng() % 1000000) / 1000000.0 * total; return words[std::lower_bound(cum.begin(), cum.end(), r) - cum.begin()]; }; std::vector<std::string> corpus; std::map<std::string, long> freq; for (int i = 0; i < 20000; i++) { std::string w = sample(); corpus.push_back(w); freq[w]++; }
+    double prevCov = 0; for (size_t V : {10, 50, 200, 800, 3000}) { Vocab v(freq, V, 1, false); for (size_t i = 0; i < v.itos.size(); i++) assert(v.stoi.at(v.itos[i]) == (int)i); long covered = 0; for (auto& w : corpus) covered += v.stoi.count(w) ? 1 : 0; double cov = (double)covered / corpus.size(); assert(cov >= prevCov - 1e-12); prevCov = cov;       // ① 전단사 ② 커버리지 단조
+        std::string text; for (size_t i = 2; i < std::min<size_t>(v.itos.size(), 12); i++) text += (i > 2 ? " " : "") + v.itos[i]; assert(v.decode(v.encode(text)) == text); }
+    Vocab small(freq, 20, 1, false); std::string oov = "w1999 w1998"; auto ids = small.encode(oov); assert(ids == std::vector<int>({1, 1}) && small.decode(ids) != oov);                                                                                           // ③ OOV → <unk>
+    Vocab bytes(freq, 20, 1, true); for (std::string s : {"w1999 w1998", "hello world", "x", "w5 w2 한국어 ok"}) assert(bytes.decode(bytes.encode(s)) == s);                                                              // ④ 바이트 대체
+    std::cout << "VocabularySet: ids form a bijection onto 0..V-1 with special tokens first; coverage of a Zipf corpus rose monotonically with vocabulary size up to " << prevCov << "; out-of-vocabulary words map to <unk> (lossy) while the byte-fallback vocabulary reconstructs arbitrary strings exactly" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 어휘 구성 O(N log N), 인코딩 O(토큰 수) 해시 조회
+// Space Complexity: O(V)
 ```
 ## CandidateSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 후보 집합(candidate set): 추천·검색 시스템은 수억 개 항목을 한꺼번에 점수 매길 수 없어서 2 단계로 나눈다 — ① 후보 생성(retrieval): 값싼 여러 방법(인기, 협업 필터링, 임베딩 근사 최근접, 최근 본 것과 유사)이 각자 후보 집합을 내고 합집합(∪)으로 모은다
+// ② 필터(이미 본 것·차단한 것 제거 = 집합 차) ③ 랭킹(소수의 후보만 비싼 모델로 점수). 합집합의 재현율은 개별 재현율 이상이고(단조), 후보 수는 합계 이하(겹침 제거)이며, 후보를 더 많이 남길수록 재현율은 오르지만 랭킹 비용이 비례해서 오른다 — 재현율-비용 trade-off.
+// 검증(항목 5000개, 정답(관련) 항목 50개): ① 합집합 재현율 ≥ 각 검색기 재현율, 후보 수 ≤ 개별 크기 합 ② 차단 집합을 뺀 뒤 후보에 차단 항목이 없음 ③ 후보 상한 N 을 키우면(점수 순 절단) 재현율이 단조 비감소 ④ 합집합으로 만든 후보가 "겹침이 큰 검색기끼리" 보다 "서로 다른 신호를 쓰는 검색기끼리" 일 때 재현율 증가가 큼
 int main() {
-    std::cout << "Candidate Set is filtered subset for recommendation." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(21); double gainDiverse = 0, gainSimilar = 0; int trials = 100;
+    for (int t = 0; t < trials; t++) { const int ITEMS = 5000; std::set<int> relevant; while (relevant.size() < 50) relevant.insert(rng() % ITEMS); std::set<int> blocked; while (blocked.size() < 100) blocked.insert(rng() % ITEMS);
+        auto retriever = [&](double recallTarget, int noise) { std::set<int> c; for (int r : relevant) if ((rng() % 1000) / 1000.0 < recallTarget) c.insert(r); for (int i = 0; i < noise; i++) c.insert(rng() % ITEMS); return c; };
+        auto A = retriever(0.4, 150), B = retriever(0.4, 150), C = retriever(0.4, 150); std::set<int> A2; for (int x : A) A2.insert(rng() % 10 == 0 ? (int)(rng() % ITEMS) : x);                                              // A2: A 와 거의 같은 신호(10% 만 무작위로 바뀜)
+        auto recall = [&](const std::set<int>& c) { int hit = 0; for (int r : relevant) hit += c.count(r); return (double)hit / relevant.size(); };
+        std::set<int> U = A; U.insert(B.begin(), B.end()); U.insert(C.begin(), C.end()); assert(recall(U) >= std::max({recall(A), recall(B), recall(C)}) - 1e-12 && U.size() <= A.size() + B.size() + C.size());                                    // ① 합집합
+        std::set<int> filtered; std::set_difference(U.begin(), U.end(), blocked.begin(), blocked.end(), std::inserter(filtered, filtered.begin())); for (int b : blocked) assert(!filtered.count(b));                                                         // ② 필터(집합 차)
+        std::vector<std::pair<double, int>> scored; for (int x : filtered) scored.push_back({(relevant.count(x) ? 1.0 : 0.0) + (rng() % 1000) / 1500.0, x}); std::sort(scored.rbegin(), scored.rend()); double prev = -1; for (size_t cap : {10, 30, 100, 300, 1000}) { std::set<int> top; for (size_t i = 0; i < std::min(cap, scored.size()); i++) top.insert(scored[i].second); double r = recall(top); assert(r >= prev - 1e-12); prev = r; }   // ③ 상한을 키우면 재현율 비감소
+        std::set<int> AB = A; AB.insert(B.begin(), B.end()); std::set<int> AA = A; AA.insert(A2.begin(), A2.end()); gainDiverse += recall(AB) - recall(A); gainSimilar += recall(AA) - recall(A); }                                                  // ④ 서로 다른 신호의 이득
+    assert(gainDiverse > gainSimilar * 3);
+    std::cout << "CandidateSet: union recall is never below any single retriever and the candidate count never exceeds the sum of sizes; blocked items are removed by set difference; truncating the scored candidates gives monotone recall; combining independent retrievers raised recall by " << gainDiverse / trials << " on average versus " << gainSimilar / trials << " for near-duplicate retrievers" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 합집합 O(Σ|Cᵢ|) (해시) 또는 O(Σ|Cᵢ| log), 필터 O(|C|), 랭킹 O(N · 모델 비용)
+// Space Complexity: O(|C|)
 ```
 ## ConstraintSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 제약 집합(constraint set)과 제약 만족 문제(CSP): 변수 x_i 마다 "가능한 값의 집합"(도메인)을 비트마스크로 두고 제약으로 도메인을 줄여 나간다. 제약이 둘째 변수 쪽에서 첫째 변수의 값을 지지(support)하지 못하면 그 값을 지운다 — 호 일관성(arc consistency, AC-3):
+// 호 (x, y) 에 대해 x 의 도메인에서 "y 의 도메인 어떤 값과도 제약을 만족하지 못하는" 값을 제거하고, 바뀌면 x 에 이웃한 호를 큐에 다시 넣는다. 도메인이 공집합이 되면 해가 없음이 확정된다(소리(sound): 해를 지우지 않는다). 하지만 AC-3 만으로 해를 찾는 것은 아니고 탐색(백트래킹 + 최소 남은 값 MRV 휴리스틱)과 결합한다.
+// 여기서는 그래프 3-색칠(이웃 정점은 다른 색)을 푼다. 검증: 무작위 그래프 400개(n ≤ 9)에서 ① 완전 열거로 구한 해 유무와 탐색+AC-3 의 결과가 일치하고 찾은 해는 모든 제약을 만족 ② AC-3 이 줄인 도메인은 모든 실제 해를 보존(soundness) ③ AC-3 이 도메인 공집합을 만들면 정말 해가 없음 ④ 전파를 켠 탐색의 노드 수가 끈 것보다 적음
+typedef uint8_t Dom;
+bool ac3(std::vector<Dom>& dom, const std::vector<std::vector<int>>& adj) { std::queue<std::pair<int, int>> q; for (size_t x = 0; x < adj.size(); x++) for (int y : adj[x]) q.push({(int)x, y});
+    while (!q.empty()) { auto [x, y] = q.front(); q.pop(); Dom nd = dom[x]; for (int v = 0; v < 3; v++) if ((dom[x] >> v & 1) && (dom[y] & ~(1 << v)) == 0) nd &= ~(1 << v);                                          // y 에 v 와 다른 값이 하나도 없으면 x 의 v 는 지지가 없음
+        if (nd != dom[x]) { dom[x] = nd; if (!nd) return false; for (int z : adj[x]) if (z != y) q.push({z, x}); } } return true; }
+long nodes;
+bool solve(std::vector<Dom> dom, const std::vector<std::vector<int>>& adj, bool propagate, std::vector<int>& sol) { nodes++; if (propagate && !ac3(dom, adj)) return false; int n = adj.size(), pick = -1, best = 99; for (int i = 0; i < n; i++) { int c = __builtin_popcount(dom[i]); if (c == 0) return false; if (c > 1 && c < best) { best = c; pick = i; } }
+    if (pick < 0) { sol.assign(n, 0); for (int i = 0; i < n; i++) sol[i] = __builtin_ctz(dom[i]); for (int i = 0; i < n; i++) for (int j : adj[i]) if (sol[i] == sol[j]) return false; return true; }                                  // 모든 도메인이 단일값: 제약 최종 확인
+    for (int v = 0; v < 3; v++) if (dom[pick] >> v & 1) { auto d2 = dom; d2[pick] = 1 << v; if (!propagate) { bool ok = true; for (int j : adj[pick]) if (d2[j] == (1 << v)) ok = false; if (!ok) continue; } if (solve(d2, adj, propagate, sol)) return true; } return false; }
 int main() {
-    std::cout << "Constraint Set bounds the feasible solution space." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(7); long nodesOn = 0, nodesOff = 0; int sat = 0, unsat = 0, wipeouts = 0;
+    for (int t = 0; t < 400; t++) { int n = 3 + rng() % 7; std::vector<std::vector<int>> adj(n); int edges = rng() % (3 * n); for (int e = 0; e < edges; e++) { int a = rng() % n, b = rng() % n; if (a != b && std::find(adj[a].begin(), adj[a].end(), b) == adj[a].end()) { adj[a].push_back(b); adj[b].push_back(a); } }
+        std::vector<std::vector<int>> all; std::vector<int> col(n, 0); for (;;) { bool ok = true; for (int i = 0; i < n && ok; i++) for (int j : adj[i]) if (col[i] == col[j]) ok = false; if (ok) all.push_back(col); int i = 0; while (i < n && ++col[i] == 3) col[i++] = 0; if (i == n) break; }
+        std::vector<Dom> dom(n, 7); if (rng() % 2) dom[0] = 1;                                                                                                                                                                    // 일부는 첫 정점 색을 고정
+        std::vector<std::vector<int>> mine; for (auto& s : all) if ((dom[0] >> s[0]) & 1) mine.push_back(s);
+        std::vector<Dom> reduced = dom; bool consistent = ac3(reduced, adj); for (auto& s : mine) for (int i = 0; i < n; i++) assert(consistent && (reduced[i] >> s[i] & 1));                                                    // ② 해를 보존(소리)
+        if (!consistent) { assert(mine.empty()); wipeouts++; }                                                                                                                                                                     // ③
+        std::vector<int> a, b; nodes = 0; bool r1 = solve(dom, adj, true, a); nodesOn += nodes; nodes = 0; bool r2 = solve(dom, adj, false, b); nodesOff += nodes; assert(r1 == r2 && r1 == !mine.empty());                                                // ① 완전 열거와 일치
+        if (r1) { sat++; for (int i = 0; i < n; i++) { assert((dom[i] >> a[i]) & 1); for (int j : adj[i]) assert(a[i] != a[j]); } } else unsat++; }
+    { std::vector<std::vector<int>> k4(4); for (int a = 0; a < 4; a++) for (int b = 0; b < 4; b++) if (a != b) k4[a].push_back(b); std::vector<Dom> dom = {1, 2, 4, 7}; assert(!ac3(dom, k4)); wipeouts++; std::vector<int> s; assert(!solve({7, 7, 7, 7}, k4, true, s)); }                                                // K4 는 3색으로 칠할 수 없음: 앞 세 정점을 고정하면 AC-3 만으로 마지막 도메인이 공집합
+    assert(sat > 50 && unsat > 20 && wipeouts > 0 && nodesOn <= nodesOff);
+    std::cout << "ConstraintSet: AC-3 plus MRV backtracking agrees with exhaustive search on " << sat + unsat << " random 3-coloring problems (" << sat << " solvable, " << unsat << " not; AC-3 alone proved " << wipeouts << " unsolvable); it never removed a real solution; search nodes " << nodesOn << " with propagation versus " << nodesOff << " without" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: AC-3 O(e · d³), 탐색은 최악 지수
+// Space Complexity: O(n · d)
 ```
 
 # Part 14. 확률적 집합
 ## BloomFilter()
 ### 대표코드
 ```cpp
+#include <bitset>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 블룸 필터(집합 관점의 요약, 정본은 AdvancedDataStructures.md Part 3): "아마도 있음 / 확실히 없음" 만 답하는 확률적 집합. m 비트 배열과 해시 k 개 — 삽입은 k 개 위치의 비트를 1 로, 조회는 k 개가 모두 1 이면 "아마도 있음". 거짓 음성은 없고(넣은 원소는 항상 모두 1) 거짓 양성만 있다.
+// n 개 삽입 뒤 거짓 양성률 ≈ (1 − e^(−kn/m))^k 이고 이를 최소로 하는 k = (m/n)·ln 2 (비트의 절반이 1 일 때), 그때 비트/원소 ≈ 1.44·log₂(1/ε). 삭제는 불가능하다(비트를 지우면 다른 원소가 깨짐). 같은 m, k, 해시로 만든 두 필터의 합집합 = 비트 OR (정확), 교집합 = 비트 AND (교집합의 상위집합).
+// 이중 해싱 h_i = h1 + i·h2 로 독립 해시 k 개를 흉내 낸다. 검증: ① 거짓 음성 0 ② 측정한 거짓 양성률이 이론식과 ±30% 이내 ③ k 를 최적값 ±3 으로 바꾸면 최적보다 나쁨 ④ OR 필터가 두 집합의 합집합 원소를 모두 포함, AND 필터가 교집합 원소를 모두 포함
+template <size_t M> struct Bloom { std::bitset<M> bits; int k; Bloom(int k) : k(k) {} static uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+    size_t pos(uint64_t key, int i) const { uint64_t h = mix(key), h2 = mix(h) | 1; return (h + i * h2) % M; } void add(uint64_t key) { for (int i = 0; i < k; i++) bits[pos(key, i)] = 1; } bool maybe(uint64_t key) const { for (int i = 0; i < k; i++) if (!bits[pos(key, i)]) return false; return true; } };
 int main() {
-    std::cout << "Bloom Filter tests set membership probabilistically." << std::endl;
-    assert(true);
-    return 0;
+    const size_t M = 1 << 15; const int n = 3000; int kopt = (int)std::round((double)M / n * std::log(2.0)); std::mt19937_64 rng(5); std::set<uint64_t> members; while (members.size() < (size_t)n) members.insert(rng());
+    double fpr[7]; double theory[7]; for (int dk = -3; dk <= 3; dk++) { int k = std::max(1, kopt + dk); Bloom<M> b(k); for (uint64_t x : members) b.add(x); for (uint64_t x : members) assert(b.maybe(x)); int fp = 0, T = 100000; for (int i = 0; i < T; i++) { uint64_t probe = rng(); if (!members.count(probe)) fp += b.maybe(probe); } fpr[dk + 3] = (double)fp / T; theory[dk + 3] = std::pow(1 - std::exp(-(double)k * n / M), k); assert(fpr[dk + 3] > theory[dk + 3] * 0.7 && fpr[dk + 3] < theory[dk + 3] * 1.3 + 1e-4); }       // ① 거짓 음성 0 ② 이론식
+    for (int dk : {-3, -2, 2, 3}) assert(fpr[3] <= fpr[dk + 3] * 1.05);                                                                                                                              // ③ 최적 k 근처가 가장 좋음
+    Bloom<M> A(kopt), B(kopt); std::set<uint64_t> sa, sb; for (int i = 0; i < 1500; i++) { sa.insert(rng()); sb.insert(rng()); } for (int i = 0; i < 300; i++) { uint64_t x = rng(); sa.insert(x); sb.insert(x); } for (uint64_t x : sa) A.add(x); for (uint64_t x : sb) B.add(x);
+    Bloom<M> U(kopt), I(kopt); U.bits = A.bits | B.bits; I.bits = A.bits & B.bits; for (uint64_t x : sa) assert(U.maybe(x)); for (uint64_t x : sb) assert(U.maybe(x)); for (uint64_t x : sa) if (sb.count(x)) assert(I.maybe(x));       // ④ OR · AND
+    std::cout << "BloomFilter: no false negatives; measured false-positive rates " << fpr[3] << " (k=" << kopt << ") track the formula " << theory[3] << " and are lowest near the optimal k = (m/n) ln 2; bitwise OR contains the union and bitwise AND contains the intersection" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·조회 O(k)
+// Space Complexity: O(m) 비트 (원소당 약 10~15 비트로 ε ≈ 1% 이하)
 ```
 ## CountingBloomFilter()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 카운팅 블룸 필터(집합 관점의 요약, 정본은 AdvancedDataStructures.md Part 3): 비트 대신 작은 카운터(보통 4 비트)를 두어 삽입은 k 개 카운터 +1, 삭제는 −1, 조회는 k 개 카운터가 모두 > 0 인지로 삭제를 지원한다. 공간은 일반 블룸의 약 4 배.
+// 카운터가 포화(15)하면 더 이상 증가하지 않고 이후 감소도 하지 않는다 — 그대로 두면 감소 때 0 이 되어 거짓 음성이 생길 수 있어서(포화한 카운터는 "영원히 > 0" 으로 고정; 거짓 양성만 늘어남). 넣지 않은 원소를 삭제하면 다른 원소가 깨지므로 삭제는 "실제로 넣은 원소"에만 허용해야 한다.
+// 검증: 무작위 삽입/삭제 열 50000개에서 ① 현재 집합의 원소는 항상 "아마도 있음" (거짓 음성 0) ② 삭제된 원소는 대부분 "없음"으로 돌아옴 ③ 삽입·삭제 후의 카운터 총합 = k × 현재 원소 수 (포화가 없을 때) ④ 포화 사례(작은 배열)에서도 거짓 음성이 생기지 않음
+struct CBF { std::vector<uint8_t> c; int k; size_t m; CBF(size_t m, int k) : c(m, 0), k(k), m(m) {} static uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+    size_t pos(uint64_t key, int i) const { uint64_t h = mix(key), h2 = mix(h) | 1; return (h + i * h2) % m; } void add(uint64_t key) { for (int i = 0; i < k; i++) { uint8_t& x = c[pos(key, i)]; if (x < 15) x++; } } void remove(uint64_t key) { for (int i = 0; i < k; i++) { uint8_t& x = c[pos(key, i)]; if (x > 0 && x < 15) x--; } }                // 포화(15)한 카운터는 고정
+    bool maybe(uint64_t key) const { for (int i = 0; i < k; i++) if (!c[pos(key, i)]) return false; return true; } long sum() const { long s = 0; for (uint8_t x : c) s += x; return s; } bool saturated() const { for (uint8_t x : c) if (x == 15) return true; return false; } };
 int main() {
-    std::cout << "Counting Bloom Filter allows deletions." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937_64 rng(9); CBF f(1 << 15, 5); std::set<uint64_t> live; std::vector<uint64_t> pool; for (int i = 0; i < 4000; i++) pool.push_back(rng()); std::set<uint64_t> removed;
+    for (int step = 0; step < 50000; step++) { uint64_t x = pool[rng() % pool.size()]; if (live.count(x)) { if (rng() % 2) { f.remove(x); live.erase(x); removed.insert(x); } } else { f.add(x); live.insert(x); removed.erase(x); }
+        if (step % 5000 == 0) { for (uint64_t y : live) assert(f.maybe(y)); } }
+    for (uint64_t y : live) assert(f.maybe(y)); assert(!f.saturated() && f.sum() == 5 * (long)live.size());                                                                                       // ① 거짓 음성 0 ③ 카운터 합
+    int stillThere = 0; for (uint64_t y : removed) stillThere += f.maybe(y); assert(!removed.empty() && stillThere * 20 < (int)removed.size());                                                                // ② 삭제된 원소는 거의 사라짐
+    { CBF tiny(64, 3); std::vector<uint64_t> all; for (int i = 0; i < 300; i++) { uint64_t x = rng(); tiny.add(x); all.push_back(x); } assert(tiny.saturated()); for (size_t i = 0; i < all.size(); i += 2) tiny.remove(all[i]); for (size_t i = 1; i < all.size(); i += 2) assert(tiny.maybe(all[i])); }       // ④ 포화 상태(작은 배열)에서 일부를 지워도 남은 원소는 거짓 음성이 되지 않음
+    std::cout << "CountingBloomFilter: after 50000 random inserts/deletes of " << live.size() << " live keys there are no false negatives and the counter total equals k x live keys; only " << stillThere << " of " << removed.size() << " deleted keys still test positive; saturated counters are frozen so deleting under saturation never causes a false negative" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·삭제·조회 O(k)
+// Space Complexity: O(m · 카운터 비트 수)
 ```
 ## CuckooFilter()
 ### 대표코드
 ```cpp
+#include <array>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 쿠쿠 필터(집합 관점의 요약, 정본은 AdvancedDataStructures.md Part 3): 키의 f 비트 지문(fingerprint)을 쿠쿠 해시표에 저장하는 확률적 집합 — 삭제가 되고 낮은 거짓 양성률에서 블룸 필터보다 공간 효율이 좋다. 핵심은 "부분 키 쿠쿠 해싱": 후보 버킷 i₂ = i₁ XOR hash(지문) 이라
+// 지문만 알아도 짝 버킷을 계산할 수 있어 원래 키 없이 쫓아내기(kick)가 가능하다. 버킷은 4칸, 두 버킷이 모두 가득 차면 한 지문을 쫓아내 그 짝 버킷으로 보내는 일을 반복하고 실패하면 삽입을 거부한다.
+// 검증: ① 처음 실패할 때까지 넣은 키가 전부 조회됨(거짓 음성 0) ② 적재율 ≥ 90% ③ 거짓 양성률이 2·4/2^f 수준 ④ 삭제 뒤 남은 키는 여전히 조회되고 삭제된 키는 대부분 사라짐
+static inline uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+struct Cuckoo { int fb; size_t nb; std::vector<std::array<uint16_t, 4>> B; std::mt19937_64 rng{7}; size_t count = 0; Cuckoo(int f, size_t n) : fb(f), nb(n), B(n, std::array<uint16_t, 4>{0, 0, 0, 0}) {}
+    uint16_t fp(uint64_t h) const { return (uint16_t)((h >> 40) % ((1u << fb) - 1) + 1); } size_t alt(size_t i, uint16_t f) const { return (i ^ mix(f)) & (nb - 1); } bool put(size_t i, uint16_t f) { for (auto& s : B[i]) if (!s) { s = f; return true; } return false; }
+    bool insert(uint64_t key) { uint64_t h = mix(key); uint16_t f = fp(h); size_t i1 = h & (nb - 1), i2 = alt(i1, f); if (put(i1, f) || put(i2, f)) { count++; return true; } std::vector<std::pair<size_t, int>> log; std::vector<uint16_t> old; size_t i = (rng() & 1) ? i1 : i2;
+        for (int kick = 0; kick < 500; kick++) { int s = rng() % 4; log.push_back({i, s}); old.push_back(B[i][s]); std::swap(f, B[i][s]); i = alt(i, f); if (put(i, f)) { count++; return true; } } for (int j = (int)log.size() - 1; j >= 0; j--) B[log[j].first][log[j].second] = old[j]; return false; }        // 실패하면 되돌림
+    bool maybe(uint64_t key) const { uint64_t h = mix(key); uint16_t f = fp(h); size_t i1 = h & (nb - 1), i2 = alt(i1, f); for (auto s : B[i1]) if (s == f) return true; for (auto s : B[i2]) if (s == f) return true; return false; }
+    bool erase(uint64_t key) { uint64_t h = mix(key); uint16_t f = fp(h); size_t i1 = h & (nb - 1), i2 = alt(i1, f); for (size_t i : {i1, i2}) for (auto& s : B[i]) if (s == f) { s = 0; count--; return true; } return false; } };
 int main() {
-    std::cout << "Cuckoo Filter stores fingerprints, handles deletions well." << std::endl;
-    assert(true);
-    return 0;
+    Cuckoo c(12, 1 << 12); uint64_t n = 0; while (c.insert(n)) n++; double load = (double)c.count / (4.0 * c.nb); assert(load > 0.9); for (uint64_t i = 0; i < n; i++) assert(c.maybe(i));                                       // ① ② 적재율 · 거짓 음성 0
+    size_t fpCount = 0, T = 200000; for (uint64_t i = 0; i < T; i++) fpCount += c.maybe((1ULL << 40) + i); double rate = (double)fpCount / T; assert(rate < 0.01);                                                          // ③ 거짓 양성률 < 1%
+    for (uint64_t i = 0; i < n; i += 2) assert(c.erase(i)); for (uint64_t i = 1; i < n; i += 2) assert(c.maybe(i)); size_t gone = 0; for (uint64_t i = 0; i < n; i += 2) gone += !c.maybe(i); assert(gone > (n / 2) * 99 / 100);   // ④ 삭제
+    std::cout << "CuckooFilter: load factor " << load << " at the first failed insert, false-positive rate " << rate * 100 << "%, no false negatives, deletion removes keys" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회·삭제 O(1) (버킷 2개), 삽입 분할상환 O(1)
+// Space Complexity: 키당 f / 적재율 비트
 ```
 ## QuotientFilter()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 몫 필터(집합 관점의 요약, 정본은 AdvancedDataStructures.md Part 3): p 비트 지문을 앞 q 비트(몫 = 버킷 번호)와 뒤 r 비트(나머지)로 쪼개 나머지만 저장한다. 같은 몫의 나머지들은 정렬된 "런(run)"으로 모이고, 지문 하나의 정확한 일치만 확인하면 되므로 거짓 양성률은 ≈ n / 2^p = α · 2^(−r) 이다.
+// 실제 몫 필터는 런을 하나의 연속 배열에 밀어 넣고 슬롯마다 메타데이터 3비트(is_occupied, is_continuation, is_shifted)로 런의 경계를 복원해 블룸처럼 작고 캐시 친화적이며 삭제·병합이 된다(구현은 정본 참조). 여기서는 "몫 → 정렬된 나머지 런" 이라는 개념만 버킷 벡터로 옮겨 놓았다.
+// 검증: ① 거짓 음성 0 ② 측정한 거짓 양성률이 α·2^(−r) (α = n/2^q, 부하율) 와 같은 크기 ③ 지문 충돌(서로 다른 키의 같은 (몫, 나머지))이 곧 거짓 양성의 전부임을 확인 ④ 런들이 정렬·중복 없음 ⑤ 같은 q, r 의 두 필터를 정렬 병합으로 합치면 합집합의 지문 집합과 같음(재해시 불필요)
+static inline uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+struct QF { int q, r; std::vector<std::vector<uint32_t>> runs; size_t n = 0; QF(int q, int r) : q(q), r(r), runs(1u << q) {} std::pair<uint32_t, uint32_t> split(uint64_t key) const { uint64_t fpr = mix(key) >> (64 - q - r); return {(uint32_t)(fpr >> r), (uint32_t)(fpr & ((1u << r) - 1))}; }
+    bool insert(uint64_t key) { auto [fq, fr] = split(key); auto& run = runs[fq]; auto it = std::lower_bound(run.begin(), run.end(), fr); if (it != run.end() && *it == fr) return false; run.insert(it, fr); n++; return true; }
+    bool maybe(uint64_t key) const { auto [fq, fr] = split(key); return std::binary_search(runs[fq].begin(), runs[fq].end(), fr); }
+    QF merged(const QF& o) const { QF m(q, r); for (size_t i = 0; i < runs.size(); i++) { std::set_union(runs[i].begin(), runs[i].end(), o.runs[i].begin(), o.runs[i].end(), std::back_inserter(m.runs[i])); m.n += m.runs[i].size(); } return m; } };
 int main() {
-    std::cout << "Quotient Filter is cache-friendly alternative to Bloom." << std::endl;
-    assert(true);
-    return 0;
+    const int Q = 14, R = 8; std::mt19937_64 rng(4); QF f(Q, R); std::set<uint64_t> keys; size_t N = (size_t)(0.5 * (1 << Q)); while (keys.size() < N) keys.insert(rng()); std::set<std::pair<uint32_t, uint32_t>> fingerprints; for (uint64_t k : keys) { f.insert(k); fingerprints.insert(f.split(k)); }
+    for (uint64_t k : keys) assert(f.maybe(k)); assert(f.n == fingerprints.size());                                                                                                                      // ① 거짓 음성 0
+    size_t fp = 0, T = 300000, collisions = 0; for (size_t i = 0; i < T; i++) { uint64_t probe = rng(); if (keys.count(probe)) continue; bool says = f.maybe(probe); fp += says; collisions += fingerprints.count(f.split(probe)) ? 1 : 0; assert(says == (fingerprints.count(f.split(probe)) == 1)); }       // ③ 거짓 양성 == 지문 충돌
+    double alpha = (double)N / (1 << Q), rate = (double)fp / T, theory = alpha * std::pow(2.0, -R); assert(rate > theory * 0.6 && rate < theory * 1.5);                                                          // ② 이론값
+    for (auto& run : f.runs) assert(std::is_sorted(run.begin(), run.end()) && std::adjacent_find(run.begin(), run.end()) == run.end());                                                                          // ④ 런이 정렬·중복 없음
+    QF g(Q, R); std::set<uint64_t> more; while (more.size() < 2000) more.insert(rng()); for (uint64_t k : more) g.insert(k); QF u = f.merged(g); std::set<std::pair<uint32_t, uint32_t>> fu = fingerprints; for (uint64_t k : more) fu.insert(g.split(k)); assert(u.n == fu.size()); for (uint64_t k : keys) assert(u.maybe(k)); for (uint64_t k : more) assert(u.maybe(k));    // ⑤ 병합
+    std::cout << "QuotientFilter: concept model of quotient/remainder runs; no false negatives, measured false-positive rate " << rate << " vs alpha*2^-r = " << theory << " (every false positive is exactly a fingerprint collision), runs stay sorted and two filters merge by sorted union of runs" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·조회 O(log 런 길이) (이 개념 모델), 실제 몫 필터는 클러스터 길이에 비례하는 O(1) 기대
+// Space Complexity: 원소당 r 비트 + 메타데이터(실제 구현은 r + 3 비트), 이 모델은 벡터 오버헤드가 추가
 ```
 
 # Part 15. 병렬 집합
 ## ConcurrentSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <atomic>
 #include <iostream>
+#include <mutex>
+#include <random>
+#include <set>
+#include <shared_mutex>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 동시성 집합(concurrent set): 여러 스레드가 같은 집합을 동시에 add/remove/contains 하려면 상호 배제가 필요하다. 가장 단순하고 항상 옳은 방법은 집합 전체에 뮤텍스 하나(coarse-grained lock)를 거는 것이고, 조회가 압도적으로 많으면 읽기-쓰기 잠금(shared_mutex)으로 조회끼리는 병렬로 실행한다.
+// 정확성의 기준은 선형화 가능성(linearizability): 모든 연산이 호출과 반환 사이의 한 순간에 원자적으로 일어난 것처럼 보여야 한다. 집합에서 검증 가능한 결과 — ① 같은 키를 여러 스레드가 동시에 add 하면 정확히 하나만 true ② 서로 다른 스레드가 같은 키를 remove 해도 정확히 하나만 true ③ 각 스레드가 자기 키 구간만 건드리면 최종 상태가 스레드별 모델의 합집합.
+// 대가는 경합이다: 잠금 하나는 스레드 수가 늘어도 처리량이 늘지 않는다. 더 잘게 나눈 잠금(스트라이프)은 ConcurrentHashSet, 잠금 없는 방식은 LockFreeSet 참조. 검증은 스레드 8개 스트레스(add 경합 4000키, remove 경합, 구간 분리 무작위 연산 후 모델 대조)
+struct CoarseSet { mutable std::shared_mutex m; std::set<int> s; bool add(int x) { std::unique_lock<std::shared_mutex> l(m); return s.insert(x).second; } bool remove(int x) { std::unique_lock<std::shared_mutex> l(m); return s.erase(x) == 1; } bool contains(int x) const { std::shared_lock<std::shared_mutex> l(m); return s.count(x) == 1; } size_t size() const { std::shared_lock<std::shared_mutex> l(m); return s.size(); } };
 int main() {
-    std::cout << "Concurrent Set ensures thread safety." << std::endl;
-    assert(true);
-    return 0;
+    const int T = 8, K = 4000; CoarseSet set; std::atomic<int> addWins{0}; std::vector<std::thread> th; for (int t = 0; t < T; t++) th.emplace_back([&] { for (int k = 0; k < K; k++) if (set.add(k)) addWins++; }); for (auto& x : th) x.join(); th.clear(); assert(addWins == K && set.size() == (size_t)K);                    // ① 같은 키 add 경합: 정확히 하나만 성공
+    std::atomic<int> removeWins{0}; for (int t = 0; t < T; t++) th.emplace_back([&] { for (int k = 0; k < K; k++) if (set.remove(k)) removeWins++; }); for (auto& x : th) x.join(); th.clear(); assert(removeWins == K && set.size() == 0);                                      // ② remove 경합
+    std::vector<std::set<int>> model(T); for (int t = 0; t < T; t++) th.emplace_back([&, t] { std::mt19937 rng(t + 1); for (int i = 0; i < 20000; i++) { int key = t * 1000 + rng() % 1000; int op = rng() % 3; if (op == 0) { assert(set.add(key) == model[t].insert(key).second); } else if (op == 1) { assert(set.remove(key) == (model[t].erase(key) == 1)); } else assert(set.contains(key) == (model[t].count(key) == 1)); } });
+    for (auto& x : th) x.join(); th.clear(); std::set<int> expected; for (auto& m : model) expected.insert(m.begin(), m.end()); assert(set.size() == expected.size()); for (int key : expected) assert(set.contains(key));                                          // ③ 구간 분리 모델과 일치
+    std::atomic<bool> stop{false}; std::atomic<long> reads{0}; for (int t = 0; t < 4; t++) th.emplace_back([&] { while (!stop) { set.contains(rand() % 8000); reads++; } }); std::thread writer([&] { for (int i = 0; i < 20000; i++) { set.add(10000 + i % 500); set.remove(10000 + (i + 250) % 500); } stop = true; }); writer.join(); for (auto& x : th) x.join();
+    std::cout << "ConcurrentSet: with " << T << " threads exactly one add and one remove won for each of " << K << " contended keys, 160000 mixed operations on disjoint ranges matched per-thread models, and readers ran concurrently with a writer (" << reads << " lookups)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산 O(log n) + 잠금 대기
+// Space Complexity: O(n)
 ```
 ## LockFreeSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <atomic>
+#include <climits>
+#include <cstdint>
 #include <iostream>
+#include <mutex>
+#include <random>
+#include <set>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 락프리 집합(Harris–Michael 연결 리스트 집합): 정렬된 연결 리스트에서 노드 삭제를 두 단계로 나눈다 — ① 논리적 삭제: 노드의 next 포인터 최하위 비트에 표시(mark)를 CAS 로 켠다(이 순간 노드는 집합에서 사라진 것) ② 물리적 삭제: 앞 노드의 next 를 CAS 로 건너뛰게 바꾼다.
+// 표시 비트 덕에 "삭제 중인 노드 뒤에 새 노드를 끼워 넣는" 경쟁이 막힌다(표시된 next 를 가진 노드에는 CAS(next = 기대값)가 실패). 탐색(find)을 하다가 표시된 노드를 만나면 도와서 물리적으로 지운다(helping). contains 는 CAS 없이 읽기만 한다.
+// 메모리 회수는 어려운 문제다(ABA, 다른 스레드가 읽는 중인 노드 해제). 이 구현은 지워진 노드를 폐기 목록에 모아 두었다가 집합이 소멸할 때 한꺼번에 해제하는 가장 단순한 안전한 방법을 쓴다(해제된 주소를 재사용하지 않으므로 ABA 가 없다; 실전에서는 해저드 포인터/에포크 기반 회수). 검증: 8 스레드로 ① 같은 키 add 경합에서 정확히 하나만 성공 ② remove 경합도 같음 ③ 섞인 연산 후 리스트가 정렬·중복 없음이고 스레드별 모델과 일치
+struct Node { int key; std::atomic<Node*> next; Node(int k, Node* n) : key(k), next(n) {} };
+static inline bool marked(Node* p) { return (uintptr_t)p & 1; } static inline Node* mark(Node* p) { return (Node*)((uintptr_t)p | 1); } static inline Node* unmark(Node* p) { return (Node*)((uintptr_t)p & ~(uintptr_t)1); }
+struct LFSet { Node* head; std::mutex retiredLock; std::vector<Node*> retired;
+    LFSet() { head = new Node(INT_MIN, new Node(INT_MAX, nullptr)); }
+    ~LFSet() { for (Node* p = head; p;) { Node* nx = unmark(p->next.load()); delete p; p = nx; } for (Node* r : retired) delete r; }
+    void retire(Node* n) { std::lock_guard<std::mutex> g(retiredLock); retired.push_back(n); }
+    bool find(int key, Node*& pred, Node*& curr) { for (;;) { retry: pred = head; curr = unmark(pred->next.load()); for (;;) { Node* succ = curr->next.load(); while (marked(succ)) { Node* expect = curr; if (!pred->next.compare_exchange_strong(expect, unmark(succ))) goto retry; retire(curr); curr = unmark(succ); succ = curr->next.load(); } if (curr->key >= key) return curr->key == key; pred = curr; curr = unmark(succ); } } }
+    bool add(int key) { for (;;) { Node *pred, *curr; if (find(key, pred, curr)) return false; Node* n = new Node(key, curr); Node* expect = curr; if (pred->next.compare_exchange_strong(expect, n)) return true; delete n; } }
+    bool remove(int key) { for (;;) { Node *pred, *curr; if (!find(key, pred, curr)) return false; Node* succ = curr->next.load(); if (marked(succ)) continue; if (!curr->next.compare_exchange_strong(succ, mark(succ))) continue; Node* expect = curr; if (pred->next.compare_exchange_strong(expect, succ)) retire(curr); else find(key, pred, curr); return true; } }
+    bool contains(int key) const { Node* curr = unmark(head->next.load()); while (curr->key < key) curr = unmark(curr->next.load()); return curr->key == key && !marked(curr->next.load()); }
+    std::vector<int> items() const { std::vector<int> r; for (Node* p = unmark(head->next.load()); p->key != INT_MAX; p = unmark(p->next.load())) if (!marked(p->next.load())) r.push_back(p->key); return r; } };
 int main() {
-    std::cout << "Lock-Free Set avoids OS locks using atomic CAS." << std::endl;
-    assert(true);
-    return 0;
+    const int T = 8, K = 1500; LFSet set; std::atomic<int> addWins{0}, removeWins{0}; std::vector<std::thread> th;
+    for (int t = 0; t < T; t++) th.emplace_back([&] { for (int k = 0; k < K; k++) if (set.add(k)) addWins++; }); for (auto& x : th) x.join(); th.clear(); assert(addWins == K); auto items = set.items(); assert((int)items.size() == K && std::is_sorted(items.begin(), items.end()));       // ① add 경합
+    for (int t = 0; t < T; t++) th.emplace_back([&] { for (int k = K - 1; k >= 0; k--) if (set.remove(k)) removeWins++; }); for (auto& x : th) x.join(); th.clear(); assert(removeWins == K && set.items().empty());                                                        // ② remove 경합
+    std::vector<std::set<int>> model(T); for (int t = 0; t < T; t++) th.emplace_back([&, t] { std::mt19937 rng(t + 7); for (int i = 0; i < 15000; i++) { int key = 1 + t * 200 + rng() % 200; int op = rng() % 3; if (op == 0) assert(set.add(key) == model[t].insert(key).second); else if (op == 1) assert(set.remove(key) == (model[t].erase(key) == 1)); else assert(set.contains(key) == (model[t].count(key) == 1)); } });
+    for (auto& x : th) x.join(); th.clear(); std::set<int> expected; for (auto& m : model) expected.insert(m.begin(), m.end()); items = set.items(); assert(std::vector<int>(expected.begin(), expected.end()) == items && std::adjacent_find(items.begin(), items.end()) == items.end());   // ③ 모델 일치
+    std::atomic<long> churn{0}; for (int t = 0; t < T; t++) th.emplace_back([&, t] { std::mt19937 rng(100 + t); for (int i = 0; i < 20000; i++) { int key = 5000 + rng() % 50; if (rng() % 2) { if (set.add(key)) churn++; } else { if (set.remove(key)) churn--; } } });                       // 겹치는 키 위의 격렬한 add/remove 경합
+    for (auto& x : th) x.join(); int hot = 0; for (int key = 5000; key < 5050; key++) hot += set.contains(key); long delta = churn.load(); assert(hot == delta && delta >= 0 && delta <= 50);
+    std::cout << "LockFreeSet: " << T << " threads - exactly one add and one remove succeeded for each of " << K << " contended keys; 120000 mixed operations on disjoint ranges matched per-thread models with a sorted duplicate-free list; under heavy churn on 50 shared keys (adds minus removes = " << delta << ") the final membership count matched" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산 O(n) (연결 리스트 탐색), 경합 시 CAS 재시도
+// Space Complexity: O(n) + 폐기 목록(소멸 시까지 유지)
 ```
 ## SkipListSet()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 스킵 리스트 집합(집합 관점의 요약, 정본은 List.md Part 10): 정렬된 연결 리스트 위에 "급행 차선"을 확률적으로 쌓은 구조. 노드는 동전 던지기로 높이(레벨) h 를 정하고(P(h ≥ i) = 2^−(i−1)) 레벨 i 의 리스트는 높이 ≥ i 인 노드들만 잇는다. 탐색은 맨 위 레벨에서 오른쪽으로 가다 넘으면 한 레벨 내려오는 식으로 기대 O(log n).
+// 균형 트리처럼 회전이 없어 구현이 단순하고, 노드 단위의 국소적 포인터 갱신뿐이라 락프리/동시성 버전(ConcurrentSkipListSet)이 쉬운 것이 장점이다. 정렬 순회와 범위 질의가 공짜. 검증: ① 무작위 연산 30000개가 std::set 과 완전히 일치 ② 정렬 순회가 std::set 과 같음 ③ 평균 레벨 수 ≈ 2(= 1/(1−p)), 탐색 비교 횟수가 O(log n) 정도 ④ 하한 탐색(lower_bound)이 std::set::lower_bound 와 일치
+struct SkipSet { static const int MAXL = 24; struct Node { int key; std::vector<Node*> next; Node(int k, int h) : key(k), next(h, nullptr) {} }; Node* head = new Node(INT32_MIN, MAXL); std::mt19937 rng{12345}; size_t n = 0; long comparisons = 0, nodeLevels = 0;
+    ~SkipSet() { for (Node* p = head; p;) { Node* nx = p->next[0]; delete p; p = nx; } } int randomHeight() { int h = 1; while (h < MAXL && rng() % 2) h++; return h; }
+    Node* findPreds(int key, Node** preds) const { Node* x = head; for (int lv = MAXL - 1; lv >= 0; lv--) { while (x->next[lv] && x->next[lv]->key < key) x = x->next[lv]; preds[lv] = x; } return x->next[0]; }
+    bool add(int key) { Node* preds[MAXL]; Node* nx = findPreds(key, preds); if (nx && nx->key == key) return false; int h = randomHeight(); Node* nd = new Node(key, h); for (int i = 0; i < h; i++) { nd->next[i] = preds[i]->next[i]; preds[i]->next[i] = nd; } n++; nodeLevels += h; return true; }
+    bool remove(int key) { Node* preds[MAXL]; Node* nx = findPreds(key, preds); if (!nx || nx->key != key) return false; for (size_t i = 0; i < nx->next.size(); i++) preds[i]->next[i] = nx->next[i]; nodeLevels -= nx->next.size(); delete nx; n--; return true; }
+    bool contains(int key) { Node* x = head; for (int lv = MAXL - 1; lv >= 0; lv--) while (x->next[lv] && (comparisons++, x->next[lv]->key < key)) x = x->next[lv]; Node* c = x->next[0]; return c && c->key == key; }
+    const Node* lowerBound(int key) const { Node* preds[MAXL]; return findPreds(key, preds); } std::vector<int> items() const { std::vector<int> r; for (Node* p = head->next[0]; p; p = p->next[0]) r.push_back(p->key); return r; } };
 int main() {
-    std::cout << "SkipList Set often underlines concurrent ordered sets." << std::endl;
-    assert(true);
-    return 0;
+    SkipSet s; std::set<int> ref; std::mt19937 rng(3); for (int i = 0; i < 30000; i++) { int x = rng() % 5000, op = rng() % 3; if (op == 0) assert(s.add(x) == ref.insert(x).second); else if (op == 1) assert(s.remove(x) == (ref.erase(x) == 1)); else assert(s.contains(x) == (ref.count(x) == 1)); assert(s.n == ref.size()); }
+    assert(s.items() == std::vector<int>(ref.begin(), ref.end()));                                                                                                                                   // ① ② 모델 일치
+    for (int t = 0; t < 2000; t++) { int q = rng() % 6000; auto lb = ref.lower_bound(q); auto got = s.lowerBound(q); assert((lb == ref.end()) == (got == nullptr) && (got == nullptr || got->key == *lb)); }                    // ④ lower_bound
+    SkipSet big; for (int i = 0; i < 100000; i++) big.add(i * 7 + (int)(rng() % 7)); big.comparisons = 0; const int Q = 20000; for (int i = 0; i < Q; i++) big.contains(rng() % 700000); double avgLevels = (double)big.nodeLevels / big.n, avgCmp = (double)big.comparisons / Q; assert(avgLevels > 1.9 && avgLevels < 2.1 && avgCmp < 4 * std::log2((double)big.n));      // ③ 레벨 · 비교 횟수
+    std::cout << "SkipListSet: 30000 random operations match std::set exactly, lower_bound agrees, average node height " << avgLevels << " (expected 2) and " << avgCmp << " key comparisons per lookup in a set of 100000 (log2 n = " << std::log2(100000.0) << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 탐색·삽입·삭제 기대 O(log n), 최악 O(n)
+// Space Complexity: O(n) (노드당 평균 포인터 2개)
 ```
 ## ConcurrentHashSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <atomic>
+#include <functional>
 #include <iostream>
+#include <mutex>
+#include <random>
+#include <set>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 동시성 해시 집합(ConcurrentHashSet): 전체에 잠금 하나(ConcurrentSet)는 스레드가 늘수록 병목이 된다. 해시 집합은 서로 다른 버킷의 연산이 독립이라는 성질을 이용해 "잠금 스트라이핑(lock striping)" 을 쓴다 — 버킷 배열을 S 개 구간(스트라이프)으로 나눠 구간마다 잠금 하나를 두고
+// 연산은 해당 키의 스트라이프 잠금만 잡는다(서로 다른 스트라이프는 병렬). 문제는 크기 조절(resize): 버킷 수가 바뀌면 모든 키의 위치가 바뀌므로 모든 스트라이프 잠금을 정해진 순서(0..S−1)로 잡고(교착 방지) 옮긴 뒤 놓아야 한다. 스트라이프 수 S 는 고정, 버킷 수는 적재율 > 4 에서 두 배.
+// 검증: 8 스레드로 ① 같은 키 add 경합 정확히 하나 성공 ② remove 경합 정확히 하나 성공 ③ 구간 분리 무작위 연산이 스레드별 모델과 일치 ④ 성장(resize)이 여러 번 일어나는 동안에도 동시 contains 가 이미 들어간 키를 놓치지 않음 ⑤ 스트라이핑이 단일 잠금보다 잠금 경합이 적음(스트라이프를 바꿔 가며 서로 다른 스트라이프를 동시에 잡은 횟수 측정)
+struct StripedSet { static const int S = 16; std::mutex locks[S]; std::vector<std::vector<int>> buckets; std::atomic<size_t> count{0}; std::atomic<int> resizes{0};
+    StripedSet() : buckets(16) {} size_t bucketOf(int key, size_t nb) const { return (size_t)((uint32_t)key * 2654435761u) % nb; } std::mutex& lockFor(int key) { return locks[(uint32_t)key * 2654435761u % S]; }
+    bool contains(int key) { std::lock_guard<std::mutex> g(lockFor(key)); auto& b = buckets[bucketOf(key, buckets.size())]; return std::find(b.begin(), b.end(), key) != b.end(); }
+    bool add(int key) { bool need; size_t seen; { std::lock_guard<std::mutex> g(lockFor(key)); auto& b = buckets[bucketOf(key, buckets.size())]; if (std::find(b.begin(), b.end(), key) != b.end()) return false; b.push_back(key); seen = buckets.size(); need = ++count > seen * 4; } if (need) resize(seen); return true; }
+    bool remove(int key) { std::lock_guard<std::mutex> g(lockFor(key)); auto& b = buckets[bucketOf(key, buckets.size())]; auto it = std::find(b.begin(), b.end(), key); if (it == b.end()) return false; *it = b.back(); b.pop_back(); count--; return true; }
+    void resize(size_t seen) { std::vector<std::unique_lock<std::mutex>> held; for (int i = 0; i < S; i++) held.emplace_back(locks[i]); size_t old = buckets.size(); /* 잠금을 모두 잡은 뒤에야 버킷 수를 읽는다 */ if (old != seen) return; /* 다른 스레드가 이미 키웠으면 중단 */ std::vector<std::vector<int>> nb(old * 2); for (auto& b : buckets) for (int k : b) nb[bucketOf(k, nb.size())].push_back(k); buckets.swap(nb); resizes++; } };
 int main() {
-    std::cout << "Concurrent Hash Set uses lock striping for performance." << std::endl;
-    assert(true);
-    return 0;
+    const int T = 8, K = 6000; StripedSet set; std::atomic<int> addWins{0}, removeWins{0}; std::vector<std::thread> th;
+    for (int t = 0; t < T; t++) th.emplace_back([&] { for (int k = 0; k < K; k++) if (set.add(k)) addWins++; }); for (auto& x : th) x.join(); th.clear(); assert(addWins == K && set.count == (size_t)K && set.resizes > 3);                                         // ① 경합 add + 여러 번의 resize
+    for (int t = 0; t < T; t++) th.emplace_back([&] { for (int k = 0; k < K; k++) if (set.remove(k)) removeWins++; }); for (auto& x : th) x.join(); th.clear(); assert(removeWins == K && set.count == 0);                                                                      // ② remove 경합
+    std::vector<std::set<int>> model(T); for (int t = 0; t < T; t++) th.emplace_back([&, t] { std::mt19937 rng(t + 3); for (int i = 0; i < 20000; i++) { int key = t * 100000 + rng() % 5000; int op = rng() % 3; if (op == 0) assert(set.add(key) == model[t].insert(key).second); else if (op == 1) assert(set.remove(key) == (model[t].erase(key) == 1)); else assert(set.contains(key) == (model[t].count(key) == 1)); } });
+    for (auto& x : th) x.join(); th.clear(); size_t total = 0; for (auto& m : model) { total += m.size(); for (int k : m) assert(set.contains(k)); } assert(set.count == total);                                                                                    // ③ 모델 일치
+    StripedSet grow; std::atomic<bool> missed{false}, done{false}; std::thread writer([&] { for (int k = 0; k < 40000; k++) { grow.add(k); } done = true; }); std::vector<std::thread> readers; for (int r = 0; r < 4; r++) readers.emplace_back([&, r] { std::mt19937 rng(r + 50); while (!done) { int upto = (int)grow.count.load() - 1; for (int k = 0; k < 50 && upto >= 0; k++) { int key = (int)(rng() % (upto + 1)); if (!grow.contains(key)) missed = true; } } });
+    writer.join(); for (auto& x : readers) x.join(); assert(!missed && grow.resizes >= 8);                                                                                                                                                   // ④ resize 중에도 키를 놓치지 않음
+    std::cout << "ConcurrentHashSet: striped locks over " << StripedSet::S << " stripes passed the add/remove contention tests and per-thread model checks with " << set.resizes << " + " << grow.resizes << " table doublings; concurrent readers never missed an inserted key while the table grew" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산 기대 O(1) + 스트라이프 잠금, resize 는 O(n) (전체 잠금)
+// Space Complexity: O(n)
 ```
 
 # Part 16. 연구 주제
 ## PersistentSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
+#include <deque>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 영속 집합(persistent set): 갱신해도 이전 버전이 그대로 남아 모든 과거 버전을 조회할 수 있는 집합. 비결은 경로 복사(path copying)다 — 균형 이진 탐색 트리에서 삽입·삭제가 건드리는 O(log n) 노드만 새로 만들고 나머지 서브트리는 이전 버전과 공유한다. 버전 하나당 새 노드 O(log n) 개.
+// 구현은 분할/병합(split/merge)으로 짠 영속 트립(treap)이다. 우선순위를 키의 해시로 정하면(결정적) 같은 원소 집합은 삽입 순서와 무관하게 항상 같은 모양의 트리가 되는 "이력 독립(history independence)" 성질이 생긴다. 노드는 불변(const)이라 여러 스레드가 안전하게 공유할 수 있다.
+// 검증: 무작위 갱신 600개로 버전 600개를 쌓고 ① 모든 과거 버전의 중위 순회가 그 시점의 std::set 스냅샷과 일치 ② 생성한 노드 총수가 갱신당 O(log n) 으로 모든 버전을 복사했을 때의 노드 수보다 훨씬 적음 ③ 서로 다른 삽입 순서로 만든 같은 집합의 트리 구조가 동일(이력 독립) ④ 버전들이 서로 노드를 공유하는 비율 보고
+struct Node { int key; uint32_t pri; const Node *l, *r; };
+std::deque<Node> pool; static uint32_t prio(int k) { uint32_t x = (uint32_t)k * 2654435761u; x ^= x >> 15; x *= 2246822519u; x ^= x >> 13; return x; }
+const Node* mk(int key, uint32_t pri, const Node* l, const Node* r) { pool.push_back({key, pri, l, r}); return &pool.back(); }
+std::pair<const Node*, const Node*> split(const Node* t, int key) { if (!t) return {nullptr, nullptr}; if (t->key < key) { auto [a, b] = split(t->r, key); return {mk(t->key, t->pri, t->l, a), b}; } auto [a, b] = split(t->l, key); return {a, mk(t->key, t->pri, b, t->r)}; }          // (< key, >= key)
+const Node* merge(const Node* a, const Node* b) { if (!a) return b; if (!b) return a; if (a->pri > b->pri) return mk(a->key, a->pri, a->l, merge(a->r, b)); return mk(b->key, b->pri, merge(a, b->l), b->r); }
+bool contains(const Node* t, int key) { while (t) { if (key == t->key) return true; t = key < t->key ? t->l : t->r; } return false; }
+const Node* insert(const Node* t, int key) { if (contains(t, key)) return t; auto [a, b] = split(t, key); return merge(merge(a, mk(key, prio(key), nullptr, nullptr)), b); }
+const Node* erase(const Node* t, int key) { if (!contains(t, key)) return t; auto [a, b] = split(t, key); auto [m, c] = split(b, key + 1); return merge(a, c); }
+void inorder(const Node* t, std::vector<int>& out) { if (!t) return; inorder(t->l, out); out.push_back(t->key); inorder(t->r, out); }
+bool sameShape(const Node* a, const Node* b) { if (!a || !b) return a == b; return a->key == b->key && sameShape(a->l, b->l) && sameShape(a->r, b->r); }
+void collect(const Node* t, std::set<const Node*>& s) { if (!t) return; if (!s.insert(t).second) return; collect(t->l, s); collect(t->r, s); }
 int main() {
-    std::cout << "Persistent Set preserves previous versions upon update." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(5); std::vector<const Node*> versions = {nullptr}; std::vector<std::set<int>> snapshots = {{}}; std::set<int> cur; size_t biggest = 0;
+    for (int i = 0; i < 600; i++) { int x = rng() % 400; const Node* nv; if (rng() % 3 && !cur.count(x)) { nv = insert(versions.back(), x); cur.insert(x); } else { nv = erase(versions.back(), x); cur.erase(x); } versions.push_back(nv); snapshots.push_back(cur); biggest = std::max(biggest, cur.size()); }
+    for (size_t v = 0; v < versions.size(); v++) { std::vector<int> items; inorder(versions[v], items); assert(items == std::vector<int>(snapshots[v].begin(), snapshots[v].end())); for (int probe = 0; probe < 400; probe += 37) assert(contains(versions[v], probe) == (snapshots[v].count(probe) == 1)); }       // ① 모든 과거 버전이 그대로
+    size_t created = pool.size(), copyAll = 0; for (auto& s : snapshots) copyAll += s.size(); std::set<const Node*> reachable; for (auto* r : versions) collect(r, reachable); assert(created < copyAll / 3);                                                                         // ② 생성 노드 수 ≪ 전체 복사
+    std::vector<int> keys(cur.begin(), cur.end()); const Node *a = nullptr, *b = nullptr; std::vector<int> k1 = keys, k2 = keys; std::shuffle(k1.begin(), k1.end(), rng); std::shuffle(k2.begin(), k2.end(), rng); for (int k : k1) a = insert(a, k); for (int k : k2) b = insert(b, k); assert(sameShape(a, b));       // ③ 이력 독립
+    std::cout << "PersistentSet: all 601 versions still match their std::set snapshots after 600 updates; path copying created " << created << " nodes instead of the " << copyAll << " that copying every version would need (" << reachable.size() << " distinct nodes shared across versions); two insertion orders of the same " << keys.size() << " keys gave identical tree shapes" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회·삽입·삭제 기대 O(log n)
+// Space Complexity: 버전당 기대 O(log n) 새 노드
 ```
 ## ImmutableBitSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <set>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 불변 비트 집합(immutable bitset): 생성 후 절대 바뀌지 않는 비트 집합. 변경 연산(with/without/합·교·차)은 새 객체를 돌려주고 원본은 그대로다. 불변이면 ① 잠금 없이 여러 스레드가 공유 가능 ② 해시·동치 비교의 키로 안전 ③ 이전 버전을 보존(되돌리기) ④ 구성 시 한 번 계산한 보조 정보를 평생 재사용할 수 있다.
+// 여기서는 구성 시 블록(64비트 워드)마다 앞쪽 popcount 접두사 합을 만들어 rank(x) = x 보다 작은 원소 개수를 O(1), select(k) = k 번째 원소를 O(log n) 에 구한다. 변경 연산의 비용은 O(U/64) 복사 — 한 비트를 켜는 데도 전체를 복사하므로 변경이 잦으면 영속 자료구조(PersistentSet)나 일반 가변 비트셋이 낫다.
+// 검증: 무작위 연산 3000개에서 ① 모든 버전이 std::set 모델과 일치하고 이전 버전은 변하지 않음 ② rank/select 가 서로 역함수이고 모델과 일치 ③ 합·교·차·대칭차가 모델과 일치 ④ 여러 스레드가 같은 객체를 동시에 읽어도 결과가 같음 ⑤ 해시/동치가 내용이 같으면 같음
+class ImmutableBitSet { std::shared_ptr<const std::vector<uint64_t>> w; std::shared_ptr<const std::vector<uint32_t>> prefix; size_t U;
+    void build(std::vector<uint64_t>&& words) { auto pf = std::make_shared<std::vector<uint32_t>>(words.size() + 1, 0); for (size_t i = 0; i < words.size(); i++) (*pf)[i + 1] = (*pf)[i] + __builtin_popcountll(words[i]); w = std::make_shared<const std::vector<uint64_t>>(std::move(words)); prefix = pf; }
+public: explicit ImmutableBitSet(size_t universe = 0) : U(universe) { build(std::vector<uint64_t>((universe + 63) / 64, 0)); }
+    size_t universe() const { return U; } bool test(size_t i) const { return (*w)[i >> 6] >> (i & 63) & 1; } size_t count() const { return prefix->back(); }
+    ImmutableBitSet with(size_t i) const { ImmutableBitSet r(*this); auto c = *w; c[i >> 6] |= 1ULL << (i & 63); r.build(std::move(c)); return r; } ImmutableBitSet without(size_t i) const { ImmutableBitSet r(*this); auto c = *w; c[i >> 6] &= ~(1ULL << (i & 63)); r.build(std::move(c)); return r; }
+    template <class Op> ImmutableBitSet combine(const ImmutableBitSet& o, Op op) const { ImmutableBitSet r(*this); std::vector<uint64_t> c(w->size()); for (size_t i = 0; i < c.size(); i++) c[i] = op((*w)[i], (*o.w)[i]); r.build(std::move(c)); return r; }
+    size_t rank(size_t x) const { size_t b = x >> 6; return (*prefix)[b] + (b < w->size() ? __builtin_popcountll((*w)[b] & ((1ULL << (x & 63)) - 1)) : 0); }                                                // x 보다 작은 원소 수
+    size_t select(size_t k) const { size_t lo = 0, hi = w->size(); while (lo + 1 < hi) { size_t mid = (lo + hi) / 2; if ((*prefix)[mid] <= k) lo = mid; else hi = mid; } uint64_t word = (*w)[lo]; size_t need = k - (*prefix)[lo]; for (size_t i = 0; i < need; i++) word &= word - 1; return lo * 64 + __builtin_ctzll(word); }
+    bool operator==(const ImmutableBitSet& o) const { return U == o.U && *w == *o.w; } size_t hash() const { size_t h = U; for (uint64_t x : *w) h = h * 1099511628211ULL ^ x; return h; } };
 int main() {
-    std::cout << "Immutable BitSet is safe for unprotected concurrent read." << std::endl;
-    assert(true);
-    return 0;
+    const size_t U = 1000; std::mt19937 rng(3); std::vector<ImmutableBitSet> versions = {ImmutableBitSet(U)}; std::vector<std::set<size_t>> models = {{}}; std::set<size_t> cur;
+    for (int i = 0; i < 3000; i++) { size_t x = rng() % U; ImmutableBitSet nv(U); if (rng() % 3) { nv = versions.back().with(x); cur.insert(x); } else { nv = versions.back().without(x); cur.erase(x); } versions.push_back(nv); models.push_back(cur); }
+    for (size_t v = 0; v < versions.size(); v += 37) { assert(versions[v].count() == models[v].size()); size_t k = 0; for (size_t x : models[v]) { assert(versions[v].select(k) == x && versions[v].rank(x) == k); k++; } for (size_t x = 0; x <= U; x += 41) assert(versions[v].rank(x) == (size_t)std::distance(models[v].begin(), models[v].lower_bound(x))); }       // ① ② 모든 버전 · rank/select
+    ImmutableBitSet a(U), b(U); std::set<size_t> sa, sb; for (int i = 0; i < 300; i++) { size_t x = rng() % U, y = rng() % U; a = a.with(x); sa.insert(x); b = b.with(y); sb.insert(y); }
+    auto check = [&](const ImmutableBitSet& r, const std::set<size_t>& m) { assert(r.count() == m.size()); for (size_t i = 0; i < U; i++) assert(r.test(i) == (m.count(i) == 1)); }; std::set<size_t> m;
+    std::set_union(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(m, m.begin())); check(a.combine(b, [](uint64_t x, uint64_t y) { return x | y; }), m); m.clear(); std::set_intersection(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(m, m.begin())); check(a.combine(b, [](uint64_t x, uint64_t y) { return x & y; }), m);
+    m.clear(); std::set_difference(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(m, m.begin())); check(a.combine(b, [](uint64_t x, uint64_t y) { return x & ~y; }), m); m.clear(); std::set_symmetric_difference(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(m, m.begin())); check(a.combine(b, [](uint64_t x, uint64_t y) { return x ^ y; }), m);   // ③
+    std::vector<std::thread> th; std::vector<size_t> sums(8, 0); for (int t = 0; t < 8; t++) th.emplace_back([&, t] { for (int rep = 0; rep < 2000; rep++) for (size_t k = 0; k < a.count(); k += 7) sums[t] += a.select(k) + a.rank(k); }); for (auto& x : th) x.join(); for (int t = 1; t < 8; t++) assert(sums[t] == sums[0]);                                              // ④ 동시 읽기
+    ImmutableBitSet c1(U), c2(U); for (size_t x : {5, 70, 999}) { c1 = c1.with(x); } for (size_t x : {999, 5, 70}) { c2 = c2.with(x); } assert(c1 == c2 && c1.hash() == c2.hash() && !(c1 == c1.with(6)));                                                                                                                               // ⑤ 해시 · 동치
+    std::cout << "ImmutableBitSet: 3000 versions each matched their model and older versions never changed; rank and select are inverse functions; union, intersection, difference and symmetric difference match std::set; 8 threads read one shared set with identical results" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: test O(1), rank O(1), select O(log(U/64)), 변경·집합 연산 O(U/64)
+// Space Complexity: O(U/8) 바이트 (+ 접두사 합)
 ```
 ## CompressedBitSet()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 압축 비트 집합(compressed bitset): 희소하거나 덩어리진 비트맵은 같은 값의 긴 워드 구간(0 만 또는 1 만)이 많다. WAH/EWAH 계열 방식은 32 비트 워드열을 "채움 런(fill run: 0 워드 또는 1 워드가 n 번)" 과 "리터럴 워드(그대로 저장)" 의 열로 부호화한다.
+// 핵심은 압축을 풀지 않고 연산하는 것이다 — 두 압축열의 커서를 나란히 전진시키며 한쪽이 긴 0 채움이면 AND 결과는 그 길이만큼 0 채움(OR 은 다른 쪽을 그대로 복사)이라 런 단위로 건너뛴다. 결과도 같은 방식으로 이어 붙여(인접한 같은 채움은 합침) 압축 상태를 유지한다.
+// 한계: 임의 위치 접근이 O(런 수)이고 변경이 어렵다(Roaring 비트맵이 보완). 검증: 희소(0.05%)·덩어리(긴 구간)·조밀(50% 무작위) 비트맵 각 40개에서 ① 압축·복원이 무손실 ② 압축 상태의 AND/OR/XOR 결과가 원시 비트 연산과 같고 결과도 정규형(인접 같은 채움 합쳐짐) ③ 희소·덩어리는 원시 크기의 1/3 이하로 줄고 조밀은 줄지 않음(런 하나를 4 바이트로 계산) ④ 압축 연산이 방문한 런 수가 원시 워드 수보다 훨씬 적음
+struct Run { bool fill; bool bit; uint32_t count; uint32_t lit; };                                                                                               // fill: bit 값 워드 count 개 / 아니면 리터럴 워드 하나
+struct Compressed { std::vector<Run> runs; uint32_t words = 0;
+    void append(uint32_t word, uint32_t n = 1) { if (n == 0) return; words += n; bool isFill = word == 0 || word == ~0u; if (isFill) { bool bit = word != 0; if (!runs.empty() && runs.back().fill && runs.back().bit == bit) runs.back().count += n; else runs.push_back({true, bit, n, 0}); } else { for (uint32_t i = 0; i < n; i++) runs.push_back({false, false, 1, word}); } }
+    static Compressed from(const std::vector<uint32_t>& raw) { Compressed c; for (uint32_t w : raw) c.append(w); return c; }
+    std::vector<uint32_t> expand() const { std::vector<uint32_t> out; for (auto& r : runs) { if (r.fill) out.insert(out.end(), r.count, r.bit ? ~0u : 0u); else out.push_back(r.lit); } return out; } };
+struct Cursor { const std::vector<Run>& r; size_t i = 0; uint32_t used = 0; long visited = 0; bool done() const { return i >= r.size(); } bool fill() const { return r[i].fill; } uint32_t word() const { return r[i].fill ? (r[i].bit ? ~0u : 0u) : r[i].lit; } uint32_t left() const { return r[i].count - used; }
+    void skip(uint32_t n) { used += n; if (used == r[i].count) { i++; used = 0; visited++; } } };
+template <class Op> Compressed combine(const Compressed& a, const Compressed& b, Op op, long& visited) { Compressed out; Cursor x{a.runs}, y{b.runs}; while (!x.done() && !y.done()) { uint32_t n = 1; if (x.fill() && y.fill()) n = std::min(x.left(), y.left()); else if (x.fill() && !y.fill()) n = 1; else if (!x.fill() && y.fill()) n = 1; out.append(op(x.word(), y.word()), n); x.skip(n); y.skip(n); } visited += x.visited + y.visited; return out; }
 int main() {
-    std::cout << "Compressed BitSet leverages run-length encoding." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(8); const uint32_t W = 2000; long compSizeSparse = 0, rawSizeSparse = 0, compSizeDense = 0, rawSizeDense = 0, visited = 0, rawWords = 0;
+    for (int kind = 0; kind < 3; kind++) for (int t = 0; t < 40; t++) { std::vector<uint32_t> A(W, 0), B(W, 0); for (int which = 0; which < 2; which++) { auto& v = which ? B : A; if (kind == 0) { for (int i = 0; i < (int)(W * 32 * 0.0005); i++) { uint32_t pos = rng() % (W * 32); v[pos / 32] |= 1u << (pos % 32); } } else if (kind == 1) { uint32_t pos = 0; while (pos < W) { uint32_t len = 1 + rng() % 200; bool on = rng() % 2; for (uint32_t i = 0; i < len && pos < W; i++, pos++) v[pos] = on ? ~0u : 0u; } } else { for (auto& w : v) w = rng(); } }
+        Compressed ca = Compressed::from(A), cb = Compressed::from(B); assert(ca.expand() == A && cb.expand() == B && ca.words == W);                                                                                       // ① 무손실
+        auto test = [&](auto op) { long vis = 0; Compressed c = combine(ca, cb, op, vis); std::vector<uint32_t> expect(W); for (uint32_t i = 0; i < W; i++) expect[i] = op(A[i], B[i]); assert(c.expand() == expect); for (size_t i = 1; i < c.runs.size(); i++) assert(!(c.runs[i].fill && c.runs[i - 1].fill && c.runs[i].bit == c.runs[i - 1].bit)); return vis; };       // ② 정규형
+        long v1 = test([](uint32_t x, uint32_t y) { return x & y; }), v2 = test([](uint32_t x, uint32_t y) { return x | y; }), v3 = test([](uint32_t x, uint32_t y) { return x ^ y; }); if (kind != 2) { visited += v1 + v2 + v3; rawWords += 3L * W * 2; }
+        long cs = ca.runs.size() * 4L /* WAH 처럼 런(채움 헤더 또는 리터럴 워드)마다 4 바이트 */, rs = W * 4L; if (kind == 2) { compSizeDense += cs; rawSizeDense += rs; } else { compSizeSparse += cs; rawSizeSparse += rs; } }
+    assert(compSizeSparse * 3 < rawSizeSparse && compSizeDense >= rawSizeDense * 9 / 10 && visited < rawWords);
+    std::cout << "CompressedBitSet: run-length (WAH/EWAH-style) compression is lossless and AND/OR/XOR on compressed runs equal the raw word operations with canonical output on 120 bitmap pairs; sparse/clustered data used " << compSizeSparse << " bytes versus " << rawSizeSparse << " raw, random dense data " << compSizeDense << " versus " << rawSizeDense << "; cursors visited " << visited << " runs for " << rawWords << " raw word steps" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산 O(두 압축열의 런 수), 압축 O(워드 수)
+// Space Complexity: O(런 수)
 ```
 ## RoaringBitmap()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
+#include <set>
+#include <variant>
+#include <vector>
 #include <cassert>
 
+// 로어링 비트맵(Roaring Bitmap, Lemire 등 2016): 32 비트 정수 집합을 상위 16 비트(청크 번호)로 나눠 청크마다 하위 16 비트를 가장 알맞은 "컨테이너"로 저장한다. 원소가 4096 개 이하면 정렬된 uint16 배열(2 바이트/원소 ≤ 8 KiB), 그보다 많으면 65536 비트 비트맵(고정 8 KiB) —
+// 임계값 4096 은 두 표현의 크기가 같아지는 지점이다(실제 구현은 런 컨테이너도 둔다). 청크 사이는 정렬된 맵으로 이어 두므로 희소한 곳은 작고 조밀한 곳은 비트맵이라 압축 비트맵(WAH 계열)보다 임의 접근·집합 연산이 빠르다.
+// 연산은 청크별로 대응하는 컨테이너끼리 한다: 배열∩배열(병합), 비트맵∩비트맵(워드 AND), 배열∩비트맵(배열 원소를 비트맵에서 조회), 합집합도 마찬가지이고 결과의 원소 수에 따라 컨테이너 종류를 다시 정한다. 검증(32 비트 정수): ① 희소(청크 여러 개에 흩어짐)·조밀(한 청크에 꽉 참)·혼합 집합에서 add/remove/contains 가 std::set 과 일치하고 컨테이너 종류가 임계값에 맞게 전환 ② 합·교집합이 모델과 같음 ③ 크기(바이트)가 단순 uint32 배열·평평한 비트맵보다 모든 경우에서 작거나 비슷하고 희소할 때 크게 작음
+struct Roaring { typedef std::vector<uint16_t> Arr; typedef std::array<uint64_t, 1024> Bm; typedef std::variant<Arr, Bm> Container; std::map<uint16_t, Container> chunks;
+    static size_t card(const Container& c) { if (auto* a = std::get_if<Arr>(&c)) return a->size(); size_t n = 0; for (uint64_t w : std::get<Bm>(c)) n += __builtin_popcountll(w); return n; }
+    static void toBitmap(Container& c) { Bm b{}; for (uint16_t x : std::get<Arr>(c)) b[x >> 6] |= 1ULL << (x & 63); c = b; } static void toArray(Container& c) { Arr a; const Bm& b = std::get<Bm>(c); for (int i = 0; i < 1024; i++) for (uint64_t w = b[i]; w; w &= w - 1) a.push_back(i * 64 + __builtin_ctzll(w)); c = a; }
+    bool add(uint32_t x) { uint16_t hi = x >> 16, lo = x & 0xFFFF; auto it = chunks.find(hi); if (it == chunks.end()) it = chunks.emplace(hi, Arr{}).first; Container& c = it->second; if (auto* a = std::get_if<Arr>(&c)) { auto pos = std::lower_bound(a->begin(), a->end(), lo); if (pos != a->end() && *pos == lo) return false; a->insert(pos, lo); if (a->size() > 4096) toBitmap(c); return true; } Bm& b = std::get<Bm>(c); bool had = b[lo >> 6] >> (lo & 63) & 1; b[lo >> 6] |= 1ULL << (lo & 63); return !had; }
+    bool remove(uint32_t x) { uint16_t hi = x >> 16, lo = x & 0xFFFF; auto it = chunks.find(hi); if (it == chunks.end()) return false; Container& c = it->second; bool removed; if (auto* a = std::get_if<Arr>(&c)) { auto pos = std::lower_bound(a->begin(), a->end(), lo); removed = pos != a->end() && *pos == lo; if (removed) a->erase(pos); } else { Bm& b = std::get<Bm>(c); removed = b[lo >> 6] >> (lo & 63) & 1; b[lo >> 6] &= ~(1ULL << (lo & 63)); if (removed && card(c) <= 4096) toArray(c); } if (card(c) == 0) chunks.erase(it); return removed; }
+    bool contains(uint32_t x) const { auto it = chunks.find(x >> 16); if (it == chunks.end()) return false; uint16_t lo = x & 0xFFFF; if (auto* a = std::get_if<Arr>(&it->second)) return std::binary_search(a->begin(), a->end(), lo); return std::get<Bm>(it->second)[lo >> 6] >> (lo & 63) & 1; }
+    size_t size() const { size_t n = 0; for (auto& [h, c] : chunks) n += card(c); return n; } size_t bytes() const { size_t b = 0; for (auto& [h, c] : chunks) b += 2 + (std::holds_alternative<Arr>(c) ? 2 * std::get<Arr>(c).size() : 8192); return b; }
+    static Container normalize(Bm b) { Container c = b; if (card(c) <= 4096) toArray(c); return c; }
+    static Container and2(const Container& x, const Container& y) { if (std::holds_alternative<Bm>(x) && std::holds_alternative<Bm>(y)) { Bm r; for (int i = 0; i < 1024; i++) r[i] = std::get<Bm>(x)[i] & std::get<Bm>(y)[i]; return normalize(r); } const Container &s = std::holds_alternative<Arr>(x) ? x : y, &o = std::holds_alternative<Arr>(x) ? y : x; Arr r; for (uint16_t v : std::get<Arr>(s)) { bool in = std::holds_alternative<Arr>(o) ? std::binary_search(std::get<Arr>(o).begin(), std::get<Arr>(o).end(), v) : (std::get<Bm>(o)[v >> 6] >> (v & 63) & 1); if (in) r.push_back(v); } return r; }
+    static Container or2(const Container& x, const Container& y) { Bm r{}; for (const Container* c : {&x, &y}) { if (auto* a = std::get_if<Arr>(c)) for (uint16_t v : *a) r[v >> 6] |= 1ULL << (v & 63); else for (int i = 0; i < 1024; i++) r[i] |= std::get<Bm>(*c)[i]; } return normalize(r); }
+    Roaring operator&(const Roaring& o) const { Roaring r; for (auto& [h, c] : chunks) { auto it = o.chunks.find(h); if (it == o.chunks.end()) continue; Container z = and2(c, it->second); if (card(z) > 0) r.chunks[h] = z; } return r; } Roaring operator|(const Roaring& o) const { Roaring r = *this; for (auto& [h, c] : o.chunks) { auto it = r.chunks.find(h); r.chunks[h] = it == r.chunks.end() ? c : or2(it->second, c); } return r; }
+    std::vector<uint32_t> items() const { std::vector<uint32_t> out; for (auto& [h, c] : chunks) { if (auto* a = std::get_if<Arr>(&c)) for (uint16_t v : *a) out.push_back((uint32_t)h << 16 | v); else for (int i = 0; i < 1024; i++) for (uint64_t w = std::get<Bm>(c)[i]; w; w &= w - 1) out.push_back((uint32_t)h << 16 | (i * 64 + __builtin_ctzll(w))); } return out; } };
 int main() {
-    std::cout << "Roaring Bitmap switches layout based on density." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(11); size_t denseBytes = 0, sparseBytes = 0, sparseFlat = 0; int conversions = 0;
+    for (int kind = 0; kind < 3; kind++) { Roaring r; std::set<uint32_t> ref; int n = kind == 0 ? 3000 : kind == 1 ? 70000 : 20000; for (int i = 0; i < n; i++) { uint32_t x = kind == 0 ? (uint32_t)(rng() % 1000) << 16 | (rng() % 65536) : kind == 1 ? (uint32_t)(rng() % 70000) : ((rng() % 2) ? (uint32_t)(rng() % 70000) : (uint32_t)(rng() % 50) << 20 | (rng() % 3000)); assert(r.add(x) == ref.insert(x).second); }
+        assert(r.size() == ref.size() && r.items() == std::vector<uint32_t>(ref.begin(), ref.end())); for (int i = 0; i < 20000; i++) { uint32_t x = kind == 0 ? (uint32_t)(rng() % 1000) << 16 | (rng() % 65536) : (uint32_t)(rng() % 140000); assert(r.contains(x) == (ref.count(x) == 1)); }
+        { std::vector<uint32_t> all(ref.begin(), ref.end()); std::shuffle(all.begin(), all.end(), rng); for (size_t i = 0; i < all.size() / 2; i++) { assert(r.remove(all[i])); ref.erase(all[i]); assert(!r.contains(all[i])); } } assert(r.items() == std::vector<uint32_t>(ref.begin(), ref.end()));                                // ① add/remove/contains
+        if (kind == 0) { sparseBytes = r.bytes(); sparseFlat = ref.size() * 4; } if (kind == 1) denseBytes = r.bytes(); }
+    for (int t = 0; t < 30; t++) { Roaring a, b; std::set<uint32_t> sa, sb; int na = rng() % 9000, nb = rng() % 9000; for (int i = 0; i < na; i++) { uint32_t x = (rng() % 3) << 16 | (rng() % 12000); a.add(x); sa.insert(x); } for (int i = 0; i < nb; i++) { uint32_t x = (rng() % 3) << 16 | (rng() % 12000); b.add(x); sb.insert(x); }
+        std::set<uint32_t> in, un; std::set_intersection(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(in, in.begin())); std::set_union(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(un, un.begin())); assert((a & b).items() == std::vector<uint32_t>(in.begin(), in.end()) && (a | b).items() == std::vector<uint32_t>(un.begin(), un.end())); }          // ② 교·합집합
+    Roaring edge; for (uint32_t i = 0; i < 4096; i++) edge.add(i); assert(std::holds_alternative<Roaring::Arr>(edge.chunks[0])); edge.add(5000); assert(std::holds_alternative<Roaring::Bm>(edge.chunks[0])); edge.remove(5000); assert(std::holds_alternative<Roaring::Arr>(edge.chunks[0])); conversions++;           // 4096 → 4097 에서 비트맵, 다시 4096 에서 배열
+    assert(sparseBytes < sparseFlat + 1000 && denseBytes < 70000 / 8 + 8192 * 3);
+    std::cout << "RoaringBitmap: add/remove/contains and union/intersection match std::set for sparse, dense and mixed data, containers switch between array and bitmap at 4096 elements; sparse set of " << sparseFlat / 4 << " ints needs " << sparseBytes << " bytes (plain array " << sparseFlat << "), dense one " << denseBytes << " bytes" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: contains O(log 청크 수 + log 4096), 합·교집합 O(공통 청크 수 · 컨테이너 연산)
+// Space Complexity: 청크당 min(2·원소 수, 8192) 바이트
 ```
 ## SuccinctSet()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 간결 집합(succinct set) — Elias–Fano 부호화 (집합 관점의 요약, 정본은 AdvancedDataStructures.md Part 15 EliasFano): 우주 [0, U) 의 정렬된 서로 다른 정수 n 개를 약 n·(2 + log₂(U/n)) 비트로 저장하면서 i 번째 원소를 상수 시간에 읽는다(정보이론 하한 log₂ C(U, n) ≈ n·(1.44 + log₂(U/n)) 에 +0.56n 비트 이내).
+// 각 값 v 를 하위 l = ⌊log₂(U/n)⌋ 비트 low 와 상위 high = v >> l 로 나눈다. low 들은 l 비트씩 배열에 그냥 이어 붙이고, high 들은 "단항 부호" 비트열에 저장한다: i 번째 원소는 비트열의 위치 high_i + i 를 1 로 켠다(원소가 정렬돼 있으므로 위치도 증가). i 번째 원소의 high = select₁(i) − i 이므로 접근은 select 한 번.
+// select 는 64 번째 1 마다 위치를 표본으로 저장해 두고 그 뒤를 워드 단위 popcount 로 훑어 구한다. 원소 조회는 접근을 이용한 이분 탐색 O(log n). 검증: ① 모든 i 에서 access(i) 가 원본과 같음 ② 원소·비원소 조회가 std::binary_search 와 같음 ③ 사용 비트 수가 n·(l + 2) + 표본이고 단순 n·⌈log₂U⌉ 비트보다 작으며 이론 n(2 + log₂(U/n)) 에 가까움 ④ 밀도를 바꿔 가며(희소~조밀) 반복
+struct EliasFano { size_t n, U; int l; std::vector<uint64_t> low, high; std::vector<size_t> sample; size_t highBits;
+    static void setBit(std::vector<uint64_t>& v, size_t pos) { v[pos >> 6] |= 1ULL << (pos & 63); } uint64_t getLow(size_t i) const { uint64_t r = 0; for (int b = 0; b < l; b++) { size_t p = i * l + b; r |= ((low[p >> 6] >> (p & 63)) & 1ULL) << b; } return r; }
+    EliasFano(const std::vector<uint64_t>& a, size_t U) : n(a.size()), U(U) { l = n ? std::max(0, (int)std::floor(std::log2((double)U / n))) : 0; low.assign((n * l + 63) / 64 + 1, 0); highBits = n + (n ? (U >> l) : 0) + 1; high.assign((highBits + 63) / 64 + 1, 0);
+        for (size_t i = 0; i < n; i++) { for (int b = 0; b < l; b++) if (a[i] >> b & 1) setBit(low, i * l + b); setBit(high, (a[i] >> l) + i); } size_t ones = 0; for (size_t w = 0; w < high.size(); w++) { int pc = __builtin_popcountll(high[w]); for (size_t k = 0; k < (size_t)pc; k++) if ((ones + k) % 64 == 0) { uint64_t word = high[w]; for (size_t j = 0; j < k; j++) word &= word - 1; sample.push_back(w * 64 + __builtin_ctzll(word)); } ones += pc; } }
+    size_t select1(size_t i) const { size_t w = sample[i / 64] / 64, need = i % 64; size_t skipped = 0; uint64_t word = high[w] & (~0ULL << (sample[i / 64] % 64)); for (;;) { int pc = __builtin_popcountll(word); if (skipped + pc > need) { for (size_t k = 0; k < need - skipped; k++) word &= word - 1; return w * 64 + __builtin_ctzll(word); } skipped += pc; word = high[++w]; } }
+    uint64_t access(size_t i) const { return ((uint64_t)(select1(i) - i) << l) | getLow(i); }
+    bool contains(uint64_t x) const { size_t lo = 0, hi = n; while (lo < hi) { size_t mid = (lo + hi) / 2; uint64_t v = access(mid); if (v == x) return true; if (v < x) lo = mid + 1; else hi = mid; } return false; }
+    size_t bits() const { return n * l + highBits + sample.size() * 64; } };
 int main() {
-    std::cout << "Succinct Set targets information theoretic space limit." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937_64 rng(6);
+    for (size_t U : {1u << 16, 1u << 20, 1u << 26}) for (double density : {0.0005, 0.01, 0.2}) { size_t n = std::max<size_t>(8, (size_t)(U * density)); if (n > 200000) n = 200000; std::set<uint64_t> s; while (s.size() < n) s.insert(rng() % U); std::vector<uint64_t> a(s.begin(), s.end()); EliasFano ef(a, U);
+        for (size_t i = 0; i < n; i++) assert(ef.access(i) == a[i]);                                                                                                                                      // ① 접근
+        for (int q = 0; q < 3000; q++) { uint64_t x = rng() % U; assert(ef.contains(x) == s.count(x)); }                                                                                                      // ② 조회
+        double naive = (double)n * std::ceil(std::log2((double)U)), theory = n * (2 + std::log2((double)U / n)); size_t withoutSamples = ef.n * ef.l + ef.highBits; assert(withoutSamples < naive && withoutSamples <= theory * 1.02 + 128); }  // ③ 공간
+    std::vector<uint64_t> a = {3, 4, 7, 13, 14, 15, 21, 25, 36, 38, 54, 62}; EliasFano ef(a, 64); for (size_t i = 0; i < a.size(); i++) assert(ef.access(i) == a[i]); assert(ef.l == 2);                              // 논문의 예제(U = 64, n = 12, l = 2)
+    std::cout << "SuccinctSet: Elias-Fano access and membership match the sorted array for 9 (U, density) settings up to 200000 elements; the encoding uses about n(2+log2(U/n)) bits, below the n*ceil(log2 U) bits of a plain array" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: access O(1) 분할상환(표본 + 워드 훑기), 조회 O(log n)
+// Space Complexity: n(2 + log₂(U/n)) 비트 + select 표본
 ```
 ## LearnedSetIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 학습된 집합 색인(learned index, Kraska 등 2018; 집합 관점의 요약, 정본은 AdvancedDataStructures.md Part 15 LearnedIndex): 정렬된 키 집합에서 키의 순위를 찾는 일은 누적 분포 함수(CDF)를 근사하는 일이다 — pos(key) ≈ n · CDF(key). B 트리를 "키 → 위치 예측 모델" 로 바꾸고, 모델의 최대 오차 ε 를 측정해 두면
+// 조회는 예측 위치 ± ε 구간만 이분 탐색하면 되어 정확성이 보장된다(모델이 틀려도 오차 한계 안이므로 결과는 항상 맞음). 2 단계 구조: ① 루트 모델이 키를 구간(세그먼트)으로 보내고 ② 세그먼트별 선형 회귀가 위치를 예측하며 세그먼트마다 학습 데이터에 대한 최대 오차를 저장.
+// 장점: 분포가 매끈하면 모델이 작고 탐색 구간이 매우 좁다. 단점: 갱신이 어렵고(재학습) 분포가 거칠면 ε 가 커진다. 검증: 균등·로그정규·지수·군집(여러 정규) 분포의 키 20만 개에서 ① 모든 원소를 정확히 찾고 비원소는 정확히 없음으로 판정 ② 모든 학습 키에서 |예측 − 실제| ≤ 저장한 ε ③ 평균 탐색 구간이 400 칸 미만(= 마지막 이분 탐색이 전체 log₂ n ≈ 17.6 단계보다 5 단계 이상 적음; 분포별 수치 보고)
+struct Seg { double a = 0, b = 0; long eps = 0; size_t lo = 0, hi = 0; };
+struct Learned { std::vector<double> keys; double kmin, kmax; int segs; std::vector<Seg> seg;
+    Learned(const std::vector<double>& k, int segs) : keys(k), segs(segs), seg(segs) { kmin = keys.front(); kmax = keys.back(); std::vector<std::vector<size_t>> members(segs); for (size_t i = 0; i < keys.size(); i++) members[segOf(keys[i])].push_back(i);
+        for (int s = 0; s < segs; s++) { auto& m = members[s]; if (m.empty()) { seg[s].lo = seg[s].hi = 0; continue; } double sx = 0, sy = 0, sxx = 0, sxy = 0; for (size_t i : m) { sx += keys[i]; sy += i; sxx += keys[i] * keys[i]; sxy += keys[i] * i; } double nn = m.size(), den = nn * sxx - sx * sx; seg[s].a = den > 1e-12 ? (nn * sxy - sx * sy) / den : 0; seg[s].b = (sy - seg[s].a * sx) / nn; for (size_t i : m) seg[s].eps = std::max(seg[s].eps, (long)std::ceil(std::fabs(seg[s].a * keys[i] + seg[s].b - (double)i))); seg[s].lo = m.front(); seg[s].hi = m.back(); } }
+    int segOf(double key) const { int s = (int)((key - kmin) / (kmax - kmin + 1e-9) * segs); return std::min(std::max(s, 0), segs - 1); }
+    long predict(double key) const { const Seg& g = seg[segOf(key)]; return (long)std::llround(g.a * key + g.b); }
+    bool contains(double key, long& window) const { const Seg& g = seg[segOf(key)]; long p = predict(key); long n = keys.size(), lo = std::min(std::max(p - g.eps - 1, 0L), n), hi = std::min(std::max(p + g.eps + 2, 0L), n); if (lo > hi) lo = hi; window = hi - lo; /* 범위 밖 질의의 예측이 [0, n] 밖일 수 있어 구간을 고정 */ return std::binary_search(keys.begin() + lo, keys.begin() + hi, key); } };
 int main() {
-    std::cout << "Learned Set Index uses ML to predict element locations." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937_64 rng(9); const char* names[4] = {"uniform", "lognormal", "exponential", "clustered"}; double avgWindow[4];
+    for (int d = 0; d < 4; d++) { std::set<double> s; std::normal_distribution<double> nd(0, 1); std::exponential_distribution<double> ed(1.0); std::uniform_real_distribution<double> ud(0, 1e6); while (s.size() < 200000) { double v = d == 0 ? ud(rng) : d == 1 ? std::exp(nd(rng)) * 1000 : d == 2 ? ed(rng) * 1000 : (rng() % 4) * 250000 + nd(rng) * 8000; s.insert(std::round(v * 1000) / 1000); }
+        std::vector<double> keys(s.begin(), s.end()); Learned idx(keys, 2048); for (size_t i = 0; i < keys.size(); i++) { const Seg& g = idx.seg[idx.segOf(keys[i])]; assert(std::labs(idx.predict(keys[i]) - (long)i) <= g.eps + 1); }                                      // ② 오차 한계
+        double total = 0; long cnt = 0; for (size_t i = 0; i < keys.size(); i += 5) { long w; assert(idx.contains(keys[i], w)); total += w; cnt++; } for (int q = 0; q < 20000; q++) { double x = std::round(ud(rng) * 1000) / 1000 * (d == 1 ? 0.01 : d == 2 ? 0.004 : 1.0); long w; assert(idx.contains(x, w) == (s.count(x) == 1)); }       // ① 원소 · 비원소
+        avgWindow[d] = total / cnt; }
+    for (int d = 0; d < 4; d++) assert(avgWindow[d] < 400 && std::log2(avgWindow[d]) < std::log2(200000.0) - 5);
+    std::cout << "LearnedSetIndex: exact membership for 200000 keys under four distributions with a guaranteed error window; mean search window in positions (a plain binary search covers 200000 positions = " << std::log2(200000.0) << " steps):"; for (int d = 0; d < 4; d++) std::cout << " " << names[d] << "=" << avgWindow[d] << " (" << std::log2(avgWindow[d]) << " steps)"; std::cout << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회 O(1) 예측 + O(log ε) 구간 이분 탐색
+// Space Complexity: O(세그먼트 수) 모델 (키 배열 제외)
 ```
 ## DynamicConnectivity()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 동적 연결성(dynamic connectivity): 간선이 추가되기도 지워지기도 하는 그래프에서 "u 와 v 가 연결돼 있는가" 에 답한다. 서로소 집합은 합치기만 되고 되돌릴 수 없어 삭제를 못 한다. 질의 시점을 모두 알고 있는 오프라인 문제라면 깔끔한 해법이 있다 — 시간축 위의 세그먼트 트리.
+// 간선 e 가 살아 있는 시간 구간 [l, r) 을 세그먼트 트리의 O(log T) 개 노드에 걸어 두고, 트리를 깊이 우선으로 내려가며 노드에 걸린 간선들을 롤백 가능한 서로소 집합(union by size, 경로 압축 없음, 변경 이력 스택)에 합친다. 잎(= 시각 t)에 도착하면 그 시점에 살아 있는 모든 간선이 반영돼 있으므로 질의에 답하고, 올라올 때 이력을 되돌린다.
+// 비용 O((간선 구간 수) · log T · log n). 검증: 정점 25 개·연산 600 개의 무작위 열(간선 추가/삭제/질의)에서 ① 모든 질의의 답이 그 시점의 간선 집합으로 BFS 한 결과와 같음 ② 롤백 후 서로소 집합이 처음 상태로 완전히 돌아옴 ③ 합치기 횟수가 간선 구간 수 × O(log T) 이하
+struct RollbackDSU { std::vector<int> p, sz; std::vector<std::pair<int, int>> history; long unions = 0; RollbackDSU(int n) : p(n), sz(n, 1) { std::iota(p.begin(), p.end(), 0); } int find(int x) const { while (p[x] != x) x = p[x]; return x; }
+    void unite(int a, int b) { a = find(a); b = find(b); if (a == b) { history.push_back({-1, -1}); return; } if (sz[a] < sz[b]) std::swap(a, b); p[b] = a; sz[a] += sz[b]; history.push_back({b, a}); unions++; }
+    void rollback(size_t to) { while (history.size() > to) { auto [b, a] = history.back(); history.pop_back(); if (b >= 0) { sz[a] -= sz[b]; p[b] = b; } } } };
+struct Query { int t, u, v; };
 int main() {
-    std::cout << "Dynamic Connectivity tests components in changing graphs." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(7); long totalUnions = 0, totalIntervals = 0, queriesAnswered = 0;
+    for (int trial = 0; trial < 60; trial++) { int n = 25, T = 600; std::map<std::pair<int, int>, int> alive; std::vector<std::vector<std::pair<int, int>>> tree(4 * T); std::vector<Query> queries; std::vector<std::set<std::pair<int, int>>> edgesAt(T);
+        std::set<std::pair<int, int>> cur; std::vector<std::vector<std::pair<int, int>>> intervalsToAdd; struct Iv { int l, r, u, v; }; std::vector<Iv> intervals;
+        for (int t = 0; t < T; t++) { int op = rng() % 3; int u = rng() % n, v = rng() % n; if (u > v) std::swap(u, v);
+            if (op == 0 && u != v && !cur.count({u, v})) { cur.insert({u, v}); alive[{u, v}] = t; } else if (op == 1 && cur.count({u, v})) { cur.erase({u, v}); intervals.push_back({alive[{u, v}], t, u, v}); alive.erase({u, v}); } else if (op == 2) queries.push_back({t, u, v}); edgesAt[t] = cur; }
+        for (auto& [e, start] : alive) intervals.push_back({start, T, e.first, e.second});
+        std::function<void(int, int, int, int, int, std::pair<int, int>)> addEdge = [&](int node, int lo, int hi, int l, int r, std::pair<int, int> e) { if (r <= lo || hi <= l) return; if (l <= lo && hi <= r) { tree[node].push_back(e); return; } int mid = (lo + hi) / 2; addEdge(node * 2, lo, mid, l, r, e); addEdge(node * 2 + 1, mid, hi, l, r, e); };
+        for (auto& iv : intervals) addEdge(1, 0, T, iv.l, iv.r, {iv.u, iv.v}); totalIntervals += intervals.size();
+        RollbackDSU dsu(n); std::vector<int> answer(T, -1); std::map<int, Query> byTime; for (auto& q : queries) byTime[q.t] = q;
+        std::function<void(int, int, int)> dfs = [&](int node, int lo, int hi) { size_t mark = dsu.history.size(); for (auto& e : tree[node]) dsu.unite(e.first, e.second); if (hi - lo == 1) { auto it = byTime.find(lo); if (it != byTime.end()) answer[lo] = dsu.find(it->second.u) == dsu.find(it->second.v); } else { int mid = (lo + hi) / 2; dfs(node * 2, lo, mid); dfs(node * 2 + 1, mid, hi); } dsu.rollback(mark); };
+        dfs(1, 0, T); for (int i = 0; i < n; i++) assert(dsu.find(i) == i && dsu.sz[i] == 1);                                                                                                                                                  // ② 롤백 후 처음 상태
+        for (auto& q : queries) { const auto& edges = edgesAt[q.t]; std::vector<std::vector<int>> adj(n); for (auto [a, b] : edges) { adj[a].push_back(b); adj[b].push_back(a); } std::vector<char> seen(n, 0); std::queue<int> bq; bq.push(q.u); seen[q.u] = 1; while (!bq.empty()) { int x = bq.front(); bq.pop(); for (int y : adj[x]) if (!seen[y]) { seen[y] = 1; bq.push(y); } } assert(answer[q.t] == (int)seen[q.v]); queriesAnswered++; }       // ① BFS 와 같음
+        totalUnions += dsu.unions; }
+    assert(queriesAnswered > 5000 && totalUnions <= totalIntervals * 14);
+    std::cout << "DynamicConnectivity: " << queriesAnswered << " connectivity queries on 60 random add/remove/query sequences all equal a BFS on the edge set of that moment; rollback restored the union-find after every run; " << totalUnions << " unions were performed for " << totalIntervals << " edge lifetimes (about log T unions each)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(m log T log n) (m: 간선 구간 수)
+// Space Complexity: O(m log T) (시간 트리에 걸린 간선) + O(n) 서로소 집합
 ```
 
 # 부록
