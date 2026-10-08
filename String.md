@@ -1339,6 +1339,60 @@ int main() {
 // Time Complexity: 구성 O(n log σ), 질의 O(m log σ)
 // Space Complexity: O(n)
 ```
+## FMIndex()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <array>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
+#include <cassert>
+
+// FM-인덱스(Ferragina–Manzini 2000): 접미사 배열과 BWT 를 합친 "자기 색인(self-index)". 원문 T 를 버리고도 ① 패턴 개수 세기 ② 출현 위치 찾기 ③ 원문 복원이 모두 되며, BWT 가 압축에 잘 맞아 원문보다 작게 저장된다.
+// 재료: BWT 문자열 L (SA 순서로 각 접미사의 바로 앞 글자), C[c] = 원문에서 c 보다 작은 글자의 수, Occ(c, i) = L[0..i) 안의 c 의 개수.  LF 사상 LF(i) = C[L[i]] + Occ(L[i], i) 는 "행 i 의 접미사 앞에 글자를 붙인 접미사의 행".
+// 역방향 탐색(backward search): 패턴을 끝에서부터 한 글자씩 붙여 가며 SA 구간 [lo, hi) 를 lo = C[c] + Occ(c, lo), hi = C[c] + Occ(c, hi) 로 줄인다 — 구간 크기가 곧 출현 횟수이고 시간은 |P| 에만 비례(원문 길이 무관).
+// 위치(locate): SA 값을 s 칸마다 표본으로 저장하고, 표본이 아닌 행은 LF 를 따라 한 칸씩 이동(걸음 수 t)하다가 표본 행을 만나면 SA[i] = 표본 + t.  Occ 는 32 칸마다 체크포인트를 두고 나머지는 직접 센다(공간-시간 균형)
+struct FM {
+    std::string L; int n; static const int CP = 32, S = 16; std::array<int, 256> C{}; std::vector<std::array<int, 256>> cp; std::vector<uint64_t> mark; std::vector<int> markRank, sample;
+    explicit FM(const std::string& text) {                                  // text 는 마지막에 유일한 가장 작은 문자 '$' 가 붙어 있어야 한다
+        n = text.size(); std::vector<int> sa(n); std::iota(sa.begin(), sa.end(), 0); std::sort(sa.begin(), sa.end(), [&](int a, int b) { return text.compare(a, n, text, b, n) < 0; });
+        L.resize(n); for (int i = 0; i < n; i++) L[i] = text[(sa[i] + n - 1) % n];
+        std::array<int, 256> cnt{}; for (unsigned char ch : text) cnt[ch]++; int acc = 0; for (int c = 0; c < 256; c++) { C[c] = acc; acc += cnt[c]; }
+        std::array<int, 256> run{}; for (int i = 0; i < n; i++) { if (i % CP == 0) cp.push_back(run); run[(unsigned char)L[i]]++; } cp.push_back(run);
+        mark.assign((n + 63) / 64 + 1, 0); markRank.assign(mark.size() + 1, 0);
+        for (int i = 0; i < n; i++) if (sa[i] % S == 0) { mark[i / 64] |= 1ULL << (i % 64); sample.push_back(sa[i]); }
+        for (size_t w = 0; w < mark.size(); w++) markRank[w + 1] = markRank[w] + __builtin_popcountll(mark[w]);
+    }
+    int occ(unsigned char c, int i) const { int b = i / CP, r = cp[b][c]; for (int j = b * CP; j < i; j++) r += (unsigned char)L[j] == c; return r; }
+    int lf(int i) const { unsigned char c = L[i]; return C[c] + occ(c, i); }
+    std::pair<int, int> range(const std::string& P) const {                // 역방향 탐색
+        int lo = 0, hi = n; for (int k = (int)P.size() - 1; k >= 0 && lo < hi; k--) { unsigned char c = P[k]; lo = C[c] + occ(c, lo); hi = C[c] + occ(c, hi); } return {lo, std::max(lo, hi)};
+    }
+    int count(const std::string& P) const { auto r = range(P); return r.second - r.first; }
+    bool marked(int i) const { return (mark[i / 64] >> (i % 64)) & 1; }
+    int locate(int i) const { int t = 0; while (!marked(i)) { i = lf(i); t++; } int r = markRank[i / 64] + __builtin_popcountll(mark[i / 64] & ((1ULL << (i % 64)) - 1)); return (sample[r] + t) % n; }
+    std::string invert() const { std::string t(n, 0); int i = 0; for (int k = n - 1; k >= 0; k--) { t[k] = L[i]; i = lf(i); } std::rotate(t.begin(), t.begin() + 1, t.end()); return t; }      // 행 0 은 접미사 "$": 거꾸로 따라가며 원문을 복원
+    double bits() const { std::array<bool, 256> used{}; for (unsigned char ch : L) used[ch] = true; int sigma = 0; for (bool u : used) sigma += u;
+        int lg = 1; while ((1 << lg) < sigma) lg++; return (double)n * lg + cp.size() * (double)sigma * 32 + sample.size() * 32.0 + n; }       // BWT 를 글자당 ⌈log2 σ⌉ 비트로 묶고 + Occ 체크포인트(σ 개 카운터) + SA 표본 + 표시 비트
+};
+int main() {
+    std::mt19937 g(1); int n = 20000; std::string T; for (int i = 0; i < n - 1; i++) T += "ACGT"[g() % 4]; T += '$';
+    FM fm(T); assert(fm.invert() == T);                                    // 원문 없이 BWT 만으로 원문 복원
+    for (int t = 0; t < 500; t++) {
+        std::string P; if (t % 2) { int len = 1 + g() % 10, st = g() % (n - len - 1); P = T.substr(st, len); } else { int len = 1 + g() % 9; for (int i = 0; i < len; i++) P += "ACGT"[g() % 4]; }
+        std::vector<int> want; for (size_t p = T.find(P); p != std::string::npos; p = T.find(P, p + 1)) want.push_back(p);
+        assert(fm.count(P) == (int)want.size()); auto r = fm.range(P); std::vector<int> got; for (int i = r.first; i < r.second; i++) got.push_back(fm.locate(i)); std::sort(got.begin(), got.end()); assert(got == want);
+    }
+    std::string W = "the quick brown fox jumps over the lazy dog and the quiet cat sleeps by the door"; std::string big; for (int i = 0; i < 40; i++) big += W; big += '\x01';       // 공백(0x20)이 '$' 보다 작으므로 영어 문장에는 더 작은 종결 문자를 쓴다
+    FM text(big); assert(text.count("the ") == 40 * 4 && text.count("quick") == 40 && text.count("zebra") == 0 && text.invert() == big);
+    std::cout << "FMIndex: count/locate/invert verified; " << fm.bits() / n << " bits per char for a 4-letter text (plain text 8 + plain suffix array 32 = 40)" << std::endl; return 0;
+}
+// Time Complexity: count O(|P|·Occ 비용), locate O(s·Occ 비용), 구성 O(n log n) (이 구현의 정렬 기반)
+// Space Complexity: BWT n 문자 + Occ 체크포인트 + SA 표본 n/s 개 (BWT 를 압축하면 n H_k 비트)
+```
 ## PalindromicTree()
 ### 대표코드
 ```cpp
