@@ -1,12 +1,14 @@
-﻿# Data Structure Project 2: Next Iterations Plan (3차 개정판)
+﻿# Data Structure Project 2: Next Iterations Plan (4차 개정판)
 
 이 계획서는 2차 개정판을 **2026-10-08 기준 저장소 실측**(커밋 `2b166e7`)으로 갱신한 것입니다. 2차 개정판의 체크리스트 중 이미 처리된 것은 완료로 옮기고, 이번 점검에서 새로 발견된 문제(파일 손상, 번호 중복, 자리표시 코드 비율)와 추가 후보를 반영했습니다.
 
 표기 규칙: **[실측]** = 파일을 직접 대조해 확인한 사실, **[판단]** = 실측을 바탕으로 한 작성자(AI)의 권고, **[확정]** = 사용자가 답했거나 판단을 위임해 채택된 결정(섹션 3 참조).
 
+> 2026-10-08 4차 개정: 작업 진행 중 실측한 품질 지표를 바탕으로 **Phase E(완성도 향상)** 를 추가했습니다. 진행 현황 스냅샷은 Phase E-0을 보세요.
+
 > 2026-10-08 갱신: 사용자 답변(Set.md 정상본 없음 / 원본 목차 모름 / Phase C는 Tier 2까지 / `process.py`·중복 구현 정책은 작성자 판단 위임)을 반영했습니다.
 
-우선순위: **Phase 0 (손상 복구) → Phase A (누락 복구) → Phase B (자리표시 코드 실구현) → Phase C (추가 후보) → Phase D (품질/문서화)**
+우선순위: **Phase 0 (손상 복구) → Phase A (누락 복구) → Phase B (자리표시 코드 실구현) → Phase C (추가 후보) → Phase D (품질/문서화) → Phase E (완성도 향상)**
 
 ---
 
@@ -327,6 +329,121 @@
 - [ ] 양쪽 모두 실구현인 11개 중복(섹션 3)의 코드가 서로 어긋나지 않는지 비교
 - [ ] `audit_result.txt` 삭제 또는 "과거 스냅샷" 표기
 
+## 🌟 Phase E: 완성도 향상 (4차 개정에서 신규) [실측 + 판단]
+
+Phase B가 "자리표시를 없애는" 일이라면, Phase E는 "남은 코드가 **책의 목적(구조 해설)에 맞게 깊고, 깨끗하고, 어디서나 돌고, 서로 일관된가**"를 끌어올리는 일입니다. 아래 수치는 이번 세션에서 직접 잰 값입니다.
+
+### E-0. 현재 품질 스냅샷 [실측, 2026-10-08]
+
+| 지표 | 값 | 해석 |
+|------|----|------|
+| 컴파일·실행 통과 | 자리표시를 제외한 모든 블록 통과 (`audit --compile`) | 기준선 확보 |
+| 자리표시 0개인 책 | Hash, String, Memory, Tree (Tree 121항목) | ADS는 41/116, PathFinding 13/102, Set 43/103 등이 실구현 |
+| 위생 프로브 (`-Wall -Wextra` + ASan/UBSan/LSan, Tree·Hash·String·Memory 375블록) | UB·ASan 오류 0 (Memory의 의도적 메모리 실험 5개 제외), **누수 51 (Tree 49, Memory 2)**, **경고 42건/24블록** (`misleading-indentation` 13, `sign-compare` 3, `missing-field-initializers` 3 …) | 새로 쓴 코드는 깨끗하고, 문제는 **원본 블록**에 집중 |
+| 실행 시간 | 위 375블록 합계 약 99초(병렬 전). ASan 하에서 `ConcurrentGC` 60초 초과, `SequentialConsistency` 14초 | 시간 예산 규칙 필요 |
+| 깊이(원본 블록) | **STL 래퍼 추정 151개**: List 40, Set 36, Queue 30, Graph 18, Stack 13, PathFinding 8 … (`std::stack`을 쓰고 `push/top`만 호출하는 식) | "구조 해설" 책인데 구조를 구현하지 않고 STL 사용법만 보여 주는 항목 |
+| 이식성 | `__builtin_*` 22곳, `M_PI` 2, `__int128` 1, POSIX 헤더(`sys/`·`unistd`) Memory 27곳(대부분 `#if` 가드), 스레드 19곳 | GCC/Clang 가정. 사용자 PC는 Windows(경로 `C:\Users\...`)라 MSVC 여부가 열린 항목 |
+| 결정성 | `random_device`·`rand`·`time` 시드 0건 | 좋음. 스레드 코드는 반복 실행 검사 필요 |
+| 동명 항목 | 둘 이상의 파일에 실구현이 있는 이름 55개 (일반 연산 `Clear/Size/IsEmpty` 등 제외 시 약 35개) | 링크형 요약이 정본과 어긋나지 않는지 기계 검사 필요 |
+| 저장소 인프라 | CI 없음, LICENSE·`.gitignore` 없음, `audit_result.txt`는 낡은 수동 스냅샷 | E-5, E-11 |
+
+### E-1. 위생 패스: 경고 0, 새니타이저 통과 [우선순위 높음]
+- [ ] `tools/audit.py`에 `--strict` 추가: `-Wall -Wextra`로 컴파일해 경고를 실패로 취급, `--san`: `-fsanitize=address,undefined`(+LeakSanitizer)로 실행. 결과는 기존 해시 캐시에 모드별로 저장.
+- [ ] 누수 51개(대부분 `new` 후 `delete` 없음)를 **트리 해제 함수 또는 `unique_ptr`** 로 정리. 새로 쓰는 코드는 처음부터 해제까지 포함(이미 그렇게 작성 중).
+- [ ] 경고 24블록 수정(`misleading-indentation`은 원본 한 줄 `if (...) a; b;` 패턴이라 줄바꿈만으로 해결).
+- [ ] 메모리 레이아웃을 일부러 들여다보는 Memory 항목(`new()`, `TextSegment`, `StackOverflow`, `MemoryLeak`, `ProcessMemory`)은 새니타이저 하에서 의미가 달라지므로 코드 주석에 `// audit: no-sanitize` 표식을 두고 `--san`에서 제외. `ConcurrentGC`는 일반 실행 시간을 재 보고 필요하면 반복 횟수를 줄임.
+- 완료 기준: `audit --strict --san` 전 책 0 실패 (표식 제외 항목은 목록으로 공개).
+
+### E-2. 깊이 보강: STL 래퍼 → 직접 구현 [우선순위 높음, 이번 라운드의 가장 큰 품질 격차]
+- 문제: 예를 들어 Stack.md `Peek()`는 `std::stack<int> s; s.push(30); s.top()` 뿐이고, List.md `Reverse()`는 `std::list::reverse()` 호출뿐입니다. 책의 목적이 "구조를 눈으로 이해하는 자료구조"이므로 이런 블록은 **구조를 하나도 보여 주지 못합니다.**
+- 정책 [판단]: 래퍼 블록은 **직접 구현한 최소 구조 + 경계 사례(빈 구조·언더플로·용량·중복) 검사 + 같은 연산을 `std::`로 수행한 결과와의 차분 검사(differential test)** 로 교체한다. STL 호출은 "실무에서는 이렇게" 한 줄로만 남긴다.
+- 적용 순서(규모 순): Queue 30 → List 40 → Set 36 → Stack 13 → Graph 18 → PathFinding 8. **아직 자리표시인 항목(List 22, Set 59, Queue 4, PathFinding 89)은 처음부터 이 정책으로 직접 구현**해 이중 작업을 피한다.
+- 래퍼 판별 휴리스틱(`struct/class` 없음 + 22줄 이하 + STL 컨테이너 사용)을 `tools/audit.py --list-thin`로 노출해 진행률을 추적.
+- 완료 기준: 판별 휴리스틱에 걸리는 블록 0개(의도적으로 STL 사용법을 보이는 "STL 대응" 항목은 `// audit: stl-demo` 표식).
+
+### E-3. 이식성 [판단]
+- [ ] `tools/audit.py --portable`: `clang++ -std=c++17`와 `g++ -std=c++20 -pedantic` 컴파일을 추가로 시도해 비교(실행은 g++ 기준으로 충분).
+- [ ] GCC 전용 구성요소(`__builtin_popcountll/clzll/ctzll`, `__int128`, `M_PI`, `cbrtl`)를 목록화하고, 이식성 표를 INDEX에 자동 생성. 새 코드에서는 `std::bitset::count`, `<cmath>`의 상수 정의 등 표준 대안이 있는 경우 우선 사용.
+- [ ] POSIX 전용(Memory)은 가드가 모두 있는지 기계 확인(가드 밖의 `sys/`·`unistd.h`·`fork`·`mmap`을 찾는 검사).
+- 결정 필요(열린 항목 3): **MSVC 지원 범위.** 기본안: GCC/Clang(Windows에서는 MinGW-w64/WSL) 지원을 명시하고, MSVC에서 안 되는 항목은 목록으로 공개.
+
+### E-4. 결정성 · 시간 예산 · 플레이키 검사 [판단]
+- [ ] 블록당 실행 시간 상한 10초(현행) 유지 + `--time` 보고에서 3초 초과 블록 목록화 → 반복 횟수 조정.
+- [ ] `audit --repeat N`: 스레드를 쓰는 블록(Memory 17, Hash 2)을 N회 반복 실행해 간헐 실패(레이스·타이밍 의존 단언) 탐지. 타이밍 단언은 금지하고 횟수·불변식 단언만 허용.
+- [ ] 난수는 모두 고정 시드(현재 위반 0건)임을 린트 항목으로 고정.
+
+### E-5. CI와 도구 [판단]
+- [ ] `.github/workflows/audit.yml`: ubuntu-latest, g++ 설치 상태에서 `python3 -I tools/audit.py --compile --strict`(PR·push), 주 1회 `--san --portable --repeat 3` 스케줄. 해시 캐시를 `actions/cache`로 보존해 변경된 블록만 다시 컴파일.
+- [ ] 도구 자체 테스트: `tools/test_tools.py`(mdedit의 각 지시어 왕복, audit의 파서·플레이스홀더 판정)로 도구가 책 파일을 망가뜨리지 않음을 보장.
+- [ ] 생성 문서의 최신성 검사(E-7)를 같은 워크플로에 포함: 책을 고치고 `INDEX.md`를 갱신하지 않으면 실패.
+
+### E-6. 링크·중복 무결성 `tools/linkcheck.py` [판단]
+- [ ] 링크형 항목의 `정본은 X.md Part N` 주석을 모두 파싱해 **대상 파일·Part·동명 항목이 실제로 존재하는지** 검사(현재 `where.py`가 수동 조회용).
+- [ ] 섹션 3의 정본 표를 데이터 파일(`tools/canonical.json`)로 옮겨, 비정본 위치에 있는 항목이 링크 주석을 갖추었는지 역방향 검사.
+- [ ] 동명 실구현 55개 중 일반 연산을 제외한 쌍은 `canonical.json`의 `allow-both`(양쪽 모두 실구현 허용: 예 Dijkstra Graph/PathFinding) 또는 `link`로 분류되도록 강제. 분류되지 않은 쌍이 있으면 실패.
+- [ ] 양쪽 실구현 쌍은 **같은 테스트 벡터**를 쓰도록 하고(예: Dijkstra 두 구현이 같은 그래프에서 같은 거리), 서로 다른 결과가 나오는지 `tools/drift.py`가 두 블록을 컴파일해 출력의 `assert`가 아닌 **표준 출력 한 줄**로 비교.
+
+### E-7. 생성 문서: 색인과 복잡도 치트시트 [판단]
+- [ ] `tools/gen_index.py` → `INDEX.md`: 책별 Part 제목과 항목 목록(`##`), 항목 수, 정본/링크형 구분, 이식성 표시, 이 책에 속한 "동명 항목의 정본 위치". 종이책 목차의 기반이 된다.
+- [ ] 같은 스크립트가 각 블록 끝의 `// Time/Space Complexity` 주석을 모아 `COMPLEXITY.md`(자료구조·연산별 복잡도 표)를 생성.
+- [ ] README 상단에 짧은 "현황" 블록(책 11권, 항목 수, 자리표시 0, 검증 날짜)을 스크립트가 갱신. README의 기존 철학·특색 메모는 건드리지 않는다.
+
+### E-8. 복잡도 정확성 린트 [판단]
+- 배경: 자리표시에서 복사된 `O(1)` 템플릿과 원본 블록의 값이 실제와 다를 수 있다.
+- [ ] `tools/complexity_lint.py` 휴리스틱: 코드에 이중 반복문·재귀·정렬이 있는데 `Time: O(1)`이면 경고, `std::sort`가 있는데 `O(N)`이면 경고, 공간이 `O(1)`인데 컨테이너를 N개 채우면 경고 → 경고 목록을 사람이 검토해 수정(자동 수정 금지).
+- [ ] 새로 쓴 항목은 이미 구현 기준으로 적었으므로 우선 원본 블록 약 300개가 대상.
+
+### E-9. 시각화 패스: 이 시리즈의 정체성 [판단]
+- 근거: README의 "구조를 눈으로 이해한다"는 방향. 이미 Hash(시각화 10편)·Memory(레이아웃 출력)는 갖췄지만 Tree·Graph·List·Stack·Queue·PathFinding·Set은 거의 숫자 단언뿐입니다.
+- [ ] 대표 항목 약 40개에 **ASCII 렌더러**를 붙여 단계별 상태를 출력하고, 출력 문자열을 **골든 단언**(`assert(out == "...")`)으로 고정: AVL/레드-블랙 회전 전후, 힙 배열↔트리 대응, B-트리 분할, 스킵 리스트 레벨, 연결 리스트 역방향 회전 단계, 유니온-파인드 숲, BFS 층, A* 격자 경로, 해시 체이닝 버킷 등.
+- [ ] 출력은 결정적이어야 하고(시드 고정, 포인터 값 금지) 폭 80열 이내.
+- [ ] (선택) 마크다운 Mermaid 그림은 해설 본문 몫이므로 이 저장소에서는 만들지 않는다 — README가 `###` 해설을 사람이 쓰도록 정해 둠.
+
+### E-10. Tier 3 추가 후보 (선택, Phase B~E 완료 후 예산이 남을 때) [판단]
+채택 기준(Phase C와 동일): ① 실무·교재에서 널리 쓰임 ② 기존 Part에 자연스럽게 들어감 ③ 정확성을 단언으로 검증 가능. 작성 직전에 `tools/where.py`로 중복을 확인한다(예: Tarjan·Kosaraju·HopcroftKarp는 이미 Graph에 있음).
+
+| 후보 | 들어갈 곳 | 이유 |
+|------|-----------|------|
+| HAMT(해시 배열 매핑 트라이), RRB-Vector | ADS Part 1 | Clojure·Scala 영속 컬렉션의 핵심 |
+| Roaring Bitmap 상세, Bitmap Index | Set Part 16 → ADS Part 2 | 검색엔진·OLAP |
+| Misra–Gries, Space-Saving, Count Sketch, Reservoir Sampling | ADS Part 3 | 스트림 알고리즘 필수 |
+| 계층형 Timing Wheel, Radix Heap, Dial(버킷 큐), Calendar Queue | Queue Part 5·11 / Graph | 타이머·최단경로 가속 |
+| Chase–Lev 덱, LMAX Disruptor 링 버퍼, RCU, Seqlock, Epoch 기반 회수 | ADS Part 9 / Memory Part 11 | 동시성 실무 |
+| Bw-Tree, Masstree, CSB+Tree, Merkle Patricia Trie | ADS Part 8·10·15 | DB·블록체인 |
+| Euler Tour Tree, 동적 연결성(오프라인) | Graph / Tree Part 15 | 동적 그래프 |
+| Sqrt Tree, Disjoint Sparse Table | ADS Part 6 | 정적 RMQ 변형 |
+| DCEL(반변), Quad-Edge | ADS Part 5 | 계산기하 |
+| Skew Heap, Interval Heap, Tournament/Loser Tree | Tree Part 8 | 힙 변형·외부 정렬 |
+| BiMap, Multiset/Multimap 직접 구현 | Set / Hash | 컨테이너 의미론 |
+
+### E-11. 저장소 위생 [판단]
+- [ ] `.gitignore`(`*.out`, `a.out`, `__pycache__/`), `tools/README.md`(DSL·감사 사용법), `audit_result.txt`는 삭제하고 `audit` 결과를 `reports/` 대신 CI 아티팩트로 대체.
+- [ ] LICENSE는 **사용자가 정할 일**이므로 임의로 추가하지 않는다(열린 항목 2).
+- [ ] 헤딩 규칙 유지 검사: Part=`# `, 항목=`## `, 첫 `###`=`대표코드`, 언어=C++ (이미 `audit.py`가 검사).
+
+### E-12. 최종 인수 검사 체크리스트
+1. `python3 -I tools/audit.py --compile --strict --san --portable` 전 책 통과, 자리표시 0, 래퍼 0(표식 제외), 누수 0.
+2. `tools/linkcheck.py`, `tools/drift.py`, `tools/complexity_lint.py` 경고 0 또는 승인된 예외 목록만.
+3. `INDEX.md`·`COMPLEXITY.md`·README 현황이 최신(CI 통과).
+4. 무작위 표본(책당 15항목)을 사람이 읽듯 검토: 한국어 주석이 코드와 일치하는지, 주장(복잡도·확률·재현율)이 단언 또는 출력으로 뒷받침되는지.
+5. 알려진 한계 목록(단순화한 구현: 예 TangoTree의 보조 트리, Soft Heap 제외 등)을 `NextPhasePlan.md`에 정직하게 기록.
+
+### E-13. 권장 순서와 규모 [판단]
+```
+(진행 중) ADS 나머지 → PathFinding → Set/Graph/List/Queue/Stack   ← 자리표시는 E-2 정책(직접 구현+차분 검사)으로 작성
+ → Phase C 잔여(Set Dancing Links)
+ → E-1 위생 → E-3 이식성 → E-4 결정성 → E-6 링크·드리프트 → E-8 복잡도 린트
+ → E-2 남은 원본 래퍼 보강 (Queue → List → Set → Stack → Graph → PathFinding)
+ → E-9 시각화 패스
+ → E-5 CI·도구 테스트 → E-7 생성 문서 → E-11 위생
+ → Phase D 마감(README 색인은 E-7로 대체)
+ → E-10 Tier 3 (예산 잔여 시)
+ → E-12 최종 인수 검사 + 계획서 최종 갱신
+```
+대략적 규모(토큰 기준): 자리표시 구현 약 2.5M, E-2 약 0.6M, E-1·3·4·6·8 약 0.5M, E-9 약 0.3M, 도구·CI·문서 약 0.3M, E-10 약 0.5~1M. 남은 예산 안에 들어가며, 순서상 뒤쪽(E-10)이 먼저 잘린다.
+
+---
+
 ---
 
 ## 📋 남은 열린 항목
@@ -335,6 +452,10 @@
 
 1. **제안 목차의 검토**: 원본 목차를 모르므로 A-3(Hash), A-4(String), A-5(Memory)의 [판단] 표시 Part는 작업하면서 읽어보고 조정. 원본 `*(2).md`가 발견되면 그 기준으로 교체.
 2. **Set.md 추정 복원 제목**: Phase 0-1의 Part 제목은 역변환으로 추정한 것이므로, 복구 후 한 번 확인.
+3. **MSVC 지원 범위 (Phase E-3)**: 기본안은 GCC/Clang(Windows는 MinGW-w64/WSL)이며 MSVC 비호환 항목은 목록 공개. MSVC까지 지원하려면 `__builtin_*`·`M_PI`·`__int128` 대체 코드를 항목마다 넣어야 해 코드가 길어집니다.
+4. **LICENSE**: 저장소 소유자가 정할 일이라 추가하지 않았습니다.
+5. **파이썬 대응 코드**: README의 최종 책 형태에 "파이썬 들여쓰기 부분을 포함하는 마무리 설명"이 있으나 이는 사람이 쓰는 해설 몫(`###`)으로 보고 자동으로 채우지 않습니다. 필요하면 핵심 항목 약 60개에 검증 가능한 ```python 블록을 추가할 수 있습니다(기본: 하지 않음).
+6. **Part 제목 언어**: ADS Part 1·2·5~15 일부가 영어 제목, 나머지는 한글입니다. 기본: 현상 유지(번역은 INDEX에서만 병기).
 
 ---
 
@@ -350,6 +471,7 @@ Phase 0 (Set.md 재작성, Tree BOM, Part 번호 정리; process.py 처리는 �
  → B-2 Memory → B-3 AdvancedDS → B-4 PathFinding → B-5 Set → B-6 Tree → B-7 Graph/List/Queue
  → Phase C Tier 1 → Tier 2 (같은 Part에 들어가는 항목은 묶어서)
  → Phase D
+ → Phase E (세부 순서는 E-13)
 ```
 
 순서의 근거:
