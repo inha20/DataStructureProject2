@@ -2682,86 +2682,205 @@ int main() {
 ## LockFreeQueue()
 ### 대표코드
 ```cpp
+#include <atomic>
 #include <iostream>
+#include <numeric>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 락프리 큐(큐 관점의 요약, 정본은 Queue.md Part 10): Michael–Scott 큐. 더미 노드로 시작해 head 는 "마지막으로 꺼낸 노드", tail 은 "끝 근처" 를 가리킨다.
+// enqueue 는 tail 의 next 를 CAS 로 잇고 tail 을 밀며(다른 스레드가 밀다 만 것도 도와 준다 = helping), dequeue 는 head 를 CAS 로 전진시킨다. 잠금이 없어 한 스레드가 멈춰도 나머지가 진행한다.
+// (이 요약판은 꺼낸 노드를 회수하지 않는다 — 안전한 회수는 HazardPointer 항목)
+struct Node { int v; std::atomic<Node*> next{nullptr}; };
+struct Q {
+    std::atomic<Node*> head, tail; Q() { Node* d = new Node{0}; head = tail = d; }
+    void enq(int v) { Node* n = new Node{v}; for (;;) { Node* t = tail.load(); Node* nx = t->next.load(); if (t != tail.load()) continue;
+        if (!nx) { if (t->next.compare_exchange_weak(nx, n)) { tail.compare_exchange_strong(t, n); return; } } else tail.compare_exchange_strong(t, nx); } }
+    bool deq(int& out) { for (;;) { Node* h = head.load(); Node* t = tail.load(); Node* nx = h->next.load(); if (h != head.load()) continue;
+        if (!nx) return false; if (h == t) { tail.compare_exchange_strong(t, nx); continue; } out = nx->v; if (head.compare_exchange_weak(h, nx)) return true; } }
+};
 int main() {
-    std::cout << "Lock-Free Queue relies on CAS loops rather than mutexes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    Q q; std::atomic<long> sum{0}; std::atomic<int> got{0}; const int P = 3, C = 3, N = 20000;
+    std::vector<std::thread> th;
+    for (int p = 0; p < P; p++) th.emplace_back([&, p] { for (int i = 1; i <= N; i++) q.enq(p * N + i); });
+    for (int c = 0; c < C; c++) th.emplace_back([&] { int v; while (got.load() < P * N) if (q.deq(v)) { sum += v; got++; } });
+    for (auto& t : th) t.join();
+    long expect = 0; for (int p = 0; p < P; p++) for (int i = 1; i <= N; i++) expect += p * N + i;
+    assert(sum == expect && got == P * N);                                  // 모든 원소가 정확히 한 번씩 나왔다
+    std::cout << "LockFreeQueue: " << got << " items through " << P << " producers / " << C << " consumers" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: enq·deq 분할상환 O(1) (경쟁이 없을 때), 락프리
+// Space Complexity: O(N)
 ```
 ## LockFreeStack()
 ### 대표코드
 ```cpp
+#include <atomic>
 #include <iostream>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 락프리 스택(스택 관점의 요약, 정본은 Stack.md Part 9): Treiber 스택. top 포인터 하나를 CAS 로 바꾼다 — push 는 "새 노드의 next 를 현재 top 으로 두고 top 을 새 노드로", pop 은 "top 을 top->next 로".
+// 주의: pop 중 다른 스레드가 같은 주소의 노드를 해제·재할당·재삽입하면 CAS 가 성공해 버리는 ABA 문제가 있다 -> 노드를 안전하게 회수하는 HazardPointer 항목과 짝으로 읽는다 (여기서는 회수하지 않음)
+struct Node { int v; Node* next; };
+std::atomic<Node*> top{nullptr};
+void push(int v) { Node* n = new Node{v, top.load()}; while (!top.compare_exchange_weak(n->next, n)); }
+bool pop(int& v) { Node* t = top.load(); while (t && !top.compare_exchange_weak(t, t->next)); if (!t) return false; v = t->v; return true; }
 int main() {
-    std::cout << "Lock-Free Stack pushes/pops via CAS on the Top pointer." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int T = 4, N = 20000; std::vector<std::thread> th; std::atomic<long> pushed{0}, popped{0};
+    for (int t = 0; t < T; t++) th.emplace_back([&, t] { for (int i = 1; i <= N; i++) { push(t * N + i); pushed += t * N + i; } });
+    for (auto& x : th) x.join(); th.clear();
+    for (int t = 0; t < T; t++) th.emplace_back([&] { int v; while (pop(v)) popped += v; });
+    for (auto& x : th) x.join();
+    assert(pushed == popped && pushed > 0);
+    std::cout << "LockFreeStack: pushed sum == popped sum = " << popped << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: push·pop 분할상환 O(1) (락프리)
+// Space Complexity: O(N)
 ```
 ## ConcurrentHashMap()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 #include <cassert>
 
+// 동시 해시 맵(해시 관점의 요약, 정본은 Hash.md Part 12): 하나의 큰 잠금 대신 키의 해시로 고른 "조각(shard)" 마다 잠금을 따로 두면(lock striping) 서로 다른 조각을 쓰는 스레드끼리는 부딪히지 않는다.
+// Java 의 ConcurrentHashMap, Go 의 sync.Map 샤딩 구현이 이 아이디어 위에 있다
+struct CMap {
+    static const int S = 16; struct Shard { std::mutex m; std::unordered_map<std::string, int> map; } shard[S];
+    Shard& pick(const std::string& k) { return shard[std::hash<std::string>{}(k) % S]; }
+    void add(const std::string& k, int d) { Shard& s = pick(k); std::lock_guard<std::mutex> g(s.m); s.map[k] += d; }
+    int get(const std::string& k) { Shard& s = pick(k); std::lock_guard<std::mutex> g(s.m); auto it = s.map.find(k); return it == s.map.end() ? 0 : it->second; }
+};
 int main() {
-    std::cout << "Concurrent HashMap uses lock striping across multiple segments." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    CMap m; std::vector<std::thread> th;
+    for (int t = 0; t < 4; t++) th.emplace_back([&] { for (int i = 0; i < 20000; i++) m.add("k" + std::to_string(i % 100), 1); });
+    for (auto& x : th) x.join();
+    for (int i = 0; i < 100; i++) assert(m.get("k" + std::to_string(i)) == 4 * 200);          // 갱신 손실 없음
+    std::cout << "ConcurrentHashMap: 80000 concurrent increments, none lost" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 평균 O(1) + 조각 잠금 경쟁
+// Space Complexity: O(N)
 ```
 ## SkipListSet()
 ### 대표코드
 ```cpp
+#include <climits>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 스킵 리스트 집합(집합 관점의 요약, 정본은 List.md Part 10): 정렬된 연결 리스트 위에 "급행 차선"을 확률적으로 쌓는다. 노드의 높이는 동전 던지기(1/2 확률로 한 층 위로)로 정해 기대 O(log N) 탐색.
+// 잠금 없는 구현(ConcurrentSkipListSet)이 쉬운 이유: 균형을 회전이 아니라 확률로 얻어서, 삽입이 아래층부터 CAS 로 링크를 이으면 되기 때문
+struct N { int k; std::vector<N*> nx; };
+struct SkipSet {
+    N* head = new N{INT_MIN, std::vector<N*>(16, nullptr)}; int lvl = 1; std::mt19937 g{1};
+    bool has(int k) const { N* x = head; for (int i = lvl - 1; i >= 0; i--) while (x->nx[i] && x->nx[i]->k < k) x = x->nx[i]; x = x->nx[0]; return x && x->k == k; }
+    bool add(int k) { N* up[16]; N* x = head; for (int i = lvl - 1; i >= 0; i--) { while (x->nx[i] && x->nx[i]->k < k) x = x->nx[i]; up[i] = x; }
+        if (x->nx[0] && x->nx[0]->k == k) return false; int h = 1; while (h < 16 && (g() & 1)) h++;
+        if (h > lvl) { for (int i = lvl; i < h; i++) up[i] = head; lvl = h; } N* n = new N{k, std::vector<N*>(h)};
+        for (int i = 0; i < h; i++) { n->nx[i] = up[i]->nx[i]; up[i]->nx[i] = n; } return true; }
+};
 int main() {
-    std::cout << "Skip List Set is widely used for concurrent sorted sets due to simple pointer updates." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    SkipSet s; std::set<int> ref; std::mt19937 g(2);
+    for (int i = 0; i < 20000; i++) { int k = g() % 5000; assert(s.add(k) == ref.insert(k).second); }
+    for (int k = 0; k < 5000; k++) assert(s.has(k) == (ref.count(k) > 0));
+    std::cout << "SkipListSet: " << ref.size() << " keys, " << s.lvl << " levels" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 탐색·삽입 기대 O(log N)
+// Space Complexity: 기대 O(N) (노드당 평균 2 개의 포인터)
 ```
 ## CompareAndSwap()
 ### 대표코드
 ```cpp
+#include <atomic>
 #include <iostream>
+#include <thread>
+#include <vector>
 #include <cassert>
 
+// 비교-교환(CAS, 메모리 관점의 요약, 정본은 Memory.md Part 11): "값이 기대한 것과 같을 때만 새 값으로 바꾸고 성공 여부를 돌려준다" 를 한 번의 원자적 명령으로 수행한다. 모든 락프리 구조의 기본 블록이다.
+// 실패하면 현재 값이 expected 에 되돌려 담기므로 "읽기 -> 계산 -> CAS, 실패 시 반복" 루프를 만든다. 아래는 CAS 루프로 만든 원자적 최댓값 갱신
+std::atomic<int> best{0};
+void updateMax(int v) { int cur = best.load(); while (v > cur && !best.compare_exchange_weak(cur, v)); }
 int main() {
-    std::cout << "Compare-And-Swap (CAS) is the hardware primitive for lock-free data structures." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::vector<std::thread> th; for (int t = 0; t < 4; t++) th.emplace_back([t] { for (int i = 0; i < 10000; i++) updateMax(t * 10000 + i); });
+    for (auto& x : th) x.join();
+    assert(best == 39999);
+    std::cout << "CompareAndSwap: concurrent max = " << best << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 경쟁이 없으면 O(1), 경쟁 시 재시도 횟수만큼
 // Space Complexity: O(1)
 ```
 ## HazardPointer()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <atomic>
 #include <iostream>
+#include <mutex>
+#include <thread>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Hazard Pointers prevent ABA problems and premature deletion in lock-free code." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 위험 포인터(hazard pointer, Michael 2004): 락프리 구조에서 "다른 스레드가 아직 읽고 있을지 모르는 노드를 해제하지 않기" 위한 메모리 회수 기법.
+// 읽는 쪽: 노드 포인터 p 를 읽으면 먼저 자기 전용 위험 슬롯 hp[tid] 에 p 를 공시하고, 공유 위치가 여전히 p 인지 다시 확인한 뒤에만 역참조한다 (공시 후 재검증이 핵심).
+// 지우는 쪽: 구조에서 뗀 노드는 곧바로 delete 하지 않고 자기 retired 목록에 넣는다. 목록이 임계값을 넘으면 모든 스레드의 hp 를 훑어 "아무도 공시하지 않은" 노드만 해제한다.
+// 이렇게 하면 해제된 주소가 재사용되어 CAS 가 속는 ABA 문제도 함께 막힌다 (공시된 노드는 해제되지 않으니 주소가 재사용될 수 없다)
+const int MAXT = 8, THRESH = 32;
+struct Node { int v; Node* next; };
+std::atomic<Node*> top{nullptr}; std::atomic<Node*> hp[MAXT];
+std::atomic<long> allocated{0}, freed{0};
+thread_local std::vector<Node*> retired; thread_local int tid = 0;
+std::mutex orphanMu; std::vector<Node*> orphans;
+void scan() {
+    std::vector<Node*> prot; for (int i = 0; i < MAXT; i++) if (Node* p = hp[i].load()) prot.push_back(p);
+    std::sort(prot.begin(), prot.end()); std::vector<Node*> keep;
+    for (Node* n : retired) { if (std::binary_search(prot.begin(), prot.end(), n)) keep.push_back(n); else { delete n; freed++; } }
+    retired.swap(keep);
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+void retire(Node* n) { retired.push_back(n); if ((int)retired.size() >= THRESH) scan(); }
+void push(int v) { Node* n = new Node{v, top.load()}; allocated++; while (!top.compare_exchange_weak(n->next, n)); }
+bool pop(int& v) {
+    Node* t;
+    for (;;) {
+        t = top.load(); if (!t) { hp[tid].store(nullptr); return false; }
+        hp[tid].store(t);                                                  // ① 보호 공시
+        if (top.load() != t) continue;                                     // ② 재검증: 공시하는 사이 top 이 바뀌었다면 t 는 이미 떨어졌을 수 있으니 다시
+        Node* nx = t->next;                                                // ③ 이제 t 는 해제되지 않는다 (안전한 역참조)
+        if (top.compare_exchange_weak(t, nx)) break;
+    }
+    hp[tid].store(nullptr); v = t->v; retire(t); return true;
+}
+void threadExit() { hp[tid].store(nullptr); scan(); std::lock_guard<std::mutex> g(orphanMu); orphans.insert(orphans.end(), retired.begin(), retired.end()); retired.clear(); }
+
+int main() {
+    const int T = 4, N = 50000; std::atomic<long> pushedSum{0}, poppedSum{0};
+    std::vector<std::thread> th;
+    for (int t = 0; t < T; t++) th.emplace_back([&, t] {
+        tid = t;                                                           // 스레드마다 위험 슬롯 하나
+        for (int i = 1; i <= N; i++) { int v = t * N + i; push(v); pushedSum += v; int out; if (i % 2 == 0 && pop(out)) poppedSum += out; if (pop(out)) poppedSum += out; }   // 스택이 작아 ABA 가 일어나기 쉬운 부하
+        threadExit();
+    });
+    for (auto& x : th) x.join();
+    tid = 0; int out; while (pop(out)) poppedSum += out;                   // 남은 원소를 비운다
+    threadExit();
+    for (Node* n : orphans) { delete n; freed++; }                         // 모든 스레드가 끝났으므로 안전
+    assert(pushedSum == poppedSum);                                        // 원소가 사라지거나 두 번 나오지 않았다
+    assert(allocated == freed);                                            // 할당한 노드를 하나도 빠짐없이, 한 번씩만 해제했다
+    std::cout << "HazardPointer: " << allocated << " nodes allocated, " << freed << " freed, sums equal" << std::endl; return 0;
+}
+// Time Complexity: 읽기 O(1) 공시 + 재검증, 회수 분할상환 O(스레드 수) per 노드
+// Space Complexity: 미회수 노드 수 <= 스레드 수 × (임계값 + 스레드 수)
 ```
 
 # Part 10. 분산 시스템
@@ -2769,271 +2888,959 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <map>
+#include <string>
 #include <cassert>
 
+// 일관된 해시(해시 관점의 요약, 정본은 Hash.md Part 7): 서버와 키를 같은 해시 링 위에 놓고 키는 시계 방향 첫 서버가 맡는다. 서버를 더하거나 빼도 이웃 구간의 키만 이동한다
+// (평균 K/N 개) — "해시 % 서버 수" 는 서버 수가 바뀌면 거의 전부 이동한다. 서버당 가상 노드를 여러 개 두면 부하가 고르게 퍼진다
+unsigned long long h(const std::string& s) { unsigned long long x = 1469598103934665603ULL; for (unsigned char c : s) { x ^= c; x *= 1099511628211ULL; } x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; return x; }
+struct Ring {
+    std::map<unsigned long long, std::string> r;
+    void add(const std::string& n) { for (int v = 0; v < 100; v++) r[h(n + "#" + std::to_string(v))] = n; }
+    const std::string& owner(const std::string& key) const { auto it = r.lower_bound(h(key)); return it == r.end() ? r.begin()->second : it->second; }
+};
 int main() {
-    std::cout << "Consistent Hashing minimizes remapping when nodes join/leave." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    Ring ring; for (std::string n : {"A", "B", "C", "D"}) ring.add(n);
+    const int K = 20000; std::string before[K]; for (int i = 0; i < K; i++) before[i] = ring.owner("key" + std::to_string(i));
+    ring.add("E"); int moved = 0; for (int i = 0; i < K; i++) { const std::string& now = ring.owner("key" + std::to_string(i)); if (now != before[i]) { moved++; assert(now == "E"); } }   // 이동한 키는 모두 새 서버로
+    assert(moved > K / 8 && moved < K / 3);                                // 이론값 1/5
+    std::cout << "ConsistentHashing: adding 1 of 5 servers moved " << 100.0 * moved / K << "% of keys (ideal 20%)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회 O(log (서버 × 가상노드))
+// Space Complexity: O(서버 × 가상노드)
 ```
 ## DistributedHashTable()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 분산 해시 테이블(DHT, 해시 관점의 요약, Chord·Kademlia 는 Hash.md Part 7): 중앙 서버 없이 키 -> 값 저장을 노드들이 나눠 맡는다. 핵심은 (1) 키와 노드가 같은 식별자 공간에 놓이고
+// (2) 각 키는 "식별자가 가장 가까운" 노드들이 맡으며 (3) 복제(replication)로 노드 하나가 죽어도 값이 남는다는 것.  아래는 링에서 키의 후속 3 노드가 복제본을 갖는 최소 모델이다
+struct DHT {
+    std::map<unsigned, std::map<int, std::string>> node; static const int R = 3;       // 노드 id -> 저장소
+    std::vector<unsigned> owners(int key) const { std::vector<unsigned> v; unsigned id = key * 2654435761u; auto it = node.lower_bound(id);
+        for (int i = 0; i < R && i < (int)node.size(); i++) { if (it == node.end()) it = node.begin(); v.push_back(it->first); ++it; } return v; }
+    void put(int key, const std::string& val) { for (unsigned n : owners(key)) node[n][key] = val; }
+    bool get(int key, std::string& val) const { for (unsigned n : owners(key)) { auto it = node.at(n).find(key); if (it != node.at(n).end()) { val = it->second; return true; } } return false; }
+};
 int main() {
-    std::cout << "DHT distributes key-value pairs across P2P networks." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    DHT d; for (unsigned id : {10u, 1000000u, 900000000u, 2000000000u, 3000000000u, 4000000000u}) d.node[id];
+    for (int k = 0; k < 500; k++) d.put(k, "v" + std::to_string(k));
+    d.node.erase(2000000000u);                                             // 노드 하나가 죽으면 소유자 목록은 남은 노드들의 후속 3 개로 바뀐다
+    for (int k = 0; k < 500; k++) { std::string v; assert(d.get(k, v) && v == "v" + std::to_string(k)); }     // 죽은 노드가 가졌던 키도 다른 복제본이 응답
+    std::cout << "DistributedHashTable: all 500 keys survive loss of one of 6 nodes (replication " << DHT::R << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회 O(log N) 홉(Chord) 또는 O(log N) (Kademlia)
+// Space Complexity: 키당 복제 수 R
 ```
 ## Chord()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 코드(Chord, 해시 관점의 요약, 정본은 Hash.md Part 7): 2^m 크기의 식별자 링에서 각 노드가 "내 id + 2^i 의 후속 노드" m 개를 손가락(finger)으로 알고 있다. 조회는 목표를 넘지 않는 가장 먼 손가락으로 점프해
+// 매 홉마다 남은 거리를 절반 이하로 줄이므로 O(log N) 홉이다
+const int m = 10, SZ = 1 << m;
+std::vector<int> ids;
+int succ(int x) { auto it = std::lower_bound(ids.begin(), ids.end(), x % SZ); return it == ids.end() ? ids[0] : *it; }       // x 의 후속 노드
+bool inOpen(int x, int a, int b) { return a < b ? (x > a && x < b) : (x > a || x < b); }
 int main() {
-    std::cout << "Chord protocol routes queries in O(log N) using a finger table ring." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(3); std::set<int> s; while (s.size() < 64) s.insert(g() % SZ); ids.assign(s.begin(), s.end());
+    int maxHops = 0;
+    for (int t = 0; t < 2000; t++) {
+        int key = g() % SZ, cur = ids[g() % ids.size()], hops = 0;
+        while (!(key == cur || inOpen(key, cur, succ(cur + 1)) || key == succ(cur + 1))) {           // 키가 (cur, 후속] 에 없으면 점프
+            int next = cur;
+            for (int i = m - 1; i >= 0; i--) { int f = succ(cur + (1 << i)); if (inOpen(f, cur, key)) { next = f; break; } }       // 키 바로 앞까지 가장 멀리 가는 손가락
+            if (next == cur) break; cur = next; hops++;
+        }
+        int owner = (key == cur) ? cur : succ(cur + 1);                    // 마지막 노드의 후속이 키의 주인
+        assert(owner == succ(key)); maxHops = std::max(maxHops, hops);
+    }
+    assert(maxHops <= m);
+    std::cout << "Chord: 64 nodes, lookups correct, max hops " << maxHops << " (<= log2 ring size = " << m << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회 O(log N) 홉
+// Space Complexity: 노드당 O(log N) 손가락
 ```
 ## Kademlia()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 카뎀리아(Kademlia, 해시 관점의 요약, 정본은 Hash.md Part 7): 거리를 XOR 로 정의한다(d(a,b)=a^b, 대칭이고 삼각부등식을 만족). 노드는 거리 구간 [2^i, 2^(i+1)) 마다 k-버킷(최대 k 개 연락처)을 두고,
+// 목표 id 를 향해 "가장 가까운 연락처 α 개에 질의 -> 더 가까운 노드를 받아 반복" 한다. 질의마다 최소 한 비트씩 가까워져 O(log N) 라운드이다 (BitTorrent Mainline DHT, IPFS)
+const int BITS = 12, K = 8;
+std::vector<std::vector<int>> table;                                       // table[n] = 노드 n(인덱스) 의 연락처 id 들
 int main() {
-    std::cout << "Kademlia uses XOR metric for distance between nodes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(4); std::set<int> s; while (s.size() < 300) s.insert(g() % (1 << BITS)); std::vector<int> ids(s.begin(), s.end()); int N = ids.size();
+    table.assign(N, {});
+    for (int n = 0; n < N; n++) { std::vector<std::vector<int>> bucket(BITS);
+        for (int o = 0; o < N; o++) if (o != n) bucket[31 - __builtin_clz(ids[n] ^ ids[o])].push_back(ids[o]);        // 거리의 최상위 비트가 같은 것끼리 한 버킷
+        for (auto& b : bucket) { std::shuffle(b.begin(), b.end(), g); if ((int)b.size() > K) b.resize(K); for (int id : b) table[n].push_back(id); } }
+    auto index = [&](int id) { return std::lower_bound(ids.begin(), ids.end(), id) - ids.begin(); };
+    int maxRounds = 0;
+    for (int t = 0; t < 500; t++) {
+        int target = g() % (1 << BITS), cur = ids[g() % N], rounds = 0;
+        for (;;) { int best = cur; for (int c : table[index(cur)]) if ((c ^ target) < (best ^ target)) best = c; if (best == cur) break; cur = best; rounds++; }      // 더 가까운 연락처로 이동
+        int want = *std::min_element(ids.begin(), ids.end(), [&](int a, int b) { return (a ^ target) < (b ^ target); });
+        assert(cur == want); maxRounds = std::max(maxRounds, rounds);      // 전역에서 XOR 거리가 가장 가까운 노드를 찾았다
+    }
+    std::cout << "Kademlia: 300 nodes, XOR-closest node found in <= " << maxRounds << " rounds (id bits " << BITS << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회 O(log N) 라운드
+// Space Complexity: 노드당 O(k log N) 연락처
 ```
 ## MerkleTree()
 ### 대표코드
 ```cpp
+#include <functional>
 #include <iostream>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 머클 트리(트리 관점의 요약, 정본은 Tree.md Part 16): 잎 = 데이터 블록의 해시, 부모 = 두 자식 해시의 해시. 루트 하나로 전체를 요약하고, 한 블록의 진위는 루트까지의 형제 해시 log N 개(감사 경로)로 확인한다.
+// 분산 시스템에서는 두 복제본의 루트가 같으면 같고, 다르면 서브트리를 비교해 어긋난 블록만 찾아 동기화한다 (Cassandra anti-entropy, Git, 블록체인). 여기서는 std::hash 로 구조만 보이고, 암호학적 SHA-256 판은 Tree.md
+typedef unsigned long long H;
+H leaf(const std::string& s) { return std::hash<std::string>{}("L" + s); }
+H node(H a, H b) { return std::hash<std::string>{}("N" + std::to_string(a) + "," + std::to_string(b)); }
+std::vector<std::vector<H>> build(const std::vector<std::string>& d) { std::vector<std::vector<H>> lv(1); for (auto& s : d) lv[0].push_back(leaf(s));
+    while (lv.back().size() > 1) { auto& c = lv.back(); std::vector<H> up; for (size_t i = 0; i < c.size(); i += 2) up.push_back(node(c[i], c[i + 1 < c.size() ? i + 1 : i])); lv.push_back(up); } return lv; }
+bool verify(H root, size_t idx, const std::string& data, const std::vector<std::vector<H>>& lv) {
+    H cur = leaf(data); for (size_t l = 0; l + 1 < lv.size(); l++) { size_t sib = idx ^ 1; H s = sib < lv[l].size() ? lv[l][sib] : cur; cur = (idx & 1) ? node(s, cur) : node(cur, s); idx >>= 1; } return cur == root; }
 int main() {
-    std::cout << "Merkle Tree builds hash of hashes to quickly verify large datasets." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::vector<std::string> d = {"a", "b", "c", "d", "e", "f", "g", "h"}; auto lv = build(d);
+    assert(verify(lv.back()[0], 5, "f", lv) && !verify(lv.back()[0], 5, "F", lv));                   // 변조 탐지
+    auto d2 = d; d2[3] = "D"; auto lv2 = build(d2); assert(lv2.back()[0] != lv.back()[0] && lv2[1][0] == lv[1][0] && lv2[1][1] != lv[1][1]);   // 어긋난 서브트리만 다름
+    std::cout << "MerkleTree: 8 leaves, 3-hash audit path verifies, a single changed block changes only its subtree" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 루트 계산 O(N), 증명 검증 O(log N)
+// Space Complexity: O(N)
 ```
 ## CRDT()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 #include <cassert>
 
+// CRDT(Conflict-free Replicated Data Type): 여러 복제본이 각자 쓰기를 받고, 서로 상태를 주고받아 병합하기만 하면 (순서·중복·지연과 관계없이) 같은 값으로 수렴하는 자료구조.
+// 상태 기반(CvRDT) 조건: 병합(merge)이 교환법칙·결합법칙·멱등법칙을 만족 = 상태들이 합 반격자(join-semilattice)를 이루고 연산이 단조 증가. 그래서 중복·순서 뒤바뀜이 해롭지 않다.
+//   GCounter: 복제본별 카운터의 원소별 max   PNCounter: GCounter 둘(증가, 감소)   LWWRegister: (타임스탬프, 복제본 id) 가 큰 쪽   ORSet: 추가 태그 집합 - 제거된 태그 집합 ("추가 우선")
+struct GCounter {
+    std::map<int, long> c;
+    void inc(int r, long n = 1) { c[r] += n; }
+    long value() const { long s = 0; for (auto& kv : c) s += kv.second; return s; }
+    void merge(const GCounter& o) { for (auto& kv : o.c) c[kv.first] = std::max(c[kv.first], kv.second); }
+    bool operator==(const GCounter& o) const { return c == o.c; }
+};
+struct PNCounter {
+    GCounter p, n; void inc(int r) { p.inc(r); } void dec(int r) { n.inc(r); } long value() const { return p.value() - n.value(); }
+    void merge(const PNCounter& o) { p.merge(o.p); n.merge(o.n); } bool operator==(const PNCounter& o) const { return p == o.p && n == o.n; }
+};
+struct LWW {
+    std::string v; long ts = 0; int rid = -1;
+    void set(const std::string& s, long t, int r) { if (t > ts || (t == ts && r > rid)) { v = s; ts = t; rid = r; } }
+    void merge(const LWW& o) { set(o.v, o.ts, o.rid); } bool operator==(const LWW& o) const { return v == o.v && ts == o.ts && rid == o.rid; }
+};
+typedef std::pair<int, long> Tag;
+struct ORSet {
+    std::map<std::string, std::set<Tag>> adds; std::set<Tag> removed; long ctr = 0;           // ctr 은 이 복제본의 로컬 상태(병합 대상 아님)
+    void add(const std::string& e, int r) { adds[e].insert({r, ++ctr}); }
+    void remove(const std::string& e) { for (auto& t : adds[e]) removed.insert(t); }        // 지금 관찰한 태그만 지운다 -> 동시에 일어난 add 는 살아남음
+    bool has(const std::string& e) const { auto it = adds.find(e); if (it == adds.end()) return false; for (auto& t : it->second) if (!removed.count(t)) return true; return false; }
+    void merge(const ORSet& o) { for (auto& kv : o.adds) adds[kv.first].insert(kv.second.begin(), kv.second.end()); removed.insert(o.removed.begin(), o.removed.end()); }
+    bool operator==(const ORSet& o) const { std::map<std::string, std::set<Tag>> a = adds, b = o.adds; for (auto it = a.begin(); it != a.end();) it = it->second.empty() ? a.erase(it) : std::next(it); for (auto it = b.begin(); it != b.end();) it = it->second.empty() ? b.erase(it) : std::next(it); return a == b && removed == o.removed; }
+};
+struct Replica { int id; PNCounter cnt; LWW reg; ORSet set; void merge(const Replica& o) { cnt.merge(o.cnt); reg.merge(o.reg); set.merge(o.set); } };
+bool same(const Replica& a, const Replica& b) { return a.cnt == b.cnt && a.reg == b.reg && a.set == b.set; }
+
 int main() {
-    std::cout << "CRDTs allow distributed offline edits that merge without conflicts." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 rng(7); const int R = 5; std::vector<Replica> rep(R); for (int i = 0; i < R; i++) rep[i].id = i;
+    long truth = 0, clock = 0; long bestTs = -1; int bestRid = -1; std::string bestVal; const char* names[] = {"x", "y", "z", "w"};
+    for (int step = 0; step < 4000; step++) {
+        int r = rng() % R, op = rng() % 10; Replica& me = rep[r];
+        if (op == 0) { me.cnt.inc(r); truth++; } else if (op == 1) { me.cnt.dec(r); truth--; }
+        else if (op == 2) { std::string v = "v" + std::to_string(step); long ts = ++clock / 2; me.reg.set(v, ts, r); if (ts > bestTs || (ts == bestTs && r > bestRid)) { bestTs = ts; bestRid = r; bestVal = v; } }
+        else if (op == 3) me.set.add(names[rng() % 4], r); else if (op == 4) me.set.remove(names[rng() % 4]);
+        else { int s = rng() % R; rep[s].merge(rep[r]); if (rng() % 3 == 0) rep[s].merge(rep[r]); if (rng() % 4 == 0) rep[r].merge(rep[s]); }       // 일부는 중복 전달·역방향 전달
+    }
+    for (int round = 0; round < 2; round++) for (int i = 0; i < R; i++) for (int j = 0; j < R; j++) rep[i].merge(rep[j]);        // 마지막 전체 교환
+    for (int i = 1; i < R; i++) assert(same(rep[0], rep[i]));              // 모든 복제본이 같은 상태로 수렴
+    assert(rep[0].cnt.value() == truth && rep[0].reg.v == bestVal);        // 카운터는 모든 증감의 합, 레지스터는 (ts, id) 최대 쓰기
+    // 병합의 법칙: 임의의 세 상태 a, b, c
+    for (int t = 0; t < 200; t++) {
+        Replica s[3]; for (int i = 0; i < 3; i++) { s[i].id = i; for (int k = 0; k < 20; k++) { int op = rng() % 5; if (op == 0) s[i].cnt.inc(i); else if (op == 1) s[i].cnt.dec(i); else if (op == 2) s[i].reg.set("q" + std::to_string(rng() % 9), rng() % 6, i); else if (op == 3) s[i].set.add(names[rng() % 4], i); else s[i].set.remove(names[rng() % 4]); } }
+        Replica ab = s[0]; ab.merge(s[1]); Replica ba = s[1]; ba.merge(s[0]); assert(same(ab, ba));                         // 교환
+        Replica abc1 = ab; abc1.merge(s[2]); Replica bc = s[1]; bc.merge(s[2]); Replica abc2 = s[0]; abc2.merge(bc); assert(same(abc1, abc2));     // 결합
+        Replica aa = s[0]; aa.merge(s[0]); assert(same(aa, s[0]));                                                          // 멱등
+    }
+    // 추가 우선 의미: 한쪽이 지우는 동안 다른 쪽이 다시 추가하면 원소가 살아남는다
+    Replica A, B; A.id = 0; B.id = 1; A.set.add("x", 0); B.merge(A); A.set.remove("x"); B.set.add("x", 1); A.merge(B); B.merge(A);
+    assert(A.set.has("x") && B.set.has("x"));
+    Replica C; C.id = 2; C.merge(A); C.set.remove("x"); A.merge(C); assert(!A.set.has("x"));                                  // 관찰한 add 를 지우면 사라짐
+    std::cout << "CRDT: 5 replicas converge (counter=" << rep[0].cnt.value() << ", register=" << rep[0].reg.v << "); merge is commutative/associative/idempotent; OR-Set is add-wins" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산 O(1)~O(원소 태그 수), 병합 O(상태 크기)
+// Space Complexity: O(복제본 수 + 태그 수)
 ```
 
 # Part 11. GPU 자료구조
 ## GPUBVH()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// GPU 친화적 BVH(LBVH, Karras 2012): 트리를 "위에서 쪼개며" 만드는 대신, 물체를 3D 공간 채움 곡선인 모튼 코드(Morton code)로 정렬한 뒤 정렬된 코드열 자체에서 트리 모양을 직접 계산한다.
+// 내부 노드 i 의 담당 구간과 분할 지점이 코드의 "공통 접두사 길이" δ(i, j) 만으로 정해지므로 노드마다 독립 계산 -> GPU 에서 스레드 하나가 노드 하나를 맡아 완전 병렬로 짓는다. 바운딩 박스는 잎에서 시작해
+// 루트로 올라가며 합치는데, 각 부모에 "먼저 도착한 스레드는 멈추고 나중 도착한 스레드가 두 자식 박스를 합치는" 원자 카운터로 병렬화한다.  아래는 같은 알고리즘을 CPU 에서 순차 루프로 실행해 구조를 검증한다
+typedef std::array<float, 3> V;
+struct Box { V lo, hi; };
+uint32_t expand(uint32_t v) { v = (v * 0x00010001u) & 0xFF0000FFu; v = (v * 0x00000101u) & 0x0F00F00Fu; v = (v * 0x00000011u) & 0xC30C30C3u; v = (v * 0x00000005u) & 0x49249249u; return v; }
+uint32_t morton(const V& p) { auto q = [](float x) { return (uint32_t)std::min(std::max(x * 1024.0f, 0.0f), 1023.0f); }; return expand(q(p[0])) * 4 + expand(q(p[1])) * 2 + expand(q(p[2])); }
+Box unite(const Box& a, const Box& b) { Box r; for (int i = 0; i < 3; i++) { r.lo[i] = std::min(a.lo[i], b.lo[i]); r.hi[i] = std::max(a.hi[i], b.hi[i]); } return r; }
+bool overlap(const Box& a, const Box& b) { for (int i = 0; i < 3; i++) if (a.hi[i] < b.lo[i] || b.hi[i] < a.lo[i]) return false; return true; }
+struct Internal { int left, right, parent = -1; Box box; };                // 자식: >= 0 이면 내부 노드 번호, 음수면 ~(잎 번호)
+struct LBVH {
+    int n; std::vector<uint32_t> code; std::vector<Box> leaf; std::vector<int> leafParent, objId; std::vector<Internal> in;
+    int delta(int i, int j) const { if (j < 0 || j >= n) return -1; if (code[i] == code[j]) return 32 + __builtin_clz(i ^ j); return __builtin_clz(code[i] ^ code[j]); }   // 공통 접두사 길이 (같은 코드는 인덱스로 구분)
+    explicit LBVH(const std::vector<Box>& objs) {
+        n = objs.size(); std::vector<std::pair<uint32_t, int>> s(n);
+        for (int i = 0; i < n; i++) { V c; for (int k = 0; k < 3; k++) c[k] = (objs[i].lo[k] + objs[i].hi[k]) / 2; s[i] = {morton(c), i}; }
+        std::sort(s.begin(), s.end()); code.resize(n); leaf.resize(n); objId.resize(n);
+        for (int i = 0; i < n; i++) { code[i] = s[i].first; objId[i] = s[i].second; leaf[i] = objs[s[i].second]; }
+        in.resize(n - 1); leafParent.assign(n, -1);
+        for (int i = 0; i < n - 1; i++) {                                  // GPU 라면 노드마다 스레드 하나
+            int d = (delta(i, i + 1) - delta(i, i - 1)) >= 0 ? 1 : -1, dmin = delta(i, i - d), lmax = 2;
+            while (delta(i, i + lmax * d) > dmin) lmax *= 2;
+            int l = 0; for (int t = lmax / 2; t >= 1; t /= 2) if (delta(i, i + (l + t) * d) > dmin) l += t;
+            int j = i + l * d, first = std::min(i, j), last = std::max(i, j);
+            int dnode = delta(first, last), split = first, step = last - first;      // 분할 지점: 접두사가 더 길어지는 마지막 위치
+            do { step = (step + 1) >> 1; int ns = split + step; if (ns < last && delta(first, ns) > dnode) split = ns; } while (step > 1);
+            in[i].left = (first == split) ? ~split : split; in[i].right = (last == split + 1) ? ~(split + 1) : split + 1;
+        }
+        for (int i = 0; i < n - 1; i++) for (int c : {in[i].left, in[i].right}) { if (c < 0) leafParent[~c] = i; else in[c].parent = i; }
+        std::vector<int> arrived(n - 1, 0);                                // 원자 카운터 대신 순차 시뮬레이션: 두 번째 도착자가 박스를 합친다
+        for (int lf = 0; lf < n; lf++) for (int p = leafParent[lf]; p != -1; p = in[p].parent) {
+            if (arrived[p]++ == 0) break;
+            in[p].box = unite(boxOf(in[p].left), boxOf(in[p].right));
+        }
+    }
+    const Box& boxOf(int c) const { return c < 0 ? leaf[~c] : in[c].box; }
+    void query(const Box& q, std::vector<int>& out) const {
+        std::vector<int> st = {0};
+        while (!st.empty()) { int c = st.back(); st.pop_back(); if (!overlap(boxOf(c), q)) continue; if (c < 0) out.push_back(objId[~c]); else { st.push_back(in[c].left); st.push_back(in[c].right); } }
+    }
+    int depth(int c) const { return c < 0 ? 0 : 1 + std::max(depth(in[c].left), depth(in[c].right)); }
+};
+
 int main() {
-    std::cout << "GPU BVH linearizes bounding volume trees for ray tracing pipelines." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(1); std::uniform_real_distribution<float> U(0, 1); int n = 3000; std::vector<Box> objs;
+    for (int i = 0; i < n; i++) { V c = {U(g), U(g), U(g)}; float s = 0.002f + 0.01f * U(g); objs.push_back({{c[0], c[1], c[2]}, {c[0] + s, c[1] + s, c[2] + s}}); }
+    LBVH t(objs);
+    std::vector<int> seen(n, 0), parentCount(n - 1, 0);                    // 구조 검사: 잎은 정확히 한 번씩, 내부 노드는 정확히 한 부모
+    std::vector<int> st = {0}; int internalCount = 0;
+    while (!st.empty()) { int c = st.back(); st.pop_back(); if (c < 0) { seen[~c]++; continue; } internalCount++; st.push_back(t.in[c].left); st.push_back(t.in[c].right);
+        for (int k : {t.in[c].left, t.in[c].right}) assert(k < 0 || t.in[k].parent == c); }
+    for (int i = 0; i < n; i++) assert(seen[i] == 1); assert(internalCount == n - 1 && t.in[0].parent == -1);
+    for (int i = 0; i < n - 1; i++) for (int k : {t.in[i].left, t.in[i].right}) { const Box& b = t.boxOf(k); for (int a = 0; a < 3; a++) assert(t.in[i].box.lo[a] <= b.lo[a] && t.in[i].box.hi[a] >= b.hi[a]); }   // 부모 박스가 자식 박스를 감싼다
+    for (int q = 0; q < 300; q++) {
+        V c = {U(g), U(g), U(g)}; Box b{{c[0], c[1], c[2]}, {c[0] + 0.1f, c[1] + 0.1f, c[2] + 0.1f}}; std::vector<int> got, want; t.query(b, got);
+        for (int i = 0; i < n; i++) if (overlap(objs[i], b)) want.push_back(i); std::sort(got.begin(), got.end()); assert(got == want);
+    }
+    std::cout << "GPUBVH: LBVH over " << n << " objects built from Morton codes, depth " << t.depth(0) << ", queries match brute force" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 구성 O(N log N) (정렬) + 노드별 O(log N), GPU 병렬이면 정렬 이후 O(log N) 단계
+// Space Complexity: O(N)
 ```
 ## CUDASparseMatrix()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// GPU 희소 행렬: 대부분이 0 인 행렬을 저장하는 형식에 따라 GPU 의 메모리 접근 효율이 크게 달라진다. 행렬-벡터 곱(SpMV)을 네 형식으로 구현해 같은 결과를 확인하고,
+// 워프(32 스레드)가 한 번에 읽는 128바이트 메모리 구간(트랜잭션) 수를 세어 "합쳐진 접근(coalescing)" 의 차이를 숫자로 본다.
+//   COO: (행, 열, 값) 목록 - 단순, 원자 덧셈/분할 합 필요   CSR: 행 시작 위치 + 열 + 값 - 가장 흔함. 스레드 하나가 한 행(scalar) 또는 워프가 한 행(vector)
+//   ELL: 모든 행을 같은 길이 K 로 패딩하고 "열 우선"으로 저장 - 같은 슬롯의 값이 이웃 스레드끼리 이웃 주소라 합쳐져 읽힘. 행 길이가 고르지 않으면 패딩 낭비
+struct Csr { int rows; std::vector<int> ptr, idx; std::vector<long> val; };
+struct Ell { int rows, K; std::vector<int> idx; std::vector<long> val; };    // (i, k) 는 k * rows + i
+struct Coo { std::vector<int> r, c; std::vector<long> v; };
+Csr toCsr(const Coo& m, int rows) { Csr a; a.rows = rows; a.ptr.assign(rows + 1, 0); for (int r : m.r) a.ptr[r + 1]++; for (int i = 0; i < rows; i++) a.ptr[i + 1] += a.ptr[i];
+    a.idx.resize(m.r.size()); a.val.resize(m.r.size()); std::vector<int> fill(a.ptr.begin(), a.ptr.end() - 1); for (size_t e = 0; e < m.r.size(); e++) { int p = fill[m.r[e]]++; a.idx[p] = m.c[e]; a.val[p] = m.v[e]; } return a; }
+Ell toEll(const Csr& a) { Ell e; e.rows = a.rows; e.K = 0; for (int i = 0; i < a.rows; i++) e.K = std::max(e.K, a.ptr[i + 1] - a.ptr[i]);
+    e.idx.assign((size_t)e.K * a.rows, -1); e.val.assign((size_t)e.K * a.rows, 0); for (int i = 0; i < a.rows; i++) for (int k = 0; k < a.ptr[i + 1] - a.ptr[i]; k++) { e.idx[(size_t)k * a.rows + i] = a.idx[a.ptr[i] + k]; e.val[(size_t)k * a.rows + i] = a.val[a.ptr[i] + k]; } return e; }
+std::vector<long> spmvCsrScalar(const Csr& a, const std::vector<long>& x) { std::vector<long> y(a.rows, 0); for (int i = 0; i < a.rows; i++) for (int p = a.ptr[i]; p < a.ptr[i + 1]; p++) y[i] += a.val[p] * x[a.idx[p]]; return y; }
+std::vector<long> spmvCsrVector(const Csr& a, const std::vector<long>& x) {       // 워프 하나가 한 행: 레인 l 이 l, l+32, ... 번째 원소를 맡고 트리 형태로 합산
+    std::vector<long> y(a.rows, 0);
+    for (int i = 0; i < a.rows; i++) { long lane[32] = {0}; for (int p = a.ptr[i], l = 0; p < a.ptr[i + 1]; p++, l = (l + 1) % 32) lane[l] += a.val[p] * x[a.idx[p]];
+        for (int off = 16; off >= 1; off /= 2) for (int l = 0; l < off; l++) lane[l] += lane[l + off]; y[i] = lane[0]; }
+    return y;
+}
+std::vector<long> spmvEll(const Ell& e, const std::vector<long>& x) { std::vector<long> y(e.rows, 0); for (int k = 0; k < e.K; k++) for (int i = 0; i < e.rows; i++) { int c = e.idx[(size_t)k * e.rows + i]; if (c >= 0) y[i] += e.val[(size_t)k * e.rows + i] * x[c]; } return y; }
+std::vector<long> spmvCoo(const Coo& m, int rows, const std::vector<long>& x) { std::vector<long> y(rows, 0); for (size_t e = 0; e < m.r.size(); e++) y[m.r[e]] += m.v[e] * x[m.c[e]]; return y; }       // GPU 에서는 y 갱신이 원자 덧셈
+long countSegments(const std::vector<long>& addrBytes) { std::set<long> seg; for (long a : addrBytes) seg.insert(a / 128); return seg.size(); }       // 한 워프 로드가 건드리는 128B 구간 수
+
 int main() {
-    std::cout << "CUDA Sparse Matrix uses CSR/CSC formats for parallel thread access." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 g(2); const int R = 1024, C = 512; Coo m; std::vector<std::vector<long>> dense(R, std::vector<long>(C, 0));
+    for (int i = 0; i < R; i++) { int len = 4 + g() % 9; std::set<int> cols; while ((int)cols.size() < len) cols.insert(g() % C); for (int c : cols) { long v = (long)(g() % 19) - 9; if (!v) v = 1; m.r.push_back(i); m.c.push_back(c); m.v.push_back(v); dense[i][c] = v; } }
+    std::vector<long> x(C); for (auto& v : x) v = (long)(g() % 21) - 10;
+    std::vector<long> ref(R, 0); for (int i = 0; i < R; i++) for (int j = 0; j < C; j++) ref[i] += dense[i][j] * x[j];
+    Csr csr = toCsr(m, R); Ell ell = toEll(csr);
+    assert(spmvCsrScalar(csr, x) == ref && spmvCsrVector(csr, x) == ref && spmvEll(ell, x) == ref && spmvCoo(m, R, x) == ref);      // 네 가지 모두 같은 답
+    long tCsr = 0, tEll = 0, tVec = 0;                                     // 값 배열 로드의 128B 구간 수 (워프 = 연속된 32 행)
+    for (int w = 0; w < R / 32; w++) for (int k = 0; k < ell.K; k++) {
+        std::vector<long> a1, a2; for (int l = 0; l < 32; l++) { int i = w * 32 + l; if (k < csr.ptr[i + 1] - csr.ptr[i]) a1.push_back((long)(csr.ptr[i] + k) * 8); a2.push_back(((long)k * R + i) * 8); }
+        if (!a1.empty()) tCsr += countSegments(a1); tEll += countSegments(a2);
+    }
+    for (int i = 0; i < R; i++) for (int p = csr.ptr[i]; p < csr.ptr[i + 1]; p += 32) { std::vector<long> a; for (int q = p; q < std::min(p + 32, csr.ptr[i + 1]); q++) a.push_back((long)q * 8); tVec += countSegments(a); }
+    assert(tEll * 2 < tCsr);                                               // ELL 의 열 우선 배치가 CSR scalar 보다 메모리 트랜잭션이 훨씬 적다
+    double wasted = 1.0 - (double)csr.val.size() / ((double)ell.K * R);
+    std::cout << "CUDASparseMatrix: SpMV equal in 4 formats; value-load segments per matrix: CSR-scalar " << tCsr << ", CSR-vector " << tVec << ", ELL " << tEll << " (ELL padding waste " << wasted * 100 << "%)" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: SpMV O(nnz) (ELL 은 O(K·rows))
+// Space Complexity: CSR O(nnz + rows), ELL O(K·rows)
 ```
 ## ParallelPrefixSum()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <numeric>
+#include <random>
+#include <thread>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Parallel Prefix Sum (Scan) uses tree reduction to compute running totals." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 병렬 접두합(scan): GPU 알고리즘의 기본 부품(정렬, 스트림 압축, 히스토그램, BVH 구성)이다. 순차 계산은 앞 결과에 의존하지만 합의 결합법칙을 이용하면 로그 단계로 풀린다.
+//   Hillis–Steele: 단계 d 마다 a[i] += a[i - 2^d].  단계 수 log n, 총 연산 n log n (작업 비효율적이지만 단순)
+//   Blelloch(작업 효율적): 상향 스윕(트리로 합 만들기, n-1 번 덧셈) + 하향 스윕(루트에 0 을 넣고 내려보내기, n-1 번) = 총 2(n-1) 번, 깊이 2 log n
+//   큰 배열: 블록별 scan -> 블록 합 scan -> 블록 오프셋 더하기 (GPU 에서 블록 = 스레드 블록)
+// 각 단계의 인덱스는 서로 겹치지 않아 스레드로 나눠도 경쟁이 없다. 아래는 std::thread 로 같은 구조를 돌린다
+template <class F> void parallelFor(long n, F f, int T = 4) { std::vector<std::thread> th; for (int t = 0; t < T; t++) th.emplace_back([=] { for (long i = t; i < n; i += T) f(i); }); for (auto& x : th) x.join(); }
+long adds = 0;
+void blelloch(std::vector<long>& a) {                                      // 길이는 2 의 거듭제곱, 배타적(exclusive) scan
+    long n = a.size();
+    for (long s = 2; s <= n; s *= 2) { parallelFor(n / s, [&](long b) { a[b * s + s - 1] += a[b * s + s / 2 - 1]; }); adds += n / s; }          // 상향 스윕
+    a[n - 1] = 0;
+    for (long s = n; s >= 2; s /= 2) { parallelFor(n / s, [&](long b) { long l = b * s + s / 2 - 1, r = b * s + s - 1; long t = a[l]; a[l] = a[r]; a[r] += t; }); adds += n / s; }   // 하향 스윕
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+std::vector<long> hillisSteele(std::vector<long> a, long& work) {         // 포괄(inclusive) scan, 이중 버퍼
+    long n = a.size(); std::vector<long> b(n);
+    for (long d = 1; d < n; d *= 2) { parallelFor(n, [&](long i) { b[i] = a[i] + (i >= d ? a[i - d] : 0); }); work += n - d; a.swap(b); }
+    return a;
+}
+std::vector<long> scanLarge(const std::vector<long>& in) {                 // 블록 scan -> 블록 합 scan -> 오프셋 더하기
+    const long BS = 1024; long n = in.size(), blocks = (n + BS - 1) / BS; std::vector<long> a(blocks * BS, 0), sums(blocks);
+    std::copy(in.begin(), in.end(), a.begin());
+    parallelFor(blocks, [&](long b) { long s = 0; for (long i = b * BS; i < (b + 1) * BS; i++) { long v = a[i]; a[i] = s; s += v; } sums[b] = s; });          // 블록별 scan (블록 안은 순차)
+    long acc = 0; for (long b = 0; b < blocks; b++) { long v = sums[b]; sums[b] = acc; acc += v; }                                                          // 블록 합 scan
+    parallelFor(blocks, [&](long b) { for (long i = b * BS; i < (b + 1) * BS; i++) a[i] += sums[b]; });
+    a.resize(n); return a;
+}
+
+int main() {
+    std::mt19937 g(1); const long n = 1 << 14; std::vector<long> v(n); for (auto& x : v) x = (long)(g() % 100);
+    std::vector<long> ref(n); std::exclusive_scan(v.begin(), v.end(), ref.begin(), 0L);
+    std::vector<long> a = v; adds = 0; blelloch(a); assert(a == ref && adds == 2 * (n - 1) - 0);            // 배타적 scan 일치, 덧셈 횟수 2(n-1)
+    long work = 0; std::vector<long> inc = hillisSteele(v, work); std::vector<long> refInc(n); std::inclusive_scan(v.begin(), v.end(), refInc.begin());
+    assert(inc == refInc && work > 5 * adds);                              // 같은 결과지만 작업량이 훨씬 많다 (n log n vs 2n)
+    std::vector<long> big(100003); for (auto& x : big) x = (long)(g() % 1000) - 500;
+    std::vector<long> refBig(big.size()); std::exclusive_scan(big.begin(), big.end(), refBig.begin(), 0L);
+    assert(scanLarge(big) == refBig);
+    std::cout << "ParallelPrefixSum: Blelloch " << adds << " adds vs Hillis-Steele " << work << " for n=" << n << "; block scan verified for n=100003" << std::endl; return 0;
+}
+// Time Complexity: 작업 O(N), 깊이 O(log N) (Blelloch)
+// Space Complexity: O(N)
 ```
 ## ParallelHashTable()
 ### 대표코드
 ```cpp
+#include <atomic>
+#include <cstdint>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 #include <cassert>
 
+// 병렬 해시 테이블(GPU/멀티코어): 개방 주소법(선형 탐사) + 슬롯의 키를 원자 CAS 로 점유한다. 빈 슬롯(0)에 CAS(0 -> key) 가 성공한 스레드가 그 슬롯의 주인이고, 실패했는데 들어 있는 키가 같으면 이미 다른 스레드가 넣은 것이다.
+// 잠금이 없고 슬롯 하나에만 경쟁하므로 수천 스레드(GPU)에서 잘 확장된다. 한계: 키를 먼저 점유하고 값을 나중에 쓰므로 "삽입 단계"와 "조회 단계"를 분리해야 한다(phase-concurrent), 삭제와 크기 변경은 어렵다
+static inline uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+struct PHT {
+    size_t mask; std::unique_ptr<std::atomic<uint64_t>[]> keys; std::unique_ptr<std::atomic<uint32_t>[]> vals; std::atomic<long> probes{0};
+    explicit PHT(size_t cap) : mask(cap - 1), keys(new std::atomic<uint64_t>[cap]), vals(new std::atomic<uint32_t>[cap]) { for (size_t i = 0; i < cap; i++) { keys[i] = 0; vals[i] = 0; } }
+    bool insert(uint64_t key, uint32_t val) {                              // key != 0. 새로 만든 슬롯이면 true
+        long p = 0;
+        for (size_t i = mix(key) & mask;; i = (i + 1) & mask, p++) {
+            uint64_t cur = keys[i].load();
+            if (cur == 0) { uint64_t exp = 0; if (keys[i].compare_exchange_strong(exp, key)) { vals[i].store(val); probes += p + 1; return true; } cur = exp; }       // 점유 경쟁
+            if (cur == key) { vals[i].store(val); probes += p + 1; return false; }
+        }
+    }
+    bool find(uint64_t key, uint32_t& val) const {
+        for (size_t i = mix(key) & mask;; i = (i + 1) & mask) { uint64_t cur = keys[i].load(); if (cur == key) { val = vals[i].load(); return true; } if (cur == 0) return false; }
+    }
+};
+
 int main() {
-    std::cout << "Parallel Hash Table on GPU uses multi-pass CAS to resolve collisions." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    PHT t(1 << 18); const int T = 4; const uint64_t N = 100000; std::atomic<long> created{0}; std::vector<std::thread> th;
+    for (int k = 0; k < T; k++) th.emplace_back([&, k] { for (uint64_t i = 0; i < N; i++) { uint64_t key = (i * 3 + k * 7000) % (N * 2) + 1; if (t.insert(key, (uint32_t)(key * 31))) created++; } });      // 스레드끼리 키가 겹친다
+    for (auto& x : th) x.join();
+    std::unordered_map<uint64_t, uint32_t> ref; for (int k = 0; k < T; k++) for (uint64_t i = 0; i < N; i++) { uint64_t key = (i * 3 + k * 7000) % (N * 2) + 1; ref[key] = (uint32_t)(key * 31); }
+    assert((size_t)created == ref.size());                                 // 같은 키를 두 스레드가 만들지 않았다 (CAS 가 승자를 하나만 정함)
+    th.clear(); std::atomic<long> bad{0};
+    for (int k = 0; k < T; k++) th.emplace_back([&] { for (auto& kv : ref) { uint32_t v; if (!t.find(kv.first, v) || v != kv.second) bad++; } uint32_t v; for (uint64_t key = N * 2 + 5; key < N * 2 + 2000; key++) if (t.find(key, v)) bad++; });
+    for (auto& x : th) x.join(); assert(bad == 0);
+    double load = (double)ref.size() / (1 << 18);
+    std::cout << "ParallelHashTable: " << ref.size() << " keys from " << T << " racing threads, load " << load << ", avg probes per insert " << (double)t.probes / (T * N) << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·조회 기대 O(1) (부하율이 낮을 때)
+// Space Complexity: 고정 용량 (키 8 B + 값 4 B) × 슬롯
 ```
 ## WarpQueue()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <thread>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Warp Queue leverages warp-level primitives for intra-warp communication." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 워프 큐: GPU 에서 수천 스레드가 같은 큐 꼬리에 원자 연산을 하면 직렬화로 느려진다. 해법인 "워프 단위 집계(warp-aggregated atomics)":
+// 같은 워프(32 레인)에서 push 하려는 레인들의 마스크를 ballot 으로 얻고, popc 로 개수 c 를 센 뒤 대표 레인 하나만 tail.fetch_add(c) 를 한 번 수행한다.
+// 각 레인은 "자기보다 낮은 레인 중 push 하는 레인 수" = popc(mask & lanemask_lt) 를 오프셋으로 base + 오프셋 위치에 쓴다. 원자 연산이 푸시 수에서 워프 수로 줄고 레인 순서도 유지된다.
+// 아래는 같은 규칙을 32 칸 배열로 흉내 내고(ballot=비트마스크 만들기, popc=__builtin_popcount), 여러 OS 스레드가 각자 워프들을 돌려 하나의 큐에 넣는다
+const int W = 32;
+std::atomic<long> tail{0}, atomicOps{0}; std::vector<int> buf;
+int warpPush(const int vals[W], const bool want[W]) {
+    uint32_t mask = 0; for (int l = 0; l < W; l++) if (want[l]) mask |= 1u << l;       // ballot
+    int cnt = __builtin_popcount(mask); if (!cnt) return 0;
+    long base = tail.fetch_add(cnt); atomicOps++;                          // 대표 레인 하나만 원자 연산 (결과는 shuffle 로 모든 레인에 전달)
+    for (int l = 0; l < W; l++) if (want[l]) buf[base + __builtin_popcount(mask & ((1u << l) - 1))] = vals[l];
+    return cnt;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int main() {
+    const int T = 4, WARPS = 5000; buf.assign((size_t)T * WARPS * W, -1); std::vector<std::thread> th; std::vector<long> pushed(T, 0);
+    std::vector<std::vector<int>> mine(T);
+    for (int t = 0; t < T; t++) th.emplace_back([&, t] { std::mt19937 g(100 + t); int vals[W]; bool want[W];
+        for (int w = 0; w < WARPS; w++) { for (int l = 0; l < W; l++) { want[l] = g() % 10 < 3; vals[l] = (t * WARPS + w) * W + l; if (want[l]) mine[t].push_back(vals[l]); } pushed[t] += warpPush(vals, want); } });
+    for (auto& x : th) x.join();
+    long total = 0; for (long p : pushed) total += p;
+    assert(tail == total);
+    std::vector<int> got(buf.begin(), buf.begin() + total), want; for (auto& m : mine) want.insert(want.end(), m.begin(), m.end());
+    std::sort(got.begin(), got.end()); std::sort(want.begin(), want.end()); assert(got == want);          // 모든 원소가 정확히 한 번씩 들어갔다
+    assert(atomicOps <= (long)T * WARPS && atomicOps * 5 < total);        // 원자 연산 수 = 워프 수 이하, 푸시 수의 1/5 미만
+    std::cout << "WarpQueue: " << total << " pushes with " << atomicOps << " atomic operations (naive: one per push)" << std::endl; return 0;
+}
+// Time Complexity: 워프당 원자 연산 1회 (푸시당 O(1/레인 수))
+// Space Complexity: 큐 용량
 ```
 
 # Part 12. AI와 데이터
 ## VectorIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 벡터 인덱스의 기준선: 플랫(flat, 전수 탐색) 색인.  임베딩(문장·이미지를 나타내는 실수 벡터) 데이터베이스는 "질의 벡터와 가장 가까운 k 개" 를 찾는 일이고, 플랫 색인은 모든 벡터와의 거리를 재서 정확한 답을 낸다 — O(N·D).
+// 다른 모든 근사 색인(HNSW, IVF, PQ, Annoy ...)은 이 정확한 답에 대한 recall@k 로 평가한다.  이 항목은 ① 힙으로 하는 top-k 선택 ② 코사인 = 정규화 후 L2 (|a-b|² = 2 - 2a·b) ③ 내적 검색(MIPS)은 L2 와 다르다 ④ 차원이 커질수록 "가장 가까운 점과 가장 먼 점의 거리비가 1 로 수렴" — 왜 근사가 필요한지 — 를 확인한다
+typedef std::vector<float> Vec;
+float l2(const Vec& a, const Vec& b) { float s = 0; for (size_t i = 0; i < a.size(); i++) s += (a[i] - b[i]) * (a[i] - b[i]); return s; }
+float dot(const Vec& a, const Vec& b) { float s = 0; for (size_t i = 0; i < a.size(); i++) s += a[i] * b[i]; return s; }
+void normalize(Vec& v) { float n = std::sqrt(dot(v, v)); for (auto& x : v) x /= n; }
+struct Flat {
+    std::vector<Vec> data;
+    std::vector<int> knn(const Vec& q, int k) const {                      // 최대 힙으로 O(N log k)
+        std::priority_queue<std::pair<float, int>> h;
+        for (size_t i = 0; i < data.size(); i++) { float d = l2(q, data[i]); if ((int)h.size() < k) h.push({d, (int)i}); else if (d < h.top().first) { h.pop(); h.push({d, (int)i}); } }
+        std::vector<int> out; while (!h.empty()) { out.push_back(h.top().second); h.pop(); } std::reverse(out.begin(), out.end()); return out;
+    }
+};
+double recall(const std::vector<int>& approx, const std::vector<int>& exact) { int hit = 0; for (int a : approx) hit += std::find(exact.begin(), exact.end(), a) != exact.end(); return (double)hit / exact.size(); }
+
 int main() {
-    std::cout << "Vector Index structures store and search high-dimensional embeddings." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(1); std::normal_distribution<float> N(0, 1); int n = 3000, D = 32;
+    Flat f; for (int i = 0; i < n; i++) { Vec v(D); for (auto& x : v) x = N(g); f.data.push_back(v); }
+    Vec q(D); for (auto& x : q) x = N(g);
+    std::vector<int> all(n); std::iota(all.begin(), all.end(), 0); std::sort(all.begin(), all.end(), [&](int a, int b) { return l2(q, f.data[a]) < l2(q, f.data[b]); });
+    std::vector<int> top = f.knn(q, 10); assert(top == std::vector<int>(all.begin(), all.begin() + 10));       // 힙 top-k == 전체 정렬의 앞 10 개
+    assert(recall(top, top) == 1.0 && recall(std::vector<int>(all.end() - 10, all.end()), top) == 0.0);
+    Flat u = f; for (auto& v : u.data) normalize(v); Vec qn = q; normalize(qn);                      // 코사인 = 정규화 후 L2
+    std::vector<int> byL2 = u.knn(qn, 10), byCos(n); std::iota(byCos.begin(), byCos.end(), 0); std::sort(byCos.begin(), byCos.end(), [&](int a, int b) { return dot(qn, u.data[a]) > dot(qn, u.data[b]); });
+    assert(byL2 == std::vector<int>(byCos.begin(), byCos.begin() + 10));
+    for (int i = 0; i < 5; i++) assert(std::fabs(l2(qn, u.data[i]) - (2 - 2 * dot(qn, u.data[i]))) < 1e-4);
+    Flat m; m.data = {{1, 0}, {0, 0.9f}, {3, 3}}; Vec mq = {0, 1};          // 정규화하지 않으면 내적 최대 != 거리 최소
+    assert(m.knn(mq, 1)[0] == 1); int mips = 0; for (int i = 1; i < 3; i++) if (dot(mq, m.data[i]) > dot(mq, m.data[mips])) mips = i; assert(mips == 2);
+    double ratio[4]; int dims[4] = {2, 8, 32, 128};                        // 최근접/최원 거리비: 차원이 커질수록 1 에 가까워진다
+    for (int t = 0; t < 4; t++) { std::vector<Vec> pts; for (int i = 0; i < 1000; i++) { Vec v(dims[t]); for (auto& x : v) x = std::uniform_real_distribution<float>(0, 1)(g); pts.push_back(v); }
+        Vec c(dims[t]); for (auto& x : c) x = 0.5f; float mn = 1e9, mx = 0; for (auto& p : pts) { float d = std::sqrt(l2(c, p)); mn = std::min(mn, d); mx = std::max(mx, d); } ratio[t] = mn / mx; }
+    assert(ratio[0] < ratio[1] && ratio[1] < ratio[2] && ratio[2] < ratio[3]);
+    std::cout << "VectorIndex: exact top-k verified; nearest/farthest distance ratio by dimension 2/8/32/128 = " << ratio[0] << "/" << ratio[1] << "/" << ratio[2] << "/" << ratio[3] << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 질의 O(N·D + N log k)
+// Space Complexity: O(N·D)
 ```
 ## HNSW()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// HNSW(Hierarchical Navigable Small World, Malkov–Yashunin): 벡터 검색의 사실상 표준 근사 색인. 점들을 "근접 그래프"(각 점이 가까운 점 M 개와 연결)로 잇고, 그 위에 성기게 샘플링한 상위 층을 여러 겹 쌓는다.
+// 층 l 에 오를 확률은 e^(-l/mL) 로 기하급수적으로 줄어(mL = 1/ln M) 층이 스킵 리스트처럼 작동한다. 질의: 맨 위 층에서 탐욕적으로 질의에 가까운 노드로 이동 -> 한 층 내려가 그 노드에서 다시 이동 ...
+// -> 0층에서는 ef 크기의 후보 목록을 유지하며 넓게 탐색(best-first). 삽입은 질의와 같은 방식으로 이웃을 찾고, 연결할 M 개를 고를 때 "이미 고른 이웃보다 나에게 더 가까운 후보만" 남기는 휴리스틱으로 다양한 방향의 간선을 보존한다
+// 거리 계산 횟수가 N 이 아니라 대략 log N 에 비례해 늘어나는 것이 핵심이다. 아래는 정확한 전수 탐색에 대한 recall 과 거리 계산 횟수로 검증한다
+const int D = 16;
+typedef std::array<float, D> Pt; typedef std::pair<float, int> PI;
+struct HNSW {
+    int M = 12, M0 = 24, efC = 80; double mL = 1.0 / std::log(12.0);
+    std::vector<Pt> pts; std::vector<std::vector<std::vector<int>>> nb; int entry = -1, maxL = -1; std::mt19937 rng{42}; long evals = 0;
+    std::vector<int> vis; int epoch = 0;
+    float dq(const Pt& q, int b) { evals++; float s = 0; for (int i = 0; i < D; i++) s += (q[i] - pts[b][i]) * (q[i] - pts[b][i]); return s; }
+    std::vector<PI> searchLayer(const Pt& q, int ep, int ef, int layer) {          // best-first: 후보 최소 힙 + 결과 최대 힙(크기 ef)
+        if (vis.size() < pts.size()) vis.resize(pts.size(), 0); ++epoch;
+        std::priority_queue<PI, std::vector<PI>, std::greater<PI>> cand; std::priority_queue<PI> res;
+        float d0 = dq(q, ep); cand.push({d0, ep}); res.push({d0, ep}); vis[ep] = epoch;
+        while (!cand.empty()) {
+            PI c = cand.top(); if ((int)res.size() >= ef && c.first > res.top().first) break; cand.pop();
+            for (int e : nb[c.second][layer]) { if (vis[e] == epoch) continue; vis[e] = epoch; float de = dq(q, e);
+                if ((int)res.size() < ef || de < res.top().first) { cand.push({de, e}); res.push({de, e}); if ((int)res.size() > ef) res.pop(); } }
+        }
+        std::vector<PI> out; while (!res.empty()) { out.push_back(res.top()); res.pop(); } std::reverse(out.begin(), out.end()); return out;
+    }
+    std::vector<int> select(const std::vector<PI>& cand, int m) {              // 휴리스틱: 이미 고른 이웃 r 보다 후보 e 가 질의에 더 가까울 때만 채택
+        std::vector<int> res;
+        for (auto& c : cand) { if ((int)res.size() >= m) break; bool ok = true; for (int r : res) { float d = 0; for (int i = 0; i < D; i++) d += (pts[c.second][i] - pts[r][i]) * (pts[c.second][i] - pts[r][i]); if (d < c.first) { ok = false; break; } } if (ok) res.push_back(c.second); }
+        for (auto& c : cand) { if ((int)res.size() >= m) break; if (std::find(res.begin(), res.end(), c.second) == res.end()) res.push_back(c.second); }   // 부족하면 가까운 순으로 채움
+        return res;
+    }
+    void insert(const Pt& p) {
+        int id = pts.size(); pts.push_back(p); int l = (int)(-std::log(std::uniform_real_distribution<double>(1e-12, 1.0)(rng)) * mL); nb.emplace_back(l + 1);
+        if (entry < 0) { entry = id; maxL = l; return; }
+        int ep = entry;
+        for (int ly = maxL; ly > l; ly--) ep = searchLayer(p, ep, 1, ly)[0].second;           // 위 층: 탐욕 이동
+        for (int ly = std::min(l, maxL); ly >= 0; ly--) {
+            auto cand = searchLayer(p, ep, efC, ly); auto sel = select(cand, M); nb[id][ly] = sel;
+            for (int e : sel) { auto& lst = nb[e][ly]; lst.push_back(id); int cap = ly == 0 ? M0 : M;
+                if ((int)lst.size() > cap) { std::vector<PI> c; for (int x : lst) { float d = 0; for (int i = 0; i < D; i++) d += (pts[e][i] - pts[x][i]) * (pts[e][i] - pts[x][i]); c.push_back({d, x}); } std::sort(c.begin(), c.end()); lst = select(c, cap); } }
+            ep = cand[0].second;
+        }
+        if (l > maxL) { maxL = l; entry = id; }
+    }
+    std::vector<int> search(const Pt& q, int k, int ef) {
+        int ep = entry; for (int ly = maxL; ly > 0; ly--) ep = searchLayer(q, ep, 1, ly)[0].second;
+        auto r = searchLayer(q, ep, std::max(ef, k), 0); std::vector<int> out; for (int i = 0; i < k && i < (int)r.size(); i++) out.push_back(r[i].second); return out;
+    }
+};
+
 int main() {
-    std::cout << "HNSW uses layered small-world graphs for fast approximate nearest neighbors." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 g(3); std::normal_distribution<float> N(0, 1); int n = 3000, C = 20;
+    std::vector<Pt> centers(C); for (auto& c : centers) for (auto& x : c) x = N(g) * 4;
+    auto sample = [&]() { Pt p = centers[g() % C]; for (auto& x : p) x += N(g); return p; };
+    HNSW h; for (int i = 0; i < n; i++) h.insert(sample());
+    for (size_t i = 0; i < h.pts.size(); i++) for (size_t ly = 0; ly < h.nb[i].size(); ly++) assert((int)h.nb[i][ly].size() <= (ly == 0 ? h.M0 : h.M));      // 차수 상한
+    std::vector<int> seen(n, 0), st = {h.entry}; seen[h.entry] = 1; int reach = 1;                    // 0층 연결성
+    while (!st.empty()) { int c = st.back(); st.pop_back(); for (int e : h.nb[c][0]) if (!seen[e]) { seen[e] = 1; reach++; st.push_back(e); } }
+    assert(reach >= n * 0.99);
+    int Q = 200, k = 10; double rec[3] = {0, 0, 0}; int efs[3] = {10, 32, 128}; long ev[3] = {0, 0, 0};
+    for (int t = 0; t < Q; t++) {
+        Pt q = sample(); std::vector<PI> all; for (int i = 0; i < n; i++) { float d = 0; for (int j = 0; j < D; j++) d += (q[j] - h.pts[i][j]) * (q[j] - h.pts[i][j]); all.push_back({d, i}); }
+        std::partial_sort(all.begin(), all.begin() + k, all.end()); std::vector<int> exact; for (int i = 0; i < k; i++) exact.push_back(all[i].second);
+        for (int e = 0; e < 3; e++) { h.evals = 0; auto r = h.search(q, k, efs[e]); ev[e] += h.evals; int hit = 0; for (int a : r) hit += std::find(exact.begin(), exact.end(), a) != exact.end(); rec[e] += (double)hit / k; }
+    }
+    for (int e = 0; e < 3; e++) rec[e] /= Q;
+    assert(rec[0] <= rec[1] + 1e-9 && rec[1] <= rec[2] + 1e-9 && rec[2] >= 0.95 && rec[1] >= 0.85);        // ef 를 키우면 recall 이 오른다
+    assert((double)ev[1] / Q < n / 4.0);                                   // ef=32 에서도 전수 탐색(N 번)의 1/4 미만
+    std::cout << "HNSW: n=" << n << ", layers " << h.maxL + 1 << ", recall@10 ef=10/32/128: " << rec[0] << "/" << rec[1] << "/" << rec[2] << ", avg distance evals " << ev[0] / Q << "/" << ev[1] / Q << "/" << ev[2] / Q << " (flat: " << n << ")" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·질의 평균 O(log N) 거리 계산 (경험적)
+// Space Complexity: O(N·(D + M))
 ```
 ## IVFIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "IVF partitions vector space via K-Means clusters to prune searches." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// IVF(Inverted File Index): 벡터를 k-평균으로 nlist 개 군집으로 나누고, 군집(=역색인의 "단어")마다 소속 벡터 목록을 보관한다. 질의는 중심 nlist 개와의 거리를 재서 가장 가까운 nprobe 개 군집의 목록만 훑는다.
+// 거리 계산 수가 N 에서 nlist + N·nprobe/nlist 로 줄지만, 질의 근처 점이 이웃 군집에 있으면 놓친다 -> nprobe 를 키울수록 recall 이 오르고 nprobe = nlist 면 전수 탐색과 같다.  속도-정확도 조절 손잡이가 nprobe 하나인 단순함이 장점이다
+typedef std::vector<float> Vec;
+float l2(const Vec& a, const Vec& b) { float s = 0; for (size_t i = 0; i < a.size(); i++) s += (a[i] - b[i]) * (a[i] - b[i]); return s; }
+std::vector<Vec> kmeans(const std::vector<Vec>& X, int k, int iters, std::mt19937& g) {
+    int dim = X[0].size(); std::vector<int> perm(X.size()); std::iota(perm.begin(), perm.end(), 0); std::shuffle(perm.begin(), perm.end(), g);
+    std::vector<Vec> C(k); for (int c = 0; c < k; c++) C[c] = X[perm[c]];
+    for (int it = 0; it < iters; it++) {
+        std::vector<Vec> sum(k, Vec(dim, 0)); std::vector<int> cnt(k, 0);
+        for (auto& x : X) { int b = 0; float bd = 1e30f; for (int c = 0; c < k; c++) { float d = l2(x, C[c]); if (d < bd) { bd = d; b = c; } } cnt[b]++; for (int i = 0; i < dim; i++) sum[b][i] += x[i]; }
+        for (int c = 0; c < k; c++) if (cnt[c]) for (int i = 0; i < dim; i++) C[c][i] = sum[c][i] / cnt[c]; else C[c] = X[g() % X.size()];
+    }
+    return C;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+struct IVF {
+    std::vector<Vec> cents; std::vector<std::vector<int>> lists; const std::vector<Vec>* data; long evals = 0;
+    void build(const std::vector<Vec>& X, int nlist, std::mt19937& g) { data = &X; cents = kmeans(X, nlist, 10, g); lists.assign(nlist, {});
+        for (size_t i = 0; i < X.size(); i++) { int b = 0; float bd = 1e30f; for (int c = 0; c < nlist; c++) { float d = l2(X[i], cents[c]); if (d < bd) { bd = d; b = c; } } lists[b].push_back(i); } }
+    std::vector<int> search(const Vec& q, int k, int nprobe) {
+        std::vector<std::pair<float, int>> cd; for (size_t c = 0; c < cents.size(); c++) cd.push_back({l2(q, cents[c]), (int)c}); evals += cents.size();
+        std::partial_sort(cd.begin(), cd.begin() + nprobe, cd.end());
+        std::vector<std::pair<float, int>> cand; for (int p = 0; p < nprobe; p++) for (int id : lists[cd[p].second]) { cand.push_back({l2(q, (*data)[id]), id}); evals++; }
+        int kk = std::min<int>(k, cand.size()); std::partial_sort(cand.begin(), cand.begin() + kk, cand.end()); std::vector<int> out; for (int i = 0; i < kk; i++) out.push_back(cand[i].second); return out;
+    }
+};
+
+int main() {
+    std::mt19937 g(2); std::normal_distribution<float> N(0, 1); int n = 10000, D = 16, C = 40, nlist = 64, k = 10;
+    std::vector<Vec> centers(C, Vec(D)); for (auto& c : centers) for (auto& x : c) x = N(g) * 4;
+    auto sample = [&]() { Vec p = centers[g() % C]; for (auto& x : p) x += N(g); return p; };
+    std::vector<Vec> X; for (int i = 0; i < n; i++) X.push_back(sample());
+    IVF ivf; ivf.build(X, nlist, g);
+    size_t tot = 0; for (auto& l : ivf.lists) tot += l.size(); assert(tot == (size_t)n);
+    int probes[6] = {1, 2, 4, 8, 16, 64}; double rec[6] = {0}; long ev[6] = {0}; int Q = 100;
+    for (int t = 0; t < Q; t++) {
+        Vec q = sample(); std::vector<std::pair<float, int>> all; for (int i = 0; i < n; i++) all.push_back({l2(q, X[i]), i}); std::partial_sort(all.begin(), all.begin() + k, all.end());
+        std::vector<int> exact; for (int i = 0; i < k; i++) exact.push_back(all[i].second);
+        for (int p = 0; p < 6; p++) { ivf.evals = 0; auto r = ivf.search(q, k, probes[p]); ev[p] += ivf.evals; int hit = 0; for (int a : r) hit += std::find(exact.begin(), exact.end(), a) != exact.end(); rec[p] += (double)hit / k; }
+    }
+    for (int p = 0; p < 6; p++) rec[p] /= Q;
+    for (int p = 1; p < 6; p++) assert(rec[p] >= rec[p - 1] - 1e-9);       // nprobe 를 키우면 recall 은 줄지 않는다
+    assert(rec[5] == 1.0 && rec[3] >= 0.9 && (double)ev[3] / Q < n / 3.0); // nprobe = nlist 면 정확, nprobe=8 이면 recall 90%+ 이면서 거리 계산은 1/3 미만
+    std::cout << "IVFIndex: recall@10 for nprobe 1/2/4/8/16/64 = " << rec[0] << "/" << rec[1] << "/" << rec[2] << "/" << rec[3] << "/" << rec[4] << "/" << rec[5]
+              << ", avg evals at nprobe=8: " << ev[3] / Q << " (flat " << n << ")" << std::endl; return 0;
+}
+// Time Complexity: 질의 O(nlist·D + (N/nlist)·nprobe·D)
+// Space Complexity: O(N·D + nlist·D)
 ```
 ## ProductQuantization()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Product Quantization compresses vectors using sub-space codebooks." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 곱 양자화(Product Quantization, Jégou 2011): 벡터 압축. D 차원 벡터를 m 개의 부분 벡터(D/m 차원)로 쪼개 각 부분 공간에서 k-평균 코드북(ksub 개 중심)을 따로 학습하고, 벡터를 "m 개의 중심 번호" 로 기억한다.
+// ksub^m 가지 조합을 표현하면서 코드북 저장은 m·ksub 개 중심뿐이다.  D=32, float 128 바이트 벡터가 m=8 바이트가 된다(16 배 압축).
+// 비대칭 거리 계산(ADC): 질의 q 는 압축하지 않고, 부분 공간마다 "q 의 부분 벡터와 각 중심의 거리" 표 table[j][c] 를 한 번 만든 뒤, 압축된 벡터와의 거리를 표 m 번 조회의 합으로 구한다 — 정확히 q 와 복원 벡터의 거리와 같다
+typedef std::vector<float> Vec;
+float l2(const float* a, const float* b, int d) { float s = 0; for (int i = 0; i < d; i++) s += (a[i] - b[i]) * (a[i] - b[i]); return s; }
+std::vector<Vec> kmeans(const std::vector<Vec>& X, int k, int iters, std::mt19937& g) {
+    int dim = X[0].size(); std::vector<int> perm(X.size()); std::iota(perm.begin(), perm.end(), 0); std::shuffle(perm.begin(), perm.end(), g);
+    std::vector<Vec> C(k); for (int c = 0; c < k; c++) C[c] = X[perm[c]];
+    for (int it = 0; it < iters; it++) {
+        std::vector<Vec> sum(k, Vec(dim, 0)); std::vector<int> cnt(k, 0);
+        for (auto& x : X) { int b = 0; float bd = 1e30f; for (int c = 0; c < k; c++) { float d = l2(x.data(), C[c].data(), dim); if (d < bd) { bd = d; b = c; } } cnt[b]++; for (int i = 0; i < dim; i++) sum[b][i] += x[i]; }
+        for (int c = 0; c < k; c++) if (cnt[c]) for (int i = 0; i < dim; i++) C[c][i] = sum[c][i] / cnt[c]; else C[c] = X[g() % X.size()];
+    }
+    return C;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+struct PQ {
+    int D, m, ksub, dsub; std::vector<std::vector<Vec>> book;              // book[j][c] = 부분 공간 j 의 중심 c
+    PQ(int D, int m, int ksub) : D(D), m(m), ksub(ksub), dsub(D / m) {}
+    void train(const std::vector<Vec>& X, std::mt19937& g) { book.clear(); for (int j = 0; j < m; j++) { std::vector<Vec> sub; for (auto& x : X) sub.emplace_back(x.begin() + j * dsub, x.begin() + (j + 1) * dsub); book.push_back(kmeans(sub, ksub, 12, g)); } }
+    std::vector<uint8_t> encode(const Vec& x) const { std::vector<uint8_t> code(m); for (int j = 0; j < m; j++) { int b = 0; float bd = 1e30f; for (int c = 0; c < ksub; c++) { float d = l2(x.data() + j * dsub, book[j][c].data(), dsub); if (d < bd) { bd = d; b = c; } } code[j] = b; } return code; }
+    Vec decode(const std::vector<uint8_t>& code) const { Vec x(D); for (int j = 0; j < m; j++) for (int i = 0; i < dsub; i++) x[j * dsub + i] = book[j][code[j]][i]; return x; }
+    std::vector<float> table(const Vec& q) const { std::vector<float> t(m * ksub); for (int j = 0; j < m; j++) for (int c = 0; c < ksub; c++) t[j * ksub + c] = l2(q.data() + j * dsub, book[j][c].data(), dsub); return t; }
+    float adc(const std::vector<float>& t, const std::vector<uint8_t>& code) const { float s = 0; for (int j = 0; j < m; j++) s += t[j * ksub + code[j]]; return s; }
+};
+
+int main() {
+    std::mt19937 g(5); std::normal_distribution<float> N(0, 1); int n = 4000, D = 32, C = 30;
+    std::vector<Vec> centers(C, Vec(D)); for (auto& c : centers) for (auto& x : c) x = N(g) * 3;
+    auto sample = [&]() { Vec p = centers[g() % C]; for (auto& x : p) x += N(g); return p; };
+    std::vector<Vec> X; for (int i = 0; i < n; i++) X.push_back(sample());
+    double mse[3]; int ks[3] = {4, 16, 64};
+    for (int t = 0; t < 3; t++) { PQ pq(D, 8, ks[t]); pq.train(X, g); double e = 0; for (int i = 0; i < 500; i++) e += l2(X[i].data(), pq.decode(pq.encode(X[i])).data(), D); mse[t] = e / 500; }
+    assert(mse[0] > mse[1] && mse[1] > mse[2]);                            // 코드북이 클수록 복원 오차가 줄어든다
+    PQ pq(D, 8, 64); pq.train(X, g); std::vector<std::vector<uint8_t>> codes; for (auto& x : X) codes.push_back(pq.encode(x));
+    Vec q = sample(); auto tb = pq.table(q);
+    for (int i = 0; i < 20; i++) assert(std::fabs(pq.adc(tb, codes[i]) - l2(q.data(), pq.decode(codes[i]).data(), D)) < 1e-2f * (1 + pq.adc(tb, codes[i])));   // ADC == 복원 벡터와의 거리
+    int Q = 100, k = 10, R = 100; double recAdc = 0, recRerank = 0;
+    for (int t = 0; t < Q; t++) {
+        Vec qq = sample(); auto T = pq.table(qq);
+        std::vector<std::pair<float, int>> ex, ap; for (int i = 0; i < n; i++) { ex.push_back({l2(qq.data(), X[i].data(), D), i}); ap.push_back({pq.adc(T, codes[i]), i}); }
+        std::partial_sort(ex.begin(), ex.begin() + k, ex.end()); std::partial_sort(ap.begin(), ap.begin() + R, ap.end());
+        std::vector<int> exact; for (int i = 0; i < k; i++) exact.push_back(ex[i].second);
+        int hit = 0; for (int i = 0; i < k; i++) hit += std::find(exact.begin(), exact.end(), ap[i].second) != exact.end(); recAdc += (double)hit / k;
+        std::vector<std::pair<float, int>> rr; for (int i = 0; i < R; i++) rr.push_back({l2(qq.data(), X[ap[i].second].data(), D), ap[i].second}); std::partial_sort(rr.begin(), rr.begin() + k, rr.end());      // 후보 100 개만 원본으로 재순위
+        hit = 0; for (int i = 0; i < k; i++) hit += std::find(exact.begin(), exact.end(), rr[i].second) != exact.end(); recRerank += (double)hit / k;
+    }
+    recAdc /= Q; recRerank /= Q; assert(recRerank >= 0.9 && recRerank >= recAdc);
+    std::cout << "ProductQuantization: 128 B -> " << pq.m << " B per vector (16x), MSE by ksub 4/16/64 = " << mse[0] << "/" << mse[1] << "/" << mse[2] << ", recall@10 ADC only " << recAdc << ", with exact re-rank of top " << R << ": " << recRerank << std::endl; return 0;
+}
+// Time Complexity: 학습 O(m·ksub·N·dsub·반복), 질의 표 만들기 O(ksub·D) + 벡터당 O(m)
+// Space Complexity: 벡터당 m 바이트 + 코드북 m·ksub·dsub
 ```
 ## KDTreeKNN()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "KD-Tree works well for low dimensions but suffers curse of dimensionality." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// KD 트리 kNN(트리 관점의 요약, 정본은 Tree.md Part 11): 최근접 이웃을 k 개로 확장한 탐색 — 최대 힙에 k 개를 유지하고, 분할 평면까지의 거리 제곱이 힙의 최댓값(k 번째 최선)보다 크면 반대쪽을 건너뛴다.
+// 저차원(~10 이하)에서만 효과적이고 차원이 커지면 거의 모든 가지를 방문한다 -> 고차원은 HNSW·IVF·PQ
+typedef std::array<double, 2> P; std::vector<P> a; typedef std::priority_queue<std::pair<double, int>> Heap;
+double sq(const P& x, const P& y) { return (x[0] - y[0]) * (x[0] - y[0]) + (x[1] - y[1]) * (x[1] - y[1]); }
+void build(int lo, int hi, int ax) { if (hi - lo <= 1) return; int m = (lo + hi) / 2; std::nth_element(a.begin() + lo, a.begin() + m, a.begin() + hi, [&](const P& x, const P& y) { return x[ax] < y[ax]; }); build(lo, m, 1 - ax); build(m + 1, hi, 1 - ax); }
+void knn(int lo, int hi, int ax, const P& q, int k, Heap& h) {
+    if (lo >= hi) return; int m = (lo + hi) / 2; double d = sq(a[m], q); if ((int)h.size() < k || d < h.top().first) { h.push({d, m}); if ((int)h.size() > k) h.pop(); }
+    double diff = q[ax] - a[m][ax]; int nl = diff < 0 ? lo : m + 1, nh = diff < 0 ? m : hi, fl = diff < 0 ? m + 1 : lo, fh = diff < 0 ? hi : m;
+    knn(nl, nh, 1 - ax, q, k, h); if ((int)h.size() < k || diff * diff < h.top().first) knn(fl, fh, 1 - ax, q, k, h);
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int main() {
+    std::mt19937 g(1); std::uniform_real_distribution<double> U(0, 1); for (int i = 0; i < 3000; i++) a.push_back({U(g), U(g)}); build(0, a.size(), 0);
+    for (int t = 0; t < 200; t++) { P q = {U(g), U(g)}; Heap h; knn(0, a.size(), 0, q, 5, h); std::vector<double> got, all; while (!h.empty()) { got.push_back(h.top().first); h.pop(); } std::reverse(got.begin(), got.end());
+        for (auto& p : a) all.push_back(sq(p, q)); std::sort(all.begin(), all.end()); for (int i = 0; i < 5; i++) assert(got[i] == all[i]); }
+    std::cout << "KDTreeKNN: 5-NN verified against brute force" << std::endl; return 0;
+}
+// Time Complexity: 질의 평균 O(log N + k) (저차원)
+// Space Complexity: O(N)
 ```
 ## BallTreeKNN()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 볼 트리 kNN(이 책 Part 5 BallTree 의 요약): 점들을 공(중심 c, 반지름 r)으로 묶으면 공 안의 모든 점까지의 거리는 최소 |q-c| - r 이상(삼각부등식). 공을 이 하한이 작은 순서로 방문하다가
+// 하한이 현재 k 번째 최선 이상이면 남은 공 전부를 한꺼번에 버린다. 아래는 한 층짜리(잎 공들의 목록) 판으로 같은 가지치기 규칙을 보인다
+struct Ball { double cx, cy, r; std::vector<std::pair<double, double>> p; };
 int main() {
-    std::cout << "Ball Tree handles non-Euclidean or skewed multi-dimensional data better." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(2); std::uniform_real_distribution<double> U(0, 1); std::vector<std::pair<double, double>> pts; for (int i = 0; i < 4000; i++) pts.push_back({U(g), U(g)});
+    std::sort(pts.begin(), pts.end(), [](auto& a, auto& b) { return (int)(a.first * 16) != (int)(b.first * 16) ? a.first < b.first : a.second < b.second; });   // 격자 비슷하게 정렬 후 32 개씩 묶기
+    std::vector<Ball> balls; for (size_t i = 0; i < pts.size(); i += 32) { Ball b{0, 0, 0, {pts.begin() + i, pts.begin() + std::min(pts.size(), i + 32)}}; for (auto& q : b.p) { b.cx += q.first / b.p.size(); b.cy += q.second / b.p.size(); }
+        for (auto& q : b.p) b.r = std::max(b.r, std::hypot(q.first - b.cx, q.second - b.cy)); balls.push_back(b); }
+    long visitedPts = 0; int Q = 100, k = 5;
+    for (int t = 0; t < Q; t++) {
+        double qx = U(g), qy = U(g); std::vector<std::pair<double, int>> order; for (size_t i = 0; i < balls.size(); i++) order.push_back({std::max(0.0, std::hypot(qx - balls[i].cx, qy - balls[i].cy) - balls[i].r), (int)i}); std::sort(order.begin(), order.end());
+        std::priority_queue<double> h; for (auto& o : order) { if ((int)h.size() == k && o.first >= h.top()) break;                // 하한이 k 번째 최선 이상이면 이후 공은 모두 제외
+            for (auto& p : balls[o.second].p) { visitedPts++; double d = std::hypot(qx - p.first, qy - p.second); if ((int)h.size() < k) h.push(d); else if (d < h.top()) { h.pop(); h.push(d); } } }
+        std::vector<double> all; for (auto& p : pts) all.push_back(std::hypot(qx - p.first, qy - p.second)); std::sort(all.begin(), all.end()); assert(h.top() == all[k - 1]);
+    }
+    std::cout << "BallTreeKNN: exact 5-NN, avg points examined " << visitedPts / Q << " of " << pts.size() << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 질의 평균 O(√N) (한 층 판), 계층 볼 트리는 O(log N)
+// Space Complexity: O(N)
 ```
 ## AnnoyIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// Annoy(Spotify): 랜덤 투영 트리의 숲. 한 트리는 점들을 재귀적으로 둘로 나눈다 — 무작위로 점 a, b 를 뽑아 법선 a-b, 중점을 지나는 초평면으로 가른다(두 점 사이를 수직 이등분).
+// 잎에 점이 K 개 이하로 남으면 멈춘다. 트리 하나는 경계 근처의 이웃을 놓치지만 여러 그루가 서로 다른 무작위 평면으로 놓친 것을 보완한다.
+// 질의: 모든 트리의 루트를 우선순위 큐(우선순위 = 평면까지의 여유 margin, 질의가 평면에서 멀수록 안전)에 넣고, 높은 것부터 꺼내 내려가며 잎의 점들을 후보로 모은다(search_k 개까지, 가까운 쪽 자식 먼저, 먼 쪽 자식은 낮은 우선순위로 큐에).
+// 후보에 대해서만 정확한 거리를 재서 상위 k 개를 돌려준다.  색인 파일을 mmap 으로 공유하기 쉬워 읽기 전용 대규모 데이터에 인기가 있다
+typedef std::vector<float> Vec;
+float dot(const Vec& a, const Vec& b) { float s = 0; for (size_t i = 0; i < a.size(); i++) s += a[i] * b[i]; return s; }
+float l2(const Vec& a, const Vec& b) { float s = 0; for (size_t i = 0; i < a.size(); i++) s += (a[i] - b[i]) * (a[i] - b[i]); return s; }
+struct Annoy {
+    struct Node { Vec normal; float off = 0; int l = -1, r = -1; std::vector<int> items; };
+    std::vector<Vec> pts; std::vector<Node> nodes; std::vector<int> roots; std::mt19937 g{7}; static const int LEAF = 16;
+    int build(std::vector<int>& ids) {
+        int id = nodes.size(); nodes.emplace_back();
+        if ((int)ids.size() <= LEAF) { nodes[id].items = ids; return id; }
+        std::vector<int> L, R;
+        for (int attempt = 0; attempt < 5 && (L.empty() || R.empty()); attempt++) {
+            int a = ids[g() % ids.size()], b = ids[g() % ids.size()]; if (a == b) continue; L.clear(); R.clear();
+            Vec nrm(pts[a].size()), mid(pts[a].size()); for (size_t i = 0; i < nrm.size(); i++) { nrm[i] = pts[a][i] - pts[b][i]; mid[i] = (pts[a][i] + pts[b][i]) / 2; }
+            float off = -dot(nrm, mid); for (int i : ids) (dot(nrm, pts[i]) + off > 0 ? R : L).push_back(i); nodes[id].normal = nrm; nodes[id].off = off;
+        }
+        if (L.empty() || R.empty()) { L.assign(ids.begin(), ids.begin() + ids.size() / 2); R.assign(ids.begin() + ids.size() / 2, ids.end()); nodes[id].normal.assign(pts[0].size(), 0); nodes[id].off = 0; }    // 퇴화 시 임의 분할
+        int l = build(L), r = build(R); nodes[id].l = l; nodes[id].r = r; return id;
+    }
+    void buildForest(int trees) { for (int t = 0; t < trees; t++) { std::vector<int> ids(pts.size()); std::iota(ids.begin(), ids.end(), 0); roots.push_back(build(ids)); } }
+    std::vector<int> search(const Vec& q, int k, int searchK, long* examined = nullptr) {
+        std::priority_queue<std::pair<float, int>> pq; for (int r : roots) pq.push({1e30f, r});
+        std::vector<int> cand;
+        while (!pq.empty() && (int)cand.size() < searchK) {
+            auto [pr, id] = pq.top(); pq.pop(); const Node& nd = nodes[id];
+            if (nd.l < 0) { cand.insert(cand.end(), nd.items.begin(), nd.items.end()); continue; }
+            float margin = dot(nd.normal, q) + nd.off; pq.push({std::min(pr, margin), nd.r}); pq.push({std::min(pr, -margin), nd.l});     // 양의 쪽 자식은 +margin, 음의 쪽은 -margin
+        }
+        std::sort(cand.begin(), cand.end()); cand.erase(std::unique(cand.begin(), cand.end()), cand.end()); if (examined) *examined += cand.size();
+        std::vector<std::pair<float, int>> sc; for (int i : cand) sc.push_back({l2(q, pts[i]), i}); int kk = std::min<int>(k, sc.size()); std::partial_sort(sc.begin(), sc.begin() + kk, sc.end());
+        std::vector<int> out; for (int i = 0; i < kk; i++) out.push_back(sc[i].second); return out;
+    }
+};
+
 int main() {
-    std::cout << "Annoy uses forests of random hyperplanes for ANN search." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(4); std::normal_distribution<float> N(0, 1); int n = 5000, D = 16, C = 25, k = 10;
+    std::vector<Vec> centers(C, Vec(D)); for (auto& c : centers) for (auto& x : c) x = N(g) * 4;
+    auto sample = [&]() { Vec p = centers[g() % C]; for (auto& x : p) x += N(g); return p; };
+    Annoy a10, a50; for (int i = 0; i < n; i++) { Vec p = sample(); a10.pts.push_back(p); a50.pts.push_back(p); } a10.buildForest(10); a50.buildForest(50);
+    double r10 = 0, r50 = 0; long ex = 0; int Q = 150;
+    for (int t = 0; t < Q; t++) {
+        Vec q = sample(); std::vector<std::pair<float, int>> all; for (int i = 0; i < n; i++) all.push_back({l2(q, a10.pts[i]), i}); std::partial_sort(all.begin(), all.begin() + k, all.end());
+        std::vector<int> exact; for (int i = 0; i < k; i++) exact.push_back(all[i].second);
+        auto score = [&](const std::vector<int>& r) { int hit = 0; for (int x : r) hit += std::find(exact.begin(), exact.end(), x) != exact.end(); return (double)hit / k; };
+        r10 += score(a10.search(q, k, 400)); r50 += score(a50.search(q, k, 2000, &ex));
+    }
+    r10 /= Q; r50 /= Q; assert(r50 >= 0.85 && r50 >= r10 - 0.02 && (double)ex / Q < n / 2.0);     // 트리를 늘리고 search_k 를 키우면 recall 이 오르고, 전수 탐색보다 훨씬 적은 후보만 본다
+    std::cout << "AnnoyIndex: recall@10 with 10 trees/search_k 400 = " << r10 << ", 50 trees/search_k 2000 = " << r50 << ", avg candidates examined " << ex / Q << " of " << n << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 구성 O(트리 수 · N log N), 질의 O(search_k + 후보 정확 거리)
+// Space Complexity: O(트리 수 · N)
 ```
 ## FAISSIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "FAISS is a highly optimized C++/CUDA library for similarity search." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// FAISS(Facebook AI Similarity Search)의 대표 색인 조합 IVF-PQ ("IVFADC"). 역색인(IVF)으로 후보를 군집 몇 개로 좁히고, 후보 벡터는 곱 양자화(PQ)로 압축해 둔다.
+// 핵심은 "잔차(residual) 양자화": 벡터 x 를 군집 중심 c 와의 차이 r = x - c 로 바꿔 PQ 를 학습하면, 잔차의 분산이 원래보다 훨씬 작아 같은 코드 크기에서 오차가 줄어든다.
+// 질의: 가까운 nprobe 개 군집마다 q - c 를 기준으로 PQ 거리표를 만들어 해당 군집 코드들의 ADC 거리를 구하고, 상위 R 개를 원본 벡터로 재순위한다. FAISS 는 이런 색인을 "IVF64,PQ8" 같은 문자열 한 줄로 만든다(index factory)
+typedef std::vector<float> Vec;
+float l2(const float* a, const float* b, int d) { float s = 0; for (int i = 0; i < d; i++) s += (a[i] - b[i]) * (a[i] - b[i]); return s; }
+std::vector<Vec> kmeans(const std::vector<Vec>& X, int k, int iters, std::mt19937& g) {
+    int dim = X[0].size(); std::vector<int> perm(X.size()); std::iota(perm.begin(), perm.end(), 0); std::shuffle(perm.begin(), perm.end(), g);
+    std::vector<Vec> C(k); for (int c = 0; c < k; c++) C[c] = X[perm[c]];
+    for (int it = 0; it < iters; it++) {
+        std::vector<Vec> sum(k, Vec(dim, 0)); std::vector<int> cnt(k, 0);
+        for (auto& x : X) { int b = 0; float bd = 1e30f; for (int c = 0; c < k; c++) { float d = l2(x.data(), C[c].data(), dim); if (d < bd) { bd = d; b = c; } } cnt[b]++; for (int i = 0; i < dim; i++) sum[b][i] += x[i]; }
+        for (int c = 0; c < k; c++) if (cnt[c]) for (int i = 0; i < dim; i++) C[c][i] = sum[c][i] / cnt[c]; else C[c] = X[g() % X.size()];
+    }
+    return C;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+struct IVFPQ {
+    int D, nlist, m, ksub, dsub; std::vector<Vec> cents; std::vector<std::vector<Vec>> book;
+    struct Entry { int id; std::vector<uint8_t> code; }; std::vector<std::vector<Entry>> lists; const std::vector<Vec>* data = nullptr;
+    IVFPQ(int D, int nlist, int m, int ksub) : D(D), nlist(nlist), m(m), ksub(ksub), dsub(D / m) {}
+    int nearestCentroid(const Vec& x) const { int b = 0; float bd = 1e30f; for (int c = 0; c < nlist; c++) { float d = l2(x.data(), cents[c].data(), D); if (d < bd) { bd = d; b = c; } } return b; }
+    void build(const std::vector<Vec>& X, std::mt19937& g) {
+        data = &X; cents = kmeans(X, nlist, 10, g); std::vector<Vec> res; for (auto& x : X) { int c = nearestCentroid(x); Vec r(D); for (int i = 0; i < D; i++) r[i] = x[i] - cents[c][i]; res.push_back(r); }
+        for (int j = 0; j < m; j++) { std::vector<Vec> sub; for (auto& r : res) sub.emplace_back(r.begin() + j * dsub, r.begin() + (j + 1) * dsub); book.push_back(kmeans(sub, ksub, 10, g)); }
+        lists.assign(nlist, {});
+        for (size_t i = 0; i < X.size(); i++) { int c = nearestCentroid(X[i]); std::vector<uint8_t> code(m);
+            for (int j = 0; j < m; j++) { int b = 0; float bd = 1e30f; for (int s = 0; s < ksub; s++) { float d = 0; for (int t = 0; t < dsub; t++) { float diff = X[i][j * dsub + t] - cents[c][j * dsub + t] - book[j][s][t]; d += diff * diff; } if (d < bd) { bd = d; b = s; } } code[j] = b; }
+            lists[c].push_back({(int)i, code}); }
+    }
+    std::vector<int> search(const Vec& q, int k, int nprobe, int R) const {
+        std::vector<std::pair<float, int>> cd; for (int c = 0; c < nlist; c++) cd.push_back({l2(q.data(), cents[c].data(), D), c}); std::partial_sort(cd.begin(), cd.begin() + nprobe, cd.end());
+        std::vector<std::pair<float, int>> cand;
+        for (int p = 0; p < nprobe; p++) { int c = cd[p].second; std::vector<float> T(m * ksub);
+            for (int j = 0; j < m; j++) for (int s = 0; s < ksub; s++) { float d = 0; for (int t = 0; t < dsub; t++) { float diff = q[j * dsub + t] - cents[c][j * dsub + t] - book[j][s][t]; d += diff * diff; } T[j * ksub + s] = d; }       // q - c 에 대한 거리표
+            for (auto& e : lists[c]) { float d = 0; for (int j = 0; j < m; j++) d += T[j * ksub + e.code[j]]; cand.push_back({d, e.id}); } }
+        int rr = std::min<int>(R, cand.size()); std::partial_sort(cand.begin(), cand.begin() + rr, cand.end());
+        std::vector<std::pair<float, int>> fin; for (int i = 0; i < rr; i++) fin.push_back({l2(q.data(), (*data)[cand[i].second].data(), D), cand[i].second});
+        int kk = std::min<int>(k, fin.size()); std::partial_sort(fin.begin(), fin.begin() + kk, fin.end()); std::vector<int> out; for (int i = 0; i < kk; i++) out.push_back(fin[i].second); return out;
+    }
+};
+
+int main() {
+    std::mt19937 g(6); std::normal_distribution<float> N(0, 1); int n = 6000, D = 32, C = 30, k = 10;
+    std::vector<Vec> centers(C, Vec(D)); for (auto& c : centers) for (auto& x : c) x = N(g) * 3;
+    auto sample = [&]() { Vec p = centers[g() % C]; for (auto& x : p) x += N(g); return p; };
+    std::vector<Vec> X; for (int i = 0; i < n; i++) X.push_back(sample());
+    IVFPQ idx(D, 32, 8, 64); idx.build(X, g);
+    size_t total = 0; for (auto& l : idx.lists) total += l.size(); assert(total == (size_t)n);
+    // ADC 항등식: 질의가 속한 군집의 거리표 합 == q 와 (중심 + 복원 잔차) 의 거리
+    { Vec q = sample(); int c = idx.nearestCentroid(q); for (int t = 0; t < 10 && t < (int)idx.lists[c].size(); t++) { auto& e = idx.lists[c][t]; float viaTable = 0, direct = 0;
+        for (int j = 0; j < idx.m; j++) for (int i = 0; i < idx.dsub; i++) { float d = q[j * idx.dsub + i] - idx.cents[c][j * idx.dsub + i] - idx.book[j][e.code[j]][i]; direct += d * d; }
+        for (int j = 0; j < idx.m; j++) { float s = 0; for (int i = 0; i < idx.dsub; i++) { float d = q[j * idx.dsub + i] - idx.cents[c][j * idx.dsub + i] - idx.book[j][e.code[j]][i]; s += d * d; } viaTable += s; }
+        assert(std::fabs(viaTable - direct) < 1e-3f * (1 + direct)); } }
+    int Q = 100; double rec = 0, recNoRerank = 0;
+    for (int t = 0; t < Q; t++) {
+        Vec q = sample(); std::vector<std::pair<float, int>> all; for (int i = 0; i < n; i++) all.push_back({l2(q.data(), X[i].data(), D), i}); std::partial_sort(all.begin(), all.begin() + k, all.end());
+        std::vector<int> exact; for (int i = 0; i < k; i++) exact.push_back(all[i].second);
+        auto score = [&](const std::vector<int>& r) { int hit = 0; for (int x : r) hit += std::find(exact.begin(), exact.end(), x) != exact.end(); return (double)hit / k; };
+        rec += score(idx.search(q, k, 8, 100)); recNoRerank += score(idx.search(q, k, 8, k));              // R=k 이면 사실상 ADC 순위만 사용
+    }
+    rec /= Q; recNoRerank /= Q; assert(rec >= 0.85 && rec >= recNoRerank);
+    std::cout << "FAISSIndex (IVF" << idx.nlist << ",PQ" << idx.m << "): " << D * 4 << " B -> " << idx.m << " B + id per vector, recall@10 with nprobe=8: ADC only " << recNoRerank << ", re-rank top 100 " << rec << std::endl; return 0;
+}
+// Time Complexity: 질의 O(nlist·D + nprobe·(ksub·D + 목록 길이·m) + R·D)
+// Space Complexity: 벡터당 m 바이트 + id, 코드북·중심 O(nlist·D + m·ksub·dsub)
 ```
 
 # Part 13. 데이터베이스
