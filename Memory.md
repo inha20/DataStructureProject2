@@ -542,6 +542,7 @@ int main() {
 #include <string>
 #include <utility>
 
+#pragma GCC diagnostic ignored "-Wpessimizing-move"      // makeMoveReturn 이 일부러 보이는 역효과이므로 컴파일러 경고를 끈다
 // 반환 방식: 작은 값은 레지스터(rax)로, 큰 구조체는 호출자가 마련한 공간의 주소를 숨은 인자(sret)로 넘겨 거기에 직접 만든다.  C++17 부터 순수 우측값(prvalue) 반환은 복사·이동이 아예 일어나지 않는다 (보장된 복사 생략).
 //  이름 있는 지역 변수 반환은 NRVO(허용, 보장은 아님) — 허용되지 않으면 이동으로 폴백한다.  `return std::move(local)` 은 NRVO 를 막는 *역효과*다.
 //  각 반환 방식에서 복사·이동 횟수를 센다.  규칙에서 *보장되는* 값만 정확히 단언하고(보장 생략 0/0, std::move 반환 이동 1, 두 이름 있는 후보 중 하나를 고르는 반환은 이동 ≤ 1, 멤버 반환은 복사 1, 정적 객체 반환은 복사 1, 매개변수 반환은 이동 1), NRVO 는 "복사 0, 이동 ≤ 1" 로 허용 범위를 확인한다.
@@ -653,12 +654,13 @@ int main() {
 //  같은 함수를 재귀로 부르면 프레임 크기가 같으므로 *깊이가 한 칸 깊어질 때마다 주소가 정확히 같은 간격(stride)으로 줄어든다*.  간격은 지역 변수가 커지면 그만큼 커진다.
 //  ① 깊이 60 재귀의 프레임 주소가 엄격히 감소하고 간격이 *모두 같다* (16 바이트 정렬)  ② 지역 배열 64 / 256 / 1024 바이트 함수의 간격 차이가 배열 크기 차이와 ±64 바이트 안에서 일치  ③ 호출된 함수의 `__builtin_frame_address(1)` (= 호출자의 프레임 주소)이 바로 위 깊이의 프레임 주소와 같다
 //  ④ 서로 다른 함수 두 개가 번갈아 호출해도(상호 재귀) 프레임 주소가 계속 감소한다.  꼬리 호출 제거를 막으려고 호출 뒤에 컴파일러 장벽을 둔다.
+#pragma GCC diagnostic ignored "-Wframe-address"          // __builtin_frame_address(1) 은 호출자 프레임을 보려는 일부러의 사용
 template <int N> __attribute__((noinline)) uintptr_t dive(int d, std::vector<uintptr_t>& addrs, std::vector<uintptr_t>& callerAddrs) {
-    volatile char buf[N]; buf[0] = (char)d; addrs.push_back((uintptr_t)__builtin_frame_address(0)); if (d < 59) callerAddrs.push_back((uintptr_t)__builtin_frame_address(1));
+    volatile char buf[N]; asm volatile("" : : "r"(buf) : "memory"); buf[0] = (char)d;                   // 주소를 내보내 컴파일러가 쓰는 두 칸만 남기고 배열을 줄이지 못하게 한다 addrs.push_back((uintptr_t)__builtin_frame_address(0)); if (d < 59) callerAddrs.push_back((uintptr_t)__builtin_frame_address(1));
     uintptr_t r = d == 0 ? 0 : dive<N>(d - 1, addrs, callerAddrs); asm volatile("" ::: "memory"); buf[N - 1] = (char)r; return r + buf[0]; }
 __attribute__((noinline)) uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs);
-__attribute__((noinline)) uintptr_t pong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[48]; pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pingpong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
-__attribute__((noinline)) uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[16]; pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
+__attribute__((noinline)) uintptr_t pong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[48]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pingpong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
+__attribute__((noinline)) uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[16]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
 template <int N> long strideOf() { std::vector<uintptr_t> addrs, callers; dive<N>(59, addrs, callers); assert(addrs.size() == 60); long stride = (long)(addrs[0] - addrs[1]);
     for (size_t i = 1; i < addrs.size(); ++i) { assert(addrs[i] < addrs[i - 1] && (long)(addrs[i - 1] - addrs[i]) == stride && addrs[i] % 16 == 0); }                       // ① 엄격히 감소 + 같은 간격 + 16 바이트 정렬
     for (size_t i = 1; i < addrs.size(); ++i) assert(callers[i - 1] == addrs[i - 1]);                                                                                         // ③ 호출자의 프레임 주소 = 바로 위 프레임
@@ -698,9 +700,9 @@ int main() {
 // audit: no-sanitize (새니타이저가 프레임 크기를 바꿔 측정값이 달라진다)
 static volatile long* progress = nullptr; static uintptr_t lastAddr = 0;
 __attribute__((noinline)) long dive(long d, long stop) {
-    volatile char pad[256]; pad[0] = (char)d; if (progress) *progress = d; if (d == stop) { lastAddr = (uintptr_t)__builtin_frame_address(0); return d; }
+    volatile char pad[256]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = (char)d; if (progress) *progress = d; if (d == stop) { lastAddr = (uintptr_t)__builtin_frame_address(0); return d; }
     long r = dive(d + 1, stop); asm volatile("" ::: "memory"); return r + pad[0] - pad[0]; }
-__attribute__((noinline)) long depthSum(long d) { volatile char pad[64]; pad[0] = 1; long r = d == 0 ? 0 : d + depthSum(d - 1); asm volatile("" ::: "memory"); return r + pad[0] - 1; }
+__attribute__((noinline)) long depthSum(long d) { volatile char pad[64]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; long r = d == 0 ? 0 : d + depthSum(d - 1); asm volatile("" ::: "memory"); return r + pad[0] - 1; }
 
 int main() {
     dive(0, 0); uintptr_t a = lastAddr; dive(0, 200); uintptr_t b = lastAddr; size_t perFrame = (a - b) / 200; assert(perFrame >= 256 && perFrame < 1024 && (a - b) % 200 == 0);                    // ① 프레임 하나가 차지하는 바이트
@@ -860,7 +862,7 @@ int main() {
     assert(Obj::alive == 0);
     bool threw = false;
     volatile size_t huge = (size_t)-1 / 2;                             // 컴파일러가 상수로 판단하지 못하게 volatile
-    try { new char[huge]; } catch (const std::bad_alloc&) { threw = true; }
+    try { char* volatile sink = new char[huge]; (void)sink; } catch (const std::bad_alloc&) { threw = true; }       // 결과를 volatile 에 담아 컴파일러가 안 쓰는 할당을 지우지 못하게 한다
     assert(threw);                                                      // 실패 -> 예외
     assert(new (std::nothrow) char[huge] == nullptr);                  // 실패 -> nullptr
     std::cout << "new/delete: allocs=" << allocs << " frees=" << frees << std::endl;
@@ -2779,7 +2781,7 @@ int main() {
         assert(lostBits == (std::set<uint32_t>{1, 2, 3})); }                                                         // 읽고-쓰기면 결과 {비트0 만, 비트1 만, 둘 다} — 한 비트가 사라지는 실행이 존재
     {   std::atomic<int> a(5); assert(a.exchange(9) == 5 && a.load() == 9 && a.fetch_sub(4) == 9 && a.load() == 5 && a.fetch_add(0) == 5);                          // ④ 의미
         int expected = 3; bool ok = a.compare_exchange_strong(expected, 100); assert(!ok && expected == 5 && a.load() == 5); ok = a.compare_exchange_strong(expected, 100); assert(ok && a.load() == 100);
-        std::atomic<char> c; std::atomic<short> s; std::atomic<int> i; std::atomic<long long> l; assert(c.is_lock_free() && s.is_lock_free() && i.is_lock_free() && l.is_lock_free()); static_assert(std::atomic<int>::is_always_lock_free, "int atomics are lock-free"); assert(!std::atomic<Big>::is_always_lock_free); }          // 64 바이트 구조체는 항상 잠금 없음이 *아니다* (구현이 내부 잠금을 쓴다)
+        static_assert(std::atomic<char>::is_always_lock_free && std::atomic<short>::is_always_lock_free && std::atomic<int>::is_always_lock_free && std::atomic<long long>::is_always_lock_free, "1·2·4·8 바이트 원자 변수는 잠금이 없다"); assert(!std::atomic<Big>::is_always_lock_free); }          // 64 바이트 구조체는 항상 잠금 없음이 *아니다* (구현이 내부 잠금을 쓴다)
     std::cout << "AtomicOperation: enumerating every interleaving, non-atomic counters ended anywhere in [2, T*K] (e.g. {2,3,4} for 2 threads x 2 increments) while atomic increments always gave exactly T*K; 4 real threads gave exactly 800000 with fetch_add, a test-and-set lock protected a plain counter, and concurrent fetch_or never lost a bit" << std::endl;
     return 0;
 }
@@ -3084,10 +3086,13 @@ int main() {
 //  ① 오류 경로의 누수: 누수 함수 / 조기 반환 / RAII 버전을 실행했을 때 카운터가 정확히 예상만큼 늘어난다(여기서 일부러 샌 블록은 마지막에 모두 해제해 프로그램 자체는 누수가 없다)
 //  ② 순환 shared_ptr 은 스코프를 떠나도 객체 2 개가 *살아 있고*(weak_ptr 이 만료되지 않음), 순환을 끊으면 0 이 되며, weak_ptr 로 만든 구조는 처음부터 새지 않는다
 //  ③ 추적기 대조: 무작위 할당/해제 프로그램 20 만 번(사이트 16 곳, 크기 1..4096)에서 *해제하지 않은 블록의 목록·사이트별 개수·총 바이트*가 오라클과 같고 이중/잘못된 해제는 거부  ④ 100 만 번 할당·해제에서 1000 번에 한 번씩 일부러 빠뜨리면 보고된 누수가 정확히 1000 건.
-static long liveAllocs = 0;
-void* operator new(size_t n) { void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); liveAllocs++; return p; }
-void operator delete(void* p) noexcept { if (p) liveAllocs--; std::free(p); }
-void operator delete(void* p, size_t) noexcept { if (p) liveAllocs--; std::free(p); }
+static volatile long liveAllocs = 0;                                      // volatile: 컴파일러는 new 호출이 전역 변수를 바꾸지 않는다고 가정하고 읽기를 앞당길 수 있다
+void* operator new(size_t n) { void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); liveAllocs = liveAllocs + 1; return p; }
+void operator delete(void* p) noexcept { if (p) liveAllocs = liveAllocs - 1; std::free(p); }
+void operator delete(void* p, size_t) noexcept { if (p) liveAllocs = liveAllocs - 1; std::free(p); }
+void* operator new[](size_t n) { return operator new(n); }                // 배열 형태도 같은 계수기를 지나가게 한다 (새니타이저는 자기 new[] 를 쓴다)
+void operator delete[](void* p) noexcept { operator delete(p); }
+void operator delete[](void* p, size_t) noexcept { operator delete(p); }
 static void* volatile sink;                                             // 포인터를 "사용" 한 것처럼 보이게 해 컴파일러가 할당을 통째로 제거하지 못하게 한다
 __attribute__((noinline)) void touch(void* p) { sink = p; }
 static int* leakedArrays[8]; static int* leakedSingles[8]; static int nArrays = 0, nSingles = 0;                      // 일부러 샌 블록을 마지막에 정리하려는 기록 (할당 없이 고정 배열)
@@ -3117,7 +3122,7 @@ int main() {
     for (int step = 0; step < 200000; ++step) { int op = (int)(rng() % 10);
         if (op < 6 || blocks.empty()) { size_t n = 1 + rng() % 4096; int site = (int)(rng() % 16); void* p = tr.alloc(n, site); blocks.push_back(p); oracle[p] = {n, site}; }
         else if (op < 9) { size_t k = rng() % blocks.size(); void* p = blocks[k]; assert(tr.release(p)); assert(!tr.release(p)); oracle.erase(p); blocks[k] = blocks.back(); blocks.pop_back(); ++invalidRejected; }          // 이중 해제는 거부
-        else { int dummy; assert(!tr.release(&dummy)); ++invalidRejected; } }
+        else { void* foreign = std::malloc(8); assert(!tr.release(foreign)); std::free(foreign); ++invalidRejected; } }
     std::map<int, size_t> expectSites; size_t expectBytes = 0; for (auto& kv : oracle) { ++expectSites[kv.second.second]; expectBytes += kv.second.first; }
     assert(tr.live.size() == oracle.size() && tr.bySite() == expectSites && tr.bytes == expectBytes && invalidRejected > 1000); tr.cleanup();
     {   Tracker t2; std::set<void*> leaked; for (int i = 0; i < 1000000; ++i) { void* p = t2.alloc(8, i % 16); if (i % 1000 == 999) leaked.insert(p); else assert(t2.release(p)); } assert(t2.live.size() == 1000 && t2.bytes == 8000);          // ④ 정확히 1000 건
@@ -3261,7 +3266,8 @@ private:
     std::map<size_t, std::pair<size_t, bool>> blocks; size_t next = 4096, liveCnt = 0;
 };
 struct Counted { static int ctors, dtors; static std::map<int, int> destroyedOnce; int id; explicit Counted(int i) : id(i) { ++ctors; } ~Counted() { ++dtors; ++destroyedOnce[id]; } }; int Counted::ctors = 0, Counted::dtors = 0; std::map<int, int> Counted::destroyedOnce;
-void freeTwice(volatile char* p) { std::free((void*)p); std::free((void*)p); }
+void (*volatile freeFn)(void*) = std::free;                                   // 함수 포인터를 거치면 컴파일러가 두 번째 free 를 분석·삭제하지 못한다
+void freeTwice(volatile char* p) { freeFn((void*)p); freeFn((void*)p); }
 
 int main() {
     std::mt19937 rng(1041); CheckedHeap h; std::vector<std::pair<size_t, size_t>> ever; std::map<size_t, bool> alive; long counts[4] = {0, 0, 0, 0};                                  // ① 무작위 프로그램
@@ -3865,7 +3871,8 @@ constexpr uint64_t TASK_SIZE = 0x0000800000000000ULL;
 bool userSpace(uint64_t va) { return va < TASK_SIZE; }
 bool accessOkNaive(uint64_t p, uint64_t n) { return p + n <= TASK_SIZE; }                                                                                              // 되감기면 틀림
 bool accessOk(uint64_t p, uint64_t n) { return n <= TASK_SIZE && p <= TASK_SIZE - n; }                                                                                  // 안전한 식
-bool accessOkOracle(uint64_t p, uint64_t n) { return (unsigned __int128)p + n <= TASK_SIZE; }                                                                          // 폭을 넓혀 되감김이 없는 기준
+__extension__ typedef unsigned __int128 u128;                                                                                                                              // -pedantic 에서도 경고 없이 128 비트 정수 사용
+bool accessOkOracle(uint64_t p, uint64_t n) { return (u128)p + n <= TASK_SIZE; }                                                                          // 폭을 넓혀 되감김이 없는 기준
 
 int main() {
     assert(userSpace(0x00007fffffffffffULL) && !userSpace(0xffff800000000000ULL) && !userSpace(0xffffffff81000000ULL) && !userSpace(TASK_SIZE));
@@ -4801,7 +4808,7 @@ int main() {
 
 // 소프트웨어 트랜잭셔널 메모리(STM, TL2 방식): 락 대신 트랜잭션으로 공유 변수를 다룬다.  읽기는 낙관적으로(락 없이) 하고 쓰기는 버퍼에 모았다가,
 // 커밋할 때 "내가 읽은 변수들이 시작 이후 바뀌지 않았는가"(버전 검증)를 확인한다.  충돌했으면 버리고 처음부터 재시도 — 교착 상태가 없고 조합이 쉽다
-struct TVar { int value = 0; std::atomic<long> version{0}; };
+struct TVar { std::atomic<int> value{0}; std::atomic<long> version{0}; };       // 낙관적 읽기와 커밋 쓰기가 겹칠 수 있으므로 값도 원자 변수로 둔다 (겹침은 버전 검사로 걸러낸다)
 std::atomic<long> globalClock(0); std::mutex commitLock;
 
 struct Tx {
@@ -5067,9 +5074,10 @@ int main() {
 //  스택은 거부된 해제가 쌓여 결국 공간이 바닥나고(남는 할당 실패), 힙은 무작위 수명에서 탐색 단계가 늘고 외부 단편화가 생기지만 모든 해제를 받아 준다 — 힙의 불변식(블록이 영역을 빈틈없이 덮음, 인접한 빈 블록 없음, 바이트 소유 배열과 일치)을 매 단계 점검
 //  ③ 실제 주소: 중첩 호출의 지역 변수 주소는 한 방향으로 단조(스택은 한 방향으로 자란다)이고, 같은 깊이에서 호출하면 *같은 주소* 가 재사용되는 반면 힙 블록은 해제 전까지 겹치지 않음  ④ (Linux) 8 MiB 스택 한도: 자식 프로세스에서 64 MiB 지역 배열을 만지면 SIGSEGV, 같은 크기의 힙은 성공
 // audit: no-sanitize (스택 한도 초과를 일부러 일으킨다)
-static long newCalls = 0;
+static volatile long newCalls = 0;                             // volatile: new 호출이 전역을 바꾸지 않는다는 컴파일러의 가정을 막는다
+static void* volatile escapeSink;                              // 객체 주소를 밖으로 내보내 new/delete 쌍 전체가 제거되지 않게 한다
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"      // 전역 new/delete 를 malloc/free 로 바꿔 치우는 것이 이 실험의 목적
-void* operator new(size_t n) { newCalls++; void* p = std::malloc(n); if (!p) throw std::bad_alloc(); return p; }
+void* operator new(size_t n) { newCalls = newCalls + 1; void* p = std::malloc(n); if (!p) throw std::bad_alloc(); return p; }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, size_t) noexcept { std::free(p); }
 struct Point { int x, y; };
@@ -5105,7 +5113,7 @@ int main() {
     long before = newCalls;
     for (int i = 0; i < 1000; i++) { volatile Point p{i, i}; (void)p.x; }                                                                                                       // ① 스택 객체
     assert(newCalls == before);
-    for (int i = 0; i < 1000; i++) { Point* p = new Point{i, i}; delete p; }
+    for (int i = 0; i < 1000; i++) { Point* p = new Point{i, i}; escapeSink = p; delete p; }
     assert(newCalls == before + 1000);
     Point* escaped = new Point{3, 4}; assert(escaped->y == 4); delete escaped;                                                                                                    // 힙 객체는 함수가 끝나도 살아남을 수 있다
     std::mt19937 rng(909); const size_t CAP = 1 << 15;
@@ -5495,7 +5503,7 @@ int main() {
         for (int stride : {8, 16, 24, 32, 48, 64, 72, 128}) { auto ev = slotArray(base, 8, stride); auto cls = classify(ev); int falseLines = countClass(cls, FALSE_SHARED);
             int expect = 0; if (stride >= 64) { expect = 0; } else if (64 % stride == 0) { int k = 64 / stride; expect = 8 / k + (8 % k >= 2 ? 1 : 0); } else { std::map<uintptr_t, int> sharers; for (int t = 0; t < 8; ++t) { uintptr_t lo = base + (uintptr_t)t * stride, hi = lo + 8; for (uintptr_t l = lo / LINE; l <= (hi - 1) / LINE; ++l) ++sharers[l]; } for (auto& kv : sharers) expect += kv.second >= 2; }   // 약수가 아니면 라인별로 직접 센다
             assert(falseLines == expect); assert(countClass(cls, TRUE_SHARED) == 0); if (stride >= 64 && stride % 64 == 0) assert(falseLines == 0 && countClass(cls, PRIVATE) == 8);
-            if (stride < 64) { size_t padded = (stride + 63) / 64 * 64; auto fixedLayout = slotArray(base, 8, (int)padded); assert(countClass(classify(fixedLayout), FALSE_SHARED) == 0); assert(8 * (padded - stride) == 8 * (64 - stride) || stride % 64 != 0); } }              // ③ 패딩이 고친다
+            if (stride < 64) { size_t padded = (stride + 63) / 64 * 64; auto fixedLayout = slotArray(base, 8, (int)padded); assert(countClass(classify(fixedLayout), FALSE_SHARED) == 0); assert(8 * ((int)padded - stride) == 8 * (64 - stride) || stride % 64 != 0); } }              // ③ 패딩이 고친다
         std::vector<Event> cfg; for (int t = 0; t < 4; ++t) cfg.push_back({t, base + 0, 8, false}); cfg.push_back({0, base + 8, 8, true}); assert(classify(cfg)[base / LINE] == FALSE_SHARED);                         // 읽기 전용 설정 옆의 카운터: 바이트는 안 겹치지만 거짓 공유
         std::vector<Event> moved; for (int t = 0; t < 4; ++t) moved.push_back({t, base + 0, 8, false}); moved.push_back({0, base + 64, 8, true}); auto mm = classify(moved); assert(mm[base / LINE] == READ_SHARED && mm[base / LINE + 1] == PRIVATE);  // 카운터를 옮기면 읽기 공유 + 비공유
         std::vector<Event> cross = {{0, base + 60, 8, true}, {1, base + 68, 8, true}}; auto cc = classify(cross); assert(cc[base / LINE] == PRIVATE && cc[base / LINE + 1] == FALSE_SHARED); }                          // 라인 경계에 걸친 슬롯
