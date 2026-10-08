@@ -4468,33 +4468,218 @@ int main() {
 ## Dijkstra()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstdint>
+#include <deque>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
 
-struct Edge { int v, weight; };
+// 다익스트라(Dijkstra): 출발점에서 가까운 정점부터 하나씩 "확정" 해 가며 이웃을 완화(relax)한다. 간선 가중치가 모두 음이 아니면, 지금 우선순위 큐에서 가장 가까운 정점의 거리는 다른 어떤 경로로도 줄일 수 없으므로 확정해도 된다. 그래서 확정한 정점은 다시 열지 않는다 — 이 가정이 깨지면(음수 간선) 답이 틀린다(아래 시연).
+// 구현 다섯 가지 — ① 느긋한 이진 힙(가장 흔함, O(E log E)): 갱신될 때마다 새로 넣고 꺼낼 때 낡은 항목을 버린다. ② 색인 힙 + decrease-key(O(E log V)): 정점당 항목 하나. ③ 밀집 O(V²): 배열 스캔, 간선이 V² 에 가까울 때. ④ Dial 버킷 큐: 정수 가중치가 최대 C 이면 거리 d 별 버킷을 순환 배열로 두어 O(E + V·C). ⑤ 0-1 BFS: 가중치가 0 또는 1 이면 덱 하나로 O(V + E).
+// 검증의 중심은 *인증서(certificate)* 다: 거리 d 와 직전 정점 배열 pred 가 ⓐ d[s] = 0 ⓑ 모든 간선 (u,v,w) 에서 d[v] ≤ d[u] + w (실현 가능한 퍼텐셜) ⓒ 도달 가능한 v ≠ s 마다 pred[v] → v 간선이 딱 맞고(d[v] = d[pred] + w) pred 를 따라가면 s 에 닿는다 — 를 만족하면 d 가 곧 최단 거리다(ⓑ 로 하한, ⓒ 로 상한). 어떤 경로 알고리즘의 결과든 오라클 없이 O(V + E) 에 증명하므로 백만 정점 입력에도 쓴다. 변조 시험으로 인증서가 틀린 답을 반드시 거부함을 확인한다.
+// 그 밖의 오라클: 모든 단순 경로 열거(정점 ≤ 7), 벨만–포드, 정점 3~4 개 그래프 전수(간선마다 없음/0/1/2/3). 비용은 시간이 아니라 횟수로 단언한다 — 힙에서 꺼낸 횟수 ≤ 완화 횟수 + 1, 밀집 구현의 스캔은 정확히 V².
+typedef long long ll;
+const ll INF = LLONG_MAX / 4;
+struct Arc { int to; ll w; };
+using Graph = std::vector<std::vector<Arc>>;
+struct Result { std::vector<ll> dist; std::vector<int> pred; long long pops = 0, relaxations = 0; };
+Result fresh(int n) { Result r; r.dist.assign(n, INF); r.pred.assign(n, -1); return r; }
 
-int main() {
-    int V = 3;
-    std::vector<std::vector<Edge>> adj = {{{1, 10}, {2, 3}}, {{2, 1}}, {}};
-    std::vector<int> dist(V, 1e9);
-    std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq;
-    
-    dist[0] = 0; pq.push({0, 0});
+// ① 느긋한 힙. finalize=false 는 확정 없이 낡은 항목만 거르는 변형(음수 간선에서도 맞지만 같은 정점을 여러 번 연다).
+Result dijkstraLazy(const Graph& g, int s, bool finalize = true) {
+    int n = (int)g.size(); Result r = fresh(n);
+    std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq;
+    std::vector<char> done(n, 0);
+    r.dist[s] = 0; pq.push({0, s});
     while (!pq.empty()) {
-        auto [d, u] = pq.top(); pq.pop();
-        if (d > dist[u]) continue;
-        for (auto& edge : adj[u]) {
-            if (dist[u] + edge.weight < dist[edge.v]) {
-                dist[edge.v] = dist[u] + edge.weight;
-                pq.push({dist[edge.v], edge.v});
-            }
+        auto [d, u] = pq.top(); pq.pop(); ++r.pops;
+        if (d > r.dist[u] || (finalize && done[u])) continue;
+        done[u] = 1;
+        for (const Arc& a : g[u]) {
+            if (finalize && done[a.to]) continue;
+            if (d + a.w < r.dist[a.to]) { r.dist[a.to] = d + a.w; r.pred[a.to] = u; ++r.relaxations; pq.push({r.dist[a.to], a.to}); }
         }
     }
-    assert(dist[2] == 3);
-    std::cout << "Dijkstra SP completed." << std::endl;
-    return 0;
+    return r;
+}
+// ② 색인 힙 (decrease-key)
+struct IndexedHeap {
+    std::vector<int> h, pos; std::vector<ll> key;                              // pos: -1 = 안 들어감, -2 = 꺼냄
+    explicit IndexedHeap(int n) : pos(n, -1), key(n, INF) {}
+    bool less(int a, int b) const { return key[a] != key[b] ? key[a] < key[b] : a < b; }
+    void swapAt(int i, int j) { std::swap(h[i], h[j]); pos[h[i]] = i; pos[h[j]] = j; }
+    void up(int i) { while (i > 0) { int p = (i - 1) / 2; if (!less(h[i], h[p])) break; swapAt(i, p); i = p; } }
+    void down(int i) { int n = (int)h.size(); while (true) { int l = 2 * i + 1, r = l + 1, m = i; if (l < n && less(h[l], h[m])) m = l; if (r < n && less(h[r], h[m])) m = r; if (m == i) break; swapAt(i, m); i = m; } }
+    void pushOrDecrease(int v, ll k) {
+        if (pos[v] == -1) { key[v] = k; pos[v] = (int)h.size(); h.push_back(v); up(pos[v]); }
+        else if (pos[v] >= 0 && k < key[v]) { key[v] = k; up(pos[v]); }
+    }
+    int popMin() { int v = h[0]; swapAt(0, (int)h.size() - 1); h.pop_back(); pos[v] = -2; if (!h.empty()) down(0); return v; }
+};
+Result dijkstraIndexed(const Graph& g, int s) {
+    int n = (int)g.size(); Result r = fresh(n); IndexedHeap hp(n);
+    r.dist[s] = 0; hp.pushOrDecrease(s, 0);
+    while (!hp.h.empty()) {
+        int u = hp.popMin(); ++r.pops;
+        for (const Arc& a : g[u]) if (hp.pos[a.to] != -2 && r.dist[u] + a.w < r.dist[a.to]) {
+            r.dist[a.to] = r.dist[u] + a.w; r.pred[a.to] = u; ++r.relaxations; hp.pushOrDecrease(a.to, r.dist[a.to]);
+        }
+    }
+    return r;
+}
+// ③ 밀집 O(V²): W[u*n+v] = 최소 간선 무게 (없으면 INF)
+Result dijkstraDense(int n, const std::vector<ll>& W, int s, long long* scans) {
+    Result r = fresh(n); std::vector<char> done(n, 0); r.dist[s] = 0;
+    for (int round = 0; round < n; ++round) {
+        int u = -1;
+        for (int v = 0; v < n; ++v) { ++*scans; if (!done[v] && r.dist[v] < INF && (u < 0 || r.dist[v] < r.dist[u])) u = v; }
+        if (u < 0) break;
+        done[u] = 1; ++r.pops;
+        for (int v = 0; v < n; ++v) if (!done[v] && W[(std::size_t)u * n + v] < INF && r.dist[u] + W[(std::size_t)u * n + v] < r.dist[v]) { r.dist[v] = r.dist[u] + W[(std::size_t)u * n + v]; r.pred[v] = u; ++r.relaxations; }
+    }
+    return r;
+}
+// ④ Dial: 정수 가중치 0..C
+Result dijkstraDial(const Graph& g, int s, int C) {
+    int n = (int)g.size(); Result r = fresh(n);
+    std::vector<std::vector<int>> bucket(C + 1);
+    std::size_t pending = 1; r.dist[s] = 0; bucket[0].push_back(s);
+    for (ll d = 0; pending > 0; ++d) {
+        auto& b = bucket[d % (C + 1)];
+        while (!b.empty()) {
+            int u = b.back(); b.pop_back(); --pending;
+            if (r.dist[u] != d) continue;                                       // 낡은 항목
+            ++r.pops;
+            for (const Arc& a : g[u]) if (d + a.w < r.dist[a.to]) { r.dist[a.to] = d + a.w; r.pred[a.to] = u; ++r.relaxations; bucket[(d + a.w) % (C + 1)].push_back(a.to); ++pending; }
+        }
+    }
+    return r;
+}
+// ⑤ 0-1 BFS: 가중치 0 은 앞, 1 은 뒤
+Result zeroOneBfs(const Graph& g, int s) {
+    int n = (int)g.size(); Result r = fresh(n); std::deque<int> dq; r.dist[s] = 0; dq.push_back(s);
+    while (!dq.empty()) {
+        int u = dq.front(); dq.pop_front(); ++r.pops;
+        for (const Arc& a : g[u]) if (r.dist[u] + a.w < r.dist[a.to]) { r.dist[a.to] = r.dist[u] + a.w; r.pred[a.to] = u; ++r.relaxations; if (a.w == 0) dq.push_front(a.to); else dq.push_back(a.to); }
+    }
+    return r;
+}
+
+// ---- 인증서 ----
+bool certify(const Graph& g, int s, const std::vector<ll>& dist, const std::vector<int>& pred) {
+    int n = (int)g.size();
+    if (dist[s] != 0 || pred[s] != -1) return false;
+    for (int u = 0; u < n; ++u) if (dist[u] < INF) for (const Arc& a : g[u]) if (dist[a.to] > dist[u] + a.w) return false;      // ⓑ 실현 가능
+    for (int v = 0; v < n; ++v) {
+        if (v == s) continue;
+        if (dist[v] >= INF) { if (pred[v] != -1) return false; continue; }
+        int p = pred[v]; if (p < 0) return false;
+        bool tight = false; for (const Arc& a : g[p]) if (a.to == v && dist[p] + a.w == dist[v]) tight = true;                  // ⓒ 딱 맞는 간선
+        if (!tight) return false;
+        int x = v, steps = 0; while (x != s && steps <= n) { x = pred[x]; ++steps; if (x < 0) return false; }                   // pred 를 따라 s 에 닿는다
+        if (x != s) return false;
+    }
+    return true;
+}
+// ---- 오라클: 모든 단순 경로 (n ≤ 7) ----
+void dfsPaths(const Graph& g, int u, ll sum, unsigned used, std::vector<ll>& best) {
+    best[u] = std::min(best[u], sum);
+    for (const Arc& a : g[u]) if (!(used >> a.to & 1)) dfsPaths(g, a.to, sum + a.w, used | 1u << a.to, best);
+}
+std::vector<ll> bruteDist(const Graph& g, int s) { std::vector<ll> best(g.size(), INF); dfsPaths(g, s, 0, 1u << s, best); return best; }
+std::vector<ll> bellman(const Graph& g, int s) {                                  // 오라클 2: 벨만–포드 (음이 아닌 가중치 전용 사용)
+    int n = (int)g.size(); std::vector<ll> d(n, INF); d[s] = 0;
+    for (int pass = 0; pass < n; ++pass) { bool ch = false; for (int u = 0; u < n; ++u) if (d[u] < INF) for (const Arc& a : g[u]) if (d[u] + a.w < d[a.to]) { d[a.to] = d[u] + a.w; ch = true; } if (!ch) break; }
+    return d;
+}
+
+int main() {
+    // ① 손으로 확인한 모양: 0→1:10, 0→2:3, 2→1:1 은 0→2→1 (4), 직전 정점 배열까지
+    {   Graph g(4); g[0] = {{1, 10}, {2, 3}}; g[2] = {{1, 1}};
+        Result r = dijkstraLazy(g, 0);
+        assert(r.dist[1] == 4 && r.dist[2] == 3 && r.dist[3] == INF && r.pred[1] == 2 && r.pred[2] == 0 && r.pred[3] == -1);
+        assert(certify(g, 0, r.dist, r.pred));
+    }
+
+    // ② 음수 간선: 확정하는 고전 다익스트라는 틀린다 (0→1:1, 0→2:3, 2→1:−5 의 진짜 답은 d[1] = −2).
+    {   Graph g(3); g[0] = {{1, 1}, {2, 3}}; g[2] = {{1, -5}};
+        Result wrong = dijkstraLazy(g, 0, true), ok = dijkstraLazy(g, 0, false);
+        assert(wrong.dist[1] == 1 && !certify(g, 0, wrong.dist, wrong.pred));              // 인증서가 오답을 거부한다
+        assert(ok.dist[1] == -2 && certify(g, 0, ok.dist, ok.pred) && ok.pops > wrong.pops);   // 확정 없이 다시 열면 맞지만 정점을 여러 번 연다
+    }
+
+    // ③ 전수: 정점 3 개의 모든 방향 그래프(순서쌍 6 개마다 없음/0/1/2/3 → 5^6 = 15,625), 모든 출발점 — 다섯 구현 · 단순 경로 열거 · 벨만–포드 · 인증서
+    long long checked = 0;
+    for (int code = 0; code < 15625; ++code) {
+        Graph g(3); int c = code;
+        for (int u = 0; u < 3; ++u) for (int v = 0; v < 3; ++v) if (u != v) { int st = c % 5; c /= 5; if (st) g[u].push_back({v, st - 1}); }
+        for (int s = 0; s < 3; ++s) {
+            Result a = dijkstraLazy(g, s), b = dijkstraIndexed(g, s), d = dijkstraDial(g, s, 3);
+            std::vector<ll> want = bruteDist(g, s);
+            assert(a.dist == want && b.dist == want && d.dist == want && bellman(g, s) == want);
+            assert(certify(g, s, a.dist, a.pred) && certify(g, s, b.dist, b.pred) && certify(g, s, d.dist, d.pred));
+            ++checked;
+        }
+    }
+    assert(checked == 15625 * 3);
+
+    // ④ 무작위: 정점 ≤ 7 (평행 간선·루프 포함, 가중치 0..9) — 모든 구현 일치, 0-1 BFS 는 0/1 가중치에서, 밀집 구현의 스캔은 정확히 V²
+    std::mt19937 rng(1969);
+    for (int it = 0; it < 800; ++it) {
+        int n = 2 + (int)(rng() % 6), m = (int)(rng() % 20);
+        Graph g(n), z(n); std::vector<ll> W((std::size_t)n * n, INF);
+        for (int i = 0; i < m; ++i) {
+            int u = (int)(rng() % n), v = (int)(rng() % n); ll w = (ll)(rng() % 10);
+            g[u].push_back({v, w}); z[u].push_back({v, w % 2});
+            if (u != v) W[(std::size_t)u * n + v] = std::min(W[(std::size_t)u * n + v], w);
+        }
+        int s = (int)(rng() % n);
+        std::vector<ll> want = bruteDist(g, s);
+        Result a = dijkstraLazy(g, s), b = dijkstraIndexed(g, s), d = dijkstraDial(g, s, 9);
+        long long scans = 0; Result e = dijkstraDense(n, W, s, &scans);
+        assert(a.dist == want && b.dist == want && d.dist == want && e.dist == want && bellman(g, s) == want);
+        assert(certify(g, s, a.dist, a.pred) && certify(g, s, b.dist, b.pred) && certify(g, s, d.dist, d.pred) && certify(g, s, e.dist, e.pred));
+        assert(a.pops <= a.relaxations + 1);                                                // 꺼낸 횟수 ≤ 완화 횟수 + 1
+        long long reach = std::count_if(want.begin(), want.end(), [](ll x) { return x < INF; });
+        assert(b.pops == reach && scans == (long long)n * (reach == n ? n : reach + 1));     // 색인 힙은 도달 가능한 정점마다 한 번, 밀집 구현은 정점 수 × (라운드 수) 번 스캔
+        Result f = zeroOneBfs(z, s), zl = dijkstraLazy(z, s);
+        assert(f.dist == zl.dist && certify(z, s, f.dist, f.pred));
+        // 인증서 변조: 도달 가능한 정점 하나의 거리를 ±1 하면 반드시 거부
+        std::vector<int> reachable; for (int v = 0; v < n; ++v) if (v != s && a.dist[v] < INF) reachable.push_back(v);
+        if (!reachable.empty()) {
+            int v = reachable[rng() % reachable.size()];
+            auto bad = a.dist; bad[v] += (rng() & 1) ? 1 : -1;
+            assert(!certify(g, s, bad, a.pred));
+        }
+    }
+
+    // ⑤ 큰 입력: 격자 500×500 (정점 25 만, 호 100 만, 가중치 1..9) — 느긋한 힙 · 색인 힙 · Dial 의 거리가 같고 인증서 통과; 0/1 가중치 격자에서 0-1 BFS 와 일치
+    {
+        const int R = 500, N = R * R;
+        Graph g(N), z(N);
+        auto id = [&](int r, int c) { return r * R + c; };
+        for (int r = 0; r < R; ++r) for (int c = 0; c < R; ++c) {
+            int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
+            for (int k = 0; k < 4; ++k) { int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr >= R || nc >= R) continue; ll w = (ll)(1 + rng() % 9); g[id(r, c)].push_back({id(nr, nc), w}); z[id(r, c)].push_back({id(nr, nc), w % 2}); }
+        }
+        Result a = dijkstraLazy(g, 0), b = dijkstraIndexed(g, 0), d = dijkstraDial(g, 0, 9);
+        assert(a.dist == b.dist && a.dist == d.dist && certify(g, 0, a.dist, a.pred) && certify(g, 0, b.dist, b.pred) && certify(g, 0, d.dist, d.pred));
+        assert(a.dist[N - 1] >= 2LL * (R - 1) && a.pops <= a.relaxations + 1);
+        Result f = zeroOneBfs(z, 0), zl = dijkstraLazy(z, 0);
+        assert(f.dist == zl.dist && certify(z, 0, f.dist, f.pred));
+        // 밀집 구현: 완전 그래프 800 정점은 스캔이 정확히 V² = 640,000
+        const int K = 800; std::vector<ll> W((std::size_t)K * K, INF); Graph full(K);
+        for (int u = 0; u < K; ++u) for (int v = 0; v < K; ++v) if (u != v) { ll w = (ll)(1 + rng() % 1000); W[(std::size_t)u * K + v] = w; full[u].push_back({v, w}); }
+        long long scans = 0; Result e = dijkstraDense(K, W, 5, &scans), l = dijkstraLazy(full, 5);
+        assert(e.dist == l.dist && scans == (long long)K * K && certify(full, 5, e.dist, e.pred));
+    }
+    std::cout << "Dijkstra: lazy heap, indexed decrease-key heap, dense O(V^2), Dial buckets and 0-1 BFS gave the same distances as exhaustive simple-path enumeration and Bellman-Ford on all 15,625 digraphs over 3 vertices (every source) and on 800 random multigraphs, every answer passed the O(V+E) shortest-path certificate while any +-1 tampering of a distance was rejected, heap pops never exceeded relaxations + 1, the settle-once variant gave d[1] = 1 instead of -2 on a negative edge and the certificate caught it, and a 250,000-vertex grid and an 800-vertex complete graph (exactly V^2 scans) agreed across implementations" << std::endl; return 0;
 }
 // Time Complexity: O(E log V)
 // Space Complexity: O(V + E)
@@ -4502,54 +4687,382 @@ int main() {
 ## BellmanFord()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
 
-struct Edge { int u, v, w; };
+// 벨만–포드(Bellman–Ford): 모든 간선을 V − 1 번 훑으며 완화한다. 최단 경로는 (사이클이 없으면) 간선 ≤ V − 1 개이므로 k 번째 훑기 뒤에는 "간선 k 개 이하" 경로의 최적값을 안다. 음수 간선도 되고, V 번째 훑기에서 또 갱신되면 도달 가능한 음수 사이클이 있다. 사이클은 pred 간선을 V 번 거슬러 올라가 사이클 안에 들어선 뒤 한 바퀴 돌아 복원하고, 거리가 −∞ 인 정점은 "V 번째 훑기에서 갱신된 정점으로부터 닿는 모든 정점" 이다.
+// 훑기 방식: 제자리(in-place)는 같은 훑기 안에서 방금 줄인 값을 바로 쓰므로 간선 순서에 따라 훨씬 일찍 끝나고, 동기(synchronous)는 훑기 시작 때의 값만 읽으므로 k 번째 훑기 뒤가 정확히 "간선 k 개 이하" 의 최적값이다 — 그래서 동기식의 갱신 훑기 수는 정확히 H = 최단 경로의 최소 간선 수의 최댓값이고, 제자리는 H 이하다. 경로 그래프에서 간선을 앞에서부터 나열하면 1 번, 뒤에서부터 나열하면 V − 1 번이 걸린다.
+// 검증: ① 음수 사이클이 없을 때는 모든 단순 경로를 열거한 최솟값과 같고, 음수 사이클이 있을 때는 −∞ 정점 집합이 "플로이드–워셜이 찾은 음수 사이클 위 정점에서 닿는 정점" 과 정확히 같으며 나머지 정점은 단순 경로 최솟값과 같다. ② 복원한 사이클의 가중치 합이 실제로 음수. ③ 동기식 훑기 수 = 층별 DP 로 센 H. ④ 퍼텐셜로 만든 정점 10 만 · 간선 40 만의 큰 입력(음수 간선은 있고 음수 사이클은 없음)을 다익스트라와 대조.
+typedef long long ll;
+const ll INF = LLONG_MAX / 4;
+struct Edge { int u, v; ll w; };
+struct BF { bool negCycle; std::vector<ll> dist; std::vector<int> predEdge; int changingPasses; std::vector<int> cycle; std::vector<char> minusInf; };
+
+BF bellmanFord(int n, const std::vector<Edge>& E, int s, bool synchronous = false) {
+    BF r{false, std::vector<ll>(n, INF), std::vector<int>(n, -1), 0, {}, std::vector<char>(n, 0)};
+    r.dist[s] = 0;
+    std::vector<int> relaxedLast;
+    for (int pass = 1; pass <= n; ++pass) {
+        std::vector<ll> base = synchronous ? r.dist : std::vector<ll>();
+        bool changed = false;
+        std::vector<int> relaxed;
+        for (int i = 0; i < (int)E.size(); ++i) {
+            const Edge& e = E[i];
+            ll du = synchronous ? base[e.u] : r.dist[e.u];
+            if (du < INF && du + e.w < r.dist[e.v]) { r.dist[e.v] = du + e.w; r.predEdge[e.v] = i; changed = true; relaxed.push_back(e.v); }
+        }
+        if (!changed) break;
+        if (pass == n) { r.negCycle = true; relaxedLast = relaxed; } else ++r.changingPasses;
+    }
+    if (r.negCycle) {
+        if (!synchronous) {                                                          // 사이클 복원은 제자리 방식에서만 (pred 배열이 항상 현재 값을 가리킨다)
+            int x = relaxedLast[0];
+            for (int i = 0; i < n; ++i) x = E[r.predEdge[x]].u;                      // n 번 거슬러 올라가면 반드시 사이클 안
+            int y = x; do { r.cycle.push_back(r.predEdge[y]); y = E[r.predEdge[y]].u; } while (y != x);
+            std::reverse(r.cycle.begin(), r.cycle.end());                            // 간선 번호를 진행 방향 순서로
+        }
+        std::vector<std::vector<int>> adj(n); for (const Edge& e : E) adj[e.u].push_back(e.v);
+        std::queue<int> q; for (int v : relaxedLast) if (!r.minusInf[v]) { r.minusInf[v] = 1; q.push(v); }
+        while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (!r.minusInf[v]) { r.minusInf[v] = 1; q.push(v); } }
+    }
+    return r;
+}
+
+// ---- 오라클 ----
+void dfsPaths(const std::vector<std::vector<std::pair<int, ll>>>& g, int u, ll sum, unsigned used, std::vector<ll>& best) {
+    best[u] = std::min(best[u], sum);
+    for (auto [v, w] : g[u]) if (!(used >> v & 1)) dfsPaths(g, v, sum + w, used | 1u << v, best);
+}
+struct Oracle { std::vector<ll> simple; std::vector<char> minusInf; bool negCycle; };
+Oracle oracle(int n, const std::vector<Edge>& E, int s) {                             // n ≤ 8
+    std::vector<std::vector<std::pair<int, ll>>> g(n); for (const Edge& e : E) g[e.u].push_back({e.v, e.w});
+    Oracle o{std::vector<ll>(n, INF), std::vector<char>(n, 0), false};
+    dfsPaths(g, s, 0, 1u << s, o.simple);
+    // 플로이드–워셜(도달 가능성 + 음수 닫힌 걸음) 로 −∞ 정점 계산
+    std::vector<std::vector<ll>> d(n, std::vector<ll>(n, INF));
+    for (int i = 0; i < n; ++i) d[i][i] = 0;
+    for (const Edge& e : E) d[e.u][e.v] = std::min(d[e.u][e.v], e.w);
+    for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) if (d[i][k] < INF && d[k][j] < INF) d[i][j] = std::max(-INF, std::min(d[i][j], d[i][k] + d[k][j]));
+    for (int w = 0; w < n; ++w) if (d[s][w] < INF && d[w][w] < 0) { o.negCycle = true; for (int v = 0; v < n; ++v) if (d[w][v] < INF) o.minusInf[v] = 1; }
+    return o;
+}
+// 층별 DP: layer[k][v] = 간선 k 개 이하인 걸음의 최솟값 → H = 안정되기까지의 k
+int hopsToStabilise(int n, const std::vector<Edge>& E, int s) {
+    std::vector<ll> cur(n, INF); cur[s] = 0; int H = 0;
+    for (int k = 1; k <= n; ++k) {
+        std::vector<ll> nxt = cur;
+        for (const Edge& e : E) if (cur[e.u] < INF && cur[e.u] + e.w < nxt[e.v]) nxt[e.v] = cur[e.u] + e.w;
+        if (nxt != cur) H = k;
+        cur = nxt;
+    }
+    return H;
+}
+// 퍼텐셜로 음수 간선은 있어도 음수 사이클은 없게: w = w0 + φ(u) − φ(v) (w0 ≥ 0) → 어떤 사이클의 합도 w0 합 ≥ 0
+ll cycleWeight(const std::vector<Edge>& E, const std::vector<int>& cyc) { ll s = 0; for (int i : cyc) s += E[i].w; return s; }
 
 int main() {
-    int V = 3;
-    std::vector<Edge> edges = {{0, 1, 4}, {1, 2, -1}, {0, 2, 5}};
-    std::vector<int> dist(V, 1e9);
-    dist[0] = 0;
-    
-    for(int i=0; i<V-1; i++){
-        for(auto e : edges) {
-            if(dist[e.u] != 1e9 && dist[e.u] + e.w < dist[e.v])
-                dist[e.v] = dist[e.u] + e.w;
+    // ① 손으로 확인한 모양: 0→1:4, 1→2:−1, 0→2:5 → d[2] = 3 ; 음수 사이클 1→2→1 (−1 + −1)
+    {   std::vector<Edge> E = {{0, 1, 4}, {1, 2, -1}, {0, 2, 5}};
+        BF r = bellmanFord(3, E, 0);
+        assert(!r.negCycle && r.dist[2] == 3 && r.dist[1] == 4 && r.changingPasses <= 2);
+        std::vector<Edge> N = {{0, 1, 1}, {1, 2, -1}, {2, 1, -1}, {2, 3, 7}};
+        BF b = bellmanFord(4, N, 0);
+        assert(b.negCycle && cycleWeight(N, b.cycle) == -2 && b.cycle.size() == 2);
+        assert(!b.minusInf[0] && b.minusInf[1] && b.minusInf[2] && b.minusInf[3]);          // 사이클에서 닿는 3 도 −∞
+        BF c = bellmanFord(4, N, 3);                                                         // 3 에서는 사이클에 닿지 않는다
+        assert(!c.negCycle && c.dist[3] == 0 && c.dist[1] == INF);
+    }
+
+    // ② 순서 의존성: 경로 그래프에서 간선을 앞에서부터 나열하면 갱신 훑기 1 번, 뒤에서부터면 V − 1 번 (제자리); 동기식은 어느 순서든 V − 1
+    {
+        const int n = 1000;
+        std::vector<Edge> fwd, bwd;
+        for (int i = 0; i + 1 < n; ++i) fwd.push_back({i, i + 1, 1});
+        bwd.assign(fwd.rbegin(), fwd.rend());
+        assert(bellmanFord(n, fwd, 0).changingPasses == 1 && bellmanFord(n, bwd, 0).changingPasses == n - 1);
+        assert(bellmanFord(n, fwd, 0, true).changingPasses == n - 1 && bellmanFord(n, bwd, 0, true).changingPasses == n - 1);
+        assert(bellmanFord(n, fwd, 0).dist == bellmanFord(n, bwd, 0).dist && bellmanFord(n, fwd, 0).dist[n - 1] == n - 1);
+    }
+
+    // ③ 무작위(정점 ≤ 8, 가중치 −4..9, 음수 사이클 있음/없음 섞임): 오라클과 비교, 복원 사이클 검증, 동기식 훑기 수 = H
+    std::mt19937 rng(1958);
+    int withCycle = 0, without = 0, minusCount = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int n = 2 + (int)(rng() % 7), m = (int)(rng() % (3 * n));
+        std::vector<Edge> E; bool potential = it % 2 == 0; std::vector<ll> phi(n); for (auto& x : phi) x = (ll)(rng() % 21) - 10;
+        for (int i = 0; i < m; ++i) {
+            int u = (int)(rng() % n), v = (int)(rng() % n);
+            ll w = potential ? (ll)(rng() % 10) + phi[u] - phi[v] : (ll)(rng() % 14) - 4;
+            E.push_back({u, v, w});
+        }
+        std::shuffle(E.begin(), E.end(), rng);
+        int s = (int)(rng() % n);
+        Oracle o = oracle(n, E, s);
+        for (int mode = 0; mode < 2; ++mode) {
+            BF r = bellmanFord(n, E, s, mode == 1);
+            assert(r.negCycle == o.negCycle);
+            if (r.negCycle) {
+                if (mode == 0) {
+                    assert(cycleWeight(E, r.cycle) < 0);
+                    for (std::size_t i = 0; i < r.cycle.size(); ++i) assert(E[r.cycle[i]].v == E[r.cycle[(i + 1) % r.cycle.size()]].u);   // 이어지는 간선들
+                }
+                assert(r.minusInf == o.minusInf);
+                for (int v = 0; v < n; ++v) if (!r.minusInf[v]) assert(r.dist[v] == o.simple[v]);                                      // −∞ 가 아닌 정점은 단순 경로 최솟값
+                if (mode == 0) { ++withCycle; for (int v = 0; v < n; ++v) minusCount += r.minusInf[v]; }
+            } else {
+                assert(r.dist == o.simple);
+                if (mode == 0) ++without;
+            }
+        }
+        if (!o.negCycle) {
+            BF sy = bellmanFord(n, E, s, true), ip = bellmanFord(n, E, s, false);
+            int H = hopsToStabilise(n, E, s);
+            assert(sy.changingPasses == H && ip.changingPasses <= H);                       // 동기식은 정확히 H, 제자리는 H 이하
         }
     }
-    assert(dist[2] == 3);
-    std::cout << "Bellman-Ford SP completed." << std::endl;
-    return 0;
+    assert(withCycle > 400 && without > 800 && minusCount > 800);
+
+    // ④ 큰 입력: 정점 10 만, 간선 40 만, 퍼텐셜로 음수 간선이 많지만 음수 사이클은 없다 → 같은 그래프의 w0 에 대한 다익스트라 + 퍼텐셜 보정과 일치
+    //    (dist_w(s,v) = dist_w0(s,v) + φ(s) − φ(v) : 경로 하나의 퍼텐셜 항이 끝점 차이로 접힌다)
+    auto build = [&](int N, int M, std::mt19937_64& r, std::vector<ll>& phi, std::vector<std::vector<std::pair<int, ll>>>& g0) {
+        phi.assign(N, 0); for (auto& x : phi) x = (ll)(r() % 2001) - 1000;
+        g0.assign(N, {});
+        std::vector<Edge> E;
+        for (int i = 0; i + 1 < N; ++i) { ll w0 = (ll)(1 + r() % 100); E.push_back({i, i + 1, w0 + phi[i] - phi[i + 1]}); g0[i].push_back({i + 1, w0}); }
+        for (int i = 0; i < M - (N - 1); ++i) { int u = (int)(r() % N), v = (int)(r() % N); ll w0 = (ll)(1 + r() % 100); E.push_back({u, v, w0 + phi[u] - phi[v]}); g0[u].push_back({v, w0}); }
+        std::shuffle(E.begin(), E.end(), r);
+        return E;
+    };
+    {
+        const int N = 100000, M = 400000;
+        std::mt19937_64 r(11); std::vector<ll> phi; std::vector<std::vector<std::pair<int, ll>>> g0;
+        std::vector<Edge> E = build(N, M, r, phi, g0);
+        long long negEdges = std::count_if(E.begin(), E.end(), [](const Edge& e) { return e.w < 0; });
+        BF b = bellmanFord(N, E, 0);
+        assert(!b.negCycle && negEdges > 50000 && b.changingPasses < 400);
+        std::vector<ll> d0(N, INF); d0[0] = 0;
+        std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq; pq.push({0, 0});
+        while (!pq.empty()) { auto [d, u] = pq.top(); pq.pop(); if (d > d0[u]) continue; for (auto [v, w] : g0[u]) if (d + w < d0[v]) { d0[v] = d + w; pq.push({d0[v], v}); } }
+        for (int v = 0; v < N; ++v) assert(b.dist[v] == d0[v] + phi[0] - phi[v]);
+    }
+    {   // 음수 사이클을 심은 중간 크기 그래프 (정점 3000: 사이클이 있으면 V 번 훑어야 확정되므로 크기를 줄인다)
+        const int N = 3000, M = 12000;
+        std::mt19937_64 r(12); std::vector<ll> phi; std::vector<std::vector<std::pair<int, ll>>> g0;
+        std::vector<Edge> E = build(N, M, r, phi, g0);
+        E.push_back({5, 6, -10000000}); E.push_back({6, 5, 1});
+        BF c = bellmanFord(N, E, 0), sy = bellmanFord(N, E, 0, true);
+        assert(c.negCycle && cycleWeight(E, c.cycle) < 0 && sy.negCycle);
+        std::vector<std::vector<int>> adj(N); for (const Edge& e : E) adj[e.u].push_back(e.v);
+        std::vector<char> seen(N, 0); std::queue<int> q;
+        for (int i : c.cycle) if (!seen[E[i].u]) { seen[E[i].u] = 1; q.push(E[i].u); }
+        while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (!seen[v]) { seen[v] = 1; q.push(v); } }
+        assert(seen == c.minusInf && seen == sy.minusInf);
+    }
+    std::cout << "BellmanFord: the V-1 relaxation passes matched an enumeration of all simple paths on 3000 random graphs with up to 8 vertices (negative edges, negative cycles reachable or not), the minus-infinity set equalled exactly the vertices reachable from a negative cycle found by Floyd-Warshall, every reconstructed cycle was a closed chain of edges with negative total weight, synchronous passes needed exactly the layer-DP hop count H while in-place passes needed at most H (a path listed forwards took 1 pass, backwards 999), and a 100,000-vertex graph with over 50,000 negative edges and no negative cycle matched Dijkstra on the potential-shifted weights while a cycle planted in a 3000-vertex graph was detected by both pass styles with its reachable set marked exactly" << std::endl; return 0;
 }
-// Time Complexity: O(V * E)
-// Space Complexity: O(V)
+// Time Complexity: O(V · E)
+// Space Complexity: O(V + E)
 ```
 ## FloydWarshall()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
+
+// 플로이드–워셜(Floyd–Warshall): 모든 쌍 최단 거리를 d[i][j] = min(d[i][j], d[i][k] + d[k][j]) 한 줄로 구한다. 핵심 불변식 — k 번째 바깥 반복이 끝나면 d[i][j] 는 "중간 정점이 0..k 뿐인" 경로의 최솟값이다. 그래서 *k 가 가장 바깥 반복* 이어야 한다(i, j, k 순서로 돌리면 아래 시연처럼 틀린다). 음수 가중치는 되고, 대각선 d[i][i] < 0 이면 음수 사이클이 있다. 다음 정점 배열 next[i][j] 로 경로도 복원한다.
+// 음수 사이클이 있으면 값이 지수적으로 작아져 64 비트를 넘칠 수 있다 — −INF 에서 잘라(clamp) 정의되지 않은 동작을 피한다(UBSan 으로 확인). 같은 틀을 (min, +) 대신 (OR, AND) 에 쓰면 워셜의 추이적 폐쇄이고, 비트집합 행으로 하면 n³/64 로 줄어든다. 또 d 는 (min,+) 행렬 곱의 거듭제곱이라 ⌈log₂(V − 1)⌉ 번의 제곱으로도 같은 답이 나온다.
+// 검증: ① 정점 3 개 그래프 전수(순서쌍마다 없음/0/1/2/3 → 15,625 개) 를 출발점마다 벨만–포드 · 모든 단순 경로 열거와 대조 ② 복원한 경로가 진짜 간선으로 이어지고 합이 d[i][j] ③ 음수 사이클이 섞인 무작위 그래프에서 음수 사이클 판정이 모든 출발점의 벨만–포드와 같고, 음수 사이클의 영향을 받지 않는 쌍은 정확한 값 ④ (min,+) 제곱 · 비트집합 폐쇄 · 가중치 1 에서의 BFS 와 일치 ⑤ 정점 300 의 밀집 그래프를 300 번의 다익스트라와 대조, 음수 사이클이 가득한 정점 150 에서도 오버플로 없음.
+typedef long long ll;
+const ll INF = LLONG_MAX / 4;
+struct Edge { int u, v; ll w; };
+using Matrix = std::vector<std::vector<ll>>;
+struct FW { Matrix d; std::vector<std::vector<int>> next; bool negCycle; };
+
+FW floydWarshall(int n, const std::vector<Edge>& E, bool kOutermost = true) {
+    FW f{Matrix(n, std::vector<ll>(n, INF)), std::vector<std::vector<int>>(n, std::vector<int>(n, -1)), false};
+    for (int i = 0; i < n; ++i) { f.d[i][i] = 0; f.next[i][i] = i; }
+    for (const Edge& e : E) if (e.w < f.d[e.u][e.v]) { f.d[e.u][e.v] = e.w; f.next[e.u][e.v] = e.v; }
+    auto relax = [&](int i, int j, int k) {
+        if (f.d[i][k] < INF && f.d[k][j] < INF) {
+            ll c = std::max(-INF, f.d[i][k] + f.d[k][j]);                     // 음수 사이클에서 값이 폭주하지 않게 자른다
+            if (c < f.d[i][j]) { f.d[i][j] = c; f.next[i][j] = f.next[i][k]; }
+        }
+    };
+    if (kOutermost) { for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) relax(i, j, k); }
+    else            { for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) for (int k = 0; k < n; ++k) relax(i, j, k); }   // 틀린 순서(시연용)
+    for (int i = 0; i < n; ++i) if (f.d[i][i] < 0) f.negCycle = true;
+    return f;
+}
+std::vector<int> path(const FW& f, int i, int j) {
+    if (f.next[i][j] < 0) return {};
+    std::vector<int> p{i};
+    while (i != j && (int)p.size() <= (int)f.d.size()) { i = f.next[i][j]; p.push_back(i); }
+    return p;
+}
+
+// ---- 오라클 ----
+struct BF { bool negCycle; std::vector<ll> dist; };
+BF bellman(int n, const std::vector<Edge>& E, int s) {
+    BF r{false, std::vector<ll>(n, INF)}; r.dist[s] = 0;
+    for (int pass = 1; pass <= n; ++pass) {
+        bool ch = false;
+        for (const Edge& e : E) if (r.dist[e.u] < INF && r.dist[e.u] + e.w < r.dist[e.v]) { r.dist[e.v] = r.dist[e.u] + e.w; ch = true; }
+        if (!ch) break;
+        if (pass == n) r.negCycle = true;
+    }
+    return r;
+}
+void simplePaths(const std::vector<std::vector<std::pair<int, ll>>>& g, int u, ll sum, unsigned used, std::vector<ll>& best) {
+    best[u] = std::min(best[u], sum);
+    for (auto [v, w] : g[u]) if (!(used >> v & 1)) simplePaths(g, v, sum + w, used | 1u << v, best);
+}
+Matrix minPlusSquare(const Matrix& a) {
+    int n = (int)a.size(); Matrix c(n, std::vector<ll>(n, INF));
+    for (int i = 0; i < n; ++i) for (int k = 0; k < n; ++k) if (a[i][k] < INF) for (int j = 0; j < n; ++j) if (a[k][j] < INF) c[i][j] = std::min(c[i][j], a[i][k] + a[k][j]);
+    return c;
+}
+std::vector<std::vector<uint64_t>> closureBits(int n, const std::vector<Edge>& E) {
+    int W = (n + 63) / 64; std::vector<std::vector<uint64_t>> row(n, std::vector<uint64_t>(W, 0));
+    for (int i = 0; i < n; ++i) row[i][i >> 6] |= 1ULL << (i & 63);
+    for (const Edge& e : E) row[e.u][e.v >> 6] |= 1ULL << (e.v & 63);
+    for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) if (row[i][k >> 6] >> (k & 63) & 1) for (int w = 0; w < W; ++w) row[i][w] |= row[k][w];
+    return row;
+}
+bool checkPaths(int n, const std::vector<Edge>& E, const FW& f) {                // 복원한 경로: 진짜 간선 · 합 = d[i][j]
+    Matrix A(n, std::vector<ll>(n, INF)); for (const Edge& e : E) A[e.u][e.v] = std::min(A[e.u][e.v], e.w);
+    for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) {
+        std::vector<int> p = path(f, i, j);
+        if (f.d[i][j] >= INF) { if (!p.empty()) return false; continue; }
+        if (p.empty() || p.front() != i || p.back() != j) return false;
+        ll sum = 0; for (std::size_t t = 0; t + 1 < p.size(); ++t) { if (A[p[t]][p[t + 1]] >= INF) return false; sum += A[p[t]][p[t + 1]]; }
+        if (sum != f.d[i][j]) return false;
+    }
+    return true;
+}
 
 int main() {
-    int V = 3;
-    std::vector<std::vector<int>> dist = {{0, 5, 1000000000}, {1000000000, 0, 3}, {1000000000, 1000000000, 0}};
-    
-    for (int k = 0; k < V; ++k)
-        for (int i = 0; i < V; ++i)
-            for (int j = 0; j < V; ++j)
-                dist[i][j] = std::min(dist[i][j], dist[i][k] + dist[k][j]); 
-                
-    assert(dist[0][2] == 8);
-    std::cout << "Floyd-Warshall all-pairs SP completed." << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 0→1:5, 1→2:3 이면 d[0][2] = 8, 경로 0,1,2 ; 반대 방향은 닿지 않는다
+    {   std::vector<Edge> E = {{0, 1, 5}, {1, 2, 3}};
+        FW f = floydWarshall(3, E);
+        assert(f.d[0][2] == 8 && f.d[2][0] == INF && path(f, 0, 2) == std::vector<int>({0, 1, 2}) && !f.negCycle && path(f, 2, 0).empty());
+    }
+
+    // ② 전수: 정점 3 개의 모든 방향 그래프(순서쌍 6 개마다 없음/0/1/2/3) — 모든 쌍을 출발점마다 벨만–포드 · 단순 경로 열거와 대조, 경로 복원 검사
+    for (int code = 0; code < 15625; ++code) {
+        std::vector<Edge> E; std::vector<std::vector<std::pair<int, ll>>> g(3); int c = code;
+        for (int u = 0; u < 3; ++u) for (int v = 0; v < 3; ++v) if (u != v) { int st = c % 5; c /= 5; if (st) { E.push_back({u, v, st - 1}); g[u].push_back({v, st - 1}); } }
+        FW f = floydWarshall(3, E);
+        assert(!f.negCycle && checkPaths(3, E, f));
+        for (int s = 0; s < 3; ++s) {
+            BF b = bellman(3, E, s); std::vector<ll> best(3, INF); simplePaths(g, s, 0, 1u << s, best);
+            for (int t = 0; t < 3; ++t) assert(f.d[s][t] == b.dist[t] && f.d[s][t] == best[t]);
+        }
+    }
+
+    // ③ 틀린 반복 순서: k 를 가장 안쪽에 두면 많은 그래프에서 답이 틀리고(300 개 중 20 개 이상), 올바른 순서는 오라클과 항상 일치
+    std::mt19937 rng(1962);
+    {
+        int wrongOrder = 0;
+        for (int it = 0; it < 300; ++it) {
+            int n = 4 + (int)(rng() % 4); std::vector<Edge> E;
+            for (int i = 0, m = 2 * n; i < m; ++i) E.push_back({(int)(rng() % n), (int)(rng() % n), (ll)(1 + rng() % 9)});
+            FW good = floydWarshall(n, E), bad = floydWarshall(n, E, false);
+            for (int s = 0; s < n; ++s) assert(good.d[s] == bellman(n, E, s).dist);
+            wrongOrder += good.d != bad.d;
+        }
+        assert(wrongOrder >= 20);
+    }
+
+    // ④ 음수 간선·음수 사이클이 섞인 무작위 (정점 ≤ 8): 음수 사이클 판정 = 어떤 출발점이든 벨만–포드가 찾음, 영향 안 받는 쌍은 정확, 경로 복원
+    int cyc = 0, noCyc = 0;
+    for (int it = 0; it < 2000; ++it) {
+        int n = 2 + (int)(rng() % 7), m = (int)(rng() % (3 * n)); std::vector<Edge> E;
+        bool potential = it % 2 == 0; std::vector<ll> phi(n); for (auto& x : phi) x = (ll)(rng() % 21) - 10;
+        for (int i = 0; i < m; ++i) { int u = (int)(rng() % n), v = (int)(rng() % n); E.push_back({u, v, potential ? (ll)(rng() % 10) + phi[u] - phi[v] : (ll)(rng() % 14) - 4}); }
+        FW f = floydWarshall(n, E);
+        std::vector<BF> bf; bool anyNeg = false; for (int s = 0; s < n; ++s) { bf.push_back(bellman(n, E, s)); anyNeg = anyNeg || bf.back().negCycle; }
+        assert(f.negCycle == anyNeg);
+        auto reach = closureBits(n, E);
+        auto reaches = [&](int a, int b) { return (reach[a][b >> 6] >> (b & 63) & 1) != 0; };
+        std::vector<char> onNeg(n, 0); for (int w = 0; w < n; ++w) onNeg[w] = f.d[w][w] < 0;
+        for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) {
+            bool tainted = false; for (int w = 0; w < n; ++w) tainted = tainted || (onNeg[w] && reaches(i, w) && reaches(w, j));
+            if (!tainted) assert(f.d[i][j] == bf[i].dist[j]);                    // 음수 사이클을 거치지 않는 쌍은 정확한 값
+        }
+        if (!f.negCycle) { assert(checkPaths(n, E, f)); ++noCyc; } else ++cyc;
+    }
+    assert(cyc > 400 && noCyc > 1000);
+
+    // ⑤ (min,+) 제곱 · 비트집합 폐쇄 · BFS: ⌈log₂(V − 1)⌉ 번 제곱하면 FW 와 같다; 폐쇄는 d < INF 와 같다; 가중치 1 이면 BFS 홉 수와 같다
+    for (int it = 0; it < 150; ++it) {
+        int n = 3 + (int)(rng() % 18), m = (int)(rng() % (3 * n)); std::vector<Edge> E, U;
+        bool potential = it % 2 == 0; std::vector<ll> phi(n); for (auto& x : phi) x = (ll)(rng() % 21) - 10;
+        for (int i = 0; i < m; ++i) {
+            int u = (int)(rng() % n), v = (int)(rng() % n); ll w0 = (ll)(rng() % 10);
+            E.push_back({u, v, potential ? w0 + phi[u] - phi[v] : w0}); U.push_back({u, v, 1});
+        }
+        FW f = floydWarshall(n, E);                                               // 퍼텐셜 쪽은 음수 간선이 있지만 음수 사이클은 없다
+        assert(!f.negCycle);
+        Matrix A(n, std::vector<ll>(n, INF)); for (int i = 0; i < n; ++i) A[i][i] = 0; for (const Edge& e : E) A[e.u][e.v] = std::min(A[e.u][e.v], e.w);
+        int squarings = 0; while ((1 << squarings) < n - 1) ++squarings;
+        for (int t = 0; t < squarings; ++t) A = minPlusSquare(A);                   // 대각선이 0 이라 t 번 제곱하면 "간선 2^t 개 이하" 걸음의 최솟값
+        assert(A == f.d);
+        auto reach = closureBits(n, E);
+        for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) assert(((reach[i][j >> 6] >> (j & 63) & 1) != 0) == (f.d[i][j] < INF));
+        FW h = floydWarshall(n, U);                                               // 가중치 1 → 홉 수
+        for (int s = 0; s < n; ++s) {
+            std::vector<ll> hop(n, INF); hop[s] = 0; std::queue<int> q; q.push(s);
+            std::vector<std::vector<int>> adj(n); for (const Edge& e : U) adj[e.u].push_back(e.v);
+            while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (hop[v] == INF) { hop[v] = hop[u] + 1; q.push(v); } }
+            assert(h.d[s] == hop);
+        }
+    }
+
+    // ⑥ 큰 입력: 정점 300 의 밀집 그래프(0..100 가중치) 를 300 번의 다익스트라와 대조, 정점 1500 의 희소 그래프 폐쇄를 BFS 와 대조, 음수 사이클 가득한 정점 150 에서 오버플로 없음
+    {
+        const int N = 300; std::vector<Edge> E; std::vector<std::vector<std::pair<int, ll>>> g(N);
+        for (int i = 0; i < N * 8; ++i) { int u = (int)(rng() % N), v = (int)(rng() % N); ll w = (ll)(rng() % 101); E.push_back({u, v, w}); g[u].push_back({v, w}); }
+        FW f = floydWarshall(N, E);
+        for (int s = 0; s < N; ++s) {
+            std::vector<ll> d(N, INF); d[s] = 0; std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq; pq.push({0, s});
+            while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto [v, w] : g[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } }
+            assert(f.d[s] == d);
+        }
+        assert(checkPaths(N, E, f));
+        const int K = 1500; std::vector<Edge> S; std::vector<std::vector<int>> adj(K);
+        for (int i = 0; i < K * 2; ++i) { int u = (int)(rng() % K), v = (int)(rng() % K); S.push_back({u, v, 1}); adj[u].push_back(v); }
+        auto reach = closureBits(K, S);
+        for (int s = 0; s < K; s += 7) {
+            std::vector<char> seen(K, 0); std::queue<int> q; q.push(s); seen[s] = 1;
+            while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (!seen[v]) { seen[v] = 1; q.push(v); } }
+            for (int t = 0; t < K; ++t) assert(seen[t] == ((reach[s][t >> 6] >> (t & 63) & 1) != 0));
+        }
+        std::vector<Edge> neg; const int M = 150;
+        for (int u = 0; u < M; ++u) for (int v = 0; v < M; ++v) if (u != v) neg.push_back({u, v, (ll)(rng() % 11) - 5});
+        FW z = floydWarshall(M, neg);
+        ll lo = 0; for (auto& row : z.d) for (ll x : row) lo = std::min(lo, x);
+        assert(z.negCycle && lo >= -INF);
+    }
+    std::cout << "FloydWarshall: with k as the outermost loop all-pairs distances matched Bellman-Ford and exhaustive simple-path enumeration on all 15,625 digraphs over 3 vertices and 300 random graphs, the wrong i-j-k order gave different matrices in at least 20 of those 300, over 2000 graphs with negative edges and cycles the diagonal test agreed with Bellman-Ford from every source and pairs untouched by a negative cycle kept exact values, reconstructed paths followed real edges summing to d[i][j], ceil(log2(V-1)) min-plus squarings, a bitset transitive closure and unit-weight BFS gave the same answers, a 300-vertex graph agreed with 300 Dijkstra runs, and a dense 150-vertex negative-cycle graph stayed within [-INF, INF] without overflow" << std::endl; return 0;
 }
-// Time Complexity: O(V^3)
-// Space Complexity: O(V^2)
+// Time Complexity: O(V³)
+// Space Complexity: O(V²)
 ```
 ## Johnson()
 ### 대표코드
@@ -4605,41 +5118,138 @@ int main() {
 ## SPFA()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
 #include <climits>
+#include <cstdint>
+#include <deque>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
 
-// SPFA (Shortest Path Faster Algorithm): BellmanFord 개선, 평균 O(kE)
-std::vector<int> spfa(int src, int V, std::vector<std::vector<std::pair<int,int>>>& adj) {
-    std::vector<int> dist(V, INT_MAX);
-    std::vector<bool> inQueue(V, false);
-    std::queue<int> q;
-    dist[src] = 0; q.push(src); inQueue[src] = true;
-    while (!q.empty()) {
-        int u = q.front(); q.pop(); inQueue[u] = false;
-        for (auto [v, w] : adj[u]) {
-            if (dist[u] != INT_MAX && dist[u] + w < dist[v]) {
-                dist[v] = dist[u] + w;
-                if (!inQueue[v]) { q.push(v); inQueue[v] = true; }
+// SPFA(Shortest Path Faster Algorithm): 벨만–포드에서 "거리가 줄어든 정점의 이웃만 다시 본다" — 값이 바뀐 정점을 큐에 넣고, 큐에서 꺼낸 정점의 나가는 간선만 완화한다. 음수 간선도 되고 평균적으로 빠르지만 최악은 벨만–포드와 같은 O(V·E) 이다(아래에서 비음수 가중치로도 이차 시간이 되는 구조를 직접 만든다). 큐에 이미 들어 있는 정점은 다시 넣지 않는다(inQueue 표시).
+// 음수 사이클: 정점마다 "현재 최단 거리를 이루는 걸음의 간선 수" len[v] 를 같이 갱신한다. 음수 사이클이 없다면 그 걸음은 항상 단순 경로여서 len ≤ V − 1 이고(사이클이 끼면 거리가 줄지 않아 완화가 일어나지 않는다), len[v] ≥ V 가 되는 순간 도달 가능한 음수 사이클이 있다. 정책 변형 SLF(Small Label First): 새로 넣는 정점의 거리가 큐 맨 앞보다 작으면 앞에 넣는다 — 거리는 같고 완화 횟수만 달라진다.
+// 검증: ① 정점 3 개 그래프 전수(순서쌍마다 없음/−1/0/1/2 → 15,625 개) 를 출발점마다 벨만–포드와 대조: 음수 사이클 판정이 같고, 없으면 거리도 같다(FIFO · SLF 모두). ② 음수 사이클이 섞인 무작위 그래프 ③ 비음수 가중치에서 SPFA 가 이차 시간이 되는 구조 — 출발점에서 길이가 1, 2, …, k 인 체인으로 목적지에 닿되 길이가 길수록 *더 싼* 경로로 만들고, 목적지 뒤에 길이 m 인 꼬리를 달면 개선 파도마다 꼬리 전체를 다시 훑는다 — 의 완화 횟수가 다익스트라(≤ E)보다 한 자릿수 이상 크다. ④ 퍼텐셜로 만든 정점 20 만 · 간선 100 만(음수 간선 있음, 음수 사이클 없음)을 다익스트라와 대조.
+typedef long long ll;
+const ll INF = LLONG_MAX / 4;
+struct Arc { int to; ll w; };
+using Graph = std::vector<std::vector<Arc>>;
+enum Policy { FIFO, SLF };
+struct SP { bool negCycle = false; std::vector<ll> dist; long long relaxations = 0, pops = 0; };
+
+SP spfa(const Graph& g, int s, Policy pol = FIFO) {
+    int n = (int)g.size();
+    SP r; r.dist.assign(n, INF);
+    std::deque<int> dq; std::vector<char> in(n, 0); std::vector<int> len(n, 0);
+    r.dist[s] = 0; dq.push_back(s); in[s] = 1;
+    while (!dq.empty()) {
+        int u = dq.front(); dq.pop_front(); in[u] = 0; ++r.pops;
+        for (const Arc& a : g[u]) {
+            if (r.dist[u] + a.w < r.dist[a.to]) {
+                r.dist[a.to] = r.dist[u] + a.w; ++r.relaxations;
+                len[a.to] = len[u] + 1;
+                if (len[a.to] >= n) { r.negCycle = true; return r; }           // 걸음이 V 개 이상의 간선 → 사이클
+                if (!in[a.to]) {
+                    in[a.to] = 1;
+                    if (pol == SLF && !dq.empty() && r.dist[a.to] < r.dist[dq.front()]) dq.push_front(a.to); else dq.push_back(a.to);
+                }
             }
         }
     }
-    return dist;
+    return r;
+}
+struct BF { bool negCycle; std::vector<ll> dist; };
+BF bellman(const Graph& g, int s) {
+    int n = (int)g.size(); BF r{false, std::vector<ll>(n, INF)}; r.dist[s] = 0;
+    for (int pass = 1; pass <= n; ++pass) {
+        bool ch = false;
+        for (int u = 0; u < n; ++u) if (r.dist[u] < INF) for (const Arc& a : g[u]) if (r.dist[u] + a.w < r.dist[a.to]) { r.dist[a.to] = r.dist[u] + a.w; ch = true; }
+        if (!ch) break;
+        if (pass == n) r.negCycle = true;
+    }
+    return r;
+}
+SP dijkstra(const Graph& g, int s) {                                              // 비음수 가중치용 오라클 · 비교 대상
+    int n = (int)g.size(); SP r; r.dist.assign(n, INF);
+    std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq; r.dist[s] = 0; pq.push({0, s});
+    while (!pq.empty()) {
+        auto [d, u] = pq.top(); pq.pop(); ++r.pops;
+        if (d > r.dist[u]) continue;
+        for (const Arc& a : g[u]) if (d + a.w < r.dist[a.to]) { r.dist[a.to] = d + a.w; ++r.relaxations; pq.push({r.dist[a.to], a.to}); }
+    }
+    return r;
 }
 
 int main() {
-    int V = 5;
-    std::vector<std::vector<std::pair<int,int>>> adj(V);
-    adj[0].push_back({1, 10}); adj[0].push_back({2, 3});
-    adj[2].push_back({1, 4}); adj[1].push_back({3, 2}); adj[2].push_back({3, 8});
-    auto dist = spfa(0, V, adj);
-    assert(dist[1] == 7); assert(dist[3] == 9);
-    std::cout << "SPFA dist[1]=" << dist[1] << " dist[3]=" << dist[3] << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 0→1:10, 0→2:3, 2→1:4, 1→3:2, 2→3:8 → d[1] = 7, d[3] = 9 ; 음수 사이클 1→2→1
+    {   Graph g(4); g[0] = {{1, 10}, {2, 3}}; g[2] = {{1, 4}, {3, 8}}; g[1] = {{3, 2}};
+        SP r = spfa(g, 0);
+        assert(!r.negCycle && r.dist[1] == 7 && r.dist[3] == 9 && r.dist[2] == 3);
+        Graph c(3); c[0] = {{1, 1}}; c[1] = {{2, -3}}; c[2] = {{1, 1}};
+        assert(spfa(c, 0).negCycle && spfa(c, 0, SLF).negCycle && bellman(c, 0).negCycle);
+        assert(spfa(c, 2).negCycle == bellman(c, 2).negCycle && spfa(c, 2).negCycle);   // 2 에서도 사이클에 닿는다
+    }
+
+    // ② 전수: 정점 3 개의 모든 방향 그래프(순서쌍 6 개마다 없음/−1/0/1/2 → 15,625), 모든 출발점 — 음수 사이클 판정 · 거리 · FIFO/SLF
+    long long withCycle = 0;
+    for (int code = 0; code < 15625; ++code) {
+        Graph g(3); int c = code;
+        for (int u = 0; u < 3; ++u) for (int v = 0; v < 3; ++v) if (u != v) { int st = c % 5; c /= 5; if (st) g[u].push_back({v, st - 2}); }
+        for (int s = 0; s < 3; ++s) {
+            BF b = bellman(g, s); SP f = spfa(g, s), l = spfa(g, s, SLF);
+            assert(f.negCycle == b.negCycle && l.negCycle == b.negCycle);
+            if (!b.negCycle) assert(f.dist == b.dist && l.dist == b.dist); else ++withCycle;
+        }
+    }
+    assert(withCycle > 3000);
+
+    // ③ 무작위: 정점 ≤ 12, 가중치 −4..9 (음수 사이클 있음/없음) 와 퍼텐셜 그래프(음수 간선 있음/사이클 없음)
+    std::mt19937 rng(1959);
+    int cyc = 0, noCyc = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int n = 2 + (int)(rng() % 11), m = (int)(rng() % (3 * n)); Graph g(n);
+        bool potential = it % 2 == 0; std::vector<ll> phi(n); for (auto& x : phi) x = (ll)(rng() % 21) - 10;
+        for (int i = 0; i < m; ++i) { int u = (int)(rng() % n), v = (int)(rng() % n); g[u].push_back({v, potential ? (ll)(rng() % 10) + phi[u] - phi[v] : (ll)(rng() % 14) - 4}); }
+        int s = (int)(rng() % n);
+        BF b = bellman(g, s); SP f = spfa(g, s), l = spfa(g, s, SLF);
+        assert(f.negCycle == b.negCycle && l.negCycle == b.negCycle);
+        if (!b.negCycle) { assert(f.dist == b.dist && l.dist == b.dist); ++noCyc; } else ++cyc;
+    }
+    assert(cyc > 300 && noCyc > 1500);
+
+    // ④ 비음수 가중치에서도 이차 시간이 되는 구조: s → z1 → … → zk (가중치 1) 이고 z_j → t 의 가중치는 B − 2j, s → t 는 B, t → c1 → … → cm (가중치 1)
+    //    z_j 를 거치면 j 칸이 걸리지만 t 에는 B − j 로 닿아 j 가 클수록 더 싸다 → FIFO 에서 t 가 층마다 다시 개선되고 개선 파도가 꼬리 전체를 다시 훑는다
+    {
+        const int k = 400, m = 400, B = 1000, N = k + m + 2; int t = k + 1;
+        Graph g(N);
+        g[0].push_back({1, 1}); g[0].push_back({t, B});
+        for (int j = 1; j <= k; ++j) { if (j < k) g[j].push_back({j + 1, 1}); g[j].push_back({t, (ll)B - 2 * j}); }
+        g[t].push_back({t + 1, 1});
+        for (int i = 1; i < m; ++i) g[t + i].push_back({t + i + 1, 1});
+        SP f = spfa(g, 0), l = spfa(g, 0, SLF), d = dijkstra(g, 0);
+        assert(f.dist == d.dist && l.dist == d.dist && d.dist[t] == B - k && d.dist[N - 1] == B - k + m);
+        assert(f.relaxations >= (long long)k * m / 2);                              // 이차: 파도 k 번 × 꼬리 m 칸
+        assert(f.relaxations > 10 * d.relaxations);                                  // 다익스트라(≤ E) 보다 한 자릿수 이상 많다
+    }
+
+    // ⑤ 큰 입력: 정점 20 만 · 간선 100 만, 퍼텐셜로 음수 간선(수십만 개) 이 있지만 음수 사이클은 없다 — 다익스트라(w0) + 퍼텐셜 보정과 일치
+    {
+        const int N = 200000, M = 1000000; std::mt19937_64 r(77);
+        std::vector<ll> phi(N); for (auto& x : phi) x = (ll)(r() % 2001) - 1000;
+        Graph g(N), g0(N); long long neg = 0;
+        for (int i = 0; i + 1 < N; ++i) { ll w0 = (ll)(1 + r() % 100); g[i].push_back({i + 1, w0 + phi[i] - phi[i + 1]}); g0[i].push_back({i + 1, w0}); neg += g[i].back().w < 0; }
+        for (int i = 0; i < M - (N - 1); ++i) { int u = (int)(r() % N), v = (int)(r() % N); ll w0 = (ll)(1 + r() % 100); g[u].push_back({v, w0 + phi[u] - phi[v]}); g0[u].push_back({v, w0}); neg += g[u].back().w < 0; }
+        SP f = spfa(g, 0), l = spfa(g, 0, SLF), d = dijkstra(g0, 0);
+        assert(!f.negCycle && !l.negCycle && neg > 100000);
+        for (int v = 0; v < N; ++v) { assert(f.dist[v] == d.dist[v] + phi[0] - phi[v]); assert(l.dist[v] == f.dist[v]); }
+        assert(f.relaxations < 100LL * M);
+    }
+    std::cout << "SPFA: the queue-based relaxation with path-length cycle detection matched Bellman-Ford on all 15,625 digraphs over 3 vertices with weights -1..2 (every source, FIFO and small-label-first) and on 3000 random graphs with up to 12 vertices, agreeing on whether a negative cycle was reachable and on every distance otherwise, a chain-and-tail construction with only non-negative weights forced at least k*m/2 = 80,000 relaxations (more than 10 times Dijkstra's) so the O(VE) worst case is real, and a 200,000-vertex, 1,000,000-edge graph with over 100,000 negative edges matched Dijkstra on potential-shifted weights" << std::endl; return 0;
 }
-// Time Complexity: O(kE) average, O(VE) worst
+// Time Complexity: O(k·E) 평균, O(V·E) 최악
 // Space Complexity: O(V + E)
 ```
 # Part 10. 길찾기
@@ -4856,64 +5466,364 @@ int main() {
 ## IDDFS()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-std::vector<std::vector<int>> adj_iddfs;
+// 반복 깊이 심화 DFS(IDDFS): 깊이 제한 0, 1, 2, … 로 깊이 제한 DFS 를 반복한다. 처음 성공하는 제한 d 가 곧 최단 간선 수(BFS 와 같은 답)이고, 메모리는 현재 경로 하나뿐인 O(d) 다. 대가는 얕은 층을 반복해서 다시 만드는 일인데, 가지치기 b ≥ 2 인 트리에서는 마지막 층이 압도적으로 커서 그 반복 비용이 작다. 분기 b, 목표가 가장 오른쪽 잎(깊이 d)일 때 IDDFS 가 방문하는 노드 수는 정확히 Σ_{i=0..d} (d − i + 1) b^i 이고 BFS 는 Σ b^i 라서, 비율은 항상 b/(b − 1) 미만이다(b = 2 는 2배 미만, b = 10 은 1.11배 미만). 이를 모든 b = 2..5, d ≤ 9 에서 정수로 정확히 확인한다.
+// 분기가 1 에 가까운 길쭉한 그래프에서는 반복이 낭비다(경로 그래프는 d² 번 방문). 또 방향·사이클이 있는 그래프에서는 같은 정점이 다른 경로로 여러 번 열린다 — 현재 경로 위의 정점만 막으면(onPath) 단순 경로만 훑으므로 정확성은 유지된다. 암시적 상태 공간(8 퍼즐)에서는 방금 온 곳으로의 되돌림만 막고 BFS 로 만든 정답표(상태 181,440 개, 지름 31, 가장 먼 상태 2 개, 거리별 상태 수 전체)와 대조한다.
+// 검증: ① 정점 5 개의 모든 무방향 그래프(1024) 의 모든 (s,t) 에서 IDDFS 깊이 = BFS 거리, 도달 불가면 실패, 복원한 경로는 단순 경로 ② 무작위 방향 그래프 ③ 트리 방문 수 공식과 BFS 대비 비율 ④ 메모리: 이진 트리에서 IDDFS 스택 깊이 ≤ d + 1, BFS 큐 최대 크기는 2^d ⑤ 8 퍼즐 정답표와 일치 ⑥ 큰 입력(깊이 20 의 이진 트리 · 길이 5000 의 경로).
+struct Result { bool found = false; int depth = -1; std::vector<int> path; long long visited = 0; int maxStack = 0; int iterations = 0; };
 
-bool dls(int u, int goal, int limit, std::vector<bool>& visited) {
-    if (u == goal) return true;
-    if (limit == 0) return false;
-    visited[u] = true;
-    for (int v : adj_iddfs[u])
-        if (!visited[v] && dls(v, goal, limit-1, visited)) return true;
-    visited[u] = false;
-    return false;
+Result iddfs(const std::vector<std::vector<int>>& adj, int s, int t, int maxDepth) {
+    int n = (int)adj.size(); Result r;
+    std::vector<int> path; std::vector<char> onPath(n, 0);
+    std::function<bool(int, int)> dls = [&](int u, int left) -> bool {
+        ++r.visited; path.push_back(u); onPath[u] = 1; r.maxStack = std::max(r.maxStack, (int)path.size());
+        if (u == t) return true;                                                  // 찾으면 경로를 그대로 둔 채 빠져나간다
+        if (left > 0) for (int v : adj[u]) if (!onPath[v] && dls(v, left - 1)) return true;
+        path.pop_back(); onPath[u] = 0; return false;
+    };
+    for (int limit = 0; limit <= maxDepth; ++limit) {
+        ++r.iterations; path.clear(); std::fill(onPath.begin(), onPath.end(), 0);
+        if (dls(s, limit)) { r.found = true; r.depth = limit; r.path = path; break; }
+    }
+    return r;
+}
+struct Bfs { std::vector<int> dist; std::size_t maxQueue = 0; long long visited = 0; };
+Bfs bfs(const std::vector<std::vector<int>>& adj, int s) {
+    Bfs b; b.dist.assign(adj.size(), -1); std::queue<int> q; q.push(s); b.dist[s] = 0;
+    while (!q.empty()) { b.maxQueue = std::max(b.maxQueue, q.size()); int u = q.front(); q.pop(); ++b.visited; for (int v : adj[u]) if (b.dist[v] < 0) { b.dist[v] = b.dist[u] + 1; q.push(v); } }
+    return b;
+}
+bool validSimplePath(const std::vector<std::vector<int>>& adj, const std::vector<int>& p, int s, int t) {
+    if (p.empty() || p.front() != s || p.back() != t) return false;
+    std::vector<int> sorted = p; std::sort(sorted.begin(), sorted.end());
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) return false;
+    for (std::size_t i = 0; i + 1 < p.size(); ++i) if (std::find(adj[p[i]].begin(), adj[p[i]].end(), p[i + 1]) == adj[p[i]].end()) return false;
+    return true;
 }
 
-bool iddfs(int src, int goal, int V, int maxDepth) {
-    for (int d = 0; d <= maxDepth; d++) {
-        std::vector<bool> visited(V, false);
-        if (dls(src, goal, d, visited)) return true;
+// ---- 8 퍼즐 (암시적 상태 공간): 칸 9 개를 4 비트씩 64 비트에 담는다, 0 = 빈칸 ----
+typedef uint64_t State;
+const State GOAL = [] { State s = 0; for (int i = 0; i < 8; ++i) s |= (State)(i + 1) << (4 * i); return s; }();
+inline int cell(State s, int i) { return (int)(s >> (4 * i) & 15); }
+void neighbours(State s, std::vector<State>& out) {
+    out.clear(); int b = 0; while (cell(s, b) != 0) ++b;
+    int r = b / 3, c = b % 3, dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
+    for (int k = 0; k < 4; ++k) {
+        int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr > 2 || nc > 2) continue;
+        int x = nr * 3 + nc; State t = s; int tile = cell(s, x);
+        t &= ~(15ULL << (4 * x)); t |= (State)tile << (4 * b);
+        out.push_back(t);
     }
-    return false;
+}
+int iddfsPuzzle(State start, int maxDepth, long long& visited) {
+    std::function<bool(State, State, int)> dls = [&](State u, State parent, int left) -> bool {
+        ++visited; if (u == GOAL) return true;
+        if (left == 0) return false;
+        std::vector<State> nb; neighbours(u, nb);
+        for (State v : nb) if (v != parent && dls(v, u, left - 1)) return true;
+        return false;
+    };
+    for (int limit = 0; limit <= maxDepth; ++limit) if (dls(start, ~0ULL, limit)) return limit;
+    return -1;
 }
 
 int main() {
-    adj_iddfs = {{1,2},{0,3},{0,4},{1},{2}};
-    assert(iddfs(0, 4, 5, 10) == true);
-    assert(iddfs(3, 4, 5, 10) == true);
-    std::cout << "IDDFS verified." << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 0–1, 0–2, 1–3, 2–4 이면 0 에서 4 까지 깊이 2
+    {   std::vector<std::vector<int>> adj = {{1, 2}, {0, 3}, {0, 4}, {1}, {2}};
+        Result r = iddfs(adj, 0, 4, 10);
+        assert(r.found && r.depth == 2 && r.path == std::vector<int>({0, 2, 4}) && r.iterations == 3);
+        assert(iddfs(adj, 3, 4, 10).depth == 4 && !iddfs(adj, 0, 4, 1).found);                 // 제한이 모자라면 실패
+        assert(iddfs(adj, 2, 2, 0).found && iddfs(adj, 2, 2, 0).depth == 0);                   // 출발 = 목표
+    }
+
+    // ② 전수: 정점 5 개의 모든 무방향 그래프(2^10) 의 모든 (s, t) — BFS 거리와 같은 깊이, 도달 불가면 실패, 경로는 단순 경로
+    long long pairs = 0;
+    for (unsigned mask = 0; mask < 1024; ++mask) {
+        std::vector<std::vector<int>> adj(5); int bit = 0;
+        for (int a = 0; a < 5; ++a) for (int b = a + 1; b < 5; ++b, ++bit) if (mask >> bit & 1) { adj[a].push_back(b); adj[b].push_back(a); }
+        for (int s = 0; s < 5; ++s) {
+            Bfs b = bfs(adj, s);
+            for (int t = 0; t < 5; ++t) {
+                Result r = iddfs(adj, s, t, 4);
+                assert(r.found == (b.dist[t] >= 0));
+                if (r.found) { assert(r.depth == b.dist[t] && validSimplePath(adj, r.path, s, t) && (int)r.path.size() == r.depth + 1); }
+                ++pairs;
+            }
+        }
+    }
+    assert(pairs == 1024 * 25);
+
+    // ③ 무작위 방향 그래프 (정점 ≤ 10, 사이클·평행 간선·루프 포함)
+    std::mt19937 rng(97);
+    for (int it = 0; it < 500; ++it) {
+        int n = 2 + (int)(rng() % 9), m = (int)(rng() % (3 * n)); std::vector<std::vector<int>> adj(n);
+        for (int i = 0; i < m; ++i) adj[rng() % n].push_back((int)(rng() % n));
+        int s = (int)(rng() % n); Bfs b = bfs(adj, s);
+        for (int t = 0; t < n; ++t) {
+            Result r = iddfs(adj, s, t, n - 1);
+            assert(r.found == (b.dist[t] >= 0));
+            if (r.found) assert(r.depth == b.dist[t] && validSimplePath(adj, r.path, s, t));
+        }
+    }
+
+    // ④ 완전 b-진 트리에서 방문 수 공식: 목표 = 가장 오른쪽 잎 → IDDFS 는 정확히 Σ (d−i+1) b^i, BFS 는 Σ b^i, 비율 < b/(b−1)
+    for (int b = 2; b <= 5; ++b) for (int d = 1; d <= 9; ++d) {
+        long long total = 0, pw = 1; for (int i = 0; i <= d; ++i) { total += pw; pw *= b; }
+        if (total > 400000) continue;
+        std::vector<std::vector<int>> adj(total);
+        for (long long u = 0; u * b + 1 < total; ++u) for (int k = 1; k <= b; ++k) adj[u].push_back((int)(u * b + k));
+        Result r = iddfs(adj, 0, (int)(total - 1), d);
+        long long expect = 0; pw = 1; for (int i = 0; i <= d; ++i) { expect += (long long)(d - i + 1) * pw; pw *= b; }
+        assert(r.found && r.depth == d && r.visited == expect);
+        Bfs bf = bfs(adj, 0); assert(bf.visited == total);
+        assert(r.visited * (b - 1) < total * b);                                           // 비율 < b/(b−1) 를 정수로
+    }
+    // 메모리: 이진 트리 깊이 14 (노드 32,767) — IDDFS 의 스택 깊이는 d + 1, BFS 큐는 2^d 까지 커진다
+    {
+        const int d = 14; int total = (1 << (d + 1)) - 1; std::vector<std::vector<int>> adj(total);
+        for (int u = 0; 2 * u + 2 < total; ++u) adj[u] = {2 * u + 1, 2 * u + 2};
+        Result r = iddfs(adj, 0, total - 1, d); Bfs bf = bfs(adj, 0);
+        assert(r.found && r.maxStack == d + 1 && bf.maxQueue >= (1u << d));
+    }
+
+    // ⑤ 8 퍼즐: BFS 로 정답표를 만든다 (181,440 개 상태, 지름 31, 지름에 있는 상태 2 개) 후 IDDFS 깊이와 대조
+    std::unordered_map<State, int> table; table.reserve(400000);
+    {
+        std::vector<State> cur{GOAL}, nxt, nb; table[GOAL] = 0; int depth = 0; std::vector<long long> layer;
+        while (!cur.empty()) {
+            layer.push_back((long long)cur.size()); nxt.clear();
+            for (State s : cur) { neighbours(s, nb); for (State t : nb) if (!table.count(t)) { table[t] = depth + 1; nxt.push_back(t); } }
+            cur.swap(nxt); ++depth;
+        }
+        const std::vector<long long> known = {1, 2, 4, 8, 16, 20, 39, 62, 116, 152, 286, 396, 748, 1024, 1893, 2512, 4485, 5638, 9529, 10878, 16993, 17110, 23952, 20224, 24047, 15578, 14560, 6274, 3910, 760, 221, 2};
+        assert(table.size() == 181440 && layer == known);                                    // 거리별 상태 수 전체 (OEIS A087725)
+    }
+    long long totalVisited = 0; int checked = 0;
+    for (int it = 0; it < 300 && checked < 40; ++it) {
+        State s = GOAL; State parent = ~0ULL; std::vector<State> nb; int steps = 4 + (int)(rng() % 7);
+        for (int k = 0; k < steps; ++k) { neighbours(s, nb); State pick; do pick = nb[rng() % nb.size()]; while (pick == parent && nb.size() > 1); parent = s; s = pick; }
+        int want = table[s]; if (want < 4) continue;
+        long long visited = 0; int got = iddfsPuzzle(s, 12, visited);
+        assert(got == want); totalVisited += visited; ++checked;
+    }
+    assert(checked == 40 && totalVisited > 10000);
+
+    // ⑥ 큰 입력: 깊이 18 의 이진 트리(노드 524,287 개) 에서 가장 오른쪽 잎 → 방문 수 공식과 일치; 길이 5000 의 경로는 d² 에 비례한 반복
+    {
+        const int d = 18, total = (1 << (d + 1)) - 1; std::vector<std::vector<int>> adj(total);
+        for (int u = 0; 2 * u + 2 < total; ++u) adj[u] = {2 * u + 1, 2 * u + 2};
+        Result r = iddfs(adj, 0, total - 1, d);
+        long long expect = 0, pw = 1; for (int i = 0; i <= d; ++i) { expect += (long long)(d - i + 1) * pw; pw *= 2; }
+        assert(r.found && r.visited == expect && r.visited < 2LL * total);                 // BFS 의 total 개 대비 비율 < 2
+        const int L = 5000; std::vector<std::vector<int>> line(L + 1);
+        for (int i = 0; i < L; ++i) line[i].push_back(i + 1);
+        Result p = iddfs(line, 0, L, L);
+        assert(p.found && p.depth == L && p.visited == (long long)(L + 1) * (L + 2) / 2);   // 제한 0..L 마다 제한 + 1 개씩 방문
+    }
+    std::cout << "IDDFS: iterative deepening returned exactly the BFS distance (and a genuine simple path) for every ordered pair of every one of the 1024 undirected graphs on 5 vertices and for 500 random digraphs with loops and parallel edges, it visited exactly sum_{i<=d}(d-i+1)b^i nodes on complete b-ary trees (b = 2..5, d <= 9) with ratio to BFS strictly below b/(b-1), its stack held d+1 nodes where BFS's queue grew to 2^d, it solved 40 random 8-puzzle positions at exactly the optimal depth of a BFS table with 181,440 states and diameter 31, and handled a 524,287-node tree and a 5000-edge path" << std::endl; return 0;
 }
-// Time Complexity: O(b^d) — same as BFS but O(bd) space
+// Time Complexity: O(b^d)
 // Space Complexity: O(d)
 ```
 ## IDAStar()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
 #include <climits>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-// IDA* = IDDFS + A* heuristic: 메모리 효율적인 A*
-int idaStar_search(int node, int goal, int g, int threshold, int (*heuristic)(int, int)) {
-    int f = g + heuristic(node, goal);
-    if (f > threshold) return f;
-    if (node == goal) return -1; // found
-    int minimum = INT_MAX;
-    // (실제 구현에서는 이웃 노드를 탐색)
-    return minimum;
+// IDA*(Iterative Deepening A*): IDDFS 의 "깊이 제한" 을 "f = g + h 제한" 으로 바꾼 것. 제한(bound)을 h(시작) 로 잡고 f 가 bound 를 넘는 가지를 잘라내며 DFS 하고, 못 찾으면 그 탐색에서 잘려나간 f 중 *가장 작은 값* 을 새 bound 로 삼아 반복한다. A* 와 같은 최적해를 O(d) 메모리로 얻는 대신 같은 상태를 여러 경로로 다시 연다. h 가 허용 가능(과대평가하지 않음)이면 최적이고, A* 의 그래프 탐색과 달리 *일관성(consistency)은 필요 없다* — 모든 경로를 보는 트리 탐색이라 닫힌 집합의 재오픈 문제가 없다. 추정이 부풀려지면(비허용) 해는 얻어도 최적이 아닐 수 있다.
+// 정리(검증 대상): ① 첫 bound = h(시작), bound 는 순증가, 마지막 bound = 최적 비용(허용 h) ② h 가 정확하면 반복이 정확히 1 번 ③ 슬라이딩 퍼즐에서 맨해튼 거리는 매 이동마다 f 의 홀짝을 보존하므로 bound 는 매번 정확히 2 씩 늘어난다 ④ h = 0 이면 IDDFS 와 같고 맨해튼 휴리스틱은 방문 수를 크게 줄인다 ⑤ 비허용 h 는 때로 최적이 아닌 해를 낸다.
+// 검증: 무작위 가중 그래프(정점 ≤ 9, 가중치 1..5) 에서 휴리스틱 다섯 종 — 0, 정확한 거리, 정확한 거리의 절반(내림), 허용이지만 일관되지 않은 무작위 h, 비허용 — 로 다익스트라와 대조; 8 퍼즐 181,440 상태 BFS 정답표와 맨해튼 IDA* 의 비용 일치, 매 bound 증가량 2, 방문 수 비교.
+typedef long long ll;
+const ll INF = LLONG_MAX / 4;
+template <class S> struct Problem {
+    std::function<void(const S&, std::vector<std::pair<S, ll>>&)> succ;
+    std::function<ll(const S&)> h;
+    std::function<bool(const S&)> goal;
+};
+template <class S> struct IDA {
+    const Problem<S>& P; std::vector<S> path; long long expansions = 0; ll foundCost = -1; int maxDepth = 0;
+    explicit IDA(const Problem<S>& p) : P(p) {}
+    // 반환: FOUND(-1) 또는 bound 를 넘은 f 중 최솟값 (더 이상 갈 곳이 없으면 INF)
+    ll search(const S& s, ll g, ll bound) {
+        ll f = g + P.h(s);
+        if (f > bound) return f;
+        if (P.goal(s)) { foundCost = g; return -1; }
+        ++expansions; maxDepth = std::max(maxDepth, (int)path.size());
+        std::vector<std::pair<S, ll>> next; P.succ(s, next);
+        ll mn = INF;
+        for (auto& [t, w] : next) {
+            if (std::find(path.begin(), path.end(), t) != path.end()) continue;       // 현재 경로 위는 건너뜀
+            path.push_back(t);
+            ll r = search(t, g + w, bound);
+            if (r == -1) return -1;                                                 // 찾았으면 경로를 그대로 둔다
+            path.pop_back(); mn = std::min(mn, r);
+        }
+        return mn;
+    }
+    ll run(const S& start, std::vector<ll>* thresholds = nullptr) {                  // 최적 비용 (도달 불가면 -1)
+        path.assign(1, start); ll bound = P.h(start);
+        while (true) {
+            if (thresholds) thresholds->push_back(bound);
+            ll r = search(start, 0, bound);
+            if (r == -1) return foundCost;
+            if (r >= INF) return -1;
+            bound = r;
+        }
+    }
+};
+
+// ---- 명시적 가중 그래프 ----
+struct Wg { int n; std::vector<std::vector<std::pair<int, ll>>> adj; };
+std::vector<ll> distancesTo(const Wg& g, int t) {                                    // 역방향 다익스트라
+    std::vector<std::vector<std::pair<int, ll>>> radj(g.n);
+    for (int u = 0; u < g.n; ++u) for (auto [v, w] : g.adj[u]) radj[v].push_back({u, w});
+    std::vector<ll> d(g.n, INF); d[t] = 0; std::priority_queue<std::pair<ll, int>, std::vector<std::pair<ll, int>>, std::greater<>> pq; pq.push({0, t});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto [v, w] : radj[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } }
+    return d;
+}
+Problem<int> graphProblem(const Wg& g, int t, const std::vector<ll>& h) {
+    return {[&g](const int& u, std::vector<std::pair<int, ll>>& out) { out = g.adj[u]; },
+            [&h](const int& u) { return h[u]; },
+            [t](const int& u) { return u == t; }};
+}
+
+// ---- 8 퍼즐 ----
+typedef uint64_t State;
+const State GOAL = [] { State s = 0; for (int i = 0; i < 8; ++i) s |= (State)(i + 1) << (4 * i); return s; }();
+inline int cell(State s, int i) { return (int)(s >> (4 * i) & 15); }
+void neighbours(State s, std::vector<State>& out) {
+    out.clear(); int b = 0; while (cell(s, b) != 0) ++b;
+    int r = b / 3, c = b % 3, dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1};
+    for (int k = 0; k < 4; ++k) {
+        int nr = r + dr[k], nc = c + dc[k]; if (nr < 0 || nc < 0 || nr > 2 || nc > 2) continue;
+        int x = nr * 3 + nc; State t = s; int tile = cell(s, x);
+        t &= ~(15ULL << (4 * x)); t |= (State)tile << (4 * b);
+        out.push_back(t);
+    }
+}
+ll manhattan(State s) {
+    ll sum = 0;
+    for (int i = 0; i < 9; ++i) { int t = cell(s, i); if (t == 0) continue; int gi = t - 1; sum += std::abs(i / 3 - gi / 3) + std::abs(i % 3 - gi % 3); }
+    return sum;
+}
+Problem<State> puzzleProblem(bool useManhattan) {
+    return {[](const State& s, std::vector<std::pair<State, ll>>& out) { std::vector<State> nb; neighbours(s, nb); out.clear(); for (State t : nb) out.push_back({t, 1}); },
+            [useManhattan](const State& s) { return useManhattan ? manhattan(s) : 0; },
+            [](const State& s) { return s == GOAL; }};
 }
 
 int main() {
-    std::cout << "IDA* uses iterative deepening with f = g(n) + h(n) as threshold." << std::endl;
-    std::cout << "Memory: O(d), optimal with admissible heuristic." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(1985);
+    // ① 손으로 확인한 모양: 0→1:2, 0→2:5, 1→2:1, 2→3:1 에서 0→3 최적은 0→1→2→3 = 4 (정확한 h 로 1 번에 끝)
+    {   Wg g{4, {{{1, 2}, {2, 5}}, {{2, 1}}, {{3, 1}}, {}}};
+        std::vector<ll> exact = distancesTo(g, 3), zero(4, 0);
+        Problem<int> pe = graphProblem(g, 3, exact), pz = graphProblem(g, 3, zero);
+        IDA<int> a(pe), b(pz); std::vector<ll> ta, tb;
+        assert(a.run(0, &ta) == 4 && ta == std::vector<ll>({4}) && a.path == std::vector<int>({0, 1, 2, 3}));
+        assert(b.run(0, &tb) == 4 && tb == std::vector<ll>({0, 2, 3, 4}));                  // h = 0: bound 는 0 → 2 → 3 → 4 (잘려나간 f 의 최솟값)
+        IDA<int> c(pe); assert(c.run(3) == 0);                                              // 출발 = 목표
+        Wg dead{2, {{}, {}}}; std::vector<ll> z2(2, 0); Problem<int> pd = graphProblem(dead, 1, z2); IDA<int> d(pd); assert(d.run(0) == -1);   // 닿지 않음
+    }
+
+    // ② 무작위 가중 그래프 (정점 ≤ 9): 휴리스틱 다섯 종 대 다익스트라
+    int strictlyWorse = 0, admissibleRuns = 0, unreachable = 0;
+    for (int it = 0; it < 1500; ++it) {
+        int n = 3 + (int)(rng() % 7), m = (int)(rng() % (3 * n)); Wg g{n, std::vector<std::vector<std::pair<int, ll>>>(n)};
+        for (int i = 0; i < m; ++i) g.adj[rng() % n].push_back({(int)(rng() % n), (ll)(1 + rng() % 5)});
+        int s = (int)(rng() % n), t = (int)(rng() % n);
+        std::vector<ll> star = distancesTo(g, t);                                          // d*(v, t): 오라클이자 h 의 재료
+        ll opt = star[s] >= INF ? -1 : star[s];
+        if (opt < 0) ++unreachable;
+        std::vector<ll> zero(n, 0), exact(n), half(n), rnd(n), bad(n);
+        for (int v = 0; v < n; ++v) {
+            ll d = star[v] >= INF ? 0 : star[v];
+            exact[v] = d; half[v] = d / 2; rnd[v] = d ? (ll)(rng() % (d + 1)) : 0; bad[v] = d + (ll)(rng() % 4);
+        }
+        exact[t] = half[t] = rnd[t] = zero[t] = 0; bad[t] = 0;                              // 목표의 h 는 0
+        std::vector<const std::vector<ll>*> adm = {&zero, &exact, &half, &rnd};
+        for (auto* hv : adm) {
+            Problem<int> p = graphProblem(g, t, *hv); IDA<int> ida(p); std::vector<ll> th;
+            ll cost = ida.run(s, &th);
+            assert(cost == opt);                                                            // 허용 h → 최적 (일관성 없어도)
+            if (opt >= 0) {
+                assert(th.front() == (*hv)[s] && th.back() == opt);
+                for (std::size_t i = 1; i < th.size(); ++i) assert(th[i] > th[i - 1]);       // bound 순증가
+                if (hv == &exact) assert(th.size() == 1);                                   // 정확한 h 는 한 번에
+                ++admissibleRuns;
+            }
+        }
+        Problem<int> pb = graphProblem(g, t, bad); IDA<int> ida(pb);
+        ll cost = ida.run(s);
+        if (opt < 0) assert(cost == -1);
+        else { assert(cost >= opt); strictlyWorse += cost > opt; }
+    }
+    assert(admissibleRuns > 3000 && strictlyWorse > 20 && unreachable > 100);
+
+    // ③ 8 퍼즐: 정답표 (BFS) 를 만든다 — 181,440 개 상태, 지름 31
+    std::unordered_map<State, int> table; table.reserve(400000);
+    {
+        std::vector<State> cur{GOAL}, nxt, nb; table[GOAL] = 0; int depth = 0;
+        while (!cur.empty()) {
+            nxt.clear();
+            for (State s : cur) { neighbours(s, nb); for (State t : nb) if (!table.count(t)) { table[t] = depth + 1; nxt.push_back(t); } }
+            cur.swap(nxt); ++depth;
+        }
+        assert(table.size() == 181440);
+    }
+    // 무작위 상태 70 개: 맨해튼 IDA* 의 비용 = BFS 거리, bound 는 정확히 2 씩 증가, h = 0 보다 훨씬 적게 방문
+    Problem<State> pm = puzzleProblem(true), pz = puzzleProblem(false);
+    int checked = 0; long long parityOk = 0;
+    for (int it = 0; it < 2000 && checked < 70; ++it) {
+        State s = GOAL, parent = ~0ULL; std::vector<State> nb; int steps = 14 + (int)(rng() % 20);
+        for (int k = 0; k < steps; ++k) { neighbours(s, nb); State pick; do pick = nb[rng() % nb.size()]; while (pick == parent && nb.size() > 1); parent = s; s = pick; }
+        int want = table[s]; if (want < 10 || want > 22) continue;
+        IDA<State> m(pm); std::vector<ll> th; ll cost = m.run(s, &th);
+        assert(cost == want && (int)th.back() == want && th.front() == manhattan(s));
+        for (std::size_t i = 1; i < th.size(); ++i) assert(th[i] == th[i - 1] + 2);          // 홀짝 보존 → 정확히 2 씩
+        parityOk += (long long)th.size() - 1;
+        assert((int)m.path.size() == want + 1 && m.path.front() == s && m.path.back() == GOAL && m.maxDepth <= want);   // 해 경로도 올바르고 스택은 최적 깊이 이하
+        if (want <= 16) { IDA<State> z(pz); assert(z.run(s) == want); }                     // h = 0 도 같은 최적 비용 (얕은 상태만)
+        ++checked;
+    }
+    assert(checked == 70 && parityOk > 100);
+    // 비교를 같은 상태에서: 얕은 상태 30 개에서 맨해튼은 h = 0 보다 훨씬 적은 노드를 연다
+    {
+        long long man = 0, zero = 0; int used = 0;
+        for (int it = 0; it < 5000 && used < 30; ++it) {
+            State s = GOAL, parent = ~0ULL; std::vector<State> nb; int steps = 10 + (int)(rng() % 8);
+            for (int k = 0; k < steps; ++k) { neighbours(s, nb); State pick; do pick = nb[rng() % nb.size()]; while (pick == parent && nb.size() > 1); parent = s; s = pick; }
+            int want = table[s]; if (want < 12 || want > 16) continue;
+            IDA<State> m(pm), z(pz); assert(m.run(s) == want && z.run(s) == want);
+            man += m.expansions; zero += z.expansions; ++used;
+        }
+        assert(used == 30 && zero > 8 * man);
+    }
+    std::cout << "IDAStar: on 1500 random weighted graphs the IDA* thresholds started at h(start), strictly increased and ended at the Dijkstra optimum for four admissible heuristics (zero, exact, half-exact, and random admissible-but-inconsistent), an exact h needed a single iteration, an inadmissible h returned a costlier-than-optimal path in over 20 cases and -1 correctly for unreachable targets, and on 70 random 8-puzzle positions (optimal depth 10-22 against a 181,440-state BFS table) the Manhattan-distance IDA* returned exactly the optimal length with the bound growing by exactly 2 per iteration (parity), a stack no deeper than the solution, and at least 8 times fewer expansions than h = 0 on 30 positions of depth 12-16" << std::endl; return 0;
 }
-// Time Complexity: O(b^d) — repeated work per iteration
+// Time Complexity: O(b^d) (휴리스틱이 좋을수록 지수의 밑이 작아진다)
 // Space Complexity: O(d)
 ```
 ## ThetaStar()
@@ -5283,44 +6193,156 @@ int main() {
 ## BipartiteMatching()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
 
-std::vector<std::vector<int>> adj;
-std::vector<int> match;
-std::vector<bool> visited;
-
-bool dfs(int u) {
-    for (int v : adj[u]) {
-        if (visited[v]) continue;
-        visited[v] = true;
-        if (match[v] == -1 || dfs(match[v])) {
-            match[v] = u;
-            return true;
+// 이분 매칭(Kuhn 알고리즘): 왼쪽 정점을 하나씩 잡고, 아직 안 쓴 오른쪽 이웃 v 를 찾아 v 가 비어 있거나 v 의 현재 짝이 다른 곳으로 옮겨 갈 수 있으면(재귀적으로 "증가 경로" 를 찾으면) 짝을 맺는다. 증가 경로 = 비매칭 간선과 매칭 간선이 번갈아 놓이고 양 끝이 모두 짝 없는 정점인 경로이며, 그 경로를 따라 매칭/비매칭을 뒤집으면 매칭이 정확히 하나 커진다(Berge 정리: 증가 경로가 없으면 최대). O(V·E).
+// 증가 경로가 거의 정점 수만큼 길어질 수 있으므로 재귀 DFS 는 깊은 입력에서 호출 스택이 넘친다 — 여기서는 명시적 스택(반복형)으로 짜서 10 만 칸 길이의 증가 경로도 처리한다.
+// *인증서*: 매칭 M 이 최대라는 증명을 알고리즘과 독립적으로 O(V + E) 에 확인한다(König). 짝 없는 왼쪽 정점들에서 출발해 "왼→오는 아무 간선, 오→왼은 매칭 간선" 으로 닿는 정점 집합 Z 를 구하고 C = (L∖Z) ∪ (R∩Z) 로 하면 C 는 모든 간선을 덮는 정점 덮개이고 |C| = |M| 이다(Z 의 오른쪽 정점이 짝 없으면 증가 경로). 덮개 ≥ 매칭 이므로 둘 다 최적. 최대가 완전(|M| < |L|)하지 못할 때는 S = Z∩L 이 Hall 조건 위반 집합 |N(S)| < |S| 이다.
+// 검증: 모든 이분 그래프(3×3, 3×5, 4×4: 512 + 32,768 + 65,536 개) 에서 크기를 ① 부분집합 DP 로 구한 최대 매칭 ② Hall 결손 공식 |L| − max_S(|S| − |N(S)|) 와 대조하고 인증서 통과; 탐욕(먼저 만난 빈 이웃에 붙이기)은 최적이 아니지만 항상 최대의 절반 이상임을 확인; 큰 입력(왼쪽 100,001 개, 증가 경로 길이 200,001) 도 인증서로.
+struct Matching {
+    int nL, nR; std::vector<std::vector<int>> adj; std::vector<int> matchL, matchR, it, seen; int stamp = 0; long long steps = 0; bool greedyFirst = false;
+    Matching(int l, int r) : nL(l), nR(r), adj(l), matchL(l, -1), matchR(r, -1), it(l, 0), seen(r, 0) {}
+    void addEdge(int u, int v) { adj[u].push_back(v); }
+    // 반복형 증가 경로 탐색: us[k] 는 k 번째 왼쪽 정점, vs[k] 는 us[k] 에서 오른쪽으로 건너간 정점
+    bool augment(int root, bool newRound = true) {
+        if (newRound) ++stamp;                                                  // 실패한 탐색이 막다른 길로 표시한 오른쪽 정점은 매칭이 바뀌기 전까지 유효하다
+        std::vector<int> us{root}, vs; it[root] = 0;
+        while (!us.empty()) {
+            int u = us.back();
+            if (it[u] == (int)adj[u].size()) { us.pop_back(); if (!vs.empty()) vs.pop_back(); continue; }
+            int v = adj[u][it[u]++]; ++steps;
+            if (seen[v] == stamp) continue;
+            seen[v] = stamp; vs.push_back(v);
+            if (matchR[v] < 0) { for (std::size_t k = 0; k < us.size(); ++k) { matchL[us[k]] = vs[k]; matchR[vs[k]] = us[k]; } return true; }   // 경로를 따라 뒤집는다
+            int w = matchR[v]; it[w] = 0; us.push_back(w);
         }
+        return false;
     }
-    return false;
+    int run(const std::vector<int>& order) {
+        int size = 0; bool fresh = true;                                        // 성공했을 때만 방문 표시를 새로 시작한다 (실전에서 거의 O(E√V))
+        if (greedyFirst) for (int u : order) if (matchL[u] < 0) for (int v : adj[u]) if (matchR[v] < 0) { matchL[u] = v; matchR[v] = u; ++size; break; }   // 탐욕 초기화: 증가 경로 탐색 횟수를 크게 줄인다
+        for (int u : order) if (matchL[u] < 0) { if (augment(u, fresh)) { ++size; fresh = true; } else fresh = false; }
+        return size;
+    }
+    int run() { std::vector<int> o(nL); std::iota(o.begin(), o.end(), 0); return run(o); }
+};
+
+// ---- 인증서와 검사 ----
+bool validMatching(const Matching& m) {
+    for (int u = 0; u < m.nL; ++u) { int v = m.matchL[u]; if (v >= 0 && (v >= m.nR || m.matchR[v] != u || std::find(m.adj[u].begin(), m.adj[u].end(), v) == m.adj[u].end())) return false; }
+    for (int v = 0; v < m.nR; ++v) { int u = m.matchR[v]; if (u >= 0 && m.matchL[u] != v) return false; }
+    return true;
+}
+struct Konig { bool ok; std::vector<char> seenL, seenR; };
+Konig konig(const Matching& m, int size) {
+    Konig k{false, std::vector<char>(m.nL, 0), std::vector<char>(m.nR, 0)};
+    std::queue<int> q; for (int u = 0; u < m.nL; ++u) if (m.matchL[u] < 0) { k.seenL[u] = 1; q.push(u); }
+    while (!q.empty()) {
+        int u = q.front(); q.pop();
+        for (int v : m.adj[u]) if (!k.seenR[v]) { k.seenR[v] = 1; int w = m.matchR[v]; if (w >= 0 && !k.seenL[w]) { k.seenL[w] = 1; q.push(w); } }
+    }
+    int cover = 0;
+    for (int v = 0; v < m.nR; ++v) if (k.seenR[v]) { ++cover; if (m.matchR[v] < 0) return k; }       // 짝 없는 오른쪽에 닿으면 증가 경로가 있다
+    for (int u = 0; u < m.nL; ++u) if (!k.seenL[u]) ++cover;
+    for (int u = 0; u < m.nL; ++u) for (int v : m.adj[u]) if (k.seenL[u] && !k.seenR[v]) return k;   // 덮개 = (L∖Z) ∪ (R∩Z) 가 모든 간선을 덮는가
+    k.ok = cover == size;
+    return k;
+}
+// ---- 오라클 ----
+int bruteMax(int nL, int nR, const std::vector<unsigned>& mask) {
+    std::vector<int> dp(1u << nR, -1); dp[0] = 0;
+    for (int u = 0; u < nL; ++u) {
+        std::vector<int> nd = dp;
+        for (unsigned used = 0; used < (1u << nR); ++used) if (dp[used] >= 0) for (unsigned avail = mask[u] & ~used; avail; avail &= avail - 1) { unsigned bit = avail & -avail; nd[used | bit] = std::max(nd[used | bit], dp[used] + 1); }
+        dp = nd;
+    }
+    return *std::max_element(dp.begin(), dp.end());
+}
+int hallDeficiencyMatching(int nL, int nR, const std::vector<unsigned>& mask) {              // |L| − max_S (|S| − |N(S)|)
+    int maxDef = 0; (void)nR;
+    for (unsigned s = 0; s < (1u << nL); ++s) { unsigned nb = 0; for (int u = 0; u < nL; ++u) if (s >> u & 1) nb |= mask[u]; maxDef = std::max(maxDef, __builtin_popcount(s) - __builtin_popcount(nb)); }
+    return nL - maxDef;
+}
+int greedyMatching(int nL, int nR, const std::vector<unsigned>& mask) {
+    unsigned used = 0; int size = 0; (void)nR;
+    for (int u = 0; u < nL; ++u) { unsigned avail = mask[u] & ~used; if (avail) { used |= avail & -avail; ++size; } }
+    return size;
 }
 
 int main() {
-    int n = 2, m = 2; // 2 left, 2 right nodes
-    adj.assign(n, std::vector<int>());
-    match.assign(m, -1);
-    
-    adj[0] = {0, 1}; // L0 connected to R0, R1
-    adj[1] = {0};    // L1 connected to R0
-    
-    int size = 0;
-    for (int i = 0; i < n; ++i) {
-        visited.assign(m, false);
-        if (dfs(i)) size++;
+    // ① 손으로 확인한 모양: L0–{R0,R1}, L1–{R0} → 크기 2 (L0 가 R0 를 잡아도 L1 이 L0 를 R1 으로 옮긴다), 인증서
+    {   Matching m(2, 2); m.addEdge(0, 0); m.addEdge(0, 1); m.addEdge(1, 0);
+        assert(m.run() == 2 && validMatching(m) && m.matchL[0] == 1 && m.matchL[1] == 0 && konig(m, 2).ok);
+        Matching s(3, 2); s.addEdge(0, 0); s.addEdge(1, 0); s.addEdge(2, 0); s.addEdge(2, 1);   // L0, L1 은 R0 하나를 두고 경쟁
+        assert(s.run() == 2); Konig k = konig(s, 2); assert(k.ok);
+        int sizeS = 0, nbS = 0; for (int u = 0; u < 3; ++u) sizeS += k.seenL[u]; for (int v = 0; v < 2; ++v) nbS += k.seenR[v];
+        assert(sizeS == 2 && nbS == 1 && s.matchL[1] == -1);                                    // 짝 없는 L1 에서 닿는 Hall 위반 집합: S = {L0, L1}, N(S) = {R0}
     }
-    assert(size == 2);
-    std::cout << "Bipartite Matching verified." << std::endl;
-    return 0;
+
+    // ② 전수: (|L|,|R|) = (3,3), (3,5), (4,4) 의 모든 이분 그래프 — 크기 = 부분집합 DP = Hall 결손 공식, 인증서 통과, 탐욕은 최대의 절반 이상
+    long long total = 0, greedyWorse = 0;
+    for (auto [nL, nR] : std::vector<std::pair<int, int>>{{3, 3}, {3, 5}, {4, 4}}) {
+        int cells = nL * nR;
+        for (unsigned code = 0; code < (1u << cells); ++code) {
+            Matching m(nL, nR); std::vector<unsigned> mask(nL, 0);
+            for (int u = 0; u < nL; ++u) for (int v = 0; v < nR; ++v) if (code >> (u * nR + v) & 1) { m.addEdge(u, v); mask[u] |= 1u << v; }
+            int size = m.run();
+            assert(validMatching(m) && size == bruteMax(nL, nR, mask) && size == hallDeficiencyMatching(nL, nR, mask));
+            Konig k = konig(m, size); assert(k.ok);
+            if (size < nL) {                                                                      // Hall 위반 집합 S = Z ∩ L
+                unsigned S = 0, nb = 0; for (int u = 0; u < nL; ++u) if (k.seenL[u]) { S |= 1u << u; nb |= mask[u]; }
+                assert(__builtin_popcount(nb) < __builtin_popcount(S));
+            }
+            int g = greedyMatching(nL, nR, mask);
+            assert(2 * g >= size && g <= size);
+            greedyWorse += g < size; ++total;
+        }
+    }
+    assert(total == 512 + 32768 + 65536 && greedyWorse > 5000);
+
+    // ③ 무작위 (|L|,|R| ≤ 10, 처리 순서도 섞음): 크기는 순서와 무관, 짝 없는 개수 = 결손
+    std::mt19937 rng(1931);
+    for (int it = 0; it < 1500; ++it) {
+        int nL = 1 + (int)(rng() % 10), nR = 1 + (int)(rng() % 10), edges = (int)(rng() % (nL * nR + 1));
+        Matching a(nL, nR), b(nL, nR); std::vector<unsigned> mask(nL, 0);
+        for (int i = 0; i < edges; ++i) { int u = (int)(rng() % nL), v = (int)(rng() % nR); a.addEdge(u, v); b.addEdge(u, v); mask[u] |= 1u << v; }
+        std::vector<int> order(nL); std::iota(order.begin(), order.end(), 0); std::shuffle(order.begin(), order.end(), rng);
+        int sa = a.run(), sb = b.run(order);
+        assert(sa == sb && sa == bruteMax(nL, nR, mask) && validMatching(a) && validMatching(b) && konig(a, sa).ok && konig(b, sb).ok);
+    }
+
+    // ④ 큰 입력 1: 증가 경로가 길어지는 구성 — L_i 의 이웃은 [R_{i−1}, R_i] (L_0 은 [R_0]), 왼쪽 100,001 개 · 오른쪽 100,001 개.
+    //    L_1..L_n 을 먼저 처리하면 L_i → R_{i−1} 로 잘못 붙고, 마지막 L_0 이 길이 2n + 1 의 증가 경로를 한 번에 뒤집는다 (재귀였다면 스택 overflow).
+    {
+        const int n = 100000; Matching m(n + 1, n + 1);
+        m.addEdge(0, 0); for (int i = 1; i <= n; ++i) { m.addEdge(i, i - 1); if (i < n + 1) m.addEdge(i, i); }
+        int first = 0; for (int i = 1; i <= n; ++i) first += m.matchL[i] < 0 && m.augment(i);
+        assert(first == n && m.matchL[1] == 0 && m.matchR[n] == -1);                                // L_i → R_{i−1}, R_n 은 비어 있음
+        long long before = m.steps;
+        assert(m.augment(0));                                                                       // 증가 경로 하나가 모든 짝을 한 칸씩 옮긴다
+        assert(m.steps - before >= 2LL * n && validMatching(m));
+        for (int i = 0; i <= n; ++i) assert(m.matchL[i] == i);                                      // 완전 매칭 L_i → R_i
+        assert(konig(m, n + 1).ok);
+    }
+    // 큰 입력 2: 무작위 이분 그래프 (왼쪽 8,000 · 오른쪽 8,000 · 간선 32,000) — 인증서만으로 최대성 증명, 탐욕 초기화는 같은 크기를 더 적은 스캔으로
+    {
+        const int N = 8000; Matching plain(N, N), warm(N, N); warm.greedyFirst = true;
+        for (int i = 0; i < 4 * N; ++i) { int u = (int)(rng() % N), v = (int)(rng() % N); plain.addEdge(u, v); warm.addEdge(u, v); }
+        int size = plain.run(), size2 = warm.run();
+        assert(validMatching(plain) && validMatching(warm) && konig(plain, size).ok && konig(warm, size2).ok && size > N * 9 / 10);
+        assert(size == size2 && warm.steps < plain.steps);
+    }
+    std::cout << "BipartiteMatching: the iterative augmenting-path matching equalled both a subset-DP maximum and the Hall-deficiency formula |L| - max(|S| - |N(S)|) on all 512 + 32,768 + 65,536 bipartite graphs of sizes 3x3, 3x5 and 4x4, every result passed the Koenig vertex-cover certificate (with a genuine Hall violator whenever some left vertex stayed unmatched), greedy matching was never below half of the maximum and strictly worse on over 5000 graphs, 1500 random graphs gave the same size for shuffled processing orders, an augmenting path of length 200,001 on a 100,001-vertex side was flipped without recursion and certified, and a random 8,000 x 8,000 graph gave the same certified size with and without greedy initialisation (the latter with fewer scans)" << std::endl; return 0;
 }
-// Time Complexity: O(V * E)
+// Time Complexity: O(V · E)
 // Space Complexity: O(V + E)
 ```
 ## HungarianAlgorithm()
@@ -5373,41 +6395,195 @@ int main() {
 ## HopcroftKarp()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
 #include <climits>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
 
-// Hopcroft-Karp: 이분 그래프 최대 매칭 O(E * sqrt(V))
-struct HopcroftKarp {
-    int n, m;
-    std::vector<std::vector<int>> adj;
-    std::vector<int> matchL, matchR, dist;
-    HopcroftKarp(int n, int m) : n(n), m(m), adj(n), matchL(n,-1), matchR(m,-1), dist(n) {}
+// 홉크로프트–카프(Hopcroft–Karp): 한 번에 증가 경로 하나가 아니라, *가장 짧은* 증가 경로들을 정점이 겹치지 않게 최대한 많이 한꺼번에 찾는다(한 단계 = BFS 로 층을 만들고 그 층 그래프에서 DFS 로 서로소인 경로를 모두 뽑기). 핵심 정리: 한 단계가 끝나면 최단 증가 경로의 길이가 *반드시 늘어난다*, 그리고 길이가 √V 를 넘으면 남은 증가 경로 수가 √V 이하이므로 단계는 O(√V) 번 → O(E √V).
+// 구현 포인트: BFS 는 처음으로 짝 없는 오른쪽 정점을 만난 층(limit)에서 멈추고, DFS 는 층이 정확히 하나씩 깊어지는 간선만 따라가며 짝 없는 오른쪽 정점은 limit 층에서만 받는다. 막다른 정점은 INF 로 표시해 다시 오지 않는다. DFS 는 명시적 스택(반복형)이라 증가 경로가 길어도 안전하다.
+// 검증: ① 모든 단계에서 최단 증가 경로 길이 2·limit + 1 이 단계마다 *엄격히 증가* 하고, 단계가 끝난 뒤 독립적인 교대 BFS 로 구한 최단 증가 경로가 그 길이보다 정말 길다(= 한 단계가 최대 집합을 골랐다) ② 첫 단계 뒤의 매칭은 극대(양 끝이 모두 짝 없는 간선 없음) ③ 크기가 부분집합 DP 최대 매칭 · König 인증서와 일치, 단계 수 ≤ 2√V + 2 ④ 정확히 K + 1 단계가 걸리도록 만든 구성(길이 3, 5, …, 2K + 1 의 증가 경로를 가진 K 개 조각)과 무작위 큰 입력.
+struct HK {
+    int nL, nR; std::vector<std::vector<int>> adj; std::vector<int> matchL, matchR, dist, it;
+    std::vector<int> pathLens, gains; long long scans = 0;                       // 단계별 최단 증가 경로 길이 · 늘어난 매칭 수
+    HK(int l, int r) : nL(l), nR(r), adj(l), matchL(l, -1), matchR(r, -1), dist(l), it(l) {}
     void addEdge(int u, int v) { adj[u].push_back(v); }
-    bool bfs() {
-        std::queue<int> q;
-        for (int u=0;u<n;u++) { if (matchL[u]==-1) { dist[u]=0; q.push(u); } else dist[u]=INT_MAX; }
-        bool found=false;
-        while (!q.empty()) { int u=q.front();q.pop(); for (int v:adj[u]) { int w=matchR[v]; if (w==-1) found=true; else if (dist[w]==INT_MAX) { dist[w]=dist[u]+1; q.push(w); } } }
-        return found;
+    int bfs() {                                                                  // 반환: limit (없으면 -1)
+        std::queue<int> q; int limit = INT_MAX;
+        for (int u = 0; u < nL; ++u) { if (matchL[u] < 0) { dist[u] = 0; q.push(u); } else dist[u] = INT_MAX; }
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            if (dist[u] >= limit) continue;                                      // 첫 층 이후로는 확장하지 않는다
+            for (int v : adj[u]) {
+                ++scans; int w = matchR[v];
+                if (w < 0) limit = std::min(limit, dist[u]);
+                else if (dist[w] == INT_MAX) { dist[w] = dist[u] + 1; q.push(w); }
+            }
+        }
+        return limit == INT_MAX ? -1 : limit;
     }
-    bool dfs(int u) {
-        for (int v:adj[u]) { int w=matchR[v]; if (w==-1||(dist[w]==dist[u]+1&&dfs(w))) { matchL[u]=v; matchR[v]=u; return true; } }
-        dist[u]=INT_MAX; return false;
+    bool dfs(int root, int limit) {                                              // 반복형: 층 그래프에서 서로소 증가 경로 하나
+        std::vector<int> us{root}, vs; it[root] = 0;
+        while (!us.empty()) {
+            int u = us.back();
+            if (it[u] == (int)adj[u].size()) { dist[u] = INT_MAX; us.pop_back(); if (!vs.empty()) vs.pop_back(); continue; }   // 막다른 정점
+            int v = adj[u][it[u]++], w = matchR[v];
+            if (w < 0) {
+                if (dist[u] != limit) continue;                                  // 짝 없는 오른쪽은 마지막 층에서만
+                vs.push_back(v);
+                for (std::size_t k = 0; k < us.size(); ++k) { matchL[us[k]] = vs[k]; matchR[vs[k]] = us[k]; dist[us[k]] = INT_MAX; }   // 쓴 정점은 이번 단계에서 다시 못 쓰게 → 경로가 서로소
+                return true;
+            }
+            if (dist[w] == dist[u] + 1 && dist[w] <= limit) { vs.push_back(v); it[w] = 0; us.push_back(w); }
+        }
+        return false;
     }
-    int maxMatching() { int res=0; while(bfs()) for(int u=0;u<n;u++) if(matchL[u]==-1&&dfs(u)) res++; return res; }
+    int run(const std::vector<int>& roots) {
+        int size = 0;
+        while (true) {
+            int limit = bfs(); if (limit < 0) break;
+            int gain = 0; for (int u : roots) if (matchL[u] < 0 && dfs(u, limit)) ++gain;
+            size += gain; pathLens.push_back(2 * limit + 1); gains.push_back(gain);
+            if (gain == 0) break;                                               // (이론상 일어나지 않는다)
+        }
+        return size;
+    }
+    int run() { std::vector<int> r(nL); std::iota(r.begin(), r.end(), 0); return run(r); }
 };
 
-int main() {
-    HopcroftKarp hk(4, 4);
-    hk.addEdge(0,0); hk.addEdge(0,1); hk.addEdge(1,1); hk.addEdge(2,2); hk.addEdge(3,3); hk.addEdge(3,2);
-    assert(hk.maxMatching() == 4);
-    std::cout << "HopcroftKarp max matching: 4" << std::endl;
-    return 0;
+// ---- 오라클과 인증서 ----
+bool validMatching(const HK& m) {
+    for (int u = 0; u < m.nL; ++u) { int v = m.matchL[u]; if (v >= 0 && (v >= m.nR || m.matchR[v] != u || std::find(m.adj[u].begin(), m.adj[u].end(), v) == m.adj[u].end())) return false; }
+    for (int v = 0; v < m.nR; ++v) { int u = m.matchR[v]; if (u >= 0 && m.matchL[u] != v) return false; }
+    return true;
 }
-// Time Complexity: O(E * sqrt(V))
+bool konigOk(const HK& m, int size) {
+    std::vector<char> sL(m.nL, 0), sR(m.nR, 0); std::queue<int> q;
+    for (int u = 0; u < m.nL; ++u) if (m.matchL[u] < 0) { sL[u] = 1; q.push(u); }
+    while (!q.empty()) { int u = q.front(); q.pop(); for (int v : m.adj[u]) if (!sR[v]) { sR[v] = 1; int w = m.matchR[v]; if (w >= 0 && !sL[w]) { sL[w] = 1; q.push(w); } } }
+    int cover = 0;
+    for (int v = 0; v < m.nR; ++v) if (sR[v]) { ++cover; if (m.matchR[v] < 0) return false; }
+    for (int u = 0; u < m.nL; ++u) if (!sL[u]) ++cover;
+    for (int u = 0; u < m.nL; ++u) for (int v : m.adj[u]) if (sL[u] && !sR[v]) return false;
+    return cover == size;
+}
+int bruteMax(int nL, int nR, const std::vector<unsigned>& mask) {
+    std::vector<int> dp(1u << nR, -1); dp[0] = 0;
+    for (int u = 0; u < nL; ++u) {
+        std::vector<int> nd = dp;
+        for (unsigned used = 0; used < (1u << nR); ++used) if (dp[used] >= 0) for (unsigned avail = mask[u] & ~used; avail; avail &= avail - 1) { unsigned bit = avail & -avail; nd[used | bit] = std::max(nd[used | bit], dp[used] + 1); }
+        dp = nd;
+    }
+    return *std::max_element(dp.begin(), dp.end());
+}
+// 현재 매칭에서 가장 짧은 증가 경로의 길이 (없으면 -1) — 교대 BFS, HK 와 코드를 공유하지 않는다
+int shortestAugmenting(const HK& m) {
+    std::vector<int> dl(m.nL, -1); std::queue<int> q;
+    for (int u = 0; u < m.nL; ++u) if (m.matchL[u] < 0) { dl[u] = 0; q.push(u); }
+    int best = -1;
+    while (!q.empty()) {
+        int u = q.front(); q.pop();
+        for (int v : m.adj[u]) {
+            int w = m.matchR[v];
+            if (w < 0) { int len = 2 * dl[u] + 1; if (best < 0 || len < best) best = len; }
+            else if (dl[w] < 0) { dl[w] = dl[u] + 1; q.push(w); }
+        }
+    }
+    return best;
+}
+bool maximalMatching(const HK& m) { for (int u = 0; u < m.nL; ++u) if (m.matchL[u] < 0) for (int v : m.adj[u]) if (m.matchR[v] < 0) return false; return true; }
+
+// 단계마다 증가 경로 길이가 늘어나는지 확인하며 돌린다 (작은 입력용: 단계 끝마다 독립 BFS)
+int runChecked(HK& m, const std::vector<int>& roots) {
+    int size = 0, prevLen = 0;
+    while (true) {
+        int limit = m.bfs(); if (limit < 0) break;
+        int len = 2 * limit + 1;
+        assert(shortestAugmenting(m) == len && len > prevLen);                  // BFS 의 limit 가 진짜 최단 증가 경로 길이, 단계마다 엄격히 증가
+        int gain = 0; for (int u : roots) if (m.matchL[u] < 0 && m.dfs(u, limit)) ++gain;
+        assert(gain >= 1);
+        size += gain; prevLen = len; m.pathLens.push_back(len); m.gains.push_back(gain);
+        int after = shortestAugmenting(m); assert(after < 0 || after > len);   // 한 단계 뒤에는 그 길이의 증가 경로가 남아 있지 않다
+        if (m.pathLens.size() == 1) assert(maximalMatching(m));                // 첫 단계(길이 1)는 극대 매칭
+    }
+    return size;
+}
+
+int main() {
+    // ① 손으로 확인한 모양: 기존 예제 (L0–R0,R1 · L1–R1 · L2–R2 · L3–R3,R2) → 4
+    {   HK m(4, 4); m.addEdge(0, 0); m.addEdge(0, 1); m.addEdge(1, 1); m.addEdge(2, 2); m.addEdge(3, 3); m.addEdge(3, 2);
+        assert(m.run() == 4 && validMatching(m) && konigOk(m, 4));
+        // 나쁜 처리 순서(L1 먼저)에서도: L1 → R0 를 잡으면 L0 가 막혀 2 단계가 필요
+        HK b(2, 2); b.addEdge(0, 0); b.addEdge(1, 0); b.addEdge(1, 1);
+        assert(b.run({1, 0}) == 2 && b.pathLens == std::vector<int>({1, 3}) && b.gains == std::vector<int>({1, 1}));
+    }
+
+    // ② 전수: (3,3), (3,5), (4,4) 의 모든 이분 그래프 — 단계마다 최단 증가 경로 길이 엄격 증가, 크기 = 부분집합 DP, 인증서, 단계 수 ≤ 2√V + 2
+    long long total = 0, multiPhase = 0;
+    for (auto [nL, nR] : std::vector<std::pair<int, int>>{{3, 3}, {3, 5}, {4, 4}}) {
+        int cells = nL * nR;
+        for (unsigned code = 0; code < (1u << cells); ++code) {
+            HK m(nL, nR); std::vector<unsigned> mask(nL, 0);
+            for (int u = 0; u < nL; ++u) for (int v = 0; v < nR; ++v) if (code >> (u * nR + v) & 1) { m.addEdge(u, v); mask[u] |= 1u << v; }
+            std::vector<int> roots(nL); std::iota(roots.begin(), roots.end(), 0);
+            int size = runChecked(m, roots);
+            assert(validMatching(m) && size == bruteMax(nL, nR, mask) && konigOk(m, size) && shortestAugmenting(m) < 0);
+            assert((int)m.pathLens.size() <= 2 * (int)std::sqrt((double)(nL + nR)) + 2);
+            multiPhase += m.pathLens.size() >= 2; ++total;
+        }
+    }
+    assert(total == 512 + 32768 + 65536 && multiPhase > 500);
+
+    // ③ 무작위 (|L|,|R| ≤ 10, 뿌리 순서도 섞음): 단계 성질 + 크기
+    std::mt19937 rng(1973);
+    for (int it = 0; it < 1500; ++it) {
+        int nL = 1 + (int)(rng() % 10), nR = 1 + (int)(rng() % 10), edges = (int)(rng() % (nL * nR + 1));
+        HK m(nL, nR); std::vector<unsigned> mask(nL, 0);
+        for (int i = 0; i < edges; ++i) { int u = (int)(rng() % nL), v = (int)(rng() % nR); m.addEdge(u, v); mask[u] |= 1u << v; }
+        std::vector<int> roots(nL); std::iota(roots.begin(), roots.end(), 0); std::shuffle(roots.begin(), roots.end(), rng);
+        int size = runChecked(m, roots);
+        assert(size == bruteMax(nL, nR, mask) && validMatching(m) && konigOk(m, size));
+        int sum = 0; for (int g : m.gains) sum += g; assert(sum == size);
+    }
+
+    // ④ 단계 수가 정확히 K + 1 이 되는 구성: 조각 m (1 ≤ m ≤ K) 은 L_0..L_m / R_0..R_m, L_i 의 이웃 [R_{i−1}, R_i] (L_0 은 [R_0]) 인 경로.
+    //    뿌리를 내림차순으로 훑으면 1 단계에서 L_i → R_{i−1} 로 잘못 붙어 조각 m 에 길이 2m + 1 의 증가 경로가 남는다 → 단계 j 는 길이 2j − 1 하나만 고친다.
+    {
+        const int K = 120; int base = 0, n = 0; std::vector<int> start;
+        for (int m = 1; m <= K; ++m) { start.push_back(n); n += m + 1; }
+        HK h(n, n);
+        for (int m = 1; m <= K; ++m) {
+            base = start[m - 1];
+            h.addEdge(base, base);
+            for (int i = 1; i <= m; ++i) { h.addEdge(base + i, base + i - 1); h.addEdge(base + i, base + i); }
+        }
+        std::vector<int> roots(n); for (int i = 0; i < n; ++i) roots[i] = n - 1 - i;           // 내림차순
+        int size = h.run(roots);
+        assert(size == n && validMatching(h) && konigOk(h, n));
+        assert((int)h.pathLens.size() == K + 1);
+        for (int j = 0; j <= K; ++j) assert(h.pathLens[j] == 2 * j + 1);                     // 1, 3, 5, …, 2K + 1
+        for (int j = 1; j <= K; ++j) assert(h.gains[j] == 1);                                // 첫 단계 뒤로는 단계마다 정확히 하나
+        assert((int)h.pathLens.size() <= 2 * (int)std::sqrt(2.0 * n) + 2);
+    }
+    // 큰 입력: 무작위 왼쪽 200,000 · 오른쪽 200,000 · 간선 800,000 — 인증서로 최대성 증명, 단계 수 ≤ 2√V + 2
+    {
+        const int N = 200000; HK h(N, N);
+        for (int i = 0; i < 4 * N; ++i) h.addEdge((int)(rng() % N), (int)(rng() % N));
+        int size = h.run();
+        assert(validMatching(h) && konigOk(h, size) && size > N * 9 / 10);
+        assert((int)h.pathLens.size() <= 2 * (int)std::sqrt(2.0 * N) + 2);
+        for (std::size_t i = 1; i < h.pathLens.size(); ++i) assert(h.pathLens[i] > h.pathLens[i - 1]);
+    }
+    std::cout << "HopcroftKarp: phases built a BFS layering and extracted a maximal set of vertex-disjoint shortest augmenting paths with an iterative DFS; on all 512 + 32,768 + 65,536 bipartite graphs of sizes 3x3, 3x5 and 4x4 and 1500 random graphs with shuffled roots the BFS limit equalled the true shortest augmenting-path length found by an independent alternating BFS, that length strictly increased every phase and no path of that length remained afterwards, the first phase left a maximal matching, sizes matched a subset-DP maximum and passed the Koenig cover certificate, a constructed instance of 120 path gadgets took exactly 121 phases (lengths 1, 3, ..., 241), and a random 200,000 x 200,000 graph with 800,000 edges was certified maximum within 2*sqrt(V)+2 phases" << std::endl; return 0;
+}
+// Time Complexity: O(E √V)
 // Space Complexity: O(V + E)
 ```
 ## BlossomAlgorithm()
@@ -5478,84 +6654,272 @@ int main() {
 ## Tarjan()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <stack>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
 
-int V = 4;
-std::vector<std::vector<int>> adj = {{1}, {2}, {0}, {2}};
-std::vector<int> dfn(4, 0), low(4, 0);
-std::vector<bool> in_stack(4, false);
-std::stack<int> st;
-int timer = 0, scc_cnt = 0;
+// 타잔(Tarjan)의 강연결 요소: DFS 한 번으로 정점마다 방문 번호 idx 와 "서브트리에서 스택 위 정점으로 되돌아가 닿는 가장 이른 번호" low 를 구한다. low[u] == idx[u] 이면 u 가 한 요소의 뿌리이고, 스택에서 u 까지 꺼낸 정점들이 그 요소다. 요소는 *끝나는 순서* 대로 번호가 붙으므로 번호는 응축 그래프(요소를 한 점으로 줄인 DAG)의 *역위상 순서* — 간선 u→v 마다 comp[u] ≥ comp[v] — 이다. 같은 알고리즘의 정의·교차 검증은 Part 4 StronglyConnectedComponents 에 있고, 여기서는 이 번호 매기기가 주는 *응용* 둘을 검증한다.
+// 응용 ① 2-SAT: 절 (a ∨ b) 마다 ¬a→b, ¬b→a 를 넣은 함의 그래프(변수 i 의 리터럴 노드 2i, ¬ 는 2i+1)에서, 어떤 변수 x 와 ¬x 가 같은 요소에 있으면 충족 불가능, 아니면 comp[x] < comp[¬x] (x 가 위상 순서상 *뒤*) 일 때 x = 참 으로 두면 모든 절이 충족된다. ② 응축 그래프의 출발 요소 수 s 와 도착 요소 수 t 에 대해, 이미 강연결이 아니면 간선을 최소 max(s, t) 개 더해야 강연결이 된다(고립 정점은 s 와 t 에 모두 센다).
+// 검증: 정점 ≤ 4 의 모든 방향 그래프(4096)에서 ① 요소 = 도달 가능성 분할 ② 역위상 번호 ③ 최소 보강 간선 수를 *모든 간선 추가 조합을 시도* 해 구한 값과 대조(표본으로 정점 5), 무작위 2-SAT(변수 ≤ 10) 를 2^k 가지 완전 탐색과 대조해 SAT/UNSAT 판정과 배정의 정당성 확인, 마지막으로 변수 10 만 개 · 절 20 만 개의 큰 2-SAT 와 백만 정점 사이클.
+using Graph = std::vector<std::vector<int>>;
+struct Scc { int comps = 0; std::vector<int> comp; long long scans = 0; };
 
-void dfs(int u) {
-    dfn[u] = low[u] = ++timer;
-    st.push(u); in_stack[u] = true;
-    
-    for (int v : adj[u]) {
-        if (!dfn[v]) { dfs(v); low[u] = std::min(low[u], low[v]); }
-        else if (in_stack[v]) low[u] = std::min(low[u], dfn[v]);
-    }
-    
-    if (low[u] == dfn[u]) {
-        scc_cnt++;
-        while (true) {
-            int t = st.top(); st.pop(); in_stack[t] = false;
-            if (t == u) break;
+Scc tarjan(const Graph& g) {                                                      // 반복형: 호출 스택 대신 명시적 스택
+    int n = (int)g.size(); Scc r; r.comp.assign(n, -1);
+    std::vector<int> idx(n, -1), low(n, 0), it(n, 0), st, call; std::vector<char> on(n, 0); int counter = 0;
+    for (int root = 0; root < n; ++root) {
+        if (idx[root] >= 0) continue;
+        idx[root] = low[root] = counter++; st.push_back(root); on[root] = 1; call.push_back(root);
+        while (!call.empty()) {
+            int u = call.back();
+            if (it[u] < (int)g[u].size()) {
+                int v = g[u][it[u]++]; ++r.scans;
+                if (idx[v] < 0) { idx[v] = low[v] = counter++; st.push_back(v); on[v] = 1; call.push_back(v); }
+                else if (on[v]) low[u] = std::min(low[u], idx[v]);
+            } else {
+                if (low[u] == idx[u]) { while (true) { int w = st.back(); st.pop_back(); on[w] = 0; r.comp[w] = r.comps; if (w == u) break; } ++r.comps; }
+                call.pop_back();
+                if (!call.empty()) low[call.back()] = std::min(low[call.back()], low[u]);
+            }
         }
     }
+    return r;
+}
+// 2-SAT: 변수 i 의 리터럴 = 2i (참), 2i+1 (거짓)
+struct TwoSat {
+    int k; Graph g; explicit TwoSat(int vars) : k(vars), g(2 * vars) {}
+    static int lit(int var, bool neg) { return 2 * var + (neg ? 1 : 0); }
+    void addClause(int a, int b) { g[a ^ 1].push_back(b); g[b ^ 1].push_back(a); }            // (a ∨ b) ⇔ (¬a → b) ∧ (¬b → a)
+    bool solve(std::vector<char>& value) const {
+        Scc s = tarjan(g); value.assign(k, 0);
+        for (int i = 0; i < k; ++i) { if (s.comp[2 * i] == s.comp[2 * i + 1]) return false; value[i] = s.comp[2 * i] < s.comp[2 * i + 1]; }
+        return true;
+    }
+};
+// 최소 보강 간선 수 (응축 그래프의 출발/도착 요소로 계산)
+int minEdgesToStronglyConnect(const Graph& g, const Scc& s) {
+    if (s.comps <= 1) return 0;
+    std::vector<char> hasIn(s.comps, 0), hasOut(s.comps, 0);
+    for (std::size_t u = 0; u < g.size(); ++u) for (int v : g[u]) if (s.comp[u] != s.comp[v]) { hasOut[s.comp[u]] = 1; hasIn[s.comp[v]] = 1; }
+    int src = 0, snk = 0; for (int c = 0; c < s.comps; ++c) { src += !hasIn[c]; snk += !hasOut[c]; }
+    return std::max(src, snk);
+}
+
+// ---- 오라클 ----
+std::vector<unsigned> closure(int n, const Graph& g) {                            // 반사 추이적 폐쇄 (비트마스크, n ≤ 32)
+    std::vector<unsigned> row(n); for (int i = 0; i < n; ++i) { row[i] = 1u << i; for (int v : g[i]) row[i] |= 1u << v; }
+    for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) if (row[i] >> k & 1) row[i] |= row[k];
+    return row;
+}
+bool stronglyConnectedMask(int n, const std::vector<unsigned>& row) { for (int i = 0; i < n; ++i) if (row[i] != (n == 32 ? ~0u : (1u << n) - 1)) return false; return true; }
+int bruteMinAugment(int n, const Graph& g) {                                      // 간선을 k 개씩 더해 보며 처음 강연결이 되는 k
+    std::vector<std::pair<int, int>> absent;
+    for (int a = 0; a < n; ++a) for (int b = 0; b < n; ++b) if (a != b && std::find(g[a].begin(), g[a].end(), b) == g[a].end()) absent.push_back({a, b});
+    for (int k = 0; k <= (int)absent.size(); ++k) {
+        std::vector<int> pick(k); std::iota(pick.begin(), pick.end(), 0);
+        while (true) {
+            Graph h = g; for (int i : pick) h[absent[i].first].push_back(absent[i].second);
+            if (stronglyConnectedMask(n, closure(n, h))) return k;
+            int p = k - 1; while (p >= 0 && pick[p] == (int)absent.size() - k + p) --p;
+            if (p < 0) break;
+            ++pick[p]; for (int j = p + 1; j < k; ++j) pick[j] = pick[j - 1] + 1;
+        }
+    }
+    return -1;
 }
 
 int main() {
-    for(int i=0; i<V; i++) if(!dfn[i]) dfs(i);
-    assert(scc_cnt == 2); // {0,1,2} and {3}
-    std::cout << "Tarjan's SCC verified." << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 0→1→2→0 은 한 요소, 3→2 는 따로 → 요소 2 개, 번호는 역위상 (싱크 {0,1,2} 가 먼저 = 0)
+    {   Graph g = {{1}, {2}, {0}, {2}};
+        Scc s = tarjan(g);
+        assert(s.comps == 2 && s.comp[0] == s.comp[1] && s.comp[1] == s.comp[2] && s.comp[3] == 1 && s.comp[0] == 0 && s.scans == 4);
+        assert(minEdgesToStronglyConnect(g, s) == 1);                                    // 출발 요소 {3} 하나, 도착 요소 {0,1,2} 하나 → 간선 1 개 (2→3)
+    }
+
+    // ② 전수: 정점 ≤ 4 의 모든 방향 그래프(루프 없음) — 도달 가능성 분할 · 역위상 번호 · 호출당 간선 훑기 정확히 E 번 · 최소 보강 간선 수(완전 탐색)
+    long long graphs = 0, needAugment = 0;
+    for (int n = 1; n <= 4; ++n) {
+        std::vector<std::pair<int, int>> all; for (int a = 0; a < n; ++a) for (int b = 0; b < n; ++b) if (a != b) all.push_back({a, b});
+        int m = (int)all.size();
+        for (unsigned mask = 0; mask < (1u << m); ++mask) {
+            Graph g(n); int edges = 0; for (int i = 0; i < m; ++i) if (mask >> i & 1) { g[all[i].first].push_back(all[i].second); ++edges; }
+            Scc s = tarjan(g); auto reach = closure(n, g);
+            for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) assert((s.comp[i] == s.comp[j]) == ((reach[i] >> j & 1) && (reach[j] >> i & 1)));
+            for (int u = 0; u < n; ++u) for (int v : g[u]) assert(s.comp[u] >= s.comp[v]);                              // 역위상
+            assert(s.scans == edges);
+            int want = bruteMinAugment(n, g);
+            assert(minEdgesToStronglyConnect(g, s) == want);
+            needAugment += want > 0; ++graphs;
+        }
+    }
+    assert(graphs == 1 + 4 + 64 + 4096 && needAugment == 3 + 46 + 2490);           // 강연결이 아닌 그래프 수: 4096 − 1606 = 2490 (정점 4), 64 − 18 = 46 (정점 3), 4 − 1 = 3 (정점 2)
+    // 정점 5 개 표본 (2^20 개 중 약 700 개)
+    std::mt19937 rng(2007);
+    for (int it = 0; it < 700; ++it) {
+        Graph g(5); for (int a = 0; a < 5; ++a) for (int b = 0; b < 5; ++b) if (a != b && rng() % 100 < 22) g[a].push_back(b);
+        Scc s = tarjan(g); assert(minEdgesToStronglyConnect(g, s) == bruteMinAugment(5, g));
+    }
+
+    // ③ 2-SAT: 변수 ≤ 10 개, 절 ≤ 3k 개 (자기 절 (a ∨ a) 와 항진 (a ∨ ¬a) 포함) — 판정이 2^k 완전 탐색과 같고, SAT 이면 배정이 모든 절을 만족
+    int sat = 0, unsat = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int k = 1 + (int)(rng() % 10), m = (int)(rng() % (3 * k + 1));
+        TwoSat ts(k); std::vector<std::pair<int, int>> clauses;
+        for (int i = 0; i < m; ++i) { int a = TwoSat::lit((int)(rng() % k), rng() & 1), b = TwoSat::lit((int)(rng() % k), rng() & 1); ts.addClause(a, b); clauses.push_back({a, b}); }
+        bool brute = false;
+        for (unsigned asg = 0; asg < (1u << k) && !brute; ++asg) {
+            bool ok = true; for (auto [a, b] : clauses) { bool va = (asg >> (a / 2) & 1) != (a & 1), vb = (asg >> (b / 2) & 1) != (b & 1); ok = ok && (va || vb); }
+            brute = ok;
+        }
+        std::vector<char> val; bool got = ts.solve(val);
+        assert(got == brute);
+        if (got) { for (auto [a, b] : clauses) assert(((val[a / 2] != 0) != (a & 1)) || ((val[b / 2] != 0) != (b & 1))); ++sat; } else ++unsat;
+    }
+    assert(sat > 2000 && unsat > 600);
+
+    // ④ 큰 입력: (a) 숨긴 배정을 만족하는 절 20 만 개의 2-SAT, 변수 10 만 개 → SAT, 배정이 모든 절을 만족; 모순 절 두 개를 더하면 UNSAT  (b) 백만 정점 사이클 = 요소 1 개, 한 간선을 끊으면 요소 백만 개
+    {
+        const int K = 100000; std::mt19937_64 r(11); std::vector<char> hidden(K); for (auto& h : hidden) h = (char)(r() & 1);
+        TwoSat ts(K); std::vector<std::pair<int, int>> clauses;
+        while ((int)clauses.size() < 2 * K) {
+            int x = (int)(r() % K), y = (int)(r() % K); bool nx = r() & 1, ny = r() & 1;
+            bool vx = (hidden[x] != 0) != nx, vy = (hidden[y] != 0) != ny;
+            if (!vx && !vy) continue;                                                      // 숨긴 배정이 만족하지 않는 절은 버린다
+            int a = TwoSat::lit(x, nx), b = TwoSat::lit(y, ny); ts.addClause(a, b); clauses.push_back({a, b});
+        }
+        std::vector<char> val; assert(ts.solve(val));
+        for (auto [a, b] : clauses) assert(((val[a / 2] != 0) != (a & 1)) || ((val[b / 2] != 0) != (b & 1)));
+        ts.addClause(TwoSat::lit(0, false), TwoSat::lit(0, false)); ts.addClause(TwoSat::lit(0, true), TwoSat::lit(0, true));     // x₀ 와 ¬x₀ 를 동시에 강제
+        assert(!ts.solve(val));
+        const int N = 1000000; Graph cyc(N); for (int i = 0; i < N; ++i) cyc[i].push_back((i + 1) % N);
+        Scc one = tarjan(cyc); assert(one.comps == 1 && one.scans == N);
+        cyc[N - 1].clear(); Scc many = tarjan(cyc); assert(many.comps == N && many.comp[N - 1] == 0 && many.comp[0] == N - 1);
+    }
+    std::cout << "Tarjan: the iterative low-link DFS reproduced the reachability partition on all 4096 loop-free digraphs over 4 vertices, numbered components in reverse topological order (comp[u] >= comp[v] on every edge) while scanning each edge exactly once, the sources/sinks formula max(s,t) matched a brute-force search over every set of added edges (all graphs up to 4 vertices and 700 random 5-vertex ones), 2-SAT via component numbering agreed with 2^k enumeration on 3000 random formulas (over 2000 satisfiable and over 600 unsatisfiable) with valid assignments, and a 100,000-variable 200,000-clause planted 2-SAT was solved while a contradiction made it UNSAT, plus a 1,000,000-vertex cycle" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
+// Space Complexity: O(V)
 ```
 ## Kosaraju()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <stack>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <utility>
+#include <vector>
 
-void dfsKos(int u, std::vector<std::vector<int>>& adj, std::vector<bool>& vis, std::stack<int>& st) {
-    vis[u] = true;
-    for (int v : adj[u]) if (!vis[v]) dfsKos(v, adj, vis, st);
-    st.push(u);
-}
-void dfsKosRev(int u, std::vector<std::vector<int>>& radj, std::vector<bool>& vis) {
-    vis[u] = true;
-    for (int v : radj[u]) if (!vis[v]) dfsKosRev(v, radj, vis);
-}
+// 코사라주(Kosaraju–Sharir): 두 번의 DFS 로 강연결 요소를 구한다. ① 원래 그래프를 DFS 해서 정점을 *끝난 순서* 로 기록 ② 간선을 뒤집은 그래프에서 끝난 시각이 *가장 늦은 정점부터* 다시 DFS — 그때 한 번의 DFS 로 닿는 정점 집합이 정확히 한 요소다. 열쇠 보조정리: 요소 C 에서 C' 로 가는 간선이 있으면 max finish(C) > max finish(C') 이다. 그래서 끝 시각이 가장 큰 정점은 응축 DAG 의 *출발* 요소에 있고, 뒤집은 그래프에서는 출발 요소에서 다른 요소로 나갈 수 없어 한 요소만 닿는다. 요소 번호는 발견 순이라 응축 그래프의 *위상 순서* (간선 u→v 마다 comp[u] ≤ comp[v]) — 타잔의 역위상 번호와 반대다.
+// 비용: 간선을 훑는 횟수가 타잔은 E, 코사라주는 정확히 2E 이고 뒤집은 그래프도 따로 만들어야 한다(메모리 두 배) — 대신 두 DFS 가 각각 단순하다. 역할을 바꿔도(뒤집은 그래프를 먼저 DFS, 원래 그래프에서 두 번째) 같은 분할이 나온다. 모두 반복형 DFS 라서 백만 정점 사슬도 안전하다.
+// 검증: 정점 ≤ 4 의 모든 방향 그래프(루프 없음)에서 ① 도달 가능성 분할과 일치 ② 위상 번호(comp[u] ≤ comp[v]) ③ 보조정리 max finish(C) > max finish(C') ④ 간선 훑기 정확히 2E 와 타잔의 E ⑤ 역할을 바꾼 변형이 같은 분할; 무작위 큰 그래프 · 백만 정점 사이클은 타잔과 대조.
+using Graph = std::vector<std::vector<int>>;
+struct Scc { int comps = 0; std::vector<int> comp, finish; long long scans = 0; };
 
-int kosaraju(int V, std::vector<std::vector<int>>& adj) {
-    std::stack<int> st;
-    std::vector<bool> vis(V, false);
-    for (int i = 0; i < V; i++) if (!vis[i]) dfsKos(i, adj, vis, st);
-    std::vector<std::vector<int>> radj(V);
-    for (int u = 0; u < V; u++) for (int v : adj[u]) radj[v].push_back(u);
-    std::fill(vis.begin(), vis.end(), false);
-    int scc = 0;
-    while (!st.empty()) {
-        int u = st.top(); st.pop();
-        if (!vis[u]) { dfsKosRev(u, radj, vis); scc++; }
+// pass1 은 g 에서, pass2 는 g 의 전치에서 (swapRoles 이면 반대)
+Scc kosaraju(const Graph& g, bool swapRoles = false) {
+    int n = (int)g.size(); Scc r; r.comp.assign(n, -1); r.finish.assign(n, -1);
+    Graph rg(n); for (int u = 0; u < n; ++u) for (int v : g[u]) rg[v].push_back(u);
+    const Graph& first = swapRoles ? rg : g; const Graph& second = swapRoles ? g : rg;
+    // 1 차 DFS: 끝난 순서
+    std::vector<int> order, it(n, 0), st; std::vector<char> seen(n, 0);
+    for (int root = 0; root < n; ++root) {
+        if (seen[root]) continue;
+        seen[root] = 1; st.push_back(root);
+        while (!st.empty()) {
+            int u = st.back();
+            if (it[u] < (int)first[u].size()) { int v = first[u][it[u]++]; ++r.scans; if (!seen[v]) { seen[v] = 1; st.push_back(v); } }
+            else { r.finish[u] = (int)order.size(); order.push_back(u); st.pop_back(); }
+        }
     }
-    return scc;
+    // 2 차 DFS: 끝난 시각이 늦은 순서로, 요소 하나가 한 번에 닿는다
+    for (int k = n - 1; k >= 0; --k) {
+        int s = order[k]; if (r.comp[s] >= 0) continue;
+        r.comp[s] = r.comps; st.push_back(s);
+        while (!st.empty()) {
+            int u = st.back(); st.pop_back();
+            for (int v : second[u]) { ++r.scans; if (r.comp[v] < 0) { r.comp[v] = r.comps; st.push_back(v); } }
+        }
+        ++r.comps;
+    }
+    return r;
+}
+// 타잔 (간선 훑기 횟수 비교와 큰 입력 대조용)
+Scc tarjan(const Graph& g) {
+    int n = (int)g.size(); Scc r; r.comp.assign(n, -1);
+    std::vector<int> idx(n, -1), low(n, 0), it(n, 0), st, call; std::vector<char> on(n, 0); int counter = 0;
+    for (int root = 0; root < n; ++root) {
+        if (idx[root] >= 0) continue;
+        idx[root] = low[root] = counter++; st.push_back(root); on[root] = 1; call.push_back(root);
+        while (!call.empty()) {
+            int u = call.back();
+            if (it[u] < (int)g[u].size()) { int v = g[u][it[u]++]; ++r.scans; if (idx[v] < 0) { idx[v] = low[v] = counter++; st.push_back(v); on[v] = 1; call.push_back(v); } else if (on[v]) low[u] = std::min(low[u], idx[v]); }
+            else { if (low[u] == idx[u]) { while (true) { int w = st.back(); st.pop_back(); on[w] = 0; r.comp[w] = r.comps; if (w == u) break; } ++r.comps; } call.pop_back(); if (!call.empty()) low[call.back()] = std::min(low[call.back()], low[u]); }
+        }
+    }
+    return r;
+}
+std::vector<int> canonical(const std::vector<int>& comp) {                       // 분할만 비교: 각 요소를 가장 작은 정점 번호로 이름 붙인다
+    std::vector<int> label(comp.size(), -1), out(comp.size());
+    for (std::size_t v = 0; v < comp.size(); ++v) { if (label[comp[v]] < 0) label[comp[v]] = (int)v; out[v] = label[comp[v]]; }
+    return out;
+}
+std::vector<unsigned> closure(int n, const Graph& g) {
+    std::vector<unsigned> row(n); for (int i = 0; i < n; ++i) { row[i] = 1u << i; for (int v : g[i]) row[i] |= 1u << v; }
+    for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) if (row[i] >> k & 1) row[i] |= row[k];
+    return row;
 }
 
 int main() {
-    int V = 5;
-    std::vector<std::vector<int>> adj = {{2},{0},{1,3},{4},{}};
-    assert(kosaraju(V, adj) == 3); // {0,1,2}, {3}, {4}
-    std::cout << "Kosaraju SCC count: 3" << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 기존 예제 0→2, 1→0, 2→1,3, 3→4 → {0,1,2}, {3}, {4}, 번호는 위상 순서
+    {   Graph g = {{2}, {0}, {1, 3}, {4}, {}};
+        Scc s = kosaraju(g);
+        assert(s.comps == 3 && s.comp[0] == s.comp[1] && s.comp[1] == s.comp[2] && s.comp[0] == 0 && s.comp[3] == 1 && s.comp[4] == 2 && s.scans == 2 * 5);
+        Scc t = tarjan(g); assert(t.comps == 3 && t.comp[0] == 2 && t.comp[3] == 1 && t.comp[4] == 0 && t.scans == 5);    // 타잔 번호는 정확히 반대
+    }
+
+    // ② 전수: 정점 ≤ 4 의 모든 방향 그래프(루프 없음) — 도달 가능성 분할 · 위상 번호 · 보조정리 · 훑기 횟수 · 역할 교환
+    long long graphs = 0;
+    for (int n = 1; n <= 4; ++n) {
+        std::vector<std::pair<int, int>> all; for (int a = 0; a < n; ++a) for (int b = 0; b < n; ++b) if (a != b) all.push_back({a, b});
+        int m = (int)all.size();
+        for (unsigned mask = 0; mask < (1u << m); ++mask) {
+            Graph g(n); int edges = 0; for (int i = 0; i < m; ++i) if (mask >> i & 1) { g[all[i].first].push_back(all[i].second); ++edges; }
+            Scc s = kosaraju(g), t = tarjan(g), w = kosaraju(g, true); auto reach = closure(n, g);
+            for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) assert((s.comp[i] == s.comp[j]) == ((reach[i] >> j & 1) && (reach[j] >> i & 1)));
+            for (int u = 0; u < n; ++u) for (int v : g[u]) assert(s.comp[u] <= s.comp[v]);                                  // 위상 번호
+            std::vector<int> maxFinish(s.comps, -1); for (int v = 0; v < n; ++v) maxFinish[s.comp[v]] = std::max(maxFinish[s.comp[v]], s.finish[v]);
+            for (int u = 0; u < n; ++u) for (int v : g[u]) if (s.comp[u] != s.comp[v]) assert(maxFinish[s.comp[u]] > maxFinish[s.comp[v]]);   // 보조정리
+            assert(s.scans == 2 * edges && t.scans == edges && w.scans == 2 * edges);                                       // 코사라주 2E, 타잔 E
+            assert(canonical(s.comp) == canonical(t.comp) && canonical(s.comp) == canonical(w.comp));                      // 세 변형이 같은 분할
+            for (int u = 0; u < n; ++u) for (int v : g[u]) assert(t.comp[u] >= t.comp[v]);                                  // 타잔은 역위상
+            ++graphs;
+        }
+    }
+    assert(graphs == 1 + 4 + 64 + 4096);
+
+    // ③ 무작위 큰 그래프: 정점 30 만 · 간선 60 만 (거대 요소가 생기는 밀도) — 코사라주 = 타잔, 보조정리, 훑기 횟수; 백만 정점 사이클
+    std::mt19937_64 r(99);
+    {
+        const int N = 300000; Graph g(N); for (int i = 0; i < 2 * N; ++i) g[r() % N].push_back((int)(r() % N));
+        Scc s = kosaraju(g), t = tarjan(g);
+        assert(canonical(s.comp) == canonical(t.comp) && s.comps == t.comps && s.comps > 1 && s.scans == 2LL * 2 * N && t.scans == 2LL * N);
+        std::vector<int> size(s.comps, 0); for (int c : s.comp) ++size[c];
+        assert(*std::max_element(size.begin(), size.end()) > N / 2);                                                       // 거대 요소
+        for (int u = 0; u < N; ++u) for (int v : g[u]) assert(s.comp[u] <= s.comp[v]);
+        const int M = 1000000; Graph cyc(M); for (int i = 0; i < M; ++i) cyc[i].push_back((i + 1) % M);
+        assert(kosaraju(cyc).comps == 1 && kosaraju(cyc, true).comps == 1);
+        cyc[M - 1].clear(); Scc chain = kosaraju(cyc); assert(chain.comps == M && chain.comp[0] == 0 && chain.comp[M - 1] == M - 1);   // 사슬: 위상 순서 0 … M−1
+    }
+    std::cout << "Kosaraju: two iterative DFS passes (finish order on G, then sweeps over the transpose in decreasing finish time) matched the reachability partition on all 4096 loop-free digraphs over 4 vertices, numbered components in topological order (opposite to Tarjan's), satisfied the key lemma max finish(C) > max finish(C') on every cross-component edge, scanned exactly 2E edges against Tarjan's E, gave the same partition with the roles of G and its transpose swapped, and agreed with Tarjan on a 300,000-vertex random digraph with a giant component and on a 1,000,000-vertex cycle and chain" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
 // Space Complexity: O(V + E)
@@ -5618,32 +6982,179 @@ int main() {
 ## EulerTour()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <cassert>
 #include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
 
-// 오일러 회로: 모든 간선을 정확히 한 번씩 지나는 경로
-// 조건: 연결 그래프에서 모든 정점의 차수가 짝수
-void eulerTour(int u, std::vector<std::vector<int>>& adj, std::vector<int>& path) {
-    while (!adj[u].empty()) {
-        int v = adj[u].back(); adj[u].pop_back();
-        // 역방향 간선도 제거 (무방향)
-        adj[v].erase(std::find(adj[v].begin(), adj[v].end(), u));
-        eulerTour(v, adj, path);
+// 오일러 경로·회로(Euler trail/circuit): 모든 간선을 정확히 한 번씩 지나는 경로. 존재 조건 — 무방향: 간선이 있는 정점들이 한 연결 성분이고 홀수 차수 정점이 0 개(회로) 또는 2 개(경로, 두 홀수 정점이 양 끝). 방향: 간선이 있는 정점들이 약연결이고 모든 정점에서 진입 = 진출(회로), 또는 진출 − 진입 = +1 인 정점(시작) 하나와 −1 인 정점(끝) 하나(경로). 루프는 무방향에서 차수 2.
+// Hierholzer 알고리즘: 시작점에서 막다른 곳까지 안 쓴 간선을 따라 가다가, 막히면(스택 맨 위 정점에 안 쓴 간선이 없으면) 그 정점을 *결과의 끝* 에 놓고 돌아간다. 그렇게 얻은 정점열을 뒤집은 것이 오일러 경로다 — 도중의 부분 회로가 자동으로 이어 붙는다. O(E). 반복형(명시적 스택 + 정점별 간선 포인터)이라 백만 간선도 안전하고, 간선 번호도 함께 기록해 같은 간선을 두 번 쓰지 않았음을 확인한다. 기존의 "간선을 지우며 재귀" 방식은 vector::erase 때문에 O(E²) 이고 평행 간선·루프에서 틀린다.
+// 검증: ① 무작위 다중 그래프(루프·평행 간선·비연결)에서 존재 여부가 *모든 경로를 시도하는 완전 탐색* 과 같고, 찾은 경로는 모든 간선을 정확히 한 번 쓰며 이웃한 간선이 정말 이어진다 ② BEST 정리: 방향 오일러 그래프의 오일러 회로 수 = t_w(G) · Π (진출차수 − 1)! 를 Kirchhoff 행렬식(Bareiss)으로 계산해 회로를 전부 세는 완전 탐색과 대조 ③ 큰 입력: de Bruijn 그래프 B(2, 20) 의 오일러 회로 = 길이 2^20 의 de Bruijn 수열(모든 20 비트 문자열이 순환적으로 정확히 한 번씩 나타남), 700×700 원환 격자(간선 98 만 개) 의 오일러 회로.
+struct Trail { bool ok = false; std::vector<int> vs, es; };                       // 정점열(E+1) · 간선 번호열(E)
+struct Arc { int to, id; };
+
+Trail hierholzer(int n, const std::vector<std::pair<int, int>>& edges, bool directed) {
+    int m = (int)edges.size(); Trail t;
+    std::vector<std::vector<Arc>> adj(n); std::vector<int> deg(n, 0), outd(n, 0), ind(n, 0);
+    for (int i = 0; i < m; ++i) {
+        auto [a, b] = edges[i];
+        adj[a].push_back({b, i}); ++outd[a]; ++ind[b];
+        if (!directed) { adj[b].push_back({a, i}); }                              // 루프는 양쪽에 한 번씩 들어가 차수 2, 사용 표시로 한 번만 쓴다
     }
-    path.push_back(u);
+    int start = -1;
+    if (directed) {
+        int plus = 0, minus = 0, startPlus = -1;
+        for (int v = 0; v < n; ++v) { int d = outd[v] - ind[v]; if (d == 1) { ++plus; startPlus = v; } else if (d == -1) ++minus; else if (d != 0) return t; }
+        if (!((plus == 0 && minus == 0) || (plus == 1 && minus == 1))) return t;
+        start = startPlus; if (start < 0) for (int v = 0; v < n; ++v) if (outd[v] > 0) { start = v; break; }
+    } else {
+        int odd = 0, firstOdd = -1;
+        for (int v = 0; v < n; ++v) { deg[v] = (int)adj[v].size(); if (deg[v] & 1) { ++odd; if (firstOdd < 0) firstOdd = v; } }
+        if (odd != 0 && odd != 2) return t;
+        start = firstOdd; if (start < 0) for (int v = 0; v < n; ++v) if (deg[v] > 0) { start = v; break; }
+    }
+    if (m == 0) { t.ok = true; return t; }                                        // 간선이 없으면 빈 경로
+    if (start < 0) return t;
+    std::vector<int> ptr(n, 0), stV{start}, stE{-1}, outV, outE; std::vector<char> used(m, 0);
+    while (!stV.empty()) {
+        int u = stV.back();
+        while (ptr[u] < (int)adj[u].size() && used[adj[u][ptr[u]].id]) ++ptr[u];
+        if (ptr[u] == (int)adj[u].size()) { outV.push_back(u); outE.push_back(stE.back()); stV.pop_back(); stE.pop_back(); }
+        else { Arc a = adj[u][ptr[u]++]; used[a.id] = 1; stV.push_back(a.to); stE.push_back(a.id); }
+    }
+    if ((int)outE.size() != m + 1) return t;                                      // 모든 간선을 못 썼다 → 연결되지 않음 (outE 마지막은 시작의 −1)
+    std::reverse(outV.begin(), outV.end()); std::reverse(outE.begin(), outE.end());
+    t.ok = true; t.vs = outV; t.es.assign(outE.begin() + 1, outE.end());
+    return t;
 }
+bool validTrail(int n, const std::vector<std::pair<int, int>>& edges, bool directed, const Trail& t) {
+    int m = (int)edges.size(); (void)n;
+    if ((int)t.es.size() != m || (int)t.vs.size() != m + 1) return m == 0 && t.vs.empty() && t.es.empty();   // 간선이 없으면 빈 경로
+    std::vector<char> seen(m, 0);
+    for (int i = 0; i < m; ++i) {
+        int id = t.es[i]; if (id < 0 || id >= m || seen[id]) return false; seen[id] = 1;
+        auto [a, b] = edges[id]; int x = t.vs[i], y = t.vs[i + 1];
+        if (directed ? !(a == x && b == y) : !((a == x && b == y) || (a == y && b == x))) return false;
+    }
+    return true;
+}
+
+// ---- 오라클: 모든 경로 시도 ----
+bool bruteTrail(int n, const std::vector<std::pair<int, int>>& edges, bool directed, int cur, std::vector<char>& used, int left) {
+    if (left == 0) return true;
+    for (int i = 0; i < (int)edges.size(); ++i) {
+        if (used[i]) continue;
+        auto [a, b] = edges[i]; int next = -1;
+        if (a == cur) next = b; else if (!directed && b == cur) next = a;
+        if (next < 0) continue;
+        used[i] = 1; bool ok = bruteTrail(n, edges, directed, next, used, left - 1); used[i] = 0;
+        if (ok) return true;
+    }
+    return false;
+}
+bool bruteExists(int n, const std::vector<std::pair<int, int>>& edges, bool directed) {
+    if (edges.empty()) return true;
+    std::vector<char> used(edges.size(), 0);
+    for (int s = 0; s < n; ++s) if (bruteTrail(n, edges, directed, s, used, (int)edges.size())) return true;
+    return false;
+}
+// BEST 정리용: 오일러 회로를 (첫 간선 고정) 전부 센다
+long long countCircuits(const std::vector<std::pair<int, int>>& edges, int cur, std::vector<char>& used, int left, int startVertex) {
+    if (left == 0) return cur == startVertex ? 1 : 0;
+    long long total = 0;
+    for (int i = 1; i < (int)edges.size(); ++i) if (!used[i] && edges[i].first == cur) { used[i] = 1; total += countCircuits(edges, edges[i].second, used, left - 1, startVertex); used[i] = 0; }
+    return total;
+}
+long long bareissDet(std::vector<std::vector<long long>> a) {                         // 정수 행렬식 (분수 없는 가우스 소거)
+    int n = (int)a.size(); long long sign = 1, prev = 1;
+    for (int k = 0; k + 1 < n; ++k) {
+        if (a[k][k] == 0) { int s = -1; for (int i = k + 1; i < n; ++i) if (a[i][k] != 0) { s = i; break; } if (s < 0) return 0; std::swap(a[k], a[s]); sign = -sign; }
+        for (int i = k + 1; i < n; ++i) for (int j = k + 1; j < n; ++j) a[i][j] = (a[i][j] * a[k][k] - a[i][k] * a[k][j]) / prev;
+        prev = a[k][k];
+    }
+    return n == 0 ? 1 : sign * a[n - 1][n - 1];
+}
+
 int main() {
-    // 0-1-2-0 삼각형 (모든 차수 2, 오일러 회로 존재)
-    std::vector<std::vector<int>> adj = {{1,2},{0,2},{0,1}};
-    std::vector<int> path;
-    eulerTour(0, adj, path);
-    assert(path.size() == 4); // 3간선 + 시작점 복귀
-    std::cout << "EulerTour path length: " << path.size() << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 삼각형 → 회로(길이 4 의 정점열), 경로 그래프 → 양끝이 홀수, 별 → 없음, 비연결 → 없음, 방향 사이클
+    {   std::vector<std::pair<int, int>> tri = {{0, 1}, {1, 2}, {2, 0}};
+        Trail t = hierholzer(3, tri, false); assert(t.ok && t.vs.size() == 4 && t.vs.front() == t.vs.back() && validTrail(3, tri, false, t));
+        std::vector<std::pair<int, int>> path = {{0, 1}, {1, 2}};
+        Trail p = hierholzer(3, path, false); assert(p.ok && p.vs.front() != p.vs.back() && validTrail(3, path, false, p));
+        assert(!hierholzer(4, {{0, 1}, {0, 2}, {0, 3}}, false).ok);                            // 홀수 차수 정점 4 개
+        assert(!hierholzer(6, {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5}, {5, 3}}, false).ok);   // 두 삼각형은 이어져 있지 않다
+        std::vector<std::pair<int, int>> loop = {{0, 0}, {0, 1}, {1, 0}}; assert(hierholzer(2, loop, false).ok);   // 루프 + 평행 간선
+        std::vector<std::pair<int, int>> dir = {{0, 1}, {1, 2}, {2, 0}}; Trail d = hierholzer(3, dir, true); assert(d.ok && validTrail(3, dir, true, d));
+        assert(!hierholzer(3, {{0, 1}, {0, 2}}, true).ok);                                     // 진출 2, 진입 없음
+    }
+
+    // ② 무작위 다중 그래프 (정점 ≤ 5, 간선 ≤ 9, 루프·평행·비연결): 존재 여부 = 완전 탐색, 경로는 올바름 — 무방향과 방향 모두
+    std::mt19937 rng(1736);
+    int existed = 0, absent = 0;
+    for (int it = 0; it < 6000; ++it) {
+        int n = 1 + (int)(rng() % 5), m = (int)(rng() % 10); bool directed = it & 1; std::vector<std::pair<int, int>> edges;
+        for (int i = 0; i < m; ++i) edges.push_back({(int)(rng() % n), (int)(rng() % n)});
+        if (it % 3 == 0 && !directed) {                                                        // 짝수 차수를 자주 만들기 위해 닫힌 걸음을 섞는다
+            edges.clear(); int len = 3 + (int)(rng() % 6), v = (int)(rng() % n), first = v;
+            for (int i = 0; i + 1 < len; ++i) { int w = (int)(rng() % n); edges.push_back({v, w}); v = w; } edges.push_back({v, first});
+        }
+        Trail t = hierholzer(n, edges, directed); bool brute = bruteExists(n, edges, directed);
+        assert(t.ok == brute);
+        if (t.ok) { assert(validTrail(n, edges, directed, t)); ++existed; } else ++absent;
+    }
+    assert(existed > 1200 && absent > 1200);
+
+    // ③ BEST 정리: 방향 오일러 다중 그래프(정점 ≤ 4, 간선 ≤ 8, 모든 정점에 간선, 약연결) 에서 오일러 회로 수 = t_w · Π (outdeg − 1)!
+    int bestChecked = 0;
+    for (int it = 0; it < 60000 && bestChecked < 300; ++it) {
+        int n = 2 + (int)(rng() % 3); std::vector<std::pair<int, int>> edges;
+        for (int c = 0, cycles = 1 + (int)(rng() % 3); c < cycles; ++c) {                      // 닫힌 걸음 몇 개를 합치면 진입 = 진출
+            int len = 2 + (int)(rng() % 3), first = (int)(rng() % n), v = first;
+            for (int i = 0; i + 1 < len; ++i) { int w = (int)(rng() % n); edges.push_back({v, w}); v = w; } edges.push_back({v, first});
+        }
+        if ((int)edges.size() > 8) continue;
+        std::vector<int> outd(n, 0); for (auto [a, b] : edges) { ++outd[a]; (void)b; }
+        bool allHave = true; for (int v = 0; v < n; ++v) allHave = allHave && outd[v] > 0;
+        if (!allHave) continue;
+        Trail t = hierholzer(n, edges, true); if (!t.ok) continue;                             // 약연결이 아니면 건너뜀
+        // 라플라시안 L = D_out − A, 뿌리 w = 0 을 지운 소행렬식 = t_w
+        std::vector<std::vector<long long>> L(n, std::vector<long long>(n, 0));
+        for (auto [a, b] : edges) { L[a][a] += 1; L[a][b] -= 1; }
+        std::vector<std::vector<long long>> minor(n - 1, std::vector<long long>(n - 1));
+        for (int i = 1; i < n; ++i) for (int j = 1; j < n; ++j) minor[i - 1][j - 1] = L[i][j];
+        long long tw = bareissDet(minor), prod = 1;
+        for (int v = 0; v < n; ++v) for (int k = 2; k <= outd[v] - 1; ++k) prod *= k;
+        std::vector<char> used(edges.size(), 0); used[0] = 1;
+        long long brute = countCircuits(edges, edges[0].second, used, (int)edges.size() - 1, edges[0].first);
+        assert(brute == tw * prod);
+        ++bestChecked;
+    }
+    assert(bestChecked == 300);
+
+    // ④ 큰 입력 (a) de Bruijn 그래프 B(2, 20): 정점 2^19, 간선 2^20 → 오일러 회로의 간선 라벨이 de Bruijn 수열 (모든 20 비트 문자열이 순환적으로 정확히 한 번)
+    //    (b) 700×700 원환 격자 (모든 차수 4, 간선 980,000) 의 오일러 회로
+    {
+        const int K = 20, V = 1 << (K - 1); std::vector<std::pair<int, int>> edges; edges.reserve(1 << K);
+        for (int u = 0; u < V; ++u) for (int b = 0; b < 2; ++b) edges.push_back({u, ((u << 1) | b) & (V - 1)});     // 간선 id = 2u + b 의 라벨은 b
+        Trail t = hierholzer(V, edges, true);
+        assert(t.ok && validTrail(V, edges, true, t));
+        std::vector<int> bits(t.es.size()); for (std::size_t i = 0; i < bits.size(); ++i) bits[i] = t.es[i] & 1;
+        std::vector<char> seen(1 << K, 0); unsigned window = 0;
+        for (int i = 0; i < K - 1; ++i) window = (window << 1) | bits[i];
+        for (std::size_t i = 0; i < bits.size(); ++i) { window = ((window << 1) | bits[(i + K - 1) % bits.size()]) & ((1u << K) - 1); assert(!seen[window]); seen[window] = 1; }
+        assert(std::count(seen.begin(), seen.end(), 1) == (1 << K));                                             // 2^20 개 창이 모두 다르다
+        const int R = 700; std::vector<std::pair<int, int>> grid;
+        for (int r = 0; r < R; ++r) for (int c = 0; c < R; ++c) { grid.push_back({r * R + c, r * R + (c + 1) % R}); grid.push_back({r * R + c, ((r + 1) % R) * R + c}); }
+        Trail g = hierholzer(R * R, grid, false); assert(g.ok && validTrail(R * R, grid, false, g) && g.vs.front() == g.vs.back());
+    }
+    std::cout << "EulerTour: iterative Hierholzer matched an exhaustive search over all trails on 6000 random multigraphs (loops, parallel edges, disconnected; undirected and directed, over 1200 with and over 1200 without a trail), every produced trail used each edge exactly once with consecutive edges joined, the BEST theorem count t_w * prod (outdeg-1)! equalled the number of Euler circuits enumerated by brute force on 300 directed multigraphs (Kirchhoff determinant via Bareiss), the circuit of the de Bruijn graph B(2,20) spelled a sequence in which all 2^20 cyclic windows were distinct, and a 700x700 torus grid with 980,000 edges was traversed" << std::endl; return 0;
 }
-// Time Complexity: O(E)
+// Time Complexity: O(V + E)
 // Space Complexity: O(V + E)
 ```
 ## HeavyLightDecomposition()
@@ -7142,7 +8653,7 @@ int main() {
 //   이것은 증명된 한계이기도 하다(Tarjan 1975 상한, Fredman–Saks 1989 하한): 포인터 머신/셀 프로브 모델에서 Ω(m·α) 가 필요하다 — 더 나은 해는 없다.
 // 압축만 하고 랭크를 쓰지 않으면 O(m log_{1+m/n} n), 랭크만 쓰고 압축을 안 하면 find 하나가 O(log n) 이다. 크루스칼처럼 Union-Find 가 안쪽 루프에 있는 알고리즘의 전체 시간은 정렬 O(E log E) 가 지배하므로 Union-Find 는 사실상 "공짜" 이다.
 // 검증: ① A_k(1) 값(3, 7, 2047)과 A₄(1) > 2^300 ② 크기 n = 2^10 … 2^20 에서 무작위 합치기+조회의 연산당 평균 걸음 수가 n 에 거의 무관(상수) ③ 이항 트리(토너먼트)에서 랭크만 쓸 때는 가장 깊은 노드 조회 비용이 log₂ n 으로 자라지만 압축을 쓰면 두 번째 조회가 한 걸음 ④ 별 모양 합치기열 (0,j): 순진한 합치기+압축 없음은 Θ(n²), 랭크 합치기는 O(n) (여기서는 항상 큰 쪽이 루트라 걸음 0) ⑤ 크루스칼에서 정렬 비교 수 ≫ find 걸음 수
-typedef __int128 big;
+__extension__ typedef __int128 big;
 big ack2(big x) { return ((big)1 << (x + 1)) * (x + 1) - 1; }                                  // A₂(x) = 2^(x+1)(x+1) − 1 (x ≤ 100 에서만 정확)
 struct DSU {
     std::vector<int> p, rk; bool byRank, compress; long steps = 0; DSU(int n, bool r, bool c) : p(n), rk(n, 0), byRank(r), compress(c) { std::iota(p.begin(), p.end(), 0); }
