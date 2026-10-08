@@ -1848,7 +1848,7 @@ int main() {
 #include <cassert>
 
 void update(std::vector<int>& bit, int i, int delta) {
-    while(i < bit.size()) { bit[i] += delta; i += i & -i; }
+    while(i < (int)bit.size()) { bit[i] += delta; i += i & -i; }
 }
 int query(const std::vector<int>& bit, int i) {
     int sum = 0;
@@ -1859,7 +1859,7 @@ int query(const std::vector<int>& bit, int i) {
 int main() {
     std::vector<int> arr = {1, 3, 5, 7, 9, 11};
     std::vector<int> bit(arr.size() + 1, 0);
-    for(int i=0; i<arr.size(); i++) update(bit, i+1, arr[i]);
+    for(int i=0; i<(int)arr.size(); i++) update(bit, i+1, arr[i]);
     assert(query(bit, 4) - query(bit, 1) == 15); // Sum of indices 1..3
     std::cout << "Fenwick Tree (BIT) built and verified." << std::endl;
     return 0;
@@ -4327,7 +4327,7 @@ struct RMI {
     }
     long lowerBound(double x, long* window = nullptr) {                      // x 이상인 첫 위치
         int m = route(x); double p = leaf[m].at(x); long n = keys.size();
-        long lo = std::max(0L, (long)std::floor(p + eLo[m])), hi = std::min(n, (long)std::ceil(p + eHi[m]) + 1);
+        long lo = std::max(0L, (long)std::floor(p + eLo[m])), hi = std::max(0L, std::min(n, (long)std::ceil(p + eHi[m]) + 1));          // 예측이 음수로 크게 벗어나도 구간이 배열 밖으로 나가지 않게 0 으로 고정
         if (lo > hi) lo = hi; if (window) *window = hi - lo;
         long r = std::lower_bound(keys.begin() + lo, keys.begin() + hi, x) - keys.begin();
         bool ok = (r == 0 || keys[r - 1] < x) && (r == n || keys[r] >= x);   // 없는 키를 물었을 때 구간 밖으로 어긋날 수 있다 -> 확인 후 보정
@@ -5083,7 +5083,7 @@ struct StaticBTree {
 };
 int main() {
     std::mt19937 g(5); const long n = 1 << 20; std::vector<int> keys(n); for (long i = 0; i < n; i++) keys[i] = i * 3;     // 이미 정렬된 정수 키
-    double lines[3] = {0, 0, 0}; int Fs[3] = {4, 16, 64}; double bin = 0; int Q = 3000;
+    double lines[3] = {0, 0, 0}; int Fs[3] = {4, 16, 64}; (void)Fs; (void)Fs; double bin = 0; int Q = 3000;
     StaticBTree t4(keys, 4), t16(keys, 16), t64(keys, 64); const StaticBTree* trees[3] = {&t4, &t16, &t64};
     for (int t = 0; t < Q; t++) {
         int q = g() % (n * 3); long want = std::lower_bound(keys.begin(), keys.end(), q) - keys.begin();

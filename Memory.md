@@ -110,7 +110,7 @@ int main() {
 
 // 메모리 덤프: 주소, 16진수 바이트, 오른쪽에 출력 가능한 ASCII 를 보여 주는 hexdump -C 형식.  디버깅과 바이너리 분석의 기본 도구
 std::string hexdump(const void* data, size_t n) {
-    const unsigned char* p = (const unsigned char*)data; std::string out; char buf[16];
+    const unsigned char* p = (const unsigned char*)data; std::string out; char buf[32];
     for (size_t off = 0; off < n; off += 16) {
         std::snprintf(buf, sizeof buf, "%08zx  ", off); out += buf;
         for (size_t i = 0; i < 16; i++) {
@@ -169,6 +169,7 @@ int main() {
 }
 // Time Complexity: O(1)
 // Space Complexity: O(1)
+// audit: no-sanitize (섹션 주소 비교는 새니타이저의 섀도 메모리 배치에서 성립하지 않는다)
 ```
 ## DataSegment()
 ### 대표코드
@@ -419,8 +420,8 @@ int main() {
 
 // 지역 변수(자동 저장 기간): 선언 시점에 만들어지고 블록을 벗어날 때 "생성의 역순" 으로 소멸한다 -> RAII 의 토대.
 // 스택에 있으므로 할당·해제가 SP 이동뿐이라 빠르지만, 블록이 끝나면 그 주소는 더 이상 유효하지 않다
-std::vector<std::string> log;
-struct Guard { std::string name; explicit Guard(std::string n) : name(std::move(n)) { log.push_back("+" + name); } ~Guard() { log.push_back("-" + name); } };
+std::vector<std::string> trace;
+struct Guard { std::string name; explicit Guard(std::string n) : name(std::move(n)) { trace.push_back("+" + name); } ~Guard() { trace.push_back("-" + name); } };
 
 void f() {
     Guard a("a");
@@ -433,7 +434,7 @@ void f() {
 
 int main() {
     f();
-    assert((log == std::vector<std::string>{"+a", "+b", "+c", "-c", "-b", "+d", "-d", "-a"}));   // 생성 순서의 정확한 역순
+    assert((trace == std::vector<std::string>{"+a", "+b", "+c", "-c", "-b", "+d", "-d", "-a"}));   // 생성 순서의 정확한 역순
     int outer = 1;
     int* p = nullptr;
     { int inner = 2; p = &inner; assert(*p == 2); }                      // 블록 안에서는 유효
@@ -503,6 +504,7 @@ int main() {
 }
 // Time Complexity: O(깊이)
 // Space Complexity: O(깊이) 스택
+// audit: no-sanitize (새니타이저가 프레임 크기를 바꿔 측정값이 달라진다)
 ```
 ## TailCallOptimization()
 ### 대표코드
@@ -645,6 +647,7 @@ int main() {
 }
 // Time Complexity: 할당기에 따라 다름 (평균 O(1))
 // Space Complexity: O(n)
+// audit: no-sanitize (터무니없이 큰 할당을 일부러 요청한다)
 ```
 ## PlacementNew()
 ### 대표코드
@@ -996,7 +999,7 @@ public:
     void* alloc() {
         Slab* s = nullptr;
         for (auto& x : slabs) if (x->count < PER_SLAB && (!s || x->count > s->count)) s = x.get();   // 가장 찬 부분 슬랩 우선
-        if (!s) { slabs.emplace_back(new Slab{std::unique_ptr<char[]>(new char[objSize * PER_SLAB])}); s = slabs.back().get(); created++; }
+        if (!s) { slabs.emplace_back(new Slab{std::unique_ptr<char[]>(new char[objSize * PER_SLAB]), {}, 0}); s = slabs.back().get(); created++; }
         for (int i = 0; i < PER_SLAB; i++) if (!s->used[i]) { s->used[i] = 1; s->count++; return s->mem.get() + i * objSize; }
         return nullptr;
     }
@@ -1291,7 +1294,7 @@ struct Obj { int id; std::vector<int> refs; bool old = false; int age = 0; };
 
 struct Heap {
     std::vector<Obj> objs; std::set<int> alive; std::vector<int> roots; std::set<int> remembered;   // old 에 있으면서 young 을 가리키는 객체들
-    int make() { objs.push_back(Obj{(int)objs.size()}); alive.insert(objs.size() - 1); return objs.size() - 1; }
+    int make() { objs.push_back(Obj{(int)objs.size(), {}, false, 0}); alive.insert(objs.size() - 1); return objs.size() - 1; }
     void writeRef(int from, int to) {
         objs[from].refs.push_back(to);
         if (objs[from].old && !objs[to].old) remembered.insert(from);          // 쓰기 장벽
@@ -1484,12 +1487,13 @@ int main() {
     std::set<int> snapshot; { std::vector<int> st = {0}; while (!st.empty()) { int i = st.back(); st.pop_back(); if (!snapshot.insert(i).second) continue; for (int c : h.refs[i]) if (c >= 0) st.push_back(c); } }
     h.work.push_back(0);
     std::atomic<bool> done(false);
-    std::thread mutator([&] {                                                    // 뮤테이터: 마킹 도중 참조를 마구 끊고 바꾼다
+    std::thread mutator([&] {                                                    // 뮤테이터: 마킹 도중 참조를 마구 끊고 바꾼다 (쓰기 횟수는 유한하게 — 수집기가 반드시 끝나도록)
         std::mt19937 r(99);
-        while (!done) { int from = r() % N, slot = r() % 2; int to = (r() % 3 == 0) ? -1 : (int)(r() % N); h.writeRef(from, slot, to); }
+        for (int k = 0; k < 100000; k++) { int from = r() % N, slot = r() % 2; int to = (r() % 3 == 0) ? -1 : (int)(r() % N); h.writeRef(from, slot, to); }
+        done = true;
     });
-    while (h.markStep()) { std::this_thread::yield(); }
-    done = true; mutator.join();
+    for (;;) { if (h.markStep()) continue; if (done) { while (h.markStep()) {} break; } std::this_thread::yield(); }          // 일이 없으면 양보하고, 뮤테이터가 끝났으면 남은 장벽 기록까지 비운다
+    mutator.join();
     int missed = 0; for (int i : snapshot) if (!h.marked[i]) missed++;
     assert(missed == 0);                                                          // 스냅샷에서 닿던 객체는 하나도 놓치지 않았다
     std::cout << "ConcurrentGC (SATB): snapshot of " << snapshot.size() << " objects fully marked despite concurrent mutation" << std::endl;
@@ -2283,7 +2287,7 @@ int main() {
     if (sigsetjmp(env, 1) == 0) { ((void(*)())page)(); } else blocked = true;      // 데이터 페이지를 코드처럼 실행
     assert(blocked);                                                 // NX 가 막았다
     mprotect(page, ps, PROT_READ | PROT_EXEC);                       // 명시적으로 실행 권한을 주면
-    bool ran = false;
+    volatile bool ran = false;
     if (sigsetjmp(env, 1) == 0) { ((void(*)())page)(); ran = true; }
     assert(ran);                                                     // 실행된다 (그래서 mprotect 호출을 제한하는 정책이 따로 있다)
     munmap(page, ps);
@@ -2389,7 +2393,7 @@ std::vector<std::atomic<int>> arrive(N), X(N), Y(N), R0(N), R1(N);
 
 long runTest(std::memory_order storeOrder, std::memory_order loadOrder, bool useFence) {
     for (int i = 0; i < N; i++) { arrive[i] = 0; X[i] = 0; Y[i] = 0; R0[i] = -1; R1[i] = -1; }
-    auto sync = [&](int i) { arrive[i].fetch_add(1); while (arrive[i].load() < 2) {} };          // 두 스레드를 같은 순간에 출발시킨다
+    auto sync = [&](int i) { arrive[i].fetch_add(1); while (arrive[i].load() < 2) std::this_thread::yield(); };          // 두 스레드를 같은 순간에 출발시킨다
     std::thread a([&] { for (int i = 0; i < N; i++) { sync(i); X[i].store(1, storeOrder); if (useFence) std::atomic_thread_fence(std::memory_order_seq_cst); R0[i].store(Y[i].load(loadOrder), std::memory_order_relaxed); } });
     std::thread b([&] { for (int i = 0; i < N; i++) { sync(i); Y[i].store(1, storeOrder); if (useFence) std::atomic_thread_fence(std::memory_order_seq_cst); R1[i].store(X[i].load(loadOrder), std::memory_order_relaxed); } });
     a.join(); b.join();
@@ -2432,7 +2436,7 @@ int main() {
     long stale = 0;
     std::thread consumer([&] {
         for (int i = 0; i < N; i++) {
-            while (flag[i].load(std::memory_order_acquire) == 0) {}          // 플래그가 보일 때까지 대기
+            while (flag[i].load(std::memory_order_acquire) == 0) std::this_thread::yield();          // 플래그가 보일 때까지 대기
             if (data[i] != i * 2 + 1) stale++;                               // 플래그가 보였다면 data 도 반드시 보여야 한다
         }
     });
@@ -2461,7 +2465,7 @@ std::vector<std::atomic<int>> arrive(N), X(N), Y(N), R1(N), R2(N), R3(N), R4(N);
 
 int main() {
     for (int i = 0; i < N; i++) { arrive[i] = 0; X[i] = 0; Y[i] = 0; }
-    auto sync = [&](int i) { arrive[i].fetch_add(1); while (arrive[i].load() < 4) {} };
+    auto sync = [&](int i) { arrive[i].fetch_add(1); while (arrive[i].load() < 4) std::this_thread::yield(); };
     std::thread a([&] { for (int i = 0; i < N; i++) { sync(i); X[i].store(1); } });                                   // seq_cst 기본값
     std::thread b([&] { for (int i = 0; i < N; i++) { sync(i); Y[i].store(1); } });
     std::thread c([&] { for (int i = 0; i < N; i++) { sync(i); R1[i] = X[i].load(); R2[i] = Y[i].load(); } });
@@ -2512,6 +2516,7 @@ int main() {
 }
 // Time Complexity: O(1) 추적
 // Space Complexity: O(1) 카운터 (상세 추적은 O(할당 수))
+// audit: no-sanitize (누수를 일부러 만든다)
 ```
 ## DanglingPointer()
 ### 대표코드
@@ -3014,6 +3019,7 @@ int main() {
 }
 // Time Complexity: O(영역 수)
 // Space Complexity: O(영역 수)
+// audit: no-sanitize (/proc/self/maps 의 스택 영역 권한 표시가 새니타이저에서 다르다)
 ```
 ## ThreadLocalStorage()
 ### 대표코드
@@ -3546,10 +3552,10 @@ Obj* resolve(Obj* o) { return o->fwd.load(); }                              // �
 int read(Obj* o) { return resolve(o)->value; }
 void write(Obj* o, int v) { resolve(o)->value = v; }
 Obj* evacuate(Obj* o, std::vector<Obj*>& heap) {                            // 사본을 만들고, 전달 포인터 CAS 에 성공한 쪽만 채택
-    Obj* copy = new Obj(o->value); heap.push_back(copy);
+    Obj* copy = new Obj(o->value);
     Obj* expected = o;
-    if (o->fwd.compare_exchange_strong(expected, copy)) return copy;         // 내가 이겼다
-    return expected;                                                          // 다른 스레드가 먼저 옮겼다: 그 사본을 사용 (내 사본은 버림)
+    if (o->fwd.compare_exchange_strong(expected, copy)) { heap.push_back(copy); return copy; }         // 내가 이겼다
+    delete copy; return expected;                                              // 다른 스레드가 먼저 옮겼다: 그 사본을 사용 (내 사본은 버림)
 }
 
 int main() {
@@ -3562,6 +3568,7 @@ int main() {
     assert(a->value == 10);                                                   // 옛 사본은 더 이상 쓰이지 않는다 (낡은 값)
     Obj* second = evacuate(a, heap);                                          // 두 번째 이동 시도 -> 이미 이동됨: 기존 사본을 돌려준다
     assert(second == moved && resolve(a) == moved);
+    for (Obj* o : heap) delete o;                                             // 힙의 모든 사본 해제
     std::cout << "ShenandoahGC: accesses through the forwarding pointer saw the relocated copy; duplicate evacuation lost the CAS." << std::endl;
     return 0;
 }
@@ -3966,7 +3973,7 @@ struct World {
 };
 
 // 접근 (포인터는 객체 id 의 것, addr 에 접근) 에 대해 각 기법이 탐지하는지
-bool redzoneDetects(const World& w, int ptrObj, int addr, bool freedQuarantined) {
+bool redzoneDetects(const World& w, int /*ptrObj*/, int addr, bool freedQuarantined) {
     if (freedQuarantined) return true;                        // 격리 중인 해제 메모리는 독 처리되어 접근 시 탐지
     return w.inRedzone(addr) && addr >= 0;                    // 유효 객체 밖(레드존)에 닿으면 탐지. 다른 객체 한가운데면 탐지 못 함
 }
@@ -4012,6 +4019,7 @@ int main() {
 // 스택: 함수 호출과 함께 자동으로 생기고 사라지는 LIFO 영역 (할당 = SP 이동).  힙: 프로그래머가 수명을 정하는 영역 (할당기가 빈 블록을 찾아야 하므로 느리고 단편화가 생긴다).
 // 스택 변수는 할당기를 부르지 않는다는 것을 operator new 호출 횟수로 확인한다
 static long newCalls = 0;
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"      // 전역 new/delete 를 malloc/free 로 바꿔 치우는 것이 이 실험의 목적
 void* operator new(size_t n) { newCalls++; void* p = std::malloc(n); if (!p) throw std::bad_alloc(); return p; }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, size_t) noexcept { std::free(p); }
@@ -4138,12 +4146,16 @@ struct Parent { std::shared_ptr<Child> child; ~Parent() { destroyed++; } };
 struct Child { std::weak_ptr<Parent> parent; ~Child() { destroyed++; } };     // 역방향은 weak
 
 int main() {
+    std::shared_ptr<Node> keep;                                              // 순환을 나중에 끊기 위한 손잡이
     {
         auto a = std::make_shared<Node>(), b = std::make_shared<Node>();
         a->next = b; b->next = a;                                            // 순환
         assert(a.use_count() == 2 && b.use_count() == 2);
+        keep = b;
     }                                                                        // 지역 변수가 사라져도 서로가 붙들고 있어 해제되지 않는다
     assert(destroyed == 0);                                                  // 누수!
+    keep->next.reset(); keep.reset();                                         // 순환을 끊으면 비로소 둘 다 해제된다 (이 실험이 끝난 뒤 누수가 남지 않게)
+    assert(destroyed == 2);
 
     {
         auto p = std::make_shared<Parent>(); auto c = std::make_shared<Child>();
@@ -4151,7 +4163,7 @@ int main() {
         assert(p.use_count() == 1 && c.use_count() == 2);                    // 부모의 카운트가 올라가지 않았다
         assert(c->parent.lock() == p);                                       // 필요하면 lock() 으로 잠시 소유권을 얻는다
     }
-    assert(destroyed == 2);                                                  // 정상적으로 둘 다 해제
+    assert(destroyed == 4);                                                  // 정상적으로 둘 다 해제 (순환 2 개 + 부모/자식 2 개)
     std::cout << "Cycle of shared_ptr leaked (destroyed=0); weak_ptr back-reference freed both." << std::endl;
     return 0;
 }
@@ -4319,7 +4331,7 @@ struct Good { alignas(64) std::atomic<long> x; alignas(64) std::atomic<long> y; 
 bool sameLine(const void* a, const void* b) { return (uintptr_t)a / 64 == (uintptr_t)b / 64; }
 
 int main() {
-    Bad bad; Good good;
+    Bad bad{}; Good good{};                                                 // 값 초기화 (std::atomic 은 기본 생성만으로는 0 이 보장되지 않는다)
     assert(sizeof(Bad) == 16 && sizeof(Good) == 128);
     assert(sameLine(&bad.x, &bad.y) && !sameLine(&good.x, &good.y));         // 레이아웃으로 확인
     auto work = [](std::atomic<long>& v) { for (int i = 0; i < 100000; i++) v.fetch_add(1, std::memory_order_relaxed); };
@@ -4505,7 +4517,7 @@ int main() {
 //  규칙: (1) 이동된 값은 사용할 수 없다 (E0382)  (2) 빌려준 동안 이동할 수 없다 (E0505)  (3) 가변 참조가 있는 동안 다른 참조·사용은 금지 (E0502/E0499/E0503)
 //  (4) 불변 참조는 여러 개 가능하지만 가변 참조는 하나뿐 — "별칭 XOR 변경"
 enum Kind { LET, MOVE, BORROW, BORROW_MUT, USE, USE_REF, END_BORROW };
-struct Stmt { Kind k; std::string a, b; };           // LET x / MOVE x->y / BORROW x as r / BORROW_MUT x as r / USE x / USE_REF r / END_BORROW r
+struct Stmt { Kind k; std::string a = {}, b = {}; };           // LET x / MOVE x->y / BORROW x as r / BORROW_MUT x as r / USE x / USE_REF r / END_BORROW r
 
 std::string check(const std::vector<Stmt>& prog) {
     std::set<std::string> moved; std::map<std::string, std::pair<std::string, bool>> refs;    // 참조 이름 -> (대상, 가변 여부)

@@ -224,7 +224,7 @@ int main() {
 
 int main() {
     std::vector<int> arr = {1, 2, 3, 4};
-    for (int i = 1; i < arr.size(); ++i) {
+    for (int i = 1; i < (int)arr.size(); ++i) {
         arr[i - 1] = arr[i];
     }
     arr.pop_back();
@@ -766,7 +766,7 @@ int main() {
     std::vector<int> arr = {2, 1, 5, 1, 3, 2};
     int target = 7;
     int windowSum = 0, start = 0, minLen = 1e9;
-    for (int end = 0; end < arr.size(); ++end) {
+    for (int end = 0; end < (int)arr.size(); ++end) {
         windowSum += arr[end];
         while (windowSum >= target) {
             minLen = std::min(minLen, end - start + 1);
@@ -791,7 +791,7 @@ int main() {
 int main() {
     std::vector<int> arr = {10, 20, 30, 40};
     std::vector<int> prefixSum(arr.size() + 1, 0);
-    for (int i = 0; i < arr.size(); ++i) {
+    for (int i = 0; i < (int)arr.size(); ++i) {
         prefixSum[i + 1] = prefixSum[i] + arr[i];
     }
     int sum1to2 = prefixSum[3] - prefixSum[1];
@@ -819,7 +819,7 @@ int main() {
     diff[end + 1] -= value;
     
     int current = 0;
-    for (int i = 0; i < arr.size(); ++i) {
+    for (int i = 0; i < (int)arr.size(); ++i) {
         current += diff[i];
         arr[i] += current;
     }

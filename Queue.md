@@ -768,7 +768,7 @@ int main() {
 std::vector<int> maxSlidingWindow(std::vector<int>& nums, int k) {
     std::deque<int> dq; 
     std::vector<int> res;
-    for (int i = 0; i < nums.size(); ++i) {
+    for (int i = 0; i < (int)nums.size(); ++i) {
         if (!dq.empty() && dq.front() == i - k) dq.pop_front();
         while (!dq.empty() && nums[dq.back()] < nums[i]) dq.pop_back();
         dq.push_back(i);
@@ -988,10 +988,12 @@ public:
     size_t size() const { return tail.load(std::memory_order_acquire) - head.load(std::memory_order_acquire); }
     size_t write(const uint8_t* p, size_t n) {                                         // 생산자 전용. 실제로 쓴 바이트 수를 돌려준다
         size_t t = tail.load(std::memory_order_relaxed), h = head.load(std::memory_order_acquire); n = std::min(n, cap - (t - h));
+        if (!n) return 0;                                                                                                     // memcpy 에 널 포인터를 넘기지 않는다 (크기 0 이어도 정의되지 않은 동작)
         size_t off = t & mask, first = std::min(n, cap - off); std::memcpy(&buf[off], p, first); std::memcpy(&buf[0], p + first, n - first); tail.store(t + n, std::memory_order_release); return n;
     }
     size_t read(uint8_t* p, size_t n) {                                                // 소비자 전용
         size_t h = head.load(std::memory_order_relaxed), t = tail.load(std::memory_order_acquire); n = std::min(n, t - h);
+        if (!n) return 0;
         size_t off = h & mask, first = std::min(n, cap - off); std::memcpy(p, &buf[off], first); std::memcpy(p + first, &buf[0], n - first); head.store(h + n, std::memory_order_release); return n;
     }
 };

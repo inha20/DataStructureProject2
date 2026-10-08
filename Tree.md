@@ -1829,8 +1829,8 @@ class MinHeap {
         int right = 2 * i + 2;
         int smallest = i;
         
-        if (left < heap.size() && heap[left] < heap[smallest]) smallest = left;
-        if (right < heap.size() && heap[right] < heap[smallest]) smallest = right;
+        if (left < (int)heap.size() && heap[left] < heap[smallest]) smallest = left;
+        if (right < (int)heap.size() && heap[right] < heap[smallest]) smallest = right;
             
         if (smallest != i) {
             std::swap(heap[i], heap[smallest]);
@@ -2766,7 +2766,7 @@ class SuffixTrie {
 public:
     SuffixTrie(std::string text) {
         root = new SuffixNode();
-        for (int i = 0; i < text.length(); i++) {
+        for (int i = 0; i < (int)text.length(); i++) {
             insertSuffix(text.substr(i));
         }
     }
@@ -3049,7 +3049,7 @@ class FenwickTree {
 public:
     FenwickTree(int n) : tree(n + 1, 0) {}
     void add(int i, int delta) {
-        for (++i; i < tree.size(); i += i & -i) tree[i] += delta;
+        for (++i; i < (int)tree.size(); i += i & -i) tree[i] += delta;
     }
     int query(int i) {
         int sum = 0;

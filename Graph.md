@@ -322,7 +322,7 @@ int main() {
 #include <cassert>
 
 int main() {
-    int V = 4;
+    int V = 4; (void)V;
     // Adjacency list (directed): 2->0, 0->1, 0->2, 1->2, 2->3
     // Compressed Sparse Column (CSC) format stores column boundaries and row indices.
     // cols: 0, 1, 2, 3
@@ -1625,7 +1625,7 @@ int main() {
 
 int main() {
     int V = 3;
-    std::vector<std::vector<int>> dist = {{0, 5, 1e9}, {1e9, 0, 3}, {1e9, 1e9, 0}};
+    std::vector<std::vector<int>> dist = {{0, 5, 1000000000}, {1000000000, 0, 3}, {1000000000, 1000000000, 0}};
     
     for (int k = 0; k < V; ++k)
         for (int i = 0; i < V; ++i)
@@ -1986,7 +1986,7 @@ int main() {
 #include <climits>
 
 // IDA* = IDDFS + A* heuristic: 메모리 효율적인 A*
-int idaStar_search(int node, int goal, int g, int threshold, auto heuristic) {
+int idaStar_search(int node, int goal, int g, int threshold, int (*heuristic)(int, int)) {
     int f = g + heuristic(node, goal);
     if (f > threshold) return f;
     if (node == goal) return -1; // found
@@ -2154,7 +2154,7 @@ int bfs(int s, int t, std::vector<int>& parent) {
 int edmondsKarp(int s, int t) {
     int max_flow = 0, new_flow;
     std::vector<int> parent(V);
-    while (new_flow = bfs(s, t, parent)) {
+    while ((new_flow = bfs(s, t, parent))) {
         max_flow += new_flow;
         int cur = t;
         while (cur != s) {
@@ -2200,7 +2200,7 @@ struct Dinic {
     std::vector<std::vector<Edge>> graph;
     std::vector<int> level, iter;
     int n;
-    Dinic(int n) : n(n), graph(n), level(n), iter(n) {}
+    Dinic(int n) : graph(n), level(n), iter(n), n(n) {}
     void addEdge(int from, int to, int cap) {
         graph[from].push_back({to, (int)graph[to].size(), cap});
         graph[to].push_back({from, (int)graph[from].size()-1, 0});
@@ -2430,7 +2430,7 @@ int hungarian(std::vector<std::vector<int>>& cost) {
         std::vector<bool> used(n+1, false);
         do {
             used[j0] = true;
-            int i0 = p[j0], delta = INT_MAX, j1;
+            int i0 = p[j0], delta = INT_MAX, j1 = 0;
             for (int j = 1; j <= n; j++) {
                 if (!used[j]) {
                     int cur = cost[i0-1][j-1] - u[i0] - v[j];
@@ -2482,7 +2482,7 @@ struct HopcroftKarp {
         return found;
     }
     bool dfs(int u) {
-        for (int v:adj[u]) { int w=matchR[v]; if (w==-1||dist[w]==dist[u]+1&&dfs(w)) { matchL[u]=v; matchR[v]=u; return true; } }
+        for (int v:adj[u]) { int w=matchR[v]; if (w==-1||(dist[w]==dist[u]+1&&dfs(w))) { matchL[u]=v; matchR[v]=u; return true; } }
         dist[u]=INT_MAX; return false;
     }
     int maxMatching() { int res=0; while(bfs()) for(int u=0;u<n;u++) if(matchL[u]==-1&&dfs(u)) res++; return res; }
@@ -3110,7 +3110,7 @@ int main() {
 
     long matrixSteps = 0, listSteps = 0, matrixEdges = 0, listEdges = 0;
     for (int u = 0; u < V; u++) for (int v = 0; v < V; v++) { matrixSteps++; matrixEdges += matrix[u][v]; }   // 행렬: 전체 칸 순회
-    for (int u = 0; u < V; u++) { listSteps++; for (int v : list[u]) { listSteps++; listEdges++; } }         // 리스트: 정점 + 간선 순회
+    for (int u = 0; u < V; u++) { listSteps++; for (int v : list[u]) { (void)v; listSteps++; listEdges++; } }         // 리스트: 정점 + 간선 순회
     double density = 2.0 * edges.size() / ((double)V * (V - 1));
     assert(density < 0.01);                                          // 희소
     assert(listSteps * 100 < matrixSteps);                           // 리스트가 100배 이상 적게 본다

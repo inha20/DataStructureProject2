@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """Audit the markdown books: structure, placeholder code, and compile+run checks.
 
-Usage: python3 -I tools/audit.py [--compile] [--only REGEX] [--jobs N] [--list] [FILE ...]
+Usage: python3 -I tools/audit.py [modes] [--only REGEX] [--jobs N] [--repeat N] [--time] [--list] [FILE ...]
 
-  (default)  structure + placeholder report for every book
-  --compile  compile (g++ -std=c++17) and run every ```cpp block, report failures
-  --only     restrict --compile to headings matching REGEX
-  --list     print the names of placeholder-only entries
+  (default)      structure + placeholder + thin-block report for every book
+  --compile      compile (g++ -std=c++17) and run every ```cpp block, report failures
+  --strict       -Wall -Wextra; any warning fails (skip a block with `// audit: allow-warn`)
+  --san          AddressSanitizer + UBSan + LeakSanitizer (skip with `// audit: no-sanitize`)
+  --tsan         ThreadSanitizer, only for blocks that start threads
+  --portable     clang++ -std=c++17 and g++ -std=c++20 -pedantic (skip the latter with `// audit: gcc-only`)
+  --all          every mode above
+  --repeat N     run thread-using blocks N times (flaky-test hunting)
+  --time         list blocks slower than 3 s
+  --only         restrict checks to headings matching REGEX
+  --list         print the names of placeholder-only entries
+  --list-thin    print STL-wrapper / concept-only / trivial-assert entries (`// audit: stl-demo` exempts)
+  --list-shallow print entries with <= 4 asserts, <= 40 lines and no randomized check
 """
 import concurrent.futures as cf
 import hashlib
@@ -16,6 +25,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -101,32 +111,123 @@ def structure(book, text, nbom, startbom):
     return probs, entries
 
 
+MODES = {
+    # name: (compiler, flags, run timeout seconds)
+    "std":     ("g++",     ["-std=c++17", "-O1", "-w", "-pthread"], 10),
+    "strict":  ("g++",     ["-std=c++17", "-O1", "-Wall", "-Wextra", "-Wno-misleading-indentation", "-pthread"], 10),   # dense one-line style: see README
+    "san":     ("g++",     ["-std=c++17", "-O1", "-g", "-w", "-pthread", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"], 60),
+    "tsan":    ("g++",     ["-std=c++17", "-O1", "-g", "-w", "-pthread", "-fsanitize=thread"], 120),
+    "clang":   ("clang++", ["-std=c++17", "-O1", "-w", "-pthread"], 20),
+    "cxx20":   ("g++",     ["-std=c++20", "-O1", "-pedantic", "-pthread"], 10),
+}
+SKIP_MARK = {"san": "no-sanitize", "tsan": "no-sanitize"}
+THREAD_RE = re.compile(r"std::thread|std::async|std::jthread|<thread>")
+
+
+def marks(code):
+    return set(re.findall(r"//\s*audit:\s*([a-z\-]+)", code))
+
+
+def applicable(mode, code):
+    m = marks(code)
+    if mode in SKIP_MARK and SKIP_MARK[mode] in m:
+        return False
+    if mode == "tsan" and not THREAD_RE.search(code):
+        return False
+    if mode == "strict" and "allow-warn" in m:
+        return False
+    if mode == "cxx20" and "gcc-only" in m:
+        return False
+    return True
+
+
+def job_key(mode, code, repeat):
+    return hashlib.sha1(f"{mode}|{MODES[mode]}|{repeat}|{code}".encode()).hexdigest()
+
+
 def compile_one(job):
-    book, name, code = job
-    key = hashlib.sha1(code.encode()).hexdigest()
+    mode, book, name, code, repeat = job
+    key = job_key(mode, code, repeat)
+    cc, flags, tmo = MODES[mode]
     with tempfile.TemporaryDirectory() as d:
         src = Path(d) / "a.cpp"
         exe = Path(d) / "a.out"
         src.write_text(code, encoding="utf-8")
-        r = subprocess.run(["g++", "-std=c++17", "-O1", "-w", "-pthread", str(src), "-o", str(exe)],
-                           capture_output=True, text=True)
+        r = subprocess.run([cc] + flags + [str(src), "-o", str(exe)], capture_output=True, text=True)
         if r.returncode != 0:
             err = next((x for x in r.stderr.splitlines() if "error" in x), r.stderr[:200])
-            return key, ("compile", err[-200:])
-        try:
-            r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
-        except subprocess.TimeoutExpired:
-            return key, ("timeout", "")
-        if r.returncode != 0:
-            return key, ("run", (r.stderr or f"exit {r.returncode}")[-200:])
-    return key, ("ok", "")
+            return key, ("compile", err[-200:], 0.0)
+        if mode in ("strict", "cxx20") and "warning:" in r.stderr:
+            w = [x for x in r.stderr.splitlines() if "warning:" in x]
+            return key, ("warn", f"{len(w)} warning(s): {w[0].split('warning:')[1].strip()[:150]}", 0.0)
+        times = []
+        n = repeat if THREAD_RE.search(code) and mode in ("std", "san", "tsan") else 1
+        env = dict(os.environ, ASAN_OPTIONS="detect_leaks=1:abort_on_error=0", UBSAN_OPTIONS="print_stacktrace=1", TSAN_OPTIONS="halt_on_error=1")
+        for _ in range(n):
+            t0 = time.time()
+            try:
+                r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=tmo, env=env)
+            except subprocess.TimeoutExpired:
+                return key, ("timeout", f">{tmo}s", float(tmo))
+            times.append(time.time() - t0)
+            if r.returncode != 0:
+                err = r.stderr.strip().splitlines()
+                head = next((x for x in err if "ERROR" in x or "runtime error" in x or "Assertion" in x or "WARNING" in x), (err[0] if err else f"exit {r.returncode}"))
+                return key, ("run", head[-200:], max(times))
+            if mode in ("san", "tsan") and ("WARNING: ThreadSanitizer" in r.stderr or "runtime error" in r.stderr):
+                head = next(x for x in r.stderr.splitlines() if "WARNING" in x or "runtime error" in x)
+                return key, ("run", head[-200:], max(times))
+    return key, ("ok", "", max(times))
+
+
+THIN_WORDS = re.compile(r"concept|Placeholder|개념적|conceptually", re.I)
+
+
+def thin_reason(code):
+    """return a reason string if the block looks like an STL wrapper / toy demo, else None."""
+    if code is None or "audit: stl-demo" in code:
+        return None
+    lines = [l for l in code.split("\n") if l.strip()]
+    body = "\n".join(lines)
+    nocomm = re.sub(r"//.*", "", body)
+    has_def = bool(re.search(r"\b(struct|class)\s+\w+\s*[\{:]", nocomm)) or len(re.findall(
+        r"^\s*(?:template\s*<[^>]*>\s*)?(?:static\s+|inline\s+)?[\w:<>,\*&\s]+?\s+\w+\s*\([^;]*\)\s*(?:const\s*)?\{", nocomm, re.M)) > 1
+    if THIN_WORDS.search(nocomm + "".join(re.findall(r'"[^"]*"', body))):
+        return "concept-only"
+    if re.search(r"assert\((true|1\s*==\s*1)\)", body):
+        return "trivial-assert"
+    if not has_def and len(lines) <= 24:
+        return "stl-wrapper"
+    return None
+
+
+def shallow_reason(code):
+    if code is None or "audit: stl-demo" in code:
+        return None
+    lines = [l for l in code.split("\n") if l.strip()]
+    asserts = len(re.findall(r"\bassert\(", code))
+    rng = bool(re.search(r"mt19937|rand\(|default_random", code))
+    if not rng and asserts <= 4 and len(lines) <= 40:
+        return f"{len(lines)} lines, {asserts} asserts, no randomized check"
+    return None
 
 
 def main():
     args = sys.argv[1:]
     do_compile = "--compile" in args
     show_list = "--list" in args
+    list_thin = "--list-thin" in args
+    list_shallow = "--list-shallow" in args
+    modes = ["std"] if do_compile else []
+    if "--strict" in args: modes = ["strict"] + [m for m in modes if m != "strict"]; do_compile = True
+    if "--san" in args: modes.append("san"); do_compile = True
+    if "--tsan" in args: modes.append("tsan"); do_compile = True
+    if "--portable" in args: modes += ["clang", "cxx20"]; do_compile = True
+    if "--all" in args: modes = ["std", "strict", "san", "tsan", "clang", "cxx20"]; do_compile = True
+    modes = list(dict.fromkeys(modes))
+    show_time = "--time" in args
     only = None
+    repeat = 1
     jobs = os.cpu_count() or 2
     files = []
     i = 0
@@ -136,6 +237,8 @@ def main():
             only = re.compile(args[i + 1]); i += 1
         elif a == "--jobs":
             jobs = int(args[i + 1]); i += 1
+        elif a == "--repeat":
+            repeat = int(args[i + 1]); i += 1
         elif not a.startswith("--"):
             files.append(a.replace(".md", ""))
         i += 1
@@ -146,43 +249,59 @@ def main():
             cache = json.loads(CACHE.read_text())
         except Exception:
             cache = {}
-    total = {"blocks": 0, "ph": 0, "fail": 0}
+    total = {"blocks": 0, "ph": 0, "thin": 0, "shallow": 0}
     todo = []
-    print(f"{'book':26} {'parts':>5} {'entries':>7} {'blocks':>6} {'placeholder':>11}  structure")
+    print(f"{'book':26} {'parts':>5} {'entries':>7} {'blocks':>6} {'placeholder':>11} {'thin':>5}  structure")
     for b in books:
         text, nbom, sb = read(ROOT / f"{b}.md")
         probs, entries = structure(b, text, nbom, sb)
         nparts = len({e["part"] for e in entries})
         blocks = [e for e in entries if e["code"] is not None and e.get("lang") != "python"]
         ph = [e for e in blocks if is_placeholder(e["code"])]
-        total["blocks"] += len(blocks)
-        total["ph"] += len(ph)
-        print(f"{b:26} {nparts:5} {len(entries):7} {len(blocks):6} {len(ph):6} ({100*len(ph)//max(1,len(blocks)):3}%)  "
+        thin = [e for e in blocks if thin_reason(e["code"])]
+        shallow = [e for e in blocks if shallow_reason(e["code"])]
+        total["blocks"] += len(blocks); total["ph"] += len(ph); total["thin"] += len(thin); total["shallow"] += len(shallow)
+        print(f"{b:26} {nparts:5} {len(entries):7} {len(blocks):6} {len(ph):6} ({100*len(ph)//max(1,len(blocks)):3}%) {len(thin):5}  "
               + ("OK" if not probs else "; ".join(probs)))
         if show_list and ph:
             print("    placeholders:", ", ".join(e["name"] for e in ph))
+        if list_thin and thin:
+            print("    thin:", ", ".join(f"{e['name']}[{thin_reason(e['code'])}]" for e in thin))
+        if list_shallow and shallow:
+            print("    shallow:", ", ".join(e["name"] for e in shallow))
         if do_compile:
             for e in blocks:
                 if only and not only.search(e["name"]):
                     continue
                 todo.append((b, e["name"], e["code"]))
-    print(f"TOTAL blocks={total['blocks']} placeholders={total['ph']}")
+    print(f"TOTAL blocks={total['blocks']} placeholders={total['ph']} thin={total['thin']} shallow={total['shallow']}")
     if do_compile:
-        fails = []
-        pending = [j for j in todo if hashlib.sha1(j[2].encode()).hexdigest() not in cache]
-        with cf.ThreadPoolExecutor(jobs) as ex:
-            for job, (key, res) in zip(pending, ex.map(compile_one, pending)):
-                cache[key] = list(res)
-        CACHE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE.write_text(json.dumps(cache))
-        for b, name, code in todo:
-            st, msg = cache[hashlib.sha1(code.encode()).hexdigest()]
-            if st != "ok":
-                fails.append((b, name, st, msg))
-        print(f"compiled {len(todo)} blocks ({len(pending)} new), failures: {len(fails)}")
-        for b, name, st, msg in fails:
-            print(f"  FAIL {b}.md :: {name} [{st}] {msg}")
-        sys.exit(1 if fails else 0)
+        bad = False
+        for mode in modes:
+            sel = [(b, n, c) for b, n, c in todo if applicable(mode, c)]
+            pending = [(mode, b, n, c, repeat) for b, n, c in sel if job_key(mode, c, repeat) not in cache]
+            with cf.ThreadPoolExecutor(jobs if mode not in ("san", "tsan") else max(1, jobs // 2)) as ex:
+                for job, (key, res) in zip(pending, ex.map(compile_one, pending)):
+                    cache[key] = list(res)
+            CACHE.parent.mkdir(parents=True, exist_ok=True)
+            CACHE.write_text(json.dumps(cache))
+            fails = []
+            slow = []
+            for b, name, code in sel:
+                res = cache[job_key(mode, code, repeat)]
+                st, msg = res[0], res[1]
+                if st != "ok":
+                    fails.append((b, name, st, msg))
+                elif len(res) > 2 and res[2] > 3.0:
+                    slow.append((res[2], b, name))
+            print(f"[{mode}] checked {len(sel)} of {len(todo)} blocks ({len(pending)} new), failures: {len(fails)}")
+            for b, name, st, msg in fails:
+                print(f"  FAIL {b}.md :: {name} [{st}] {msg}")
+            if show_time and slow:
+                for t, b, name in sorted(slow, reverse=True)[:15]:
+                    print(f"  SLOW {t:5.1f}s {b}.md :: {name}")
+            bad |= bool(fails)
+        sys.exit(1 if bad else 0)
 
 
 if __name__ == "__main__":
