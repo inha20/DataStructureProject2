@@ -2,1205 +2,2418 @@
 ## CreateTree()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <vector>
 
-struct Node {
-    int data;
-    Node* left;
-    Node* right;
+// 트리를 만드는 세 가지 표현을 서로 변환하며 검증한다.
+//  ① 부모 배열 parent[i] (루트는 −1): 가장 작고 질의가 쉽다.  ② 자식 목록(children[i]): 순회에 좋다.  ③ 왼쪽 자식–오른쪽 형제(LCRS): 차수와 무관하게 노드당 포인터 2 개 — 임의의 n 진 트리를 이진 트리로.
+//  검증: 무작위 트리(균등·사슬 편향·별 편향·완전 이진)를 세 표현으로 만들어 서로 왕복 변환해도 같은 트리이고, 불변식(루트 1 개, 간선 n−1 개, 부모를 따라가면 루트에 도달 = 사이클 없음, 모든 노드가 루트에서 도달 가능)이 성립.
+//  깊이 10^6 사슬·별도 반복문으로만 만든다(재귀 없음).
+struct Tree {                                                                    // 노드는 배열 풀에 두고 인덱스로 잇는다 (소유권·해제 문제 없음)
+    struct Node { int firstChild = -1, nextSibling = -1, parent = -1; };
+    std::vector<Node> nd; std::vector<int> lastChild; int root = -1;
+    int createRoot() { nd.emplace_back(); lastChild.push_back(-1); root = (int)nd.size() - 1; return root; }
+    int addChild(int p) { nd.emplace_back(); lastChild.push_back(-1); int c = (int)nd.size() - 1; nd[c].parent = p; if (nd[p].firstChild < 0) nd[p].firstChild = c; else nd[lastChild[p]].nextSibling = c; lastChild[p] = c; return c; }       // 맨 뒤 자식으로 O(1)
+    std::vector<int> parentArray() const { std::vector<int> p(nd.size()); for (size_t i = 0; i < nd.size(); ++i) p[i] = nd[i].parent; return p; }
+    std::vector<std::vector<int>> childLists() const { std::vector<std::vector<int>> c(nd.size()); for (size_t i = 0; i < nd.size(); ++i) for (int k = nd[i].firstChild; k >= 0; k = nd[k].nextSibling) c[i].push_back(k); return c; }
+    std::vector<int> preorder() const { std::vector<int> out, st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(u); std::vector<int> kids; for (int k = nd[u].firstChild; k >= 0; k = nd[k].nextSibling) kids.push_back(k); for (size_t i = kids.size(); i-- > 0;) st.push_back(kids[i]); } return out; }
+    bool valid() const {                                                          // 루트 1 개, 부모 사슬이 루트에서 끝남, 간선 수 n−1, 형제 연결과 부모가 일치
+        if (nd.empty()) return root < 0; int roots = 0; long edges = 0; for (size_t i = 0; i < nd.size(); ++i) { if (nd[i].parent < 0) ++roots; else ++edges; for (int k = nd[i].firstChild; k >= 0; k = nd[k].nextSibling) if (nd[k].parent != (int)i) return false; }
+        if (roots != 1 || edges != (long)nd.size() - 1 || nd[root].parent >= 0) return false;
+        std::vector<char> seen(nd.size(), 0); std::vector<int> st = {root}; size_t cnt = 0; while (!st.empty()) { int u = st.back(); st.pop_back(); if (seen[u]) return false; seen[u] = 1; ++cnt; for (int k = nd[u].firstChild; k >= 0; k = nd[k].nextSibling) st.push_back(k); }
+        return cnt == nd.size();                                                  // 루트에서 모두 도달 + 한 번씩만 방문 = 연결이고 사이클 없음
+    }
 };
+Tree fromParents(const std::vector<int>& parent) {                               // 부모 배열 → LCRS 트리 (자식은 번호 순)
+    Tree t; size_t n = parent.size(); std::vector<std::vector<int>> kids(n); int root = -1; for (size_t i = 0; i < n; ++i) { if (parent[i] < 0) root = (int)i; else kids[parent[i]].push_back((int)i); }
+    std::vector<int> id(n, -1); id[root] = t.createRoot(); std::vector<int> st = {root};                          // 원래 번호 → 새 번호
+    while (!st.empty()) { int u = st.back(); st.pop_back(); for (int k : kids[u]) { id[k] = t.addChild(id[u]); st.push_back(k); } }
+    return t;                                                                       // 새 번호는 BFS/DFS 생성 순서이므로 아래 비교는 구조(차수열)로 한다
+}
+std::vector<int> randomParents(int n, int shape, std::mt19937& rng) {              // parent[i] < i 인 무작위 트리를 만든 뒤 라벨을 섞는다
+    std::vector<int> p(n, -1); for (int i = 1; i < n; ++i) p[i] = shape == 0 ? (int)(rng() % i) : shape == 1 ? std::max(0, i - 1 - (int)(rng() % 3)) : shape == 2 ? (int)(rng() % std::min(i, 3)) : (i - 1) / 2;       // 균등·사슬 편향·별 편향·완전 이진
+    std::vector<int> perm(n); for (int i = 0; i < n; ++i) perm[i] = i; std::shuffle(perm.begin(), perm.end(), rng); std::vector<int> q(n, -1); for (int i = 0; i < n; ++i) q[perm[i]] = p[i] < 0 ? -1 : perm[p[i]]; return q;
+}
+std::vector<int> degreeSequence(const std::vector<int>& parent) { std::vector<int> d(parent.size(), 0); for (int p : parent) if (p >= 0) ++d[p]; std::sort(d.begin(), d.end()); return d; }
 
 int main() {
-    Node* root = new Node{10, nullptr, nullptr};
-    std::cout << "Tree root created with data: " << root->data << std::endl;
-    assert(root->data == 10);
-    delete root;
+    Tree small; int r = small.createRoot(); int a = small.addChild(r), b = small.addChild(r); small.addChild(a); (void)b; assert(small.valid() && small.nd.size() == 4 && small.nd[r].firstChild == a);
+    std::mt19937 rng(10);
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 60), shape = (int)(rng() % 4); std::vector<int> parent = randomParents(n, shape, rng); Tree t = fromParents(parent); assert(t.valid() && (int)t.nd.size() == n);
+        std::vector<int> back = t.parentArray(); int roots = (int)std::count(back.begin(), back.end(), -1); assert(roots == 1 && degreeSequence(back) == degreeSequence(parent));                // 같은 차수열
+        std::vector<std::vector<int>> kids = t.childLists(); long edges = 0; for (auto& k : kids) edges += (long)k.size(); assert(edges == n - 1 && (int)t.preorder().size() == n);
+        Tree again = fromParents(back); assert(again.valid() && degreeSequence(again.parentArray()) == degreeSequence(back) && again.preorder().size() == t.preorder().size());                    // 왕복
+    }
+    { int n = 1000000; Tree chain; int cur = chain.createRoot(); for (int i = 1; i < n; ++i) cur = chain.addChild(cur); assert(chain.valid() && (int)chain.preorder().size() == n);         // 깊이 10^6 사슬 (반복문)
+      Tree star; int rt = star.createRoot(); for (int i = 1; i < n; ++i) star.addChild(rt); assert(star.valid() && star.preorder().size() == (size_t)n && star.nd[rt].firstChild == 1);
+      std::cout << "CreateTree: parent array, child lists and left-child/right-sibling forms agreed on 3000 random trees; a depth-10^6 chain and a 10^6-child star were built iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 노드 추가 O(1), 변환 O(n)
+// Space Complexity: O(n) (노드당 포인터 2 개 + 부모)
 ```
 ## Root()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *left, *right; };
-Node* root = nullptr;
-
-Node* getRoot() {
-    return root;
+// 루트: 부모가 없는 유일한 노드. 입력 형태에 따라 찾는 방법이 다르다 — 부모 배열에서는 −1 인 칸, 자식 목록에서는 어느 목록에도 안 나오는 노드, *뿌리 없는 트리*(간선 목록)에서는 직접 고른다.
+//  ① 잘못된 입력 검출: 루트 0 개(사이클)·2 개 이상(숲)·고아·자기 부모를 가려내는 validate 를 무작위로 망가뜨린 부모 배열에서 브루트포스(DFS 도달성)와 대조.
+//  ② 뿌리 없는 트리의 *중심*(리프를 한 겹씩 벗겨 마지막에 남는 1~2 개)은 이심률이 최소인 노드이고, 중심을 루트로 잡으면 높이가 최소(= 반지름).  브루트포스(모든 루트로 높이 계산)와 대조.
+//  ③ 루트 바꾸기(reroot): 새 루트까지의 경로 위의 부모 관계를 뒤집으면 같은 간선 집합이 새 루트의 트리가 된다 — 깊이는 새 루트에서 BFS 한 값과 같다.
+typedef std::vector<std::vector<int>> Adj;
+int findRoot(const std::vector<int>& parent) { int root = -1; for (size_t i = 0; i < parent.size(); ++i) if (parent[i] < 0) { if (root >= 0) return -2; root = (int)i; } return root; }       // −1: 루트 없음, −2: 루트 여럿
+bool validate(const std::vector<int>& parent) {                                  // 부모 배열이 정확히 하나의 트리인가
+    int n = (int)parent.size(); if (findRoot(parent) < 0) return false; for (int p : parent) if (p >= n) return false;
+    for (int i = 0; i < n; ++i) { int u = i, steps = 0; while (parent[u] >= 0 && steps <= n) { u = parent[u]; ++steps; } if (steps > n) return false; }       // 사슬이 끝나지 않으면 사이클
+    return true;
 }
+bool bruteValid(const std::vector<int>& parent) {                                // 독립 판정: 간선을 방향 없는 그래프로 두고 루트에서 DFS — 모든 노드 도달 + 간선 n−1 개 + 자기 부모 없음
+    int n = (int)parent.size(); std::vector<std::vector<int>> g(n); int roots = 0, root = -1; for (int i = 0; i < n; ++i) { if (parent[i] < 0) { ++roots; root = i; } else { if (parent[i] >= n || parent[i] == i) return false; g[i].push_back(parent[i]); g[parent[i]].push_back(i); } }
+    if (roots != 1) return false; std::vector<char> seen(n, 0); std::vector<int> st = {root}; seen[root] = 1; int cnt = 0; while (!st.empty()) { int u = st.back(); st.pop_back(); ++cnt; for (int v : g[u]) if (!seen[v]) { seen[v] = 1; st.push_back(v); } } return cnt == n;
+}
+std::vector<int> bfsDist(const Adj& g, int s) { std::vector<int> d(g.size(), -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int v : g[u]) if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } } return d; }
+std::vector<int> centers(const Adj& g) {                                         // 리프 벗기기
+    int n = (int)g.size(); std::vector<int> deg(n), leaves; for (int i = 0; i < n; ++i) { deg[i] = (int)g[i].size(); if (deg[i] <= 1) leaves.push_back(i); } int remaining = n;
+    while (remaining > 2) { std::vector<int> next; remaining -= (int)leaves.size(); for (int u : leaves) for (int v : g[u]) if (--deg[v] == 1) next.push_back(v); leaves = next; } return leaves;
+}
+std::vector<int> reroot(const std::vector<int>& parent, int newRoot) { std::vector<int> p = parent; int prev = -1, u = newRoot; while (u >= 0) { int next = p[u]; p[u] = prev; prev = u; u = next; } return p; }         // newRoot → 옛 루트 경로의 부모 관계를 뒤집는다
 
 int main() {
-    root = new Node{1, nullptr, nullptr};
-    Node* r = getRoot();
-    std::cout << "Root data: " << r->data << std::endl;
-    assert(r == root);
-    delete root;
+    assert(findRoot({-1, 0, 0, 1}) == 0 && findRoot({1, 0}) == -1 && findRoot({-1, -1}) == -2 && validate({-1, 0, 0, 1}) && !validate({1, 2, 0}) && !validate({-1, -1}));
+    std::mt19937 rng(12);
+    for (int it = 0; it < 100000; ++it) {                                        // ① 무작위로 망가뜨린 입력
+        int n = 1 + (int)(rng() % 7); std::vector<int> p(n, -1); for (int i = 1; i < n; ++i) p[i] = (int)(rng() % i); for (int k = (int)(rng() % 3); k > 0; --k) p[rng() % n] = rng() % 4 == 0 ? -1 : (int)(rng() % (n + 1)) - (rng() % 4 == 0 ? 1 : 0);
+        assert(validate(p) == bruteValid(p));
+    }
+    for (int it = 0; it < 3000; ++it) {                                          // ② 중심 = 이심률 최소, ③ 루트 바꾸기
+        int n = 1 + (int)(rng() % 40); std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = (int)(rng() % i); Adj g(n); for (int i = 1; i < n; ++i) { g[i].push_back(par[i]); g[par[i]].push_back(i); }
+        std::vector<int> ecc(n); for (int u = 0; u < n; ++u) { std::vector<int> d = bfsDist(g, u); ecc[u] = *std::max_element(d.begin(), d.end()); } int radius = *std::min_element(ecc.begin(), ecc.end()); std::vector<int> want; for (int u = 0; u < n; ++u) if (ecc[u] == radius) want.push_back(u);
+        std::vector<int> c = centers(g); std::sort(c.begin(), c.end()); assert(c == want && (c.size() == 1 || c.size() == 2));                                        // 중심 1~2 개, 이심률 최소
+        std::vector<int> best; int bestH = n; for (int u = 0; u < n; ++u) { std::vector<int> d = bfsDist(g, u); int h = *std::max_element(d.begin(), d.end()); if (h < bestH) { bestH = h; } } assert(bestH == radius);          // 높이가 가장 작은 루트의 높이 = 반지름
+        int nr = (int)(rng() % n); std::vector<int> q = reroot(par, nr); std::vector<int> dd = bfsDist(g, nr); assert(findRoot(q) == nr && validate(q));
+        for (int u = 0; u < n; ++u) { int depth = 0, x = u; while (q[x] >= 0) { x = q[x]; ++depth; } assert(depth == dd[u]); }                                                // 깊이 = 새 루트에서의 BFS 거리
+        std::vector<std::pair<int, int>> e1, e2; for (int i = 0; i < n; ++i) { if (par[i] >= 0) e1.push_back({std::min(i, par[i]), std::max(i, par[i])}); if (q[i] >= 0) e2.push_back({std::min(i, q[i]), std::max(i, q[i])}); } std::sort(e1.begin(), e1.end()); std::sort(e2.begin(), e2.end()); assert(e1 == e2);          // 간선 집합 불변
+    }
+    { int n = 1000000; std::vector<int> chain(n, -1); for (int i = 1; i < n; ++i) chain[i] = i - 1; std::vector<int> r2 = reroot(chain, n - 1); assert(findRoot(r2) == n - 1 && r2[0] == 1 && r2[n - 2] == n - 1); std::cout << "Root: validators agreed on 10^5 corrupted parent arrays; centers = minimum-eccentricity vertices and rerooting preserved the edge set on 3000 random trees; a 10^6 chain was rerooted in one pass" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 루트 찾기 O(n), 중심 O(n), reroot O(경로 길이)
+// Space Complexity: O(n)
 ```
 ## Parent()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 
-struct Node {
-    int data;
-    Node* parent;
-    Node* left;
-    Node* right;
+// 부모 포인터와 자식 목록을 *함께* 유지하는 동적 트리: 리프 추가·리프 삭제·부분 트리 옮기기(reparent).  옮기려는 곳이 자기 자손이면 사이클이 생기므로 거부해야 한다.
+//  ① 무작위 연산열을 간선 집합 모델(std::set)과 대조하고, 매 단계 양방향 일관성(parent[c] = p ⇔ c ∈ children[p])과 사이클 없음을 검사.
+//  ② 거부 판정을 브루트포스(옮긴 뒤 사이클이 생기는지 직접 확인)와 대조.  ③ k 번째 조상: 이진 승(binary lifting) O(log n) vs 부모를 k 번 따라가기, 조상 사슬(루트까지의 경로).
+struct DynTree {
+    std::vector<int> parent; std::vector<std::vector<int>> children; std::vector<char> alive; int root = 0;
+    explicit DynTree(int cap) : parent(cap, -2), children(cap), alive(cap, 0) {}
+    void makeRoot(int r) { root = r; parent[r] = -1; alive[r] = 1; }
+    bool addLeaf(int p, int c) { if (!alive[p] || alive[c]) return false; parent[c] = p; alive[c] = 1; children[p].push_back(c); return true; }
+    bool removeLeaf(int c) { if (!alive[c] || c == root || !children[c].empty()) return false; auto& v = children[parent[c]]; v.erase(std::find(v.begin(), v.end(), c)); parent[c] = -2; alive[c] = 0; return true; }
+    bool isAncestor(int a, int x) const { for (int u = x; u >= 0; u = parent[u]) if (u == a) return true; return false; }                 // a 가 x 의 조상(자기 자신 포함)인가
+    bool move(int c, int newParent) {                                            // 부분 트리 c 를 newParent 아래로
+        if (!alive[c] || !alive[newParent] || c == root || isAncestor(c, newParent)) return false;                                   // 자기 자손 밑으로는 못 간다 (사이클)
+        auto& v = children[parent[c]]; v.erase(std::find(v.begin(), v.end(), c)); parent[c] = newParent; children[newParent].push_back(c); return true;
+    }
+    bool consistent() const {
+        int cnt = 0; for (size_t i = 0; i < parent.size(); ++i) { if (!alive[i]) { if (!children[i].empty()) return false; continue; } ++cnt; if ((int)i == root) { if (parent[i] != -1) return false; } else { if (parent[i] < 0 || !alive[parent[i]]) return false; if (std::count(children[parent[i]].begin(), children[parent[i]].end(), (int)i) != 1) return false; } for (int c : children[i]) if (parent[c] != (int)i) return false; }
+        for (size_t i = 0; i < parent.size(); ++i) if (alive[i]) { int u = (int)i, steps = 0; while (parent[u] >= 0 && steps <= cnt) { u = parent[u]; ++steps; } if (u != root || steps > cnt) return false; }               // 모든 노드의 부모 사슬이 루트에서 끝난다
+        return true;
+    }
+};
+struct Lifting {                                                                 // up[j][v] = v 의 2^j 번째 조상 (없으면 −1)
+    std::vector<std::vector<int>> up; explicit Lifting(const std::vector<int>& parent) { int n = (int)parent.size(), L = 1; while ((1 << L) < n) ++L; up.assign(L + 1, std::vector<int>(n, -1)); up[0] = parent; for (int j = 1; j <= L; ++j) for (int v = 0; v < n; ++v) up[j][v] = up[j - 1][v] < 0 ? -1 : up[j - 1][up[j - 1][v]]; }
+    int kth(int v, long k) const { for (int j = 0; k > 0 && v >= 0; ++j, k >>= 1) { if (j >= (int)up.size()) return -1; if (k & 1) v = up[j][v]; } return v; }
 };
 
 int main() {
-    Node* root = new Node{1, nullptr, nullptr, nullptr};
-    Node* child = new Node{2, root, nullptr, nullptr};
-    root->left = child;
-    
-    std::cout << "Parent of child is: " << child->parent->data << std::endl;
-    assert(child->parent == root);
-    
-    delete child; delete root;
+    std::mt19937 rng(14);
+    for (int round = 0; round < 200; ++round) {
+        const int CAP = 30; DynTree t(CAP); t.makeRoot(0); std::set<std::pair<int, int>> edges;                                     // 모델: (부모, 자식) 간선 집합
+        for (int op = 0; op < 300; ++op) {
+            int k = (int)(rng() % 3), a = (int)(rng() % CAP), b = (int)(rng() % CAP);
+            if (k == 0) { bool ok = t.addLeaf(a, b); bool want = std::count_if(edges.begin(), edges.end(), [&](auto& e) { return e.second == b; }) == 0 && b != 0 && (a == 0 || std::count_if(edges.begin(), edges.end(), [&](auto& e) { return e.second == a; }) == 1); assert(ok == want); if (ok) edges.insert({a, b}); }
+            else if (k == 1) { bool ok = t.removeLeaf(a); bool isChild = std::count_if(edges.begin(), edges.end(), [&](auto& e) { return e.second == a; }) == 1, hasKid = std::count_if(edges.begin(), edges.end(), [&](auto& e) { return e.first == a; }) > 0; assert(ok == (isChild && !hasKid)); if (ok) for (auto it = edges.begin(); it != edges.end(); ++it) if (it->second == a) { edges.erase(it); break; } }
+            else { DynTree copy = t; bool ok = t.move(a, b);                                                                      // ② 브루트포스: 실제로 옮겨 보고 사이클이 생기는지
+                bool legal = copy.alive[a] && copy.alive[b] && a != copy.root; if (legal) { auto& v = copy.children[copy.parent[a]]; v.erase(std::find(v.begin(), v.end(), a)); copy.parent[a] = b; copy.children[b].push_back(a); int u = b, steps = 0; while (copy.parent[u] >= 0 && steps <= CAP) { u = copy.parent[u]; ++steps; } legal = u == copy.root && steps <= CAP; }
+                assert(ok == legal); if (ok) { for (auto it = edges.begin(); it != edges.end(); ++it) if (it->second == a) { edges.erase(it); break; } edges.insert({b, a}); } }
+            assert(t.consistent()); std::set<std::pair<int, int>> actual; for (int i = 0; i < CAP; ++i) if (t.alive[i] && i != t.root) actual.insert({t.parent[i], i}); assert(actual == edges);
+        }
+    }
+    // ③ k 번째 조상 (이진 승 vs 부모 따라가기), 조상 사슬
+    for (int it = 0; it < 300; ++it) { int n = 1 + (int)(rng() % 300); std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = std::max(0, i - 1 - (int)(rng() % 4)); Lifting lf(par);
+        for (int q = 0; q < 200; ++q) { int v = (int)(rng() % n); long k = (long)(rng() % (n + 3)); int u = v; for (long s = 0; s < k && u >= 0; ++s) u = par[u]; assert(lf.kth(v, k) == u); }
+        int v = (int)(rng() % n); std::vector<int> chain; for (int u = v; u >= 0; u = par[u]) chain.push_back(u); assert(chain.back() == 0 && lf.kth(v, (long)chain.size() - 1) == 0 && lf.kth(v, (long)chain.size()) == -1); }
+    { int n = 1000000; std::vector<int> chain(n, -1); for (int i = 1; i < n; ++i) chain[i] = i - 1; Lifting lf(chain); assert(lf.kth(n - 1, 999999) == 0 && lf.kth(n - 1, 123456) == n - 1 - 123456 && lf.kth(n - 1, 1000000) == -1);
+      std::cout << "Parent: 60000 random leaf-add / leaf-remove / move operations kept parent and child links consistent and rejected exactly the moves that would create a cycle; binary lifting answered k-th ancestor queries on a 10^6 chain" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1) if parent pointer exists
-// Space Complexity: O(1)
+// Time Complexity: 추가·삭제 O(차수), 이동 O(깊이) (사이클 검사), k 번째 조상 O(log n)
+// Space Complexity: O(n) (이진 승 O(n log n))
 ```
 ## Child()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *left, *right; };
+// 자식 접근: 순서가 있는 트리에서 k 번째 자식 읽기·그 자리에 삽입·삭제·교체·"이 노드는 몇 번째 자식인가".  왼쪽 자식–오른쪽 형제(LCRS) 표현에서 구현하고 std::vector<std::vector<int>> 모델과 무작위 연산열로 대조한다.
+//  LCRS 에서 k 번째 자식은 형제 사슬을 k 번 따라가므로 O(k) 이고, 마지막 자식 추가는 꼬리 포인터로 O(1) 이다.  떼어 낸 부분 트리는 다시 다른 곳에 붙일 수 있다(이동).
+//  불변식 — 모든 노드는 많아야 한 부모의 목록에만 있고, 목록을 걸으면 모델과 같은 순서이며, parent 가 일치하고, 자기 자손 밑으로는 붙이지 않는다.
+struct Forest {
+    std::vector<int> first, next, last, parent, count; explicit Forest(int n) : first(n, -1), next(n, -1), last(n, -1), parent(n, -1), count(n, 0) {}
+    int nthChild(int u, int k) const { int c = first[u]; while (k-- > 0 && c >= 0) c = next[c]; return c; }               // O(k)
+    int indexOf(int c) const { int p = parent[c]; if (p < 0) return -1; int k = 0; for (int x = first[p]; x != c; x = next[x]) ++k; return k; }
+    bool isAncestorOrSelf(int a, int x) const { for (int u = x; u >= 0; u = parent[u]) if (u == a) return true; return false; }
+    bool insertChildAt(int u, int pos, int c) {                                    // c 는 부모가 없는(떼어 낸) 노드여야 하고 u 의 조상이 아니어야 한다
+        if (pos < 0 || pos > count[u] || parent[c] >= 0 || isAncestorOrSelf(c, u)) return false;
+        parent[c] = u; next[c] = -1; if (count[u] == 0) { first[u] = last[u] = c; } else if (pos == 0) { next[c] = first[u]; first[u] = c; } else if (pos == count[u]) { next[last[u]] = c; last[u] = c; } else { int prev = nthChild(u, pos - 1); next[c] = next[prev]; next[prev] = c; }
+        ++count[u]; return true;
+    }
+    int removeChildAt(int u, int pos) {                                            // 떼어 낸 자식(부분 트리 통째로)의 번호, 없으면 −1
+        if (pos < 0 || pos >= count[u]) return -1; int c; if (pos == 0) { c = first[u]; first[u] = next[c]; if (first[u] < 0) last[u] = -1; } else { int prev = nthChild(u, pos - 1); c = next[prev]; next[prev] = next[c]; if (c == last[u]) last[u] = prev; }
+        next[c] = -1; parent[c] = -1; --count[u]; return c;
+    }
+    bool replaceChild(int u, int pos, int c) { int old = removeChildAt(u, pos); if (old < 0) return false; if (!insertChildAt(u, pos, c)) { insertChildAt(u, pos, old); return false; } return true; }
+};
 
 int main() {
-    Node* root = new Node{1, new Node{2, nullptr, nullptr}, nullptr};
-    Node* child = root->left;
-    std::cout << "Left child data: " << child->data << std::endl;
-    assert(child->data == 2);
-    delete child; delete root;
+    std::mt19937 rng(21);
+    for (int round = 0; round < 300; ++round) {
+        const int N = 25; Forest f(N); std::vector<std::vector<int>> model(N); std::vector<int> mparent(N, -1);
+        auto modelAncestor = [&](int a, int x) { for (int u = x; u >= 0; u = mparent[u]) if (u == a) return true; return false; };
+        for (int op = 0; op < 400; ++op) {
+            int u = (int)(rng() % N), c = (int)(rng() % N), pos = (int)(rng() % (model[u].size() + 2)), k = (int)(rng() % 4);
+            if (k == 0) { bool want = pos <= (int)model[u].size() && mparent[c] < 0 && !modelAncestor(c, u); bool ok = f.insertChildAt(u, pos, c); assert(ok == want); if (ok) { model[u].insert(model[u].begin() + pos, c); mparent[c] = u; } }
+            else if (k == 1) { int got = f.removeChildAt(u, pos); if (pos < (int)model[u].size()) { int want = model[u][pos]; assert(got == want); model[u].erase(model[u].begin() + pos); mparent[want] = -1; } else assert(got == -1); }
+            else if (k == 2) { bool ok = f.replaceChild(u, pos, c); if (pos < (int)model[u].size()) { int old = model[u][pos]; bool legal = c == old || (mparent[c] < 0 && !modelAncestor(c, u)); assert(ok == legal); if (ok && c != old) { model[u][pos] = c; mparent[old] = -1; mparent[c] = u; } } else assert(!ok); }
+            else { int p = mparent[c]; assert(f.indexOf(c) == (p < 0 ? -1 : (int)(std::find(model[p].begin(), model[p].end(), c) - model[p].begin()))); if (pos < (int)model[u].size()) assert(f.nthChild(u, pos) == model[u][pos]); else assert(f.nthChild(u, pos) == -1); }
+            for (int x = 0; x < N; ++x) { std::vector<int> walk; for (int y = f.first[x]; y >= 0; y = f.next[y]) { walk.push_back(y); assert(f.parent[y] == x); } assert(walk == model[x] && f.count[x] == (int)model[x].size() && (walk.empty() ? f.last[x] < 0 : f.last[x] == walk.back()) && f.parent[x] == mparent[x]); }
+        }
+    }
+    { Forest f(100001); int built = 0; for (int i = 1; i <= 100000; ++i) built += f.insertChildAt(0, f.count[0], i); assert(built == 100000 && f.nthChild(0, 99999) == 100000 && f.last[0] == 100000 && f.indexOf(77777) == 77776);
+      std::cout << "Child: LCRS insert/remove/replace/nth-child matched a vector-of-vectors model over 120000 random operations, cycles were rejected, and 10^5 tail appends were O(1) each" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: k 번째 자식·위치 삽입·삭제 O(k), 맨 뒤 삽입 O(1)
+// Space Complexity: O(n)
 ```
 ## Sibling()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *parent, *left, *right; };
-
-Node* getSibling(Node* node) {
-    if (!node || !node->parent) return nullptr;
-    if (node->parent->left == node) return node->parent->right;
-    return node->parent->left;
-}
+// 형제: 같은 부모를 가진 노드들. 한 방향 연결(nextSibling)만 있으면 "이전 형제" 와 "중간 삭제"가 형제 사슬을 처음부터 훑어야 하므로 O(k) 이고, 양방향(prevSibling 추가)으로 하면 O(1) 이다.
+//  ① 두 방식을 모두 구현해 std::vector 모델과 무작위 연산(앞/뒤에 삽입, 특정 형제 앞/뒤에 삽입, 삭제, 인접 교환)을 대조  ② 걸음 수를 세어 단방향의 삭제가 정확히 (위치) 걸음, 양방향은 0 걸음임을 확인
+//  ③ 성질: 형제 수 = 부모의 차수, 마지막 노드의 nextSibling 은 없음, 모든 노드에서 next→prev 가 제자리로 돌아옴.
+struct Sib {
+    std::vector<int> next, prev, parent, first, last; bool doubly; long steps = 0;
+    Sib(int n, bool d) : next(n, -1), prev(n, -1), parent(n, -1), first(n, -1), last(n, -1), doubly(d) {}
+    void append(int p, int c) { parent[c] = p; next[c] = -1; prev[c] = last[p]; if (last[p] >= 0) next[last[p]] = c; else first[p] = c; last[p] = c; }
+    void insertAfter(int s, int c) { int p = parent[s]; parent[c] = p; next[c] = next[s]; prev[c] = s; if (next[s] >= 0) prev[next[s]] = c; else last[p] = c; next[s] = c; }
+    int prevOf(int c) { if (doubly) return prev[c]; int p = parent[c]; int x = first[p], before = -1; while (x != c) { before = x; x = next[x]; ++steps; } return before; }              // 단방향이면 처음부터 훑는다
+    void unlink(int c) {
+        int p = parent[c], b = prevOf(c), a = next[c]; if (b >= 0) next[b] = a; else first[p] = a; if (a >= 0) { if (doubly) prev[a] = b; } else last[p] = b;
+        next[c] = prev[c] = parent[c] = -1;
+    }
+    void swapWithNext(int c) { int n = next[c]; if (n < 0) return; int p = parent[c], b = prevOf(c), a = next[n]; if (b >= 0) next[b] = n; else first[p] = n; next[n] = c; next[c] = a; if (doubly) { prev[n] = b; prev[c] = n; if (a >= 0) prev[a] = c; } if (a < 0) last[p] = c; }
+};
 
 int main() {
-    Node* root = new Node{1, nullptr, nullptr, nullptr};
-    Node* leftChild = new Node{2, root, nullptr, nullptr};
-    Node* rightChild = new Node{3, root, nullptr, nullptr};
-    root->left = leftChild; root->right = rightChild;
-    
-    Node* sibling = getSibling(leftChild);
-    std::cout << "Sibling of left child: " << sibling->data << std::endl;
-    assert(sibling == rightChild);
-    
-    delete leftChild; delete rightChild; delete root;
+    std::mt19937 rng(8);
+    for (int round = 0; round < 300; ++round) {
+        for (int dbl = 0; dbl < 2; ++dbl) {
+            const int N = 40; Sib s(N, dbl == 1); std::vector<int> model; std::vector<char> in(N, 0);                // 부모 0 의 자식 목록 하나를 조작한다 (노드 1..N−1)
+            for (int op = 0; op < 300; ++op) {
+                int c = 1 + (int)(rng() % (N - 1)), k = (int)(rng() % 5);
+                if (k == 0 && !in[c]) { s.append(0, c); model.push_back(c); in[c] = 1; }
+                else if (k == 1 && !in[c] && !model.empty()) { int ref = model[rng() % model.size()]; s.insertAfter(ref, c); model.insert(std::find(model.begin(), model.end(), ref) + 1, c); in[c] = 1; }
+                else if (k == 2 && in[c]) { s.unlink(c); model.erase(std::find(model.begin(), model.end(), c)); in[c] = 0; }
+                else if (k == 3 && in[c]) { auto it = std::find(model.begin(), model.end(), c); if (it + 1 != model.end()) { s.swapWithNext(c); std::iter_swap(it, it + 1); } }
+                else if (k == 4 && in[c]) { auto it = std::find(model.begin(), model.end(), c); int want = it == model.begin() ? -1 : *(it - 1); assert(s.prevOf(c) == want && s.next[c] == (it + 1 == model.end() ? -1 : *(it + 1))); }
+                std::vector<int> walk; for (int x = s.first[0]; x >= 0; x = s.next[x]) walk.push_back(x); assert(walk == model && (model.empty() ? s.last[0] < 0 && s.first[0] < 0 : s.last[0] == model.back()));                 // 순서·꼬리
+                if (dbl) for (size_t i = 0; i < walk.size(); ++i) { assert(s.prev[walk[i]] == (i ? walk[i - 1] : -1)); if (i + 1 < walk.size()) assert(s.prev[s.next[walk[i]]] == walk[i]); }                                // next → prev 가 제자리로
+            }
+        }
+    }
+    // ② 걸음 수: 목록 크기 n 의 k 번째(0 부터) 노드를 지울 때 단방향은 k 걸음, 양방향은 0 걸음
+    { const int n = 10000; Sib one(n + 1, false), two(n + 1, true); for (int i = 1; i <= n; ++i) { one.append(0, i); two.append(0, i); } one.steps = two.steps = 0; for (int target : {5000, 9000, 9999}) { one.unlink(target + 1); two.unlink(target + 1); }
+      assert(one.steps == 5000 + 8999 + 9997 && two.steps == 0 && one.first[0] == two.first[0]);              // 앞의 노드를 이미 두 개 지운 뒤의 위치: 5000, 9000−1, 9999−2
+      std::cout << "Sibling: singly and doubly linked sibling lists matched a vector model over 180000 random operations; unlinking three nodes of a 10^4 list took " << one.steps << " steps with next-only links and " << two.steps << " with prev links" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 이전 형제·삭제 단방향 O(k) / 양방향 O(1), 삽입 O(1)
+// Space Complexity: O(n) (양방향은 노드당 포인터 하나 더)
 ```
 ## Degree()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <functional>
+#include <iostream>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *left, *right; };
-
-int getDegree(Node* node) {
-    if (!node) return 0;
-    return (node->left ? 1 : 0) + (node->right ? 1 : 0);
+// 차수(degree): 노드의 자식 수 (뿌리 없는 트리에서는 이웃 수). 모든 트리에 성립하는 항등식으로 검증한다.
+//  ① 자식 수의 합 = n − 1 (간선 수),  리프 수 = 1 + Σ_{차수≥2}(차수 − 1)  — 완전 k 진 트리면 리프 = (k−1)·내부 + 1.   뿌리 없는 트리: Σ 이웃 수 = 2(n−1), 리프(이웃 1) = 2 + Σ_{이웃≥3}(이웃 − 2).
+//  ② 전위 순회의 차수열은 순서 있는 트리를 유일하게 정한다: Σ(d_i − 1) = −1 이고 진짜 접두사마다 Σ(d_i − 1) ≥ 0.  n 이 주어졌을 때 그런 수열의 개수는 카탈랑 수 C(n−1) — 전부 나열해 세고, 각각 복원한 트리의 차수열이 같은지 본다.
+//  ③ Prüfer 열: n 개의 이름 붙은 노드의 트리는 길이 n − 2 열과 일대일 대응(케일리: n^(n−2) 개)이고, 노드 v 의 이웃 수 = 1 + (열에서 v 가 나온 횟수).
+long catalan(int n) { long c = 1; for (int i = 0; i < n; ++i) c = c * 2 * (2 * i + 1) / (i + 2); return c; }
+void enumerateDegreeSeqs(int n, std::vector<int>& seq, int balance, std::vector<std::vector<int>>& out) {       // 전위 차수열 전부
+    if ((int)seq.size() == n) { if (balance == -1) out.push_back(seq); return; }
+    int remaining = n - (int)seq.size();                                                                        // balance = Σ(d−1) 누적. 끝나기 전에는 ≥ 0 이어야 한다
+    for (int d = 0; d <= remaining; ++d) { int nb = balance + d - 1; bool last = remaining == 1; if (!last && (nb < 0 || nb > remaining - 2)) continue; if (last && nb != -1) continue; seq.push_back(d); enumerateDegreeSeqs(n, seq, nb, out); seq.pop_back(); }
+}
+std::vector<int> rebuildFromDegrees(const std::vector<int>& d) {                                                // 전위 차수열 → 부모 배열 (전위 순번이 id)
+    std::vector<int> parent(d.size(), -1), stack; std::vector<int> remaining(d.size());                         // stack: 아직 자식이 더 필요한 노드
+    for (size_t i = 0; i < d.size(); ++i) { if (i) { parent[i] = stack.back(); if (--remaining[stack.back()] == 0) stack.pop_back(); } remaining[i] = d[i]; if (d[i] > 0) stack.push_back((int)i); }
+    assert(stack.empty()); return parent;
+}
+std::vector<std::pair<int, int>> pruferDecode(const std::vector<int>& seq, int n) {
+    std::vector<int> deg(n, 1); for (int v : seq) ++deg[v]; std::vector<std::pair<int, int>> edges; int ptr = 0; while (deg[ptr] != 1) ++ptr; int leaf = ptr;
+    for (int v : seq) { edges.push_back({std::min(leaf, v), std::max(leaf, v)}); if (--deg[v] == 1 && v < ptr) leaf = v; else { ++ptr; while (deg[ptr] != 1) ++ptr; leaf = ptr; } }
+    edges.push_back({std::min(leaf, n - 1), std::max(leaf, n - 1)}); return edges;
 }
 
 int main() {
-    Node* root = new Node{1, new Node{2, nullptr, nullptr}, nullptr};
-    int degree = getDegree(root);
-    std::cout << "Degree of root: " << degree << std::endl;
-    assert(degree == 1);
-    delete root->left; delete root;
+    std::mt19937 rng(6);
+    for (int it = 0; it < 5000; ++it) {                                                                         // ① 항등식 (무작위 트리 n ≤ 60)
+        int n = 1 + (int)(rng() % 60); std::vector<int> par(n, -1); int shape = (int)(rng() % 3); for (int i = 1; i < n; ++i) par[i] = shape == 0 ? (int)(rng() % i) : shape == 1 ? std::max(0, i - 1 - (int)(rng() % 2)) : (int)(rng() % std::min(i, 4));
+        std::vector<int> d(n, 0), nb(n, 0); for (int i = 1; i < n; ++i) { ++d[par[i]]; ++nb[i]; ++nb[par[i]]; }
+        long sum = 0, leaves = 0, extra = 0, nbSum = 0, nbExtra = 0, nbLeaves = 0; for (int i = 0; i < n; ++i) { sum += d[i]; leaves += d[i] == 0; if (d[i] >= 2) extra += d[i] - 1; nbSum += nb[i]; nbLeaves += nb[i] == 1; if (nb[i] >= 3) nbExtra += nb[i] - 2; }
+        assert(sum == n - 1 && leaves == 1 + extra && nbSum == 2 * (n - 1));
+        if (n >= 2) assert(nbLeaves == 2 + nbExtra);
+    }
+    for (int k : {2, 3, 5}) { int levels = 1 + (int)(rng() % 5); long internal = 0, leaves = 0, cur = 1; for (int l = 0; l < levels; ++l) { internal += cur; cur *= k; } leaves = cur; assert(leaves == (long)(k - 1) * internal + 1); }          // 완전 k 진 트리
+    for (int n = 1; n <= 10; ++n) {                                                                             // ② 카탈랑
+        std::vector<std::vector<int>> all; std::vector<int> seq; enumerateDegreeSeqs(n, seq, 0, all); assert((long)all.size() == catalan(n - 1));
+        for (auto& dseq : all) { std::vector<int> par = rebuildFromDegrees(dseq); std::vector<int> d2(n, 0); for (int i = 1; i < n; ++i) { assert(par[i] >= 0 && par[i] < i); ++d2[par[i]]; } assert(d2 == dseq); }          // 복원한 트리의 차수열 = 입력
+    }
+    for (int n = 2; n <= 7; ++n) {                                                                              // ③ Prüfer: 모든 열 n^(n−2) 개
+        long total = 1; for (int i = 0; i < n - 2; ++i) total *= n; std::vector<std::vector<std::pair<int, int>>> trees; std::vector<int> seq(n - 2, 0);
+        for (long code = 0; code < total; ++code) { long c = code; for (int i = 0; i < n - 2; ++i) { seq[i] = (int)(c % n); c /= n; } auto e = pruferDecode(seq, n); std::sort(e.begin(), e.end()); assert((int)e.size() == n - 1);
+            std::vector<int> nb(n, 0); for (auto& x : e) { ++nb[x.first]; ++nb[x.second]; } std::vector<int> occ(n, 0); for (int v : seq) ++occ[v]; for (int v = 0; v < n; ++v) assert(nb[v] == 1 + occ[v]);              // 이웃 수 = 1 + 출현 횟수
+            std::vector<int> comp(n); for (int i = 0; i < n; ++i) comp[i] = i; std::function<int(int)> fnd = [&](int x) { return comp[x] == x ? x : comp[x] = fnd(comp[x]); }; for (auto& x : e) { int a = fnd(x.first), b = fnd(x.second); assert(a != b); comp[a] = b; }        // 사이클 없는 n−1 간선 = 트리
+            trees.push_back(e); }
+        std::sort(trees.begin(), trees.end()); assert(std::unique(trees.begin(), trees.end()) == trees.end() && (long)trees.size() == total);       // 서로 다른 트리 n^(n−2) 개
+    }
+    std::cout << "Degree: sum/leaf identities held on 5000 random trees; the preorder degree sequences of all ordered trees up to 10 nodes were enumerated and counted as Catalan numbers; Pruefer sequences for n <= 7 gave n^(n-2) distinct labelled trees with degree = 1 + occurrences" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 차수 계산 O(n), 카탈랑 열거 O(C(n−1)·n)
+// Space Complexity: O(n)
 ```
 ## Depth()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *parent, *left, *right; };
-
-int getDepth(Node* node) {
-    int depth = 0;
-    while (node && node->parent) {
-        node = node->parent;
-        depth++;
-    }
-    return depth;
+// 깊이(depth): 루트에서 노드까지의 간선 수. 노드마다 부모를 끝까지 따라가면 O(n·h) 이고 사슬 모양에서는 O(n²), 이미 구한 깊이를 재사용하면 O(n).
+//  ① 세 방법을 대조: 부모 따라가기(순진) · BFS · 메모이제이션(부모가 *번호상 뒤*에 있어도 되는 반복문 — 재귀 없음).  걸음 수를 세어 순진한 쪽 Σ(깊이), 메모 쪽 ≤ 2n 을 확인.
+//  ② 성질: 깊이의 합 = 경로 길이 합, 완전 이진 트리(높이 h)에서는 (h−1)·2^(h+1) + 2.   ③ 깊이 10^6 사슬을 반복문으로(재귀로는 스택 오버플로).
+std::vector<int> depthNaive(const std::vector<int>& parent, long& steps) { std::vector<int> d(parent.size()); steps = 0; for (size_t i = 0; i < parent.size(); ++i) { int x = (int)i, k = 0; while (parent[x] >= 0) { x = parent[x]; ++k; ++steps; } d[i] = k; } return d; }
+std::vector<int> depthBfs(const std::vector<int>& parent) { int n = (int)parent.size(); std::vector<std::vector<int>> kids(n); int root = -1; for (int i = 0; i < n; ++i) { if (parent[i] < 0) root = i; else kids[parent[i]].push_back(i); } std::vector<int> d(n, -1); std::queue<int> q; d[root] = 0; q.push(root); while (!q.empty()) { int u = q.front(); q.pop(); for (int v : kids[u]) { d[v] = d[u] + 1; q.push(v); } } return d; }
+std::vector<int> depthMemo(const std::vector<int>& parent, long& steps) {                                       // 아직 모르는 노드에서 위로 올라가다 아는 곳을 만나면 되돌아 내려오며 채운다
+    int n = (int)parent.size(); std::vector<int> d(n, -1), stack; steps = 0;
+    for (int i = 0; i < n; ++i) { if (d[i] >= 0) continue; int x = i; while (x >= 0 && d[x] < 0) { stack.push_back(x); x = parent[x]; ++steps; } int base = x < 0 ? -1 : d[x]; while (!stack.empty()) { d[stack.back()] = ++base; stack.pop_back(); ++steps; } }
+    return d;
 }
 
 int main() {
-    Node* root = new Node{1, nullptr, nullptr, nullptr};
-    Node* child = new Node{2, root, nullptr, nullptr};
-    root->left = child;
-    
-    int depth = getDepth(child);
-    std::cout << "Depth of child: " << depth << std::endl;
-    assert(depth == 1);
-    
-    delete child; delete root;
+    std::mt19937 rng(19);
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 80), shape = (int)(rng() % 3); std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = shape == 0 ? (int)(rng() % i) : shape == 1 ? i - 1 : (int)(rng() % std::min(i, 3));
+        std::vector<int> perm(n); for (int i = 0; i < n; ++i) perm[i] = i; std::shuffle(perm.begin(), perm.end(), rng); std::vector<int> p(n, -1); for (int i = 0; i < n; ++i) p[perm[i]] = par[i] < 0 ? -1 : perm[par[i]];      // 라벨을 섞어 부모가 뒤 번호일 수 있게
+        long sn, sm; std::vector<int> a = depthNaive(p, sn), b = depthBfs(p), c = depthMemo(p, sm); assert(a == b && b == c && sm <= 2L * n);
+        long sum = 0; for (int x : a) sum += x; assert(sn == sum);                                                // 순진한 걸음 수 = Σ 깊이
+    }
+    for (int h = 0; h <= 12; ++h) { int n = (1 << (h + 1)) - 1; std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = (i - 1) / 2; long steps; std::vector<int> d = depthMemo(par, steps); long sum = 0; for (int x : d) sum += x; assert(sum == (long)(h - 1) * (1L << (h + 1)) + 2 && *std::max_element(d.begin(), d.end()) == h); }
+    { const int n = 1000000; std::vector<int> chain(n, -1); for (int i = 1; i < n; ++i) chain[i] = i - 1; long steps; std::vector<int> d = depthMemo(chain, steps); assert(d[n - 1] == n - 1 && steps <= 2L * n);
+      long naiveSteps = (long)n * (n - 1) / 2;
+      std::cout << "Depth: parent-climbing, BFS and memoised depths agreed on 3000 random trees (memoised steps <= 2n); the depth-10^6 chain took " << steps << " steps instead of the naive " << naiveSteps << std::endl; }
     return 0;
 }
-// Time Complexity: O(H) where H is depth
-// Space Complexity: O(1)
+// Time Complexity: 순진 O(n·h), BFS·메모이제이션 O(n)
+// Space Complexity: O(n)
 ```
 ## Height()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *left, *right; };
-
-int getHeight(Node* node) {
-    if (!node) return -1; 
-    return 1 + std::max(getHeight(node->left), getHeight(node->right));
+// 높이(height): 노드에서 가장 깊은 후손까지의 간선 수 (리프 0, 빈 트리 −1).  트리의 높이 = 루트의 높이 = 최대 깊이.  재귀 풀이는 사슬 모양에서 스택이 깊어지므로 BFS 순서를 뒤집어 반복문으로 계산한다.
+//  ① 재귀(작은 트리)·반복(BFS 역순)·최대 깊이 세 방법을 대조.  ② k 진 트리 경계: n ≤ (k^(h+1) − 1)/(k − 1), 즉 h ≥ ⌈log_k(n(k−1) + 1)⌉ − 1, 그리고 h ≤ n − 1.  완전 k 진 트리는 하한을 정확히 채운다.
+//  ③ 이진 탐색 트리의 높이는 삽입 순서에 달려 있다: 정렬된 순서로 넣으면 n − 1 (사슬), 무작위 순서면 약 4.3·ln n (반복문으로 구현).
+std::vector<int> heightsIterative(const std::vector<int>& parent, int& root) {
+    int n = (int)parent.size(); std::vector<std::vector<int>> kids(n); root = -1; for (int i = 0; i < n; ++i) { if (parent[i] < 0) root = i; else kids[parent[i]].push_back(i); }
+    std::vector<int> order = {root}; for (size_t i = 0; i < order.size(); ++i) for (int v : kids[order[i]]) order.push_back(v);                // BFS 순서
+    std::vector<int> h(n, 0); for (size_t i = order.size(); i-- > 0;) { int u = order[i]; if (parent[u] >= 0) h[parent[u]] = std::max(h[parent[u]], h[u] + 1); }          // 자식이 먼저 확정되는 역순
+    return h;
 }
+int heightRec(const std::vector<std::vector<int>>& kids, int u) { int h = 0; for (int v : kids[u]) h = std::max(h, 1 + heightRec(kids, v)); return h; }
+int maxDepth(const std::vector<int>& parent) { int best = 0; for (size_t i = 0; i < parent.size(); ++i) { int d = 0; for (int x = (int)i; parent[x] >= 0; x = parent[x]) ++d; best = std::max(best, d); } return best; }
+struct BST { std::vector<int> key, left, right; int root = -1;                                                  // 반복문 삽입 (재귀 없음)
+    void insert(int k) { key.push_back(k); left.push_back(-1); right.push_back(-1); int id = (int)key.size() - 1; if (root < 0) { root = id; return; } int u = root; while (true) { int& next = k < key[u] ? left[u] : right[u]; if (next < 0) { next = id; return; } u = next; } }
+    int height() const { if (root < 0) return -1; std::vector<std::pair<int, int>> st = {{root, 0}}; int best = 0; while (!st.empty()) { auto cur = st.back(); st.pop_back(); best = std::max(best, cur.second); if (left[cur.first] >= 0) st.push_back({left[cur.first], cur.second + 1}); if (right[cur.first] >= 0) st.push_back({right[cur.first], cur.second + 1}); } return best; } };
 
 int main() {
-    Node* root = new Node{1, new Node{2, nullptr, nullptr}, nullptr};
-    int height = getHeight(root);
-    std::cout << "Height of tree: " << height << std::endl;
-    assert(height == 1);
-    delete root->left; delete root;
+    std::mt19937 rng(23);
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 80), shape = (int)(rng() % 3); std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = shape == 0 ? (int)(rng() % i) : shape == 1 ? std::max(0, i - 1 - (int)(rng() % 2)) : (int)(rng() % std::min(i, 3));
+        int root; std::vector<int> h = heightsIterative(par, root); std::vector<std::vector<int>> kids(n); for (int i = 1; i < n; ++i) kids[par[i]].push_back(i);
+        for (int u = 0; u < n; ++u) assert(h[u] == heightRec(kids, u)); assert(h[root] == maxDepth(par) && h[root] <= n - 1);                           // ①
+        int maxDeg = 0; for (auto& v : kids) maxDeg = std::max<int>(maxDeg, (int)v.size()); if (maxDeg >= 2) { double lower = std::ceil(std::log((double)n * (maxDeg - 1) + 1) / std::log((double)maxDeg) - 1e-9) - 1; assert(h[root] >= lower); }                    // ② 하한
+    }
+    for (int k : {2, 3, 4}) for (int h = 0; h <= 6; ++h) { long n = 0, p = 1; for (int d = 0; d <= h; ++d) { n += p; p *= k; } assert(n == (long)((std::pow((double)k, h + 1) - 1) / (k - 1) + 0.5)); double lower = std::ceil(std::log((double)n * (k - 1) + 1) / std::log((double)k) - 1e-9) - 1; assert(lower == h); }         // 완전 k 진 트리는 하한을 정확히 채운다
+    { BST sorted; for (int i = 0; i < 3000; ++i) sorted.insert(i); assert(sorted.height() == 2999);                                                      // ③ 정렬된 삽입 = 사슬
+      std::vector<int> keys(100000); std::iota(keys.begin(), keys.end(), 0); long total = 0; int worst = 0; const int TRIALS = 5; for (int t = 0; t < TRIALS; ++t) { std::shuffle(keys.begin(), keys.end(), rng); BST b; for (int k : keys) b.insert(k); int h = b.height(); worst = std::max(worst, h); total += h; }
+      double mean = (double)total / TRIALS, ln = std::log(100000.0); assert(mean > std::log2(100000.0) && mean < 4.5 * ln + 10 && worst < 6 * ln);
+      std::cout << "Height: recursive, BFS-reverse and max-depth heights agreed on 3000 random trees; sorted insertion gave a BST of height 2999 while random insertion of 10^5 keys gave " << mean << " on average (4.3 ln n = " << 4.3 * ln << ")" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n)
+// Space Complexity: O(n) (반복문; 재귀는 O(h) 호출 스택)
 ```
 ## Level()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
-int getLevel(int depth) {
-    return depth + 1; // Assuming root is at Level 1
-}
+// 레벨(level): 루트가 0 층이고 깊이가 같은 노드들의 모임 — 레벨 순서 순회(BFS)의 단위.
+//  ① 레벨별 노드 목록을 두 가지로 만든다: BFS 큐(층별 묶음) vs 깊이 우선 전위 순회에서 깊이별로 모으기 — 같은 자식 순서면 *층 안의 순서까지 완전히 같다*(왼쪽→오른쪽).
+//  ② 성질: 층 d 의 노드 수 ≤ k^d (k = 최대 차수), 층별 크기의 합 = n, 완전 이진 트리의 층 d 는 정확히 2^d 개, 힙 배열(1 기반 인덱스 i)에서 레벨 = ⌊log₂ i⌋ — BFS 로 얻은 레벨과 같다.
+//  ③ 지그재그(나선) 순서 = 홀수 층을 뒤집은 것.  너비(최대 층 크기)와 레벨 수(높이 + 1).
+typedef std::vector<std::vector<int>> Levels;
+Levels levelsBfs(const std::vector<std::vector<int>>& kids, int root) { Levels out; std::queue<int> q; q.push(root); while (!q.empty()) { size_t sz = q.size(); out.emplace_back(); for (size_t i = 0; i < sz; ++i) { int u = q.front(); q.pop(); out.back().push_back(u); for (int v : kids[u]) q.push(v); } } return out; }
+Levels levelsDfs(const std::vector<std::vector<int>>& kids, int root) { Levels out; std::vector<std::pair<int, int>> st = {{root, 0}}; while (!st.empty()) { auto cur = st.back(); st.pop_back(); if ((int)out.size() <= cur.second) out.emplace_back(); out[cur.second].push_back(cur.first); for (size_t i = kids[cur.first].size(); i-- > 0;) st.push_back({kids[cur.first][i], cur.second + 1}); } return out; }       // 반복 전위 순회, 깊이별 수집
+Levels zigzag(Levels l) { for (size_t d = 1; d < l.size(); d += 2) std::reverse(l[d].begin(), l[d].end()); return l; }
 
 int main() {
-    int depth = 2; // e.g., root -> child -> grandchild
-    int level = getLevel(depth);
-    std::cout << "Level: " << level << std::endl;
-    assert(level == 3);
+    std::mt19937 rng(33);
+    for (int it = 0; it < 5000; ++it) {
+        int n = 1 + (int)(rng() % 100), shape = (int)(rng() % 4); std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = shape == 0 ? (int)(rng() % i) : shape == 1 ? std::max(0, i - 1 - (int)(rng() % 2)) : shape == 2 ? (int)(rng() % std::min(i, 3)) : (i - 1) / 2;
+        std::vector<std::vector<int>> kids(n); for (int i = 1; i < n; ++i) kids[par[i]].push_back(i); Levels a = levelsBfs(kids, 0), b = levelsDfs(kids, 0); assert(a == b);                                         // ① 층 안의 순서까지 일치
+        size_t total = 0, maxDeg = 0; for (auto& v : kids) maxDeg = std::max(maxDeg, v.size()); double cap = 1; for (size_t d = 0; d < a.size(); ++d) { total += a[d].size(); assert((double)a[d].size() <= cap + 1e-9); cap *= (double)std::max<size_t>(maxDeg, 1); }   // ② 층 크기 ≤ k^d
+        assert((int)total == n); std::vector<int> depth(n, 0); for (int i = 1; i < n; ++i) depth[i] = depth[par[i]] + 1; for (size_t d = 0; d < a.size(); ++d) for (int u : a[d]) assert(depth[u] == (int)d);                                // 레벨 = 깊이
+        Levels z = zigzag(a); for (size_t d = 0; d < a.size(); ++d) { auto expect = a[d]; if (d % 2) std::reverse(expect.begin(), expect.end()); assert(z[d] == expect); }                                              // ③
+        size_t width = 0; for (auto& l : a) width = std::max(width, l.size()); assert(a.size() == (size_t)(*std::max_element(depth.begin(), depth.end())) + 1 && width >= 1);
+    }
+    for (int n = 1; n <= 1000; ++n) {                                                                           // 힙 배열: 레벨 = ⌊log₂ i⌋ (1 기반)
+        std::vector<std::vector<int>> kids(n + 1); for (int i = 2; i <= n; ++i) kids[i / 2].push_back(i); Levels l = levelsBfs(kids, 1);
+        for (size_t d = 0; d < l.size(); ++d) for (int u : l[d]) assert((int)d == 31 - __builtin_clz((unsigned)u)); for (size_t d = 0; d + 1 < l.size(); ++d) assert(l[d].size() == (1u << d));          // 마지막을 뺀 층은 가득 참
+    }
+    { int n = (1 << 20) - 1; std::vector<std::vector<int>> kids(n); for (int i = 1; i < n; ++i) kids[(i - 1) / 2].push_back(i); Levels l = levelsDfs(kids, 0); assert(l.size() == 20 && l[19].size() == (1u << 19) && l == levelsBfs(kids, 0));
+      std::cout << "Level: BFS layering and DFS-by-depth collection agreed (including within-level order) on 5000 random trees and a 2^20-node complete tree; heap indices matched floor(log2 i); zig-zag order verified" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1) given depth
-// Space Complexity: O(1)
+// Time Complexity: O(n)
+// Space Complexity: O(n) (BFS 큐 = 가장 넓은 층)
 ```
 ## Size()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *left, *right; };
-
-int getSize(Node* node) {
-    if (!node) return 0;
-    return 1 + getSize(node->left) + getSize(node->right);
+// 크기(size): 노드 하나가 만드는 부분 트리의 노드 수.  BFS 역순으로 자식의 크기를 부모에 더하면 O(n) (재귀 없음).
+//  ① 노드마다 부분 트리를 다시 세는 순진한 방법과 대조.  ② 오일러 투어 구간 성질 — 전위 번호 tin 에서 부분 트리는 *연속 구간* [tin, tin + size) 이다: 모든 쌍 (u, v) 에서 "v 가 u 의 부분 트리에 속함" ⇔ tin[u] ≤ tin[v] < tin[u] + size[u] ⇔ 부모 따라 올라가면 u 를 만남.
+//  ③ Σ size = Σ (깊이 + 1).  ④ 센트로이드: 크기 배열만으로 max(n − size[u], 자식 최대 크기) ≤ n/2 인 노드를 찾고, 하나씩 지워 보는 브루트포스와 대조 (1 개 또는 2 개).
+std::vector<int> subtreeSizes(const std::vector<int>& parent, std::vector<int>& order) {
+    int n = (int)parent.size(); std::vector<std::vector<int>> kids(n); int root = -1; for (int i = 0; i < n; ++i) { if (parent[i] < 0) root = i; else kids[parent[i]].push_back(i); }
+    order = {root}; for (size_t i = 0; i < order.size(); ++i) for (int v : kids[order[i]]) order.push_back(v); std::vector<int> sz(n, 1); for (size_t i = order.size(); i-- > 1;) sz[parent[order[i]]] += sz[order[i]]; return sz;
+}
+int countNaive(const std::vector<std::vector<int>>& kids, int u) { int c = 0; std::vector<int> st = {u}; while (!st.empty()) { int x = st.back(); st.pop_back(); ++c; for (int v : kids[x]) st.push_back(v); } return c; }
+std::vector<int> preorderNumbers(const std::vector<std::vector<int>>& kids, int root) { std::vector<int> tin(kids.size(), -1), st = {root}; int t = 0; while (!st.empty()) { int u = st.back(); st.pop_back(); tin[u] = t++; for (size_t i = kids[u].size(); i-- > 0;) st.push_back(kids[u][i]); } return tin; }
+std::vector<int> centroidsBySizes(const std::vector<int>& parent, const std::vector<int>& sz) { int n = (int)parent.size(); std::vector<int> big(n, 0); for (int i = 0; i < n; ++i) { big[i] = n - sz[i]; } for (int i = 0; i < n; ++i) if (parent[i] >= 0) big[parent[i]] = std::max(big[parent[i]], sz[i]); std::vector<int> c; for (int i = 0; i < n; ++i) if (2 * big[i] <= n) c.push_back(i); return c; }
+std::vector<int> centroidsBrute(const std::vector<int>& parent) {                                                  // 노드를 지웠을 때 가장 큰 조각이 n/2 이하
+    int n = (int)parent.size(); std::vector<std::vector<int>> g(n); for (int i = 0; i < n; ++i) if (parent[i] >= 0) { g[i].push_back(parent[i]); g[parent[i]].push_back(i); } std::vector<int> c;
+    for (int r = 0; r < n; ++r) { std::vector<char> seen(n, 0); seen[r] = 1; int worst = 0; for (int s : g[r]) { if (seen[s]) continue; int cnt = 0; std::vector<int> st = {s}; seen[s] = 1; while (!st.empty()) { int x = st.back(); st.pop_back(); ++cnt; for (int y : g[x]) if (!seen[y]) { seen[y] = 1; st.push_back(y); } } worst = std::max(worst, cnt); } if (2 * worst <= n) c.push_back(r); }
+    return c;
 }
 
 int main() {
-    Node* root = new Node{1, new Node{2, nullptr, nullptr}, new Node{3, nullptr, nullptr}};
-    int size = getSize(root);
-    std::cout << "Size of tree: " << size << std::endl;
-    assert(size == 3);
-    delete root->left; delete root->right; delete root;
+    std::mt19937 rng(41);
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 70), shape = (int)(rng() % 3); std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = shape == 0 ? (int)(rng() % i) : shape == 1 ? std::max(0, i - 1 - (int)(rng() % 2)) : (int)(rng() % std::min(i, 3));
+        std::vector<int> perm(n); for (int i = 0; i < n; ++i) perm[i] = i; std::shuffle(perm.begin(), perm.end(), rng); std::vector<int> p(n, -1); for (int i = 0; i < n; ++i) p[perm[i]] = par[i] < 0 ? -1 : perm[par[i]];
+        std::vector<int> order; std::vector<int> sz = subtreeSizes(p, order); int root = order[0]; std::vector<std::vector<int>> kids(n); for (int i = 0; i < n; ++i) if (p[i] >= 0) kids[p[i]].push_back(i);
+        for (int u = 0; u < n; ++u) assert(sz[u] == countNaive(kids, u)); assert(sz[root] == n);                  // ①
+        std::vector<int> tin = preorderNumbers(kids, root); for (int u = 0; u < n; ++u) for (int v = 0; v < n; ++v) { bool inRange = tin[u] <= tin[v] && tin[v] < tin[u] + sz[u]; bool climbs = false; for (int x = v; x >= 0; x = p[x]) if (x == u) climbs = true; assert(inRange == climbs); }          // ② 구간 성질
+        long sumSize = 0, sumDepth = 0; for (int u = 0; u < n; ++u) { sumSize += sz[u]; int d = 0; for (int x = u; p[x] >= 0; x = p[x]) ++d; sumDepth += d + 1; } assert(sumSize == sumDepth);                                  // ③
+        std::vector<int> c1 = centroidsBySizes(p, sz), c2 = centroidsBrute(p); assert(c1 == c2 && (c1.size() == 1 || c1.size() == 2));                                                                              // ④
+    }
+    { int n = 1000000; std::vector<int> chain(n, -1); for (int i = 1; i < n; ++i) chain[i] = i - 1; std::vector<int> order; std::vector<int> sz = subtreeSizes(chain, order); assert(sz[0] == n && sz[n - 1] == 1 && sz[n / 2] == n - n / 2);
+      std::vector<int> c = centroidsBySizes(chain, sz); assert(c.size() == 2 && c[0] == n / 2 - 1 && c[1] == n / 2); std::cout << "Size: iterative subtree sizes matched recounting on 3000 random trees; the preorder-interval property held for every node pair; centroids from sizes matched brute-force deletion; a 10^6 chain was handled without recursion" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n) (구간 성질 검사는 O(n²))
+// Space Complexity: O(n)
 ```
 ## IsLeaf()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 
-struct Node { int data; Node *left, *right; };
-
-bool isLeaf(Node* node) {
-    if (!node) return false;
-    return (node->left == nullptr && node->right == nullptr);
-}
+// 리프(leaf): 자식이 없는 노드. 정의를 세 가지로 구현해 서로 대조한다.
+//  ① 자식 목록이 비어 있음  ② 부모 배열에서 *누구의 부모로도 나오지 않음*  ③ 뿌리 없는 트리에서 이웃이 1 개 — 뿌리 있는 트리와의 관계: 뿌리 없는 리프 수 = 뿌리 있는 리프 수 + (루트의 자식이 1 개면 1) (루트가 리프로 보이므로), n = 1 은 예외.
+//  ④ 동적 유지: 리프 추가·삭제가 일어날 때 리프 집합을 *증분 갱신*(부모가 리프에서 내부 노드로, 또는 그 반대)한 결과가 매번 처음부터 다시 계산한 것과 같다.   ⑤ 모든 리프가 같은 깊이면 완전(perfect) 트리일 수 있다 — 리프 깊이 집합으로 판정.
+struct Dyn {
+    std::vector<int> parent; std::vector<std::vector<int>> kids; std::vector<char> alive; std::set<int> leaves; int root = 0;                       // 증분 유지되는 leaves
+    explicit Dyn(int cap) : parent(cap, -2), kids(cap), alive(cap, 0) { alive[0] = 1; parent[0] = -1; leaves.insert(0); }
+    bool addLeaf(int p, int c) { if (!alive[p] || alive[c]) return false; if (kids[p].empty()) leaves.erase(p); parent[c] = p; alive[c] = 1; kids[p].push_back(c); leaves.insert(c); return true; }
+    bool removeLeaf(int c) { if (!alive[c] || c == root || !kids[c].empty()) return false; int p = parent[c]; auto& v = kids[p]; v.erase(std::find(v.begin(), v.end(), c)); leaves.erase(c); alive[c] = 0; parent[c] = -2; if (v.empty()) leaves.insert(p); return true; }
+    std::set<int> recompute() const { std::set<int> r; for (size_t i = 0; i < alive.size(); ++i) if (alive[i] && kids[i].empty()) r.insert((int)i); return r; }
+};
 
 int main() {
-    Node* leaf = new Node{10, nullptr, nullptr};
-    bool res = isLeaf(leaf);
-    std::cout << "Is leaf: " << res << std::endl;
-    assert(res == true);
-    delete leaf;
+    std::mt19937 rng(46);
+    for (int it = 0; it < 5000; ++it) {                                                                          // ①②③ 무작위 트리 (shape 3 = 무작위 *꽉 찬* 이진 트리: 리프 하나에 자식 둘을 반복해서 붙인다)
+        int n = 1 + (int)(rng() % 60), shape = (int)(rng() % 4); std::vector<int> par(1, -1);
+        if (shape == 3) { n |= 1; std::vector<int> leafList = {0}; while ((int)par.size() + 2 <= n) { size_t pick = rng() % leafList.size(); int u = leafList[pick]; leafList[pick] = leafList.back(); leafList.pop_back(); for (int k = 0; k < 2; ++k) { par.push_back(u); leafList.push_back((int)par.size() - 1); } } n = (int)par.size(); }
+        else { par.assign(n, -1); for (int i = 1; i < n; ++i) par[i] = shape == 0 ? (int)(rng() % i) : shape == 1 ? std::max(0, i - 1 - (int)(rng() % 2)) : (int)(rng() % std::min(i, 3)); }
+        std::vector<std::vector<int>> kids(n); std::vector<char> isParent(n, 0); std::vector<int> nb(n, 0); for (int i = 1; i < n; ++i) { kids[par[i]].push_back(i); isParent[par[i]] = 1; ++nb[i]; ++nb[par[i]]; }
+        std::set<int> a, b, c; for (int u = 0; u < n; ++u) { if (kids[u].empty()) a.insert(u); if (!isParent[u]) b.insert(u); if (nb[u] == 1) c.insert(u); } assert(a == b);
+        if (n >= 2) { std::set<int> expect = a; if (kids[0].size() == 1) expect.insert(0); else expect.erase(0); assert(c == expect); } else assert(a.size() == 1 && c.empty());                                // 뿌리 없는 리프 = 뿌리 있는 리프 + (루트가 자식 1 개면 루트)
+        std::set<int> depths; for (int u : a) { int d = 0; for (int x = u; par[x] >= 0; x = par[x]) ++d; depths.insert(d); }                                    // ⑤ 리프 깊이 집합
+        bool full = true; for (auto& k : kids) if (!k.empty() && k.size() != 2) full = false;
+        if (full) { assert(a.size() == (size_t)(n + 1) / 2); if (depths.size() == 1) { int h = *depths.begin(); assert(n == (1 << (h + 1)) - 1 && a.size() == (size_t)1 << h); } }                               // 꽉 찬 이진 트리: 리프 (n+1)/2 개, 모든 리프가 같은 깊이면 완전(perfect) 트리
+    }
+    for (int h = 0; h <= 10; ++h) { int n = (1 << (h + 1)) - 1; std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = (i - 1) / 2; std::vector<char> isParent(n, 0); for (int i = 1; i < n; ++i) isParent[par[i]] = 1; std::set<int> depths; for (int u = 0; u < n; ++u) if (!isParent[u]) { int d = 0; for (int x = u; par[x] >= 0; x = par[x]) ++d; depths.insert(d); } assert(depths.size() == 1 && *depths.begin() == h); }      // 완전 이진 트리의 리프 깊이는 모두 h
+    for (int round = 0; round < 200; ++round) {                                                                  // ④ 증분 유지 vs 재계산
+        const int CAP = 40; Dyn t(CAP);
+        for (int op = 0; op < 300; ++op) { int a = (int)(rng() % CAP), b = (int)(rng() % CAP); if (rng() % 3) t.addLeaf(a, b); else t.removeLeaf(b); assert(t.leaves == t.recompute() && !t.leaves.empty()); }                 // 비어 있지 않은 트리에는 리프가 있다
+    }
+    std::cout << "IsLeaf: three leaf definitions agreed on 5000 random trees (unrooted leaves = rooted leaves +/- the root), complete binary trees were recognised by leaf depths, and incremental leaf maintenance matched recomputation over 60000 operations" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 판정 O(1), 전체 리프 O(n), 증분 갱신 O(log n)
+// Space Complexity: O(n)
 ```
 ## IsRoot()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-struct Node { int data; Node *parent, *left, *right; };
-
-bool isRoot(Node* node) {
-    return node && node->parent == nullptr;
+// 루트 판별: 부모가 없는 노드. 표현에 따라 관례가 다르다 — 트리 부모 배열은 parent[u] = −1, 분리 집합(union-find)은 parent[u] = u (자기 자신이 부모).  한 숲에서 루트는 연결 요소마다 하나.
+//  ① 숲에서 간선을 무작위로 끊으면 루트 수 = 끊은 횟수 + 1 이고, 두 관례 사이의 변환이 가역.  ② union-find: 합칠 때 크기가 큰 쪽의 루트가 새 루트(크기 합), 경로 압축 후에도 find(x) 의 결과(= 루트)는 불변 — 브루트포스 연결 요소 라벨링과 대조.
+//  ③ isRoot(x) ⇔ find(x) == x, 루트 수 = 연결 요소 수.  100 만 개 합치기도 반복문으로.
+struct DSU {
+    std::vector<int> p, sz; long compressions = 0; explicit DSU(int n) : p(n), sz(n, 1) { std::iota(p.begin(), p.end(), 0); }
+    bool isRoot(int x) const { return p[x] == x; }
+    int find(int x) { int r = x; while (p[r] != r) r = p[r]; while (p[x] != r) { int nx = p[x]; p[x] = r; x = nx; ++compressions; } return r; }                          // 반복 경로 압축
+    int findNoCompress(int x) const { while (p[x] != x) x = p[x]; return x; }
+    bool unite(int a, int b) { a = find(a); b = find(b); if (a == b) return false; if (sz[a] < sz[b]) std::swap(a, b); p[b] = a; sz[a] += sz[b]; return true; }
+};
+std::vector<int> toTreeConvention(const std::vector<int>& dsuParent) { std::vector<int> t(dsuParent.size()); for (size_t i = 0; i < t.size(); ++i) t[i] = dsuParent[i] == (int)i ? -1 : dsuParent[i]; return t; }
+std::vector<int> toDsuConvention(const std::vector<int>& treeParent) { std::vector<int> d(treeParent.size()); for (size_t i = 0; i < d.size(); ++i) d[i] = treeParent[i] < 0 ? (int)i : treeParent[i]; return d; }
+std::vector<int> componentLabels(int n, const std::vector<std::pair<int, int>>& edges) {                                  // 브루트포스: BFS 연결 요소
+    std::vector<std::vector<int>> g(n); for (auto& e : edges) { g[e.first].push_back(e.second); g[e.second].push_back(e.first); } std::vector<int> lab(n, -1); int c = 0;
+    for (int s = 0; s < n; ++s) if (lab[s] < 0) { std::vector<int> st = {s}; lab[s] = c; while (!st.empty()) { int u = st.back(); st.pop_back(); for (int v : g[u]) if (lab[v] < 0) { lab[v] = c; st.push_back(v); } } ++c; }
+    return lab;
 }
 
 int main() {
-    Node* root = new Node{1, nullptr, nullptr, nullptr};
-    bool res = isRoot(root);
-    std::cout << "Is root: " << res << std::endl;
-    assert(res == true);
-    delete root;
+    std::mt19937 rng(52);
+    for (int it = 0; it < 3000; ++it) {                                                                          // ① 간선 끊기: 루트 수 = 끊은 횟수 + 1
+        int n = 1 + (int)(rng() % 60); std::vector<int> par(n, -1); for (int i = 1; i < n; ++i) par[i] = (int)(rng() % i); int cuts = n > 1 ? (int)(rng() % n) : 0; std::vector<int> cutNodes(n - 1 > 0 ? n - 1 : 0); std::iota(cutNodes.begin(), cutNodes.end(), 1); std::shuffle(cutNodes.begin(), cutNodes.end(), rng);
+        for (int k = 0; k < cuts && k < (int)cutNodes.size(); ++k) par[cutNodes[k]] = -1; int roots = (int)std::count(par.begin(), par.end(), -1); assert(roots == std::min(cuts, n - 1) + 1);
+        std::vector<int> d = toDsuConvention(par); assert(toTreeConvention(d) == par); int dsuRoots = 0; for (int i = 0; i < n; ++i) dsuRoots += d[i] == i; assert(dsuRoots == roots);                  // 변환 왕복, 루트 수 일치
+    }
+    for (int it = 0; it < 2000; ++it) {                                                                          // ② ③ 무작위 합치기
+        int n = 1 + (int)(rng() % 50); DSU dsu(n); std::vector<std::pair<int, int>> edges; int merges = 0;
+        for (int op = 0; op < 80; ++op) { int a = (int)(rng() % n), b = (int)(rng() % n); int ra = dsu.findNoCompress(a), rb = dsu.findNoCompress(b); long sa = dsu.sz[ra], sb = dsu.sz[rb]; bool joined = dsu.unite(a, b); assert(joined == (ra != rb)); edges.push_back({a, b});
+            if (joined) { ++merges; int newRoot = dsu.findNoCompress(a); assert(newRoot == (sa >= sb ? ra : rb) && dsu.sz[newRoot] == sa + sb && dsu.isRoot(newRoot)); } }                                     // 큰 쪽의 루트가 새 루트
+        std::vector<int> lab = componentLabels(n, edges); int comps = *std::max_element(lab.begin(), lab.end()) + 1; int roots = 0; for (int i = 0; i < n; ++i) roots += dsu.isRoot(i); assert(roots == comps && roots == n - merges);
+        for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) assert((lab[i] == lab[j]) == (dsu.findNoCompress(i) == dsu.findNoCompress(j)));                                                       // 같은 요소 ⇔ 같은 루트
+        std::vector<int> before(n); for (int i = 0; i < n; ++i) before[i] = dsu.findNoCompress(i); for (int i = 0; i < n; ++i) assert(dsu.find(i) == before[i]); for (int i = 0; i < n; ++i) assert(dsu.p[i] == before[i]);          // 경로 압축은 루트를 바꾸지 않고, 압축 뒤 모두 루트에 직접 연결
+    }
+    { const int n = 1000000; DSU dsu(n); for (int i = 1; i < n; ++i) dsu.unite(i - 1, i); int roots = 0; for (int i = 0; i < n; ++i) roots += dsu.isRoot(i); assert(roots == 1 && dsu.find(n - 1) == dsu.find(0) && dsu.sz[dsu.find(0)] == n);
+      std::cout << "IsRoot: root counts matched component counts on 5000 random forests; size-based roots, path compression invariance and parent[-1]/parent[self] conversions verified; 10^6 unions were done iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 판별 O(1) (트리 표현) / 분리 집합은 find 기준 거의 O(1) 분할상환
+// Space Complexity: O(n)
 ```
 
 # Part 2. 이진트리
 ## CreateBinaryTree()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <random>
+#include <sstream>
+#include <string>
+#include <vector>
 
-struct TreeNode {
-    int val;
-    TreeNode *left, *right;
-    TreeNode(int x) : val(x), left(nullptr), right(nullptr) {}
+// 이진 트리를 만드는 방법들을 서로 변환하며 검증한다 (노드는 배열 풀: val/left/right 인덱스, 해제 문제 없음).
+//  ① 모양의 개수: n 개의 노드를 가진 서로 다른 이진 트리는 카탈랑 수 C(n) — 모든 모양을 만들어(재귀 조합) 직렬화가 서로 다르고 개수가 C(n) 인지 확인 (n ≤ 9).
+//  ② 직렬화 왕복: 레벨 순서 + null ("1,2,3,null,4") 문자열 ↔ 트리.  ③ 전위+중위 또는 후위+중위 순회열(값이 서로 다르면) 로부터 트리를 *유일하게* 복원 — 해시맵으로 O(n).  전위+후위만으로는 모호함(반례 확인).
+//  ④ 힙 배열(완전 이진 트리)  ⑤ 무작위 트리에서 모든 표현이 같은 트리를 가리킴, 깊이 10^5 사슬도 반복문으로.
+struct BT {
+    std::vector<int> val, L, R; int root = -1;
+    int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; }
+    int size() const { return (int)val.size(); }
 };
+std::string serialize(const BT& t) {                                                                           // 레벨 순서 + null, 끝의 null 은 생략
+    if (t.root < 0) return ""; std::vector<int> q = {t.root}; std::vector<std::string> out; for (size_t i = 0; i < q.size(); ++i) { int u = q[i]; if (u < 0) { out.push_back("null"); continue; } out.push_back(std::to_string(t.val[u])); q.push_back(t.L[u]); q.push_back(t.R[u]); }
+    while (!out.empty() && out.back() == "null") out.pop_back(); std::string s; for (size_t i = 0; i < out.size(); ++i) { if (i) s += ','; s += out[i]; } return s;
+}
+BT deserialize(const std::string& s) {
+    BT t; if (s.empty()) return t; std::vector<std::string> tok; std::stringstream ss(s); std::string x; while (std::getline(ss, x, ',')) tok.push_back(x);
+    t.root = t.add(std::stoi(tok[0])); std::vector<int> q = {t.root}; size_t i = 1; for (size_t h = 0; h < q.size() && i < tok.size(); ++h) { int u = q[h];
+        for (int side = 0; side < 2 && i < tok.size(); ++side, ++i) if (tok[i] != "null") { int c = t.add(std::stoi(tok[i])); (side == 0 ? t.L[u] : t.R[u]) = c; q.push_back(c); } }
+    return t;
+}
+std::vector<int> preorder(const BT& t) { std::vector<int> out, st; if (t.root >= 0) st.push_back(t.root); while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(t.val[u]); if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } return out; }
+std::vector<int> inorder(const BT& t) { std::vector<int> out, st; int u = t.root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = t.L[u]; } u = st.back(); st.pop_back(); out.push_back(t.val[u]); u = t.R[u]; } return out; }
+std::vector<int> postorder(const BT& t) { std::vector<int> out; std::vector<int> st; if (t.root >= 0) st.push_back(t.root); while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(t.val[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); if (t.R[u] >= 0) st.push_back(t.R[u]); } std::reverse(out.begin(), out.end()); return out; }       // (루트, 오른쪽, 왼쪽) 의 역순
+BT fromPreIn(const std::vector<int>& pre, const std::vector<int>& in) {                                       // 전위+중위 → 트리 (반복문: 재귀 없음)
+    BT t; if (pre.empty()) return t; std::map<int, int> pos; for (size_t i = 0; i < in.size(); ++i) pos[in[i]] = (int)i;
+    struct Job { int node, preLo, inLo, inHi; }; t.root = t.add(pre[0]); std::vector<Job> st = {{t.root, 0, 0, (int)in.size() - 1}};
+    while (!st.empty()) { Job j = st.back(); st.pop_back(); int p = pos[t.val[j.node]]; int leftCount = p - j.inLo, rightCount = j.inHi - p;
+        if (rightCount > 0) { int c = t.add(pre[j.preLo + leftCount + 1]); t.R[j.node] = c; st.push_back({c, j.preLo + leftCount + 1, p + 1, j.inHi}); }
+        if (leftCount > 0) { int c = t.add(pre[j.preLo + 1]); t.L[j.node] = c; st.push_back({c, j.preLo + 1, j.inLo, p - 1}); } }
+    return t;
+}
+BT fromPostIn(const std::vector<int>& post, const std::vector<int>& in) {
+    BT t; if (post.empty()) return t; std::map<int, int> pos; for (size_t i = 0; i < in.size(); ++i) pos[in[i]] = (int)i;
+    struct Job { int node, postHi, inLo, inHi; }; t.root = t.add(post.back()); std::vector<Job> st = {{t.root, (int)post.size() - 1, 0, (int)in.size() - 1}};
+    while (!st.empty()) { Job j = st.back(); st.pop_back(); int p = pos[t.val[j.node]]; int leftCount = p - j.inLo, rightCount = j.inHi - p;
+        if (rightCount > 0) { int c = t.add(post[j.postHi - 1]); t.R[j.node] = c; st.push_back({c, j.postHi - 1, p + 1, j.inHi}); }
+        if (leftCount > 0) { int c = t.add(post[j.postHi - 1 - rightCount]); t.L[j.node] = c; st.push_back({c, j.postHi - 1 - rightCount, j.inLo, p - 1}); } }
+    return t;
+}
+BT randomBT(int n, int shape, std::mt19937& rng) {                                                            // 값은 1..n 의 순열. shape 0: 무작위 빈 칸 붙이기, 1: 왼쪽 사슬 편향, 2: 오른쪽 편향
+    BT t; std::vector<int> vals(n); std::iota(vals.begin(), vals.end(), 1); std::shuffle(vals.begin(), vals.end(), rng); std::vector<std::pair<int, int>> slots; t.root = t.add(vals[0]); slots.push_back({t.root, 0}); slots.push_back({t.root, 1});
+    for (int i = 1; i < n; ++i) { size_t pick = shape == 0 ? rng() % slots.size() : (shape == 1 ? slots.size() - 1 - (rng() % 4 == 0 && slots.size() > 1 ? 1 : 0) : (rng() % 4 == 0 && slots.size() > 1 ? slots.size() - 2 : slots.size() - 1)); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(vals[i]); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); }
+    return t;
+}
+void allShapes(int n, std::vector<std::string>& out) {                                                          // 모양만 (여는/닫는 괄호): n 개 노드의 모든 이진 트리
+    if (n == 0) { out.push_back("."); return; }
+    for (int l = 0; l < n; ++l) { std::vector<std::string> a, b; allShapes(l, a); allShapes(n - 1 - l, b); for (auto& x : a) for (auto& y : b) out.push_back("(" + x + y + ")"); }
+}
+BT heapArrayToTree(const std::vector<int>& a) { BT t; if (a.empty()) return t; std::vector<int> id(a.size()); for (size_t i = 0; i < a.size(); ++i) id[i] = t.add(a[i]); t.root = id[0]; for (size_t i = 0; i < a.size(); ++i) { if (2 * i + 1 < a.size()) t.L[id[i]] = id[2 * i + 1]; if (2 * i + 2 < a.size()) t.R[id[i]] = id[2 * i + 2]; } return t; }
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    std::cout << "Binary Tree created." << std::endl;
-    assert(root->val == 10);
-    delete root;
+    { BT t = deserialize("1,2,3,null,4"); assert(serialize(t) == "1,2,3,null,4" && preorder(t) == (std::vector<int>{1, 2, 4, 3}) && inorder(t) == (std::vector<int>{2, 4, 1, 3}) && postorder(t) == (std::vector<int>{4, 2, 3, 1})); }
+    long catalan = 1; for (int n = 0; n <= 9; ++n) { std::vector<std::string> shapes; allShapes(n, shapes); std::sort(shapes.begin(), shapes.end()); assert(std::unique(shapes.begin(), shapes.end()) == shapes.end() && (long)shapes.size() == catalan); catalan = catalan * 2 * (2 * n + 1) / (n + 2); }      // ① C(n)
+    std::mt19937 rng(7);
+    for (int it = 0; it < 5000; ++it) {
+        int n = 1 + (int)(rng() % 60); BT t = randomBT(n, (int)(rng() % 3), rng); std::string s = serialize(t); BT back = deserialize(s); assert(serialize(back) == s && preorder(back) == preorder(t) && inorder(back) == inorder(t) && back.size() == n);               // ② 직렬화 왕복
+        BT a = fromPreIn(preorder(t), inorder(t)), b = fromPostIn(postorder(t), inorder(t)); assert(serialize(a) == s && serialize(b) == s);                                                                                                    // ③ 유일한 복원
+    }
+    { BT x = deserialize("1,2"), y = deserialize("1,null,2"); assert(preorder(x) == preorder(y) && postorder(x) == postorder(y) && serialize(x) != serialize(y) && inorder(x) != inorder(y)); }                                                  // 전위+후위로는 구분 못 한다 (중위가 필요)
+    for (int n = 0; n <= 100; ++n) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 1); BT t = heapArrayToTree(a); std::vector<int> pre = preorder(t); assert((int)pre.size() == n); std::string s = serialize(t); std::stringstream ss(s); std::string tok; int i = 1; while (std::getline(ss, tok, ',')) assert(tok == std::to_string(i++)); assert(i == n + 1); }      // ④ 힙 배열의 레벨 순서 = 배열 순서
+    { int n = 100000; BT chain; int cur = chain.root = chain.add(0); for (int i = 1; i < n; ++i) { int c = chain.add(i); chain.L[cur] = c; cur = c; } BT rebuilt = fromPreIn(preorder(chain), inorder(chain)); assert(rebuilt.size() == n && inorder(rebuilt).front() == n - 1 && preorder(rebuilt).front() == 0);
+      std::cout << "CreateBinaryTree: all binary tree shapes for n <= 9 were enumerated (Catalan counts), 5000 random trees round-tripped through level-order text and unique pre/in and post/in reconstruction, and a 10^5-deep chain was rebuilt iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 직렬화·복원 O(n) (순회열 복원은 값→위치 맵으로 O(n log n)), 모양 열거 O(C(n)·n)
+// Space Complexity: O(n)
 ```
 ## InsertLeft()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode {
-    int val;
-    TreeNode *left, *right;
-    TreeNode(int x) : val(x), left(nullptr), right(nullptr) {}
+// 왼쪽 자식 삽입: 새 노드를 p 의 왼쪽에 붙인다. p 에 이미 왼쪽 자식이 있을 때의 정책이 중요하다 — ① 거부(false) ② *밀어내기*: 새 노드가 그 자리를 차지하고 기존 부분 트리는 새 노드의 왼쪽 자식이 된다(트리 크기 +1, 기존 구조 보존).
+//  배열 풀(인덱스) 구현과 unique_ptr 기반 포인터 구현을 같은 무작위 삽입열로 돌려 *전위 괄호 직렬화*가 항상 같은지 대조한다. 불변식 — 크기 +1, 부모 링크 일치, 기존 노드들의 상대적 후손 관계 보존.
+//  InsertRight 와의 대칭: 오른쪽 삽입 = 좌우를 뒤집고 왼쪽 삽입한 뒤 다시 뒤집은 것 (mirror(insertLeft(mirror(T))) == insertRight(T)).
+struct Arena {
+    std::vector<int> val, L, R, parent; int root = -1;
+    int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); parent.push_back(-1); return (int)val.size() - 1; }
+    bool insertLeft(int p, int v, bool push) {
+        if (L[p] >= 0 && !push) return false; int c = add(v); parent[c] = p; if (L[p] >= 0) { L[c] = L[p]; parent[L[p]] = c; } L[p] = c; return true;
+    }
+    bool insertRight(int p, int v, bool push) { if (R[p] >= 0 && !push) return false; int c = add(v); parent[c] = p; if (R[p] >= 0) { R[c] = R[p]; parent[R[p]] = c; } R[p] = c; return true; }
+    std::string paren(int u) const { if (u < 0) return "."; return "(" + std::to_string(val[u]) + paren(L[u]) + paren(R[u]) + ")"; }                     // 작은 트리용 재귀 직렬화
+    bool linksOk() const { for (size_t i = 0; i < val.size(); ++i) { if (L[i] >= 0 && parent[L[i]] != (int)i) return false; if (R[i] >= 0 && parent[R[i]] != (int)i) return false; } return parent[root] == -1; }
+    void mirror() { for (size_t i = 0; i < val.size(); ++i) std::swap(L[i], R[i]); }
 };
+struct PNode { int val; std::unique_ptr<PNode> left, right; explicit PNode(int v) : val(v) {} };                      // 독립 구현: 포인터 소유 트리
+std::string paren(const PNode* u) { if (!u) return "."; return "(" + std::to_string(u->val) + paren(u->left.get()) + paren(u->right.get()) + ")"; }
+PNode* findNode(PNode* u, int v) { if (!u) return nullptr; if (u->val == v) return u; if (PNode* a = findNode(u->left.get(), v)) return a; return findNode(u->right.get(), v); }
+bool insertLeftP(PNode* root, int p, int v, bool push) { PNode* n = findNode(root, p); if (!n || (n->left && !push)) return false; std::unique_ptr<PNode> c(new PNode(v)); c->left = std::move(n->left); n->left = std::move(c); return true; }
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->left = new TreeNode(20);
-    std::cout << "Left child inserted." << std::endl;
-    assert(root->left->val == 20);
-    delete root->left; delete root;
+    std::mt19937 rng(11);
+    for (int round = 0; round < 2000; ++round) {
+        Arena a; a.root = a.add(0); std::unique_ptr<PNode> root(new PNode(0)); int next = 1; bool push = rng() % 2;
+        for (int op = 0; op < 40; ++op) {
+            int p = (int)(rng() % a.val.size()); int before = (int)a.val.size(); bool okA = a.insertLeft(p, next, push), okP = insertLeftP(root.get(), p, next, push); assert(okA == okP);          // 값 = 번호이므로 p 는 노드 번호이자 값
+            if (okA) { ++next; assert((int)a.val.size() == before + 1); } else assert((int)a.val.size() == before);
+            assert(a.linksOk() && a.paren(a.root) == paren(root.get()));
+        }
+    }
+    // 밀어내기 정책: 기존 부분 트리의 구조(전위 순서)가 새 노드 밑으로 그대로 보존된다
+    { Arena a; a.root = a.add(1); a.insertLeft(0, 2, false); a.insertLeft(1, 3, false); a.insertRight(1, 4, false); std::string before = a.paren(a.L[0]); a.insertLeft(0, 9, true); assert(a.paren(a.L[0]) == "(9" + before + ".)" && a.paren(a.root) == "(1(9" + before + ".)" + ".)" && !a.insertLeft(0, 5, false)); }
+    for (int round = 0; round < 1000; ++round) {                                                               // 대칭: insertRight(T) == mirror(insertLeft(mirror(T)))
+        Arena a; a.root = a.add(0); for (int i = 1; i < 25; ++i) { int p = (int)(rng() % a.val.size()); if (rng() % 2) a.insertLeft(p, i, true); else a.insertRight(p, i, true); }
+        Arena viaMirror = a; viaMirror.mirror(); int p = (int)(rng() % a.val.size()); viaMirror.insertLeft(p, 99, true); viaMirror.mirror(); Arena direct = a; direct.insertRight(p, 99, true); assert(viaMirror.paren(viaMirror.root) == direct.paren(direct.root));
+    }
+    { Arena a; a.root = a.add(0); int cur = 0; for (int i = 1; i <= 1000000; ++i) { a.insertLeft(cur, i, false); cur = a.L[cur]; } assert(a.val.size() == 1000001 && a.linksOk());                       // 100 만 번 삽입 (직렬화는 하지 않는다)
+      std::cout << "InsertLeft: arena and unique_ptr implementations produced identical trees over 80000 random insertions with both collision policies; right insertion equals mirrored left insertion; 10^6 insertions took O(1) each" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(1) (노드를 이미 알 때), 값으로 찾으면 O(n)
+// Space Complexity: O(1) 추가 (노드 하나)
 ```
 ## InsertRight()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
-struct TreeNode {
-    int val;
-    TreeNode *left, *right;
-    TreeNode(int x) : val(x), left(nullptr), right(nullptr) {}
+// 오른쪽 자식 삽입: 새 노드를 p 의 오른쪽에 붙인다 (이미 있으면 새 노드가 자리를 차지하고 기존 부분 트리는 새 노드의 *오른쪽* 자식이 된다).
+//  이 항목은 삽입이 *순서 구조를 어떻게 바꾸는지* 본다: 오른쪽 삽입(밀어내기)은 p 의 중위 순서 바로 뒤에 새 노드를 끼우는 효과를 가지며, 오른쪽 사슬 위에서는 연결 리스트의 "p 뒤에 삽입" 과 같다.
+//  ① 중위 순회열 오라클: p 의 오른쪽 자식이 없으면 새 노드는 중위에서 p 바로 뒤, 있으면 p 바로 뒤(= 기존 오른쪽 부분 트리 앞)에 들어간다 — 모든 경우에 inorder(after) = inorder(before) 에 새 값을 p 바로 뒤에 끼운 것.
+//  ② 전위 순회열 오라클: 전위 순서에서 새 노드는 p 의 왼쪽 부분 트리 바로 뒤(오른쪽 부분 트리 앞).  ③ 오른쪽 사슬 = 단일 연결 리스트(리스트 insertAfter 와 일치).  ④ 중복 값 없는 트리에서 모든 삽입 뒤 트리가 유효(크기 +1, 사이클 없음).
+struct BT {
+    std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; }
+    bool insertRight(int p, int v, bool push) { if (R[p] >= 0 && !push) return false; int c = add(v); R[c] = R[p]; R[p] = c; return true; }
+    bool insertLeft(int p, int v, bool push) { if (L[p] >= 0 && !push) return false; int c = add(v); L[c] = L[p]; L[p] = c; return true; }
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(val[u]); u = R[u]; } return out; }
+    std::vector<int> preorder() const { std::vector<int> out, st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(val[u]); if (R[u] >= 0) st.push_back(R[u]); if (L[u] >= 0) st.push_back(L[u]); } return out; }
+    bool valid() const { std::vector<char> seen(val.size(), 0); std::vector<int> st = {root}; size_t cnt = 0; while (!st.empty()) { int u = st.back(); st.pop_back(); if (seen[u]) return false; seen[u] = 1; ++cnt; if (L[u] >= 0) st.push_back(L[u]); if (R[u] >= 0) st.push_back(R[u]); } return cnt == val.size(); }
 };
+std::vector<int> preorderSubtree(const BT& t, int u) { std::vector<int> out, st = {u}; while (!st.empty()) { int x = st.back(); st.pop_back(); out.push_back(t.val[x]); if (t.R[x] >= 0) st.push_back(t.R[x]); if (t.L[x] >= 0) st.push_back(t.L[x]); } return out; }
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->right = new TreeNode(30);
-    std::cout << "Right child inserted." << std::endl;
-    assert(root->right->val == 30);
-    delete root->right; delete root;
+    std::mt19937 rng(17);
+    for (int round = 0; round < 2000; ++round) {
+        BT t; t.root = t.add(0); for (int i = 1; i < 20; ++i) { int p = (int)(rng() % t.val.size()); if (rng() % 2) t.insertLeft(p, i, true); else t.insertRight(p, i, true); }
+        for (int op = 0; op < 10; ++op) {
+            int p = (int)(rng() % t.val.size()), v = 100 + op; std::vector<int> in = t.inorder(), pre = t.preorder(); bool had = t.R[p] >= 0; bool ok = t.insertRight(p, v, true); assert(ok && t.valid());
+            std::vector<int> wantIn = in; wantIn.insert(std::find(wantIn.begin(), wantIn.end(), t.val[p]) + 1, v); assert(t.inorder() == wantIn);                          // ① 중위: p 바로 뒤
+            // ② 전위: p 의 왼쪽 부분 트리 바로 뒤(오른쪽 부분 트리 앞)
+            std::vector<int> wantPre = pre; int posP = (int)(std::find(wantPre.begin(), wantPre.end(), t.val[p]) - wantPre.begin()); size_t leftSize = t.L[p] >= 0 ? preorderSubtree(t, t.L[p]).size() : 0; wantPre.insert(wantPre.begin() + posP + 1 + (long)leftSize, v); assert(t.preorder() == wantPre);
+            (void)had;
+        }
+    }
+    // ③ 오른쪽 사슬 = 단일 연결 리스트 insertAfter
+    for (int round = 0; round < 500; ++round) { BT t; t.root = t.add(0); std::vector<int> list = {0}; for (int i = 1; i < 60; ++i) { int pos = (int)(rng() % list.size()); int node = -1; for (size_t k = 0; k < t.val.size(); ++k) if (t.val[k] == list[pos]) node = (int)k; t.insertRight(node, i, true); list.insert(list.begin() + pos + 1, i); }
+        std::vector<int> walk; for (int u = t.root; u >= 0; u = t.R[u]) walk.push_back(t.val[u]); assert(walk == list && t.valid()); }
+    // 거부 정책(push=false)
+    { BT t; t.root = t.add(1); assert(t.insertRight(0, 2, false) && !t.insertRight(0, 3, false) && t.val.size() == 2 && t.valid()); }
+    { BT t; t.root = t.add(0); int cur = 0; for (int i = 1; i <= 1000000; ++i) { t.insertRight(cur, i, false); cur = t.R[cur]; } assert(t.val.size() == 1000001 && t.valid());
+      std::cout << "InsertRight: after every insertion the in-order sequence gained the new value right after its parent and the pre-order sequence gained it after the parent's left subtree (20000 checked insertions); the right spine behaved as a singly linked list; 10^6 appends were O(1)" << std::endl; }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(1) (노드를 알 때)
+// Space Complexity: O(1) 추가
 ```
 ## DeleteNode()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* deleteNode(TreeNode* root, int key) {
-    if (!root) return nullptr;
-    if (key < root->val) root->left = deleteNode(root->left, key);
-    else if (key > root->val) root->right = deleteNode(root->right, key);
-    else {
-        if (!root->left) { TreeNode* tmp = root->right; delete root; return tmp; }
-        else if (!root->right) { TreeNode* tmp = root->left; delete root; return tmp; }
-        TreeNode* minNode = root->right;
-        while (minNode && minNode->left) minNode = minNode->left;
-        root->val = minNode->val;
-        root->right = deleteNode(root->right, root->val);
+// 이진 트리(정렬되지 않은)에서 노드 삭제: 구조를 깨지 않으려면 *가장 깊은(레벨 순서의 마지막) 노드*의 값으로 대상 값을 덮어쓰고 그 마지막 노드를 떼어 낸다 — 모양이 유지되고 O(n).
+//  (이진 탐색 트리의 삭제는 Part 5 DeleteBST 참고: 후계자로 대체)  구현 두 가지를 대조: ① 제자리(BFS 로 마지막 노드와 그 부모를 찾아 값 덮어쓰기 + 링크 끊기) ② 복사본을 재귀로 새로 만드는 함수형 구현.
+//  검증: 값의 다중집합에서 정확히 하나가 줄어듦, 크기 −1, 트리 유효, 나머지 구조는 그대로(= 함수형 구현과 직렬화가 같음), 없는 값이면 변화 없음, 루트만 있는 트리의 삭제, 풀 재사용(해제된 칸 재활용)으로 100 만 번 반복해도 풀 크기가 늘지 않음.
+struct BT {
+    std::vector<int> val, L, R, freeList; int root = -1; int cnt = 0;
+    int add(int v) { ++cnt; if (!freeList.empty()) { int i = freeList.back(); freeList.pop_back(); val[i] = v; L[i] = R[i] = -1; return i; } val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; }
+    bool erase(int target) {                                                                                  // 값이 target 인 노드 하나를 삭제 (BFS 순서에서 처음 만난 것)
+        if (root < 0) return false; std::vector<int> q = {root}, par = {-1}; int hit = -1; for (size_t i = 0; i < q.size(); ++i) { int u = q[i]; if (val[u] == target && hit < 0) hit = (int)i; if (L[u] >= 0) { q.push_back(L[u]); par.push_back(u); } if (R[u] >= 0) { q.push_back(R[u]); par.push_back(u); } }
+        if (hit < 0) return false; int last = q.back(), lastParent = par.back(); val[q[hit]] = val[last];                                  // 마지막 노드의 값으로 덮어쓴 뒤
+        if (lastParent < 0) root = -1; else if (R[lastParent] == last) R[lastParent] = -1; else L[lastParent] = -1; freeList.push_back(last); --cnt; return true;                         // 마지막 노드를 떼어 낸다
     }
-    return root;
+    std::string paren() const { return parenRec(root); }                                                       // 작은 트리용 재귀 직렬화
+    std::string parenRec(int u) const { if (u < 0) return "."; return "(" + std::to_string(val[u]) + parenRec(L[u]) + parenRec(R[u]) + ")"; }
+    std::vector<int> values() const { std::vector<int> out, st; if (root >= 0) st.push_back(root); while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(val[u]); if (L[u] >= 0) st.push_back(L[u]); if (R[u] >= 0) st.push_back(R[u]); } std::sort(out.begin(), out.end()); return out; }
+};
+struct PNode { int val; std::unique_ptr<PNode> l, r; explicit PNode(int v) : val(v) {} };
+std::unique_ptr<PNode> fromArena(const BT& t, int u) { if (u < 0) return nullptr; std::unique_ptr<PNode> n(new PNode(t.val[u])); n->l = fromArena(t, t.L[u]); n->r = fromArena(t, t.R[u]); return n; }
+std::string paren(const PNode* u) { if (!u) return "."; return "(" + std::to_string(u->val) + paren(u->l.get()) + paren(u->r.get()) + ")"; }
+const PNode* findFirstBfs(const PNode* root, int v) { std::vector<const PNode*> q = {root}; for (size_t i = 0; i < q.size(); ++i) { if (q[i]->val == v) return q[i]; if (q[i]->l) q.push_back(q[i]->l.get()); if (q[i]->r) q.push_back(q[i]->r.get()); } return nullptr; }
+const PNode* lastBfs(const PNode* root) { std::vector<const PNode*> q = {root}; for (size_t i = 0; i < q.size(); ++i) { if (q[i]->l) q.push_back(q[i]->l.get()); if (q[i]->r) q.push_back(q[i]->r.get()); } return q.back(); }
+std::unique_ptr<PNode> without(const PNode* u, const PNode* hit, const PNode* last, int newVal) {                    // 함수형: 복사하며 last 를 건너뛰고 hit 의 값을 바꾼다
+    if (!u || u == last) return nullptr; std::unique_ptr<PNode> n(new PNode(u == hit ? newVal : u->val)); n->l = without(u->l.get(), hit, last, newVal); n->r = without(u->r.get(), hit, last, newVal); return n;
 }
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->right = new TreeNode(20);
-    root = deleteNode(root, 20);
-    std::cout << "Node deleted." << std::endl;
-    assert(root->right == nullptr);
-    delete root;
+    std::mt19937 rng(23);
+    for (int it = 0; it < 5000; ++it) {
+        BT t; int n = 1 + (int)(rng() % 30); std::vector<std::pair<int, int>> slots; t.root = t.add((int)(rng() % 10)); slots.push_back({t.root, 0}); slots.push_back({t.root, 1});
+        for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add((int)(rng() % 10)); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); }     // 값이 겹칠 수 있다 (0..9)
+        int target = (int)(rng() % 12); std::vector<int> before = t.values(); std::unique_ptr<PNode> p = fromArena(t, t.root); const PNode* hit = findFirstBfs(p.get(), target); const PNode* last = lastBfs(p.get());
+        std::string expect; if (hit) expect = last == p.get() ? "." : paren(without(p.get(), hit, last, last->val).get()); bool ok = t.erase(target);
+        assert(ok == (hit != nullptr)); if (!ok) { assert(t.values() == before); continue; }
+        std::vector<int> expectVals = before; expectVals.erase(std::find(expectVals.begin(), expectVals.end(), target)); assert(t.values() == expectVals && t.cnt == (int)before.size() - 1);                                // 다중집합에서 target 하나가 빠졌다
+        assert((t.root < 0 ? std::string(".") : t.paren()) == expect);                                                                                               // 함수형 구현과 같은 트리
+    }
+    // 풀 재사용: 하나 넣고 하나 지우기를 100 만 번 → 풀 크기 상수
+    { BT t; t.root = t.add(1); size_t poolMax = 0; for (int i = 0; i < 1000000; ++i) { int c = t.add(i); t.R[t.root] = c; bool erased = t.erase(i); assert(erased); (void)erased; poolMax = std::max(poolMax, t.val.size()); } assert(poolMax <= 3 && t.cnt == 1);
+      BT one; one.root = one.add(5); bool e1 = one.erase(5), e2 = one.erase(5); assert(e1 && !e2 && one.root < 0 && one.cnt == 0);
+      std::cout << "DeleteNode: in-place deepest-node replacement matched a copying functional implementation (shape and multiset) over 5000 random trees with duplicate values; the node pool stayed at " << poolMax << " slots across 10^6 insert/delete pairs" << std::endl; }
     return 0;
 }
-// Time Complexity: O(H) where H is tree height
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n) (BFS 로 대상과 마지막 노드를 찾는다)
+// Space Complexity: O(n) (BFS 큐)
 ```
 ## CopyTree()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <deque>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l, TreeNode* r) : val(x), left(l), right(r) {} };
-
-TreeNode* copyTree(TreeNode* node) {
-    if (!node) return nullptr;
-    return new TreeNode(node->val, copyTree(node->left), copyTree(node->right));
+// 트리 복사: ① 깊은 복사(deep copy) — 모든 노드를 새로 만든다. 재귀 구현은 사슬 모양에서 호출 스택이 깊어지므로 명시적 스택으로 반복한다.  ② 경로 복사(path copying) — 값 하나를 바꿀 때 루트에서 그 노드까지의 경로(깊이 + 1 개)만 새로 만들고 나머지는 *공유*하는 영속(persistent) 복사.
+//  검증: 구조 동일(반복 비교), 복사본을 고쳐도 원본이 변하지 않음(독립), 새로 만든 노드 수 = n (깊은 복사) / 깊이 + 1 (경로 복사), 이전 버전은 영구히 그대로, 공유된 노드 수 = n − (깊이 + 1), 깊이 10^6 사슬도 반복문으로.
+struct Node { int val; Node *left = nullptr, *right = nullptr; explicit Node(int v) : val(v) {} };
+struct Pool { std::deque<Node> nodes; Node* make(int v) { nodes.emplace_back(v); return &nodes.back(); } };            // deque: 주소가 변하지 않고, 풀이 사라지면 모든 노드가 한꺼번에 해제 (누수 없음)
+Node* deepCopy(const Node* root, Pool& dst) {
+    if (!root) return nullptr; Node* newRoot = dst.make(root->val); std::vector<std::pair<const Node*, Node*>> st = {{root, newRoot}};
+    while (!st.empty()) { auto cur = st.back(); st.pop_back(); if (cur.first->left) { cur.second->left = dst.make(cur.first->left->val); st.push_back({cur.first->left, cur.second->left}); } if (cur.first->right) { cur.second->right = dst.make(cur.first->right->val); st.push_back({cur.first->right, cur.second->right}); } }
+    return newRoot;
 }
+Node* copyRecursive(const Node* n, Pool& dst) { if (!n) return nullptr; Node* c = dst.make(n->val); c->left = copyRecursive(n->left, dst); c->right = copyRecursive(n->right, dst); return c; }
+bool sameShapeAndValues(const Node* a, const Node* b) { std::vector<std::pair<const Node*, const Node*>> st = {{a, b}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); if (!p.first || !p.second) { if (p.first != p.second) return false; continue; } if (p.first->val != p.second->val) return false; st.push_back({p.first->left, p.second->left}); st.push_back({p.first->right, p.second->right}); } return true; }
+size_t countNodes(const Node* r) { size_t c = 0; std::vector<const Node*> st; if (r) st.push_back(r); while (!st.empty()) { const Node* u = st.back(); st.pop_back(); ++c; if (u->left) st.push_back(u->left); if (u->right) st.push_back(u->right); } return c; }
+Node* pathCopyUpdate(Node* root, const std::vector<int>& path, int newVal, Pool& dst) {                              // path: 0 = 왼쪽, 1 = 오른쪽. 루트→대상 경로의 노드만 새로 만든다
+    Node* newRoot = dst.make(root->val); newRoot->left = root->left; newRoot->right = root->right; Node* cur = newRoot, *orig = root;
+    for (int dir : path) { Node* child = dir == 0 ? orig->left : orig->right; Node* copy = dst.make(child->val); copy->left = child->left; copy->right = child->right; (dir == 0 ? cur->left : cur->right) = copy; cur = copy; orig = child; }
+    cur->val = newVal; return newRoot;
+}
+Node* randomTree(int n, Pool& pool, std::mt19937& rng) { Node* root = pool.make((int)(rng() % 1000)); std::vector<Node**> slots = {&root->left, &root->right}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); Node** s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); *s = pool.make((int)(rng() % 1000)); slots.push_back(&(*s)->left); slots.push_back(&(*s)->right); } return root; }
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2, nullptr, nullptr), nullptr);
-    TreeNode* copied = copyTree(root);
-    std::cout << "Tree copied." << std::endl;
-    assert(copied->left->val == 2);
-    // Cleanup skipped for brevity
+    std::mt19937 rng(5);
+    for (int it = 0; it < 3000; ++it) {
+        Pool src, d1, d2; int n = 1 + (int)(rng() % 60); Node* root = randomTree(n, src, rng); Node* c1 = deepCopy(root, d1); Node* c2 = copyRecursive(root, d2);
+        assert(sameShapeAndValues(root, c1) && sameShapeAndValues(c1, c2) && d1.nodes.size() == (size_t)n && d2.nodes.size() == (size_t)n && countNodes(c1) == (size_t)n);                        // 구조 동일, 새 노드 n 개
+        std::set<const Node*> orig; for (auto& x : src.nodes) orig.insert(&x); for (auto& x : d1.nodes) assert(!orig.count(&x));                                                        // 원본 노드를 하나도 공유하지 않는다
+        c1->val += 1000; if (c1->left) c1->left->val += 1000; assert(!sameShapeAndValues(root, c1) && sameShapeAndValues(root, c2));                                                         // 독립: 복사본을 고쳐도 원본·다른 복사본은 그대로
+        // 경로 복사
+        std::vector<int> path; Node* cur = root; while ((cur->left || cur->right) && rng() % 4) { int dir = cur->left && cur->right ? (int)(rng() % 2) : (cur->left ? 0 : 1); path.push_back(dir); cur = dir == 0 ? cur->left : cur->right; }
+        Pool v2; Node* newRoot = pathCopyUpdate(root, path, -5, v2); assert(v2.nodes.size() == path.size() + 1 && newRoot != root);
+        Pool snapshot; Node* before = deepCopy(root, snapshot); assert(sameShapeAndValues(root, before));                                                                                       // 이전 버전은 그대로
+        Node* t = newRoot; for (int dir : path) t = dir == 0 ? t->left : t->right; assert(t->val == -5);
+        std::set<const Node*> newNodes; for (auto& x : v2.nodes) newNodes.insert(&x); size_t shared = 0, total = 0; { std::vector<const Node*> st = {newRoot}; while (!st.empty()) { const Node* u = st.back(); st.pop_back(); ++total; if (!newNodes.count(u)) { ++shared; } if (u->left) st.push_back(u->left); if (u->right) st.push_back(u->right); } }
+        assert(total == (size_t)n && shared + path.size() + 1 == (size_t)n);                                                                                                 // 전체 n 개 중 공유 = n − (깊이 + 1)
+    }
+    { const int n = 1000000; Pool src, dst; Node* root = src.make(0); Node* cur = root; for (int i = 1; i < n; ++i) { cur->left = src.make(i); cur = cur->left; } Node* copy = deepCopy(root, dst); assert(sameShapeAndValues(root, copy) && dst.nodes.size() == (size_t)n && countNodes(copy) == (size_t)n);
+      std::vector<int> path(n - 1, 0); Pool v2; Node* nr = pathCopyUpdate(root, path, -1, v2); assert(v2.nodes.size() == (size_t)n);                                                               // 가장 깊은 노드를 바꾸면 경로 복사도 n 개
+      std::vector<int> shortPath(10, 0); Pool v3; pathCopyUpdate(root, shortPath, -1, v3); assert(v3.nodes.size() == 11 && nr != root);
+      std::cout << "CopyTree: iterative deep copy matched the recursive one on 3000 random trees (no shared nodes, independent mutation); path copying created exactly depth+1 nodes and shared the rest; a depth-10^6 chain was copied without recursion" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: 깊은 복사 O(n), 경로 복사 O(깊이)
+// Space Complexity: O(n) 새 노드 (경로 복사는 O(깊이)), 명시적 스택 O(h)
 ```
 ## MirrorTree()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l, TreeNode* r) : val(x), left(l), right(r) {} };
-
-void mirror(TreeNode* node) {
-    if (!node) return;
-    std::swap(node->left, node->right);
-    mirror(node->left);
-    mirror(node->right);
+// 좌우 반전(mirror): 모든 노드에서 왼쪽과 오른쪽 자식을 맞바꾼다 — 노드마다 독립이므로 *순서와 상관없이* 어떤 순회로 해도(또는 배열 풀을 그냥 훑어도) 같은 결과.
+//  성질: ① 두 번 하면 원래대로(involution) ② 반전한 트리의 중위 순회 = 원래의 역순, 전위 = (루트, 오른쪽, 왼쪽) 순서 전위, 높이·레벨별 너비 불변 ③ 대칭 트리(T = mirror(T)): 전위 쌍 스택 판정 vs 반전 후 비교,
+//  n 개 노드의 대칭 이진 트리의 수 = C((n−1)/2) (n 홀수) / 0 (n 짝수) — 모든 모양을 열거해 센다.  ④ 깊이 10^6 사슬을 반복문으로.
+struct BT {
+    std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; }
+    void mirrorEach() { for (size_t i = 0; i < val.size(); ++i) std::swap(L[i], R[i]); }                                         // 풀을 훑으며
+    void mirrorBfs() { std::vector<int> q = {root}; for (size_t i = 0; i < q.size(); ++i) { int u = q[i]; std::swap(L[u], R[u]); if (L[u] >= 0) q.push_back(L[u]); if (R[u] >= 0) q.push_back(R[u]); } }       // 트리를 따라가며
+};
+std::vector<int> inorder(const BT& t) { std::vector<int> out, st; int u = t.root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = t.L[u]; } u = st.back(); st.pop_back(); out.push_back(t.val[u]); u = t.R[u]; } return out; }
+std::vector<int> preorder(const BT& t, bool rightFirst) { std::vector<int> out, st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(t.val[u]); int a = rightFirst ? t.L[u] : t.R[u], b = rightFirst ? t.R[u] : t.L[u]; if (a >= 0) st.push_back(a); if (b >= 0) st.push_back(b); } return out; }        // rightFirst: 오른쪽을 먼저 방문
+std::vector<int> levelWidths(const BT& t) { std::vector<int> w; std::vector<int> cur = {t.root}; while (!cur.empty()) { w.push_back((int)cur.size()); std::vector<int> next; for (int u : cur) { if (t.L[u] >= 0) next.push_back(t.L[u]); if (t.R[u] >= 0) next.push_back(t.R[u]); } cur.swap(next); } return w; }
+int height(const BT& t) { return (int)levelWidths(t).size() - 1; }
+bool isSymmetric(const BT& t) { std::vector<std::pair<int, int>> st = {{t.L[t.root], t.R[t.root]}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); if (p.first < 0 || p.second < 0) { if (p.first != p.second) return false; continue; } if (t.val[p.first] != t.val[p.second]) return false; st.push_back({t.L[p.first], t.R[p.second]}); st.push_back({t.R[p.first], t.L[p.second]}); } return true; }      // 안쪽끼리, 바깥쪽끼리 짝지어 비교
+bool equalTrees(const BT& a, const BT& b) { std::vector<std::pair<int, int>> st = {{a.root, b.root}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); if (p.first < 0 || p.second < 0) { if (p.first != p.second) return false; continue; } if (a.val[p.first] != b.val[p.second]) return false; st.push_back({a.L[p.first], b.L[p.second]}); st.push_back({a.R[p.first], b.R[p.second]}); } return true; }
+BT randomBT(int n, std::mt19937& rng, bool symmetricValues) { BT t; t.root = t.add(symmetricValues ? 7 : (int)(rng() % 20)); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(symmetricValues ? 7 : (int)(rng() % 20)); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+void shapes(int n, std::vector<BT>& out) {                                                                     // n 개 노드의 모든 이진 트리 모양 (값은 모두 같음: 모양만 본다)
+    if (n == 0) { out.emplace_back(); return; }
+    for (int l = 0; l < n; ++l) { std::vector<BT> a, b; shapes(l, a); shapes(n - 1 - l, b);
+        for (auto& x : a) for (auto& y : b) { BT t; t.root = t.add(1); std::vector<int> mapX(x.val.size()), mapY(y.val.size()); for (size_t i = 0; i < x.val.size(); ++i) mapX[i] = t.add(1); for (size_t i = 0; i < y.val.size(); ++i) mapY[i] = t.add(1);
+            for (size_t i = 0; i < x.val.size(); ++i) { t.L[mapX[i]] = x.L[i] >= 0 ? mapX[x.L[i]] : -1; t.R[mapX[i]] = x.R[i] >= 0 ? mapX[x.R[i]] : -1; } for (size_t i = 0; i < y.val.size(); ++i) { t.L[mapY[i]] = y.L[i] >= 0 ? mapY[y.L[i]] : -1; t.R[mapY[i]] = y.R[i] >= 0 ? mapY[y.R[i]] : -1; }
+            if (x.root >= 0) t.L[t.root] = mapX[x.root]; if (y.root >= 0) t.R[t.root] = mapY[y.root]; out.push_back(t); } }
 }
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2, nullptr, nullptr), new TreeNode(3, nullptr, nullptr));
-    mirror(root);
-    std::cout << "Tree mirrored." << std::endl;
-    assert(root->left->val == 3 && root->right->val == 2);
-    // Cleanup skipped for brevity
+    std::mt19937 rng(9);
+    for (int it = 0; it < 4000; ++it) {
+        BT t = randomBT(1 + (int)(rng() % 60), rng, false); BT a = t, b = t, c = t; a.mirrorEach(); b.mirrorBfs(); assert(equalTrees(a, b));                                          // 순서와 무관
+        std::vector<int> in = inorder(t), pre = preorder(t, false), preRev = preorder(t, true); std::reverse(in.begin(), in.end()); assert(inorder(a) == in && preorder(a, false) == preRev && preorder(a, true) == pre);          // ②
+        std::vector<int> w = levelWidths(t); assert(levelWidths(a) == w && height(a) == height(t)); a.mirrorEach(); assert(equalTrees(a, t));                                                                              // 폭·높이 불변, 두 번이면 원래대로
+        BT m = t; m.mirrorEach(); assert(isSymmetric(t) == equalTrees(t, m));                                                                                                                                          // ③ 대칭 판정 두 방법
+    }
+    for (int n = 1; n <= 9; ++n) { std::vector<BT> all; shapes(n, all); long sym = 0; for (auto& t : all) { BT m = t; m.mirrorEach(); bool s1 = isSymmetric(t), s2 = equalTrees(t, m); assert(s1 == s2); sym += s1; }
+        long catalan[] = {1, 1, 2, 5, 14, 42}; long expect = n % 2 == 1 ? catalan[(n - 1) / 2] : 0; assert(sym == expect); }                                                                                            // 대칭 모양 수
+    { BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < 1000000; ++i) { int c = t.add(i); t.L[cur] = c; cur = c; } t.mirrorBfs(); assert(t.R[t.root] >= 0 && t.L[t.root] < 0 && !isSymmetric(t)); t.mirrorEach(); assert(t.L[t.root] >= 0 && t.R[t.root] < 0);
+      std::cout << "MirrorTree: mirroring by pool sweep and by BFS gave identical trees; in-order reversed, pre-order became right-first, widths/height were invariant, double mirroring was the identity; symmetric shape counts matched Catalan numbers for n <= 9; a depth-10^6 chain was mirrored iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n)
+// Space Complexity: 풀을 훑으면 O(1) 추가, BFS 는 O(너비)
 ```
 ## MergeTree()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-TreeNode* mergeTrees(TreeNode* t1, TreeNode* t2) {
-    if (!t1) return t2;
-    if (!t2) return t1;
-    t1->val += t2->val;
-    t1->left = mergeTrees(t1->left, t2->left);
-    t1->right = mergeTrees(t1->right, t2->right);
-    return t1;
+// 두 이진 트리를 *같은 위치끼리* 합치기 (값은 더한다): 한쪽에만 있는 부분 트리는 그대로 가져온다. 오라클은 "위치 → 값" 맵이다 — 루트에서의 경로 문자열("", "L", "LR", …)을 키로 하여 합친 트리의 맵은 두 맵의 합집합이고 겹치는 위치는 값의 합.
+//  ① 반복문으로 구현한 *파괴적*(첫 트리를 재사용) 합치기와 *함수형*(새 트리) 합치기가 모두 오라클과 같다.  ② 교환·결합 법칙(값과 모양), 빈 트리가 항등원, 노드 수 = 두 위치 집합의 합집합 크기.
+//  ③ 자기 자신과 합치면 모든 값이 두 배.  ④ 깊이 10^6 사슬 둘을 합쳐도 스택이 터지지 않는다.
+struct Node { int val; Node *l = nullptr, *r = nullptr; explicit Node(int v) : val(v) {} };
+struct Pool { std::vector<std::unique_ptr<Node>> nodes; Node* make(int v) { nodes.emplace_back(new Node(v)); return nodes.back().get(); } };
+Node* mergeInPlace(Node* a, Node* b) {                                                                          // a 를 재사용하고 b 에만 있는 부분 트리는 그대로 붙인다
+    if (!a) return b; if (!b) return a; std::vector<std::pair<Node*, Node*>> st = {{a, b}};
+    while (!st.empty()) { auto p = st.back(); st.pop_back(); p.first->val += p.second->val; if (p.first->l && p.second->l) st.push_back({p.first->l, p.second->l}); else if (!p.first->l) p.first->l = p.second->l; if (p.first->r && p.second->r) st.push_back({p.first->r, p.second->r}); else if (!p.first->r) p.first->r = p.second->r; }
+    return a;
 }
+Node* mergeFunctional(const Node* a, const Node* b, Pool& out) {                                               // 새 노드로 복사하며 합친다
+    if (!a && !b) return nullptr; struct Job { const Node* a; const Node* b; Node* dst; }; Node* root = out.make((a ? a->val : 0) + (b ? b->val : 0)); std::vector<Job> st = {{a, b, root}};
+    while (!st.empty()) { Job j = st.back(); st.pop_back(); const Node* al = j.a ? j.a->l : nullptr; const Node* bl = j.b ? j.b->l : nullptr; const Node* ar = j.a ? j.a->r : nullptr; const Node* br = j.b ? j.b->r : nullptr;
+        if (al || bl) { j.dst->l = out.make((al ? al->val : 0) + (bl ? bl->val : 0)); st.push_back({al, bl, j.dst->l}); } if (ar || br) { j.dst->r = out.make((ar ? ar->val : 0) + (br ? br->val : 0)); st.push_back({ar, br, j.dst->r}); } }
+    return root;
+}
+std::map<std::string, int> toMap(const Node* root) { std::map<std::string, int> m; std::vector<std::pair<const Node*, std::string>> st; if (root) st.push_back({root, ""}); while (!st.empty()) { auto p = st.back(); st.pop_back(); m[p.second] = p.first->val; if (p.first->l) st.push_back({p.first->l, p.second + "L"}); if (p.first->r) st.push_back({p.first->r, p.second + "R"}); } return m; }
+std::map<std::string, int> mergeMaps(const std::map<std::string, int>& a, const std::map<std::string, int>& b) { std::map<std::string, int> r = a; for (auto& kv : b) r[kv.first] += kv.second; return r; }
+Node* randomTree(int n, Pool& pool, std::mt19937& rng) { if (n == 0) return nullptr; Node* root = pool.make((int)(rng() % 10)); std::vector<Node**> slots = {&root->l, &root->r}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); Node** s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); *s = pool.make((int)(rng() % 10)); slots.push_back(&(*s)->l); slots.push_back(&(*s)->r); } return root; }
+Node* cloneTree(const Node* root, Pool& pool) { if (!root) return nullptr; Node* nr = pool.make(root->val); std::vector<std::pair<const Node*, Node*>> st = {{root, nr}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); if (p.first->l) { p.second->l = pool.make(p.first->l->val); st.push_back({p.first->l, p.second->l}); } if (p.first->r) { p.second->r = pool.make(p.first->r->val); st.push_back({p.first->r, p.second->r}); } } return nr; }
 
 int main() {
-    TreeNode* t1 = new TreeNode(1, new TreeNode(2));
-    TreeNode* t2 = new TreeNode(2, nullptr, new TreeNode(3));
-    TreeNode* merged = mergeTrees(t1, t2);
-    std::cout << "Trees merged." << std::endl;
-    assert(merged->val == 3 && merged->left->val == 2 && merged->right->val == 3);
-    // Cleanup skipped
+    std::mt19937 rng(12);
+    for (int it = 0; it < 4000; ++it) {
+        Pool pa, pb, pc, out1, out2, out3, copyA, copyB; int na = (int)(rng() % 25), nb = (int)(rng() % 25), nc = (int)(rng() % 25); Node* a = randomTree(na, pa, rng); Node* b = randomTree(nb, pb, rng); Node* c = randomTree(nc, pc, rng);
+        std::map<std::string, int> ma = toMap(a), mb = toMap(b), mc = toMap(c), want = mergeMaps(ma, mb);
+        Node* f = mergeFunctional(a, b, out1); assert(toMap(f) == want && toMap(a) == ma && toMap(b) == mb);                                                              // ① 함수형: 입력은 그대로
+        Node* ca = cloneTree(a, copyA); Node* cb = cloneTree(b, copyB); Node* m = mergeInPlace(ca, cb); assert(toMap(m) == want);                                          // 파괴적
+        assert(toMap(mergeFunctional(b, a, out2)) == want);                                                                                                                // ② 교환
+        std::map<std::string, int> left = toMap(mergeFunctional(mergeFunctional(a, b, out2), c, out3)), right = mergeMaps(mergeMaps(ma, mb), mc); assert(left == right);   // 결합 (두 번 합친 결과의 맵)
+        assert(toMap(mergeFunctional(a, nullptr, out3)) == ma && toMap(mergeFunctional(nullptr, a, out3)) == ma);                                                          // 빈 트리가 항등원
+        std::map<std::string, int> keys; for (auto& kv : ma) keys[kv.first]; for (auto& kv : mb) keys[kv.first]; assert(want.size() == keys.size());                      // 노드 수 = 위치 집합의 합집합
+        std::map<std::string, int> twice = toMap(mergeFunctional(a, a, out3)); for (auto& kv : ma) assert(twice[kv.first] == 2 * kv.second);                                // ③ 자기 자신과: 두 배
+    }
+    { const int n = 1000000; Pool p1, p2, out; Node* a = p1.make(1); Node* cur = a; for (int i = 1; i < n; ++i) { cur->l = p1.make(1); cur = cur->l; } Node* b = p2.make(2); cur = b; for (int i = 1; i < n / 2; ++i) { cur->r = p2.make(2); cur = cur->r; }
+      Node* m = mergeFunctional(a, b, out); size_t cnt = 0; long sum = 0; { std::vector<const Node*> st = {m}; while (!st.empty()) { const Node* u = st.back(); st.pop_back(); ++cnt; sum += u->val; if (u->l) st.push_back(u->l); if (u->r) st.push_back(u->r); } } assert(cnt == (size_t)n + n / 2 - 1 && sum == (long)n * 1 + (long)(n / 2) * 2);
+      std::cout << "MergeTree: in-place and functional merges matched a position->value map oracle on 4000 random tree triples (commutative, associative, empty identity, self-merge doubles); two depth-10^6 chains were merged iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(min(N, M))
-// Space Complexity: O(min(H1, H2)) call stack
+// Time Complexity: O(min(n, m)) (겹치는 위치만 순회, 파괴적) / 함수형은 O(n + m)
+// Space Complexity: O(h) 명시적 스택
 ```
 
 # Part 3. 순회
 ## Preorder()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-std::vector<int> res;
-
-void preorder(TreeNode* node) {
-    if (!node) return;
-    res.push_back(node->val);      // V
-    preorder(node->left);          // L
-    preorder(node->right);         // R
-}
+// 전위 순회(preorder): 루트 → 왼쪽 → 오른쪽.  ① 재귀 구현(작은 트리)과 ② 명시적 스택 구현(깊이 제한 없음)을 *독립 오라클*과 대조한다 — 오라클은 순회 코드를 쓰지 않고 각 노드의 루트 경로 문자열("", "L", "LR", …)을 전위 규칙의 비교자로 정렬한 것이다:
+//  경로 a 가 b 의 접두사면(조상) a 가 먼저, 아니면 처음 갈라지는 곳에서 'L' 이 'R' 보다 먼저.   ③ 성질: 전위 순회열의 첫 원소는 루트, 각 부분 트리는 *연속 구간*, 부분 트리의 크기로 건너뛸 수 있음.   ④ 깊이 10^6 사슬(재귀는 스택 오버플로, 반복문은 안전).
+struct BT { std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; std::vector<int> vals(n); std::iota(vals.begin(), vals.end(), 0); std::shuffle(vals.begin(), vals.end(), rng); t.root = t.add(vals[0]); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}};
+    for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(vals[i]); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+void preRec(const BT& t, int u, std::vector<int>& out) { if (u < 0) return; out.push_back(t.val[u]); preRec(t, t.L[u], out); preRec(t, t.R[u], out); }
+std::vector<int> preIter(const BT& t) { std::vector<int> out, st; if (t.root >= 0) st.push_back(t.root); while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(t.val[u]); if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } return out; }       // 오른쪽을 먼저 넣어 왼쪽이 먼저 나온다
+std::vector<std::pair<std::string, int>> paths(const BT& t) { std::vector<std::pair<std::string, int>> out; std::vector<std::pair<int, std::string>> st = {{t.root, ""}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); out.push_back({p.second, t.val[p.first]}); if (t.L[p.first] >= 0) st.push_back({t.L[p.first], p.second + "L"}); if (t.R[p.first] >= 0) st.push_back({t.R[p.first], p.second + "R"}); } return out; }
+bool preLess(const std::string& a, const std::string& b) { size_t i = 0; while (i < a.size() && i < b.size() && a[i] == b[i]) ++i; if (i == a.size()) return i != b.size(); if (i == b.size()) return false; return a[i] == 'L' && b[i] == 'R'; }
+std::vector<int> preOracle(const BT& t) { auto p = paths(t); std::sort(p.begin(), p.end(), [](auto& x, auto& y) { return preLess(x.first, y.first); }); std::vector<int> out; for (auto& e : p) out.push_back(e.second); return out; }
+int subtreeSize(const BT& t, int u) { int c = 0; std::vector<int> st = {u}; while (!st.empty()) { int x = st.back(); st.pop_back(); ++c; if (t.L[x] >= 0) st.push_back(t.L[x]); if (t.R[x] >= 0) st.push_back(t.R[x]); } return c; }
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2), new TreeNode(3));
-    preorder(root);
-    assert(res[0] == 1 && res[1] == 2 && res[2] == 3);
-    std::cout << "Preorder verified." << std::endl;
+    std::mt19937 rng(3);
+    for (int it = 0; it < 5000; ++it) { BT t = randomBT(1 + (int)(rng() % 80), rng); std::vector<int> rec; preRec(t, t.root, rec); std::vector<int> it1 = preIter(t); assert(rec == it1 && it1 == preOracle(t) && it1.front() == t.val[t.root]); }
+    for (int it = 0; it < 500; ++it) {                                                                          // ③ 부분 트리 = 연속 구간: 위치 i 의 노드(전위 순서) 아래 부분 트리는 [i, i + 크기)
+        BT t = randomBT(1 + (int)(rng() % 60), rng); std::vector<int> order; { std::vector<int> st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); order.push_back(u); if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } }
+        for (size_t i = 0; i < order.size(); ++i) { int sz = subtreeSize(t, order[i]); std::vector<int> sub = preIter(BT{t.val, t.L, t.R, order[i]}); assert(sub == std::vector<int>([&] { std::vector<int> v; for (int k = 0; k < sz; ++k) v.push_back(t.val[order[i + k]]); return v; }())); }
+    }
+    { const int n = 1000000; BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i); if (i % 2) t.L[cur] = c; else t.R[cur] = c; cur = c; } std::vector<int> p = preIter(t); assert((int)p.size() == n && p[0] == 0 && p[n - 1] == n - 1);
+      std::cout << "Preorder: recursive and stack-based traversals matched the path-comparator oracle on 5000 random trees; every subtree was a contiguous range; a depth-10^6 zig-zag was traversed iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n)
+// Space Complexity: O(h) (명시적 스택)
 ```
 ## Inorder()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-std::vector<int> res;
-
-void inorder(TreeNode* node) {
-    if (!node) return;
-    inorder(node->left);           // L
-    res.push_back(node->val);      // V
-    inorder(node->right);          // R
+// 중위 순회(inorder): 왼쪽 → 루트 → 오른쪽.  ① 재귀 ② 스택 반복 ③ 오라클: 경로 비교자 — 경로 a 가 b 의 접두사면 b 의 다음 글자가 'R' 일 때만 a 가 먼저(b 가 a 의 오른쪽 후손), 아니면 처음 갈라지는 곳에서 'L' 이 먼저.
+//  ④ 이진 탐색 트리의 중위 순회는 정렬된 열: 무작위 BST 를 만들어 확인.  ⑤ 중위 순회열의 이웃은 *후계자* 관계 — 각 노드의 다음 원소는 (오른쪽 부분 트리의 가장 왼쪽 노드) 또는 (오른쪽 자식이 없으면, 왼쪽에서 올라온 첫 조상) 이다. 부모 포인터 없이 스택으로 구하는 것과 대조.
+//  ⑥ 깊이 10^6 사슬을 반복문으로.
+struct BT { std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; std::vector<int> vals(n); std::iota(vals.begin(), vals.end(), 0); std::shuffle(vals.begin(), vals.end(), rng); t.root = t.add(vals[0]); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}};
+    for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(vals[i]); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+void inRec(const BT& t, int u, std::vector<int>& out) { if (u < 0) return; inRec(t, t.L[u], out); out.push_back(t.val[u]); inRec(t, t.R[u], out); }
+std::vector<int> inIter(const BT& t) { std::vector<int> out, st; int u = t.root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = t.L[u]; } u = st.back(); st.pop_back(); out.push_back(t.val[u]); u = t.R[u]; } return out; }
+std::vector<std::pair<std::string, int>> paths(const BT& t) { std::vector<std::pair<std::string, int>> out; std::vector<std::pair<int, std::string>> st = {{t.root, ""}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); out.push_back({p.second, t.val[p.first]}); if (t.L[p.first] >= 0) st.push_back({t.L[p.first], p.second + "L"}); if (t.R[p.first] >= 0) st.push_back({t.R[p.first], p.second + "R"}); } return out; }
+bool inLess(const std::string& a, const std::string& b) { size_t i = 0; while (i < a.size() && i < b.size() && a[i] == b[i]) ++i; if (i == a.size() && i == b.size()) return false; if (i == a.size()) return b[i] == 'R'; if (i == b.size()) return a[i] == 'L'; return a[i] == 'L' && b[i] == 'R'; }
+std::vector<int> inOracle(const BT& t) { auto p = paths(t); std::sort(p.begin(), p.end(), [](auto& x, auto& y) { return inLess(x.first, y.first); }); std::vector<int> out; for (auto& e : p) out.push_back(e.second); return out; }
+std::vector<int> successorsByStack(const BT& t) {                                                              // 각 노드(값 0..n−1)의 중위 다음 값 (없으면 −1), 부모 포인터 없이
+    std::vector<int> next(t.val.size(), -1), st; int prevVal = -1; int u = t.root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = t.L[u]; } u = st.back(); st.pop_back(); if (prevVal >= 0) next[prevVal] = t.val[u]; prevVal = t.val[u]; u = t.R[u]; } return next;
+}
+int successorDirect(const BT& t, int target) {                                                                 // 루트에서 내려가며 값이 target 인 노드의 후계자 (BST 가 아니므로 먼저 경로를 찾는다)
+    std::vector<int> parent(t.val.size(), -1), dir(t.val.size(), 0); int target_node = -1; std::vector<int> q = {t.root}; for (size_t i = 0; i < q.size(); ++i) { int u = q[i]; if (t.val[u] == target) target_node = u; if (t.L[u] >= 0) { parent[t.L[u]] = u; dir[t.L[u]] = 0; q.push_back(t.L[u]); } if (t.R[u] >= 0) { parent[t.R[u]] = u; dir[t.R[u]] = 1; q.push_back(t.R[u]); } }
+    if (t.R[target_node] >= 0) { int u = t.R[target_node]; while (t.L[u] >= 0) u = t.L[u]; return t.val[u]; }
+    int u = target_node; while (parent[u] >= 0 && dir[u] == 1) u = parent[u]; return parent[u] < 0 ? -1 : t.val[parent[u]];                                      // 오른쪽 자식이 없으면: 처음으로 "왼쪽에서 올라온" 조상
 }
 
 int main() {
-    TreeNode* root = new TreeNode(2, new TreeNode(1), new TreeNode(3));
-    inorder(root);
-    assert(res[0] == 1 && res[1] == 2 && res[2] == 3);
-    std::cout << "Inorder verified." << std::endl;
+    std::mt19937 rng(13);
+    for (int it = 0; it < 5000; ++it) { BT t = randomBT(1 + (int)(rng() % 80), rng); std::vector<int> rec; inRec(t, t.root, rec); std::vector<int> v = inIter(t); assert(rec == v && v == inOracle(t)); }
+    for (int it = 0; it < 2000; ++it) {                                                                          // ⑤ 후계자
+        BT t = randomBT(1 + (int)(rng() % 60), rng); std::vector<int> nx = successorsByStack(t); for (int v = 0; v < (int)t.val.size(); ++v) assert(nx[v] == successorDirect(t, v));
+    }
+    for (int it = 0; it < 500; ++it) {                                                                           // ④ 무작위 BST 의 중위 = 정렬
+        int n = 1 + (int)(rng() % 100); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); BT t; t.root = t.add(keys[0]);
+        for (int i = 1; i < n; ++i) { int c = t.add(keys[i]); int u = t.root; while (true) { int& nextChild = keys[i] < t.val[u] ? t.L[u] : t.R[u]; if (nextChild < 0) { nextChild = c; break; } u = nextChild; } }
+        std::vector<int> v = inIter(t); assert(std::is_sorted(v.begin(), v.end()) && (int)v.size() == n);
+    }
+    { const int n = 1000000; BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i); t.R[cur] = c; cur = c; } std::vector<int> v = inIter(t); assert((int)v.size() == n && v[0] == 0 && v[n - 1] == n - 1);          // 오른쪽 사슬: 중위 = 삽입 순서
+      BT l; l.root = l.add(0); cur = l.root; for (int i = 1; i < n; ++i) { int c = l.add(i); l.L[cur] = c; cur = c; } std::vector<int> w = inIter(l); assert((int)w.size() == n && w[0] == n - 1 && w[n - 1] == 0);                           // 왼쪽 사슬: 거꾸로 (스택이 n 까지 깊어진다)
+      std::cout << "Inorder: recursive and stack-based traversals matched the path-comparator oracle on 5000 random trees; successors from the stack agreed with the direct rule; BST in-order was sorted; 10^6-deep chains were traversed iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n)
+// Space Complexity: O(h) (스택) — 왼쪽 사슬이면 O(n); Morris 순회는 O(1)
 ```
 ## Postorder()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-std::vector<int> res;
-
-void postorder(TreeNode* node) {
-    if (!node) return;
-    postorder(node->left);         // L
-    postorder(node->right);        // R
-    res.push_back(node->val);      // V
+// 후위 순회(postorder): 왼쪽 → 오른쪽 → 루트.  자식을 먼저 처리해야 하는 일(부분 트리 크기·높이 계산, 트리 해제, 수식 트리 평가)에 쓴다.
+//  구현 세 가지 — ① 재귀 ② "(루트, 오른쪽, 왼쪽) 전위의 역순" 한 스택 ③ 정석적인 한 스택(마지막으로 방문한 노드를 기억) — 를 경로 비교자 오라클(자손이 조상보다 먼저, 갈라지면 'L' 먼저)과 대조.
+//  응용: 수식 트리 평가(후위 순회 = 후위 표기법) — 무작위 수식을 트리로 만들어 재귀 평가 값과 후위 스택 평가 값이 같다.  깊이 10^6 사슬 반복.
+struct BT { std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; std::vector<int> vals(n); std::iota(vals.begin(), vals.end(), 0); std::shuffle(vals.begin(), vals.end(), rng); t.root = t.add(vals[0]); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}};
+    for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(vals[i]); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+void postRec(const BT& t, int u, std::vector<int>& out) { if (u < 0) return; postRec(t, t.L[u], out); postRec(t, t.R[u], out); out.push_back(t.val[u]); }
+std::vector<int> postTwoStacks(const BT& t) { std::vector<int> out, st; if (t.root >= 0) st.push_back(t.root); while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(t.val[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); if (t.R[u] >= 0) st.push_back(t.R[u]); } std::reverse(out.begin(), out.end()); return out; }
+std::vector<int> postOneStack(const BT& t) {                                                                    // 정석: 오른쪽 자식에서 돌아왔을 때만 루트를 방문
+    std::vector<int> out, st; int u = t.root, last = -1;
+    while (u >= 0 || !st.empty()) { if (u >= 0) { st.push_back(u); u = t.L[u]; } else { int top = st.back(); if (t.R[top] >= 0 && last != t.R[top]) u = t.R[top]; else { out.push_back(t.val[top]); last = top; st.pop_back(); } } }
+    return out;
+}
+std::vector<std::pair<std::string, int>> paths(const BT& t) { std::vector<std::pair<std::string, int>> out; std::vector<std::pair<int, std::string>> st = {{t.root, ""}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); out.push_back({p.second, t.val[p.first]}); if (t.L[p.first] >= 0) st.push_back({t.L[p.first], p.second + "L"}); if (t.R[p.first] >= 0) st.push_back({t.R[p.first], p.second + "R"}); } return out; }
+bool postLess(const std::string& a, const std::string& b) { size_t i = 0; while (i < a.size() && i < b.size() && a[i] == b[i]) ++i; if (i == a.size() && i == b.size()) return false; if (i == a.size()) return false; if (i == b.size()) return true; return a[i] == 'L' && b[i] == 'R'; }      // 접두사(조상)는 *나중*
+std::vector<int> postOracle(const BT& t) { auto p = paths(t); std::sort(p.begin(), p.end(), [](auto& x, auto& y) { return postLess(x.first, y.first); }); std::vector<int> out; for (auto& e : p) out.push_back(e.second); return out; }
+// 수식 트리: 리프 = 숫자, 내부 = + − ×.  값은 mod 1e9+7 로 정수 계산
+struct ExprNode { char op; long long num; int l, r; };
+long long evalRec(const std::vector<ExprNode>& e, int u) { if (e[u].op == 0) return e[u].num; long long a = evalRec(e, e[u].l), b = evalRec(e, e[u].r); const long long M = 1000000007LL; return e[u].op == '+' ? (a + b) % M : e[u].op == '-' ? ((a - b) % M + M) % M : a * b % M; }
+long long evalPostfix(const std::vector<ExprNode>& e, int root) {                                               // 후위 순회로 만든 토큰열을 스택으로 평가
+    std::vector<int> order; { std::vector<int> st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); order.push_back(u); if (e[u].op) { st.push_back(e[u].l); st.push_back(e[u].r); } } std::reverse(order.begin(), order.end()); }
+    std::vector<long long> vs; const long long M = 1000000007LL; for (int u : order) { if (e[u].op == 0) vs.push_back(e[u].num); else { long long b = vs.back(); vs.pop_back(); long long a = vs.back(); vs.pop_back(); vs.push_back(e[u].op == '+' ? (a + b) % M : e[u].op == '-' ? ((a - b) % M + M) % M : a * b % M); } } return vs.back();
 }
 
 int main() {
-    TreeNode* root = new TreeNode(3, new TreeNode(1), new TreeNode(2));
-    postorder(root);
-    assert(res[0] == 1 && res[1] == 2 && res[2] == 3);
-    std::cout << "Postorder verified." << std::endl;
+    std::mt19937 rng(31);
+    for (int it = 0; it < 5000; ++it) { BT t = randomBT(1 + (int)(rng() % 80), rng); std::vector<int> rec; postRec(t, t.root, rec); std::vector<int> a = postTwoStacks(t), b = postOneStack(t); assert(rec == a && a == b && b == postOracle(t) && a.back() == t.val[t.root]); }
+    for (int it = 0; it < 3000; ++it) {                                                                          // 수식 트리
+        int leaves = 1 + (int)(rng() % 20); std::vector<ExprNode> e; std::vector<int> pool; for (int i = 0; i < leaves; ++i) { e.push_back({0, (long long)(rng() % 1000), -1, -1}); pool.push_back((int)e.size() - 1); }
+        while (pool.size() > 1) { size_t i = rng() % pool.size(); int a = pool[i]; pool[i] = pool.back(); pool.pop_back(); size_t j = rng() % pool.size(); int b = pool[j]; pool[j] = pool.back(); pool.pop_back(); e.push_back({"+-*"[rng() % 3], 0, a, b}); pool.push_back((int)e.size() - 1); }
+        assert(evalRec(e, pool[0]) == evalPostfix(e, pool[0]));
+    }
+    { const int n = 1000000; BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i); t.L[cur] = c; cur = c; } std::vector<int> a = postTwoStacks(t), b = postOneStack(t); assert(a == b && a[0] == n - 1 && a[n - 1] == 0);
+      std::cout << "Postorder: recursive, reversed (root,right,left) and canonical one-stack traversals matched the path-comparator oracle on 5000 random trees; postfix evaluation of 3000 random expression trees equalled recursive evaluation; a 10^6-deep chain was handled iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n)
+// Space Complexity: O(h)
 ```
 ## LevelOrder()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <queue>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-std::vector<int> levelOrder(TreeNode* root) {
-    std::vector<int> res;
-    if (!root) return res;
-    std::queue<TreeNode*> q;
-    q.push(root);
-    while (!q.empty()) {
-        TreeNode* curr = q.front(); q.pop();
-        res.push_back(curr->val);
-        if (curr->left) q.push(curr->left);
-        if (curr->right) q.push(curr->right);
-    }
-    return res;
-}
+// 레벨 순서 순회(BFS): 깊이 0, 1, 2, … 순으로 같은 깊이는 왼쪽 → 오른쪽.  큐 하나로 O(n).  층별로 묶어야 하면 큐의 현재 크기만큼 끊어 처리한다.
+//  오라클: 경로 문자열의 비교자 (길이가 짧은 것 먼저, 같으면 'L' < 'R' 사전순).   검증: ① 큐 구현 ② 층별 묶음 ③ 깊이 우선(DFS)으로 깊이별 수집 후 이어 붙이기 — 모두 오라클과 같다.
+//  ④ 지그재그(층마다 방향 번갈아)와 오른쪽 옆면(각 층의 마지막 노드)  ⑤ 힙 배열은 레벨 순서 그 자체: 완전 이진 트리를 배열로 저장했을 때 BFS 결과 = 배열.   ⑥ 큐의 최대 길이 ≤ 인접한 두 층의 너비 합 ≤ 2·(가장 넓은 층), 완전 이진 트리(2^20 − 1 개)에서는 정확히 2^19.
+struct BT { std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; std::vector<int> vals(n); std::iota(vals.begin(), vals.end(), 0); std::shuffle(vals.begin(), vals.end(), rng); t.root = t.add(vals[0]); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}};
+    for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(vals[i]); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+std::vector<int> levelQueue(const BT& t, size_t* maxQueue = nullptr) { std::vector<int> out; std::queue<int> q; if (t.root >= 0) q.push(t.root); size_t mq = 0; while (!q.empty()) { mq = std::max(mq, q.size()); int u = q.front(); q.pop(); out.push_back(t.val[u]); if (t.L[u] >= 0) q.push(t.L[u]); if (t.R[u] >= 0) q.push(t.R[u]); } if (maxQueue) *maxQueue = mq; return out; }
+std::vector<std::vector<int>> levelGroups(const BT& t) { std::vector<std::vector<int>> out; std::queue<int> q; if (t.root >= 0) q.push(t.root); while (!q.empty()) { size_t sz = q.size(); out.emplace_back(); for (size_t i = 0; i < sz; ++i) { int u = q.front(); q.pop(); out.back().push_back(t.val[u]); if (t.L[u] >= 0) q.push(t.L[u]); if (t.R[u] >= 0) q.push(t.R[u]); } } return out; }
+std::vector<int> levelByDfs(const BT& t) { std::vector<std::vector<int>> by; std::vector<std::pair<int, int>> st = {{t.root, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); if ((int)by.size() <= p.second) by.emplace_back(); by[p.second].push_back(t.val[p.first]); if (t.R[p.first] >= 0) st.push_back({t.R[p.first], p.second + 1}); if (t.L[p.first] >= 0) st.push_back({t.L[p.first], p.second + 1}); } std::vector<int> out; for (auto& l : by) out.insert(out.end(), l.begin(), l.end()); return out; }
+std::vector<int> levelOracle(const BT& t) { std::vector<std::pair<std::string, int>> p; std::vector<std::pair<int, std::string>> st = {{t.root, ""}}; while (!st.empty()) { auto e = st.back(); st.pop_back(); p.push_back({e.second, t.val[e.first]}); if (t.L[e.first] >= 0) st.push_back({t.L[e.first], e.second + "L"}); if (t.R[e.first] >= 0) st.push_back({t.R[e.first], e.second + "R"}); }
+    std::sort(p.begin(), p.end(), [](auto& x, auto& y) { return x.first.size() != y.first.size() ? x.first.size() < y.first.size() : x.first < y.first; }); std::vector<int> out; for (auto& e : p) out.push_back(e.second); return out; }       // 'L' < 'R' 이므로 문자열 사전순이 왼쪽→오른쪽
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2), new TreeNode(3));
-    std::vector<int> res = levelOrder(root);
-    assert(res[0] == 1 && res[1] == 2 && res[2] == 3);
-    std::cout << "LevelOrder verified." << std::endl;
+    std::mt19937 rng(37);
+    for (int it = 0; it < 5000; ++it) {
+        BT t = randomBT(1 + (int)(rng() % 100), rng); size_t mq; std::vector<int> a = levelQueue(t, &mq), c = levelByDfs(t), o = levelOracle(t); auto g = levelGroups(t); assert(a == o && c == o);
+        std::vector<int> flat; size_t widest = 0; for (auto& l : g) { flat.insert(flat.end(), l.begin(), l.end()); widest = std::max(widest, l.size()); } assert(flat == o && mq <= 2 * widest && widest <= t.val.size() / 2 + 1);                       // ② ⑥
+        std::vector<int> zig; for (size_t d = 0; d < g.size(); ++d) { auto l = g[d]; if (d % 2) std::reverse(l.begin(), l.end()); zig.insert(zig.end(), l.begin(), l.end()); } std::vector<int> right; for (auto& l : g) right.push_back(l.back());      // ④
+        assert(zig.size() == o.size() && right.size() == g.size() && right[0] == t.val[t.root]); for (size_t d = 0; d < g.size(); ++d) assert(right[d] == g[d].back());
+    }
+    for (int n = 1; n <= 500; ++n) { BT t; std::vector<int> id(n); for (int i = 0; i < n; ++i) id[i] = t.add(i); t.root = id[0]; for (int i = 0; i < n; ++i) { if (2 * i + 1 < n) t.L[id[i]] = id[2 * i + 1]; if (2 * i + 2 < n) t.R[id[i]] = id[2 * i + 2]; } std::vector<int> v = levelQueue(t); std::vector<int> want(n); std::iota(want.begin(), want.end(), 0); assert(v == want); }          // ⑤ 힙 배열
+    { const int n = (1 << 20) - 1; BT t; std::vector<int> id(n); for (int i = 0; i < n; ++i) id[i] = t.add(i); t.root = id[0]; for (int i = 0; i < n; ++i) { if (2 * i + 1 < n) t.L[id[i]] = id[2 * i + 1]; if (2 * i + 2 < n) t.R[id[i]] = id[2 * i + 2]; } size_t mq; std::vector<int> v = levelQueue(t, &mq); assert((int)v.size() == n && mq == (1u << 19));
+      std::cout << "LevelOrder: queue, layered and DFS-by-depth traversals matched the path oracle on 5000 random trees; zig-zag / right-side views checked; a heap array's BFS equalled the array; a 2^20-node complete tree peaked at queue length " << mq << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(N)
+// Time Complexity: O(n)
+// Space Complexity: O(가장 넓은 층) (완전 이진 트리에서는 약 n/2)
 ```
 ## MorrisTraversal()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-std::vector<int> morrisInorder(TreeNode* root) {
-    std::vector<int> res;
-    TreeNode* curr = root;
-    while (curr) {
-        if (!curr->left) {
-            res.push_back(curr->val);
-            curr = curr->right;
-        } else {
-            TreeNode* pre = curr->left;
-            while (pre->right && pre->right != curr) pre = pre->right;
-            if (!pre->right) {
-                pre->right = curr;
-                curr = curr->left;
-            } else {
-                pre->right = nullptr;
-                res.push_back(curr->val);
-                curr = curr->right;
-            }
-        }
-    }
-    return res;
+// 모리스 순회: 스택·재귀 없이 O(1) 추가 공간으로 중위/전위 순회. 아이디어 — 왼쪽 부분 트리의 가장 오른쪽 노드(중위 선행자)의 빈 오른쪽 포인터를 *임시 스레드*로 현재 노드에 연결해 두었다가 돌아왔을 때(=이미 연결됨) 끊는다.
+//  검증: ① 중위·전위 모두 스택 구현과 같은 열, ② 순회가 끝나면 L/R 배열이 *정확히 원래대로* 복원, ③ 포인터 이동 수 ≤ 3n (각 간선을 최대 3 번), ④ 각 노드의 스레드는 동시에 많아야 깊이만큼만 존재,
+//  ⑤ 중간에 멈춘 순회(예: 처음 k 개만 읽기)는 복원을 못 하므로 끝까지 가야 안전 — 이를 위한 복구 함수 대조.  ⑥ 깊이 10^6 사슬에서 스택 없이.
+struct BT { std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; std::vector<int> vals(n); std::iota(vals.begin(), vals.end(), 0); std::shuffle(vals.begin(), vals.end(), rng); t.root = t.add(vals[0]); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}};
+    for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(vals[i]); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+std::vector<int> inStack(const BT& t) { std::vector<int> out, st; int u = t.root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = t.L[u]; } u = st.back(); st.pop_back(); out.push_back(t.val[u]); u = t.R[u]; } return out; }
+std::vector<int> preStack(const BT& t) { std::vector<int> out, st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(t.val[u]); if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } return out; }
+std::vector<int> morris(BT& t, bool preorder, long* moves = nullptr, int* maxThreads = nullptr) {
+    std::vector<int> out; int cur = t.root; long mv = 0; int threads = 0, mt = 0;
+    while (cur >= 0) {
+        if (t.L[cur] < 0) { out.push_back(t.val[cur]); cur = t.R[cur]; ++mv; }                                    // 왼쪽이 없으면 방문하고 오른쪽(또는 스레드)으로
+        else { int pre = t.L[cur]; while (t.R[pre] >= 0 && t.R[pre] != cur) { pre = t.R[pre]; ++mv; }              // 왼쪽 부분 트리의 가장 오른쪽 노드
+            if (t.R[pre] < 0) { t.R[pre] = cur; ++threads; mt = std::max(mt, threads); if (preorder) out.push_back(t.val[cur]); cur = t.L[cur]; ++mv; }      // 스레드 연결: 처음 도착 (전위는 여기서 방문)
+            else { t.R[pre] = -1; --threads; if (!preorder) out.push_back(t.val[cur]); cur = t.R[cur]; ++mv; } } }   // 스레드 제거: 왼쪽을 끝내고 돌아옴 (중위는 여기서 방문)
+    if (moves) *moves = mv; if (maxThreads) *maxThreads = mt; return out;
 }
 
 int main() {
-    TreeNode* root = new TreeNode(2);
-    root->left = new TreeNode(1); root->right = new TreeNode(3);
-    std::vector<int> res = morrisInorder(root);
-    assert(res[0] == 1 && res[1] == 2 && res[2] == 3);
-    std::cout << "Morris Inorder Traversal verified." << std::endl;
+    std::mt19937 rng(43);
+    for (int it = 0; it < 5000; ++it) {
+        BT t = randomBT(1 + (int)(rng() % 100), rng); BT orig = t; long mv; int mt;
+        std::vector<int> in = morris(t, false, &mv, &mt); assert(in == inStack(orig) && t.L == orig.L && t.R == orig.R && mv <= 3L * (long)t.val.size());                // ① ② ③
+        std::vector<int> pre = morris(t, true); assert(pre == preStack(orig) && t.L == orig.L && t.R == orig.R);
+        int depth = 0; { std::vector<std::pair<int, int>> st = {{orig.root, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); depth = std::max(depth, p.second); if (orig.L[p.first] >= 0) st.push_back({orig.L[p.first], p.second + 1}); if (orig.R[p.first] >= 0) st.push_back({orig.R[p.first], p.second + 1}); } } assert(mt <= depth + 1);          // ④ 동시에 존재하는 스레드 수
+    }
+    { BT t; t.root = t.add(1); t.L[t.root] = t.add(0); t.R[t.root] = t.add(2); BT orig = t; int cur = t.root, visited = 0;                // ⑤ 중간에 멈추면 스레드가 남는다: 왼쪽 자식 0 만 읽고 멈춘다
+      while (cur >= 0 && visited < 1) { if (t.L[cur] < 0) { ++visited; cur = t.R[cur]; } else { int pre = t.L[cur]; while (t.R[pre] >= 0 && t.R[pre] != cur) pre = t.R[pre]; if (t.R[pre] < 0) { t.R[pre] = cur; cur = t.L[cur]; } else { t.R[pre] = -1; ++visited; cur = t.R[cur]; } } }
+      assert(t.R != orig.R && t.R[t.L[t.root]] == t.root); }                                                      // 노드 0 의 오른쪽 포인터가 임시 스레드(루트)로 남아 구조가 달라졌다 — 끝까지 돌려야 복원된다
+    { const int n = 1000000; BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i); t.L[cur] = c; cur = c; } BT orig = t; long mv; int mt; std::vector<int> v = morris(t, false, &mv, &mt); assert((int)v.size() == n && v[0] == n - 1 && t.L == orig.L && t.R == orig.R && mt <= n);
+      std::cout << "MorrisTraversal: threaded in-order and pre-order traversals matched the stack versions on 5000 random trees, restored every pointer, and used at most 3n pointer moves; a depth-10^6 chain was traversed with no stack (" << mv << " moves)" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(1)
+// Time Complexity: O(n) (각 간선 최대 3 번)
+// Space Complexity: O(1) 추가 (임시 스레드는 트리 안의 빈 포인터를 재사용)
 ```
 ## EulerTour()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-std::vector<int> eulerTourResult;
-
-void eulerTour(TreeNode* u) {
-    if(!u) return;
-    eulerTourResult.push_back(u->val); // in
-    if(u->left) { eulerTour(u->left); eulerTourResult.push_back(u->val); } // back from left
-    if(u->right) { eulerTour(u->right); eulerTourResult.push_back(u->val); } // back from right
+// 오일러 투어: 트리를 따라 한 바퀴 돌며 노드에 들어갈 때와 *자식에서 돌아올 때마다* 노드를 기록한다 — 이진 트리에서 길이는 정확히 2n − 1 이다 (간선마다 두 번 지나므로 n + (n − 1)).
+//  ① 성질: 인접한 두 항목은 트리에서 이웃(깊이 차 ±1), 처음 등장 순서 = 전위, 마지막 등장 순서 = 후위, 노드 v 의 처음~마지막 등장 사이가 v 의 부분 트리(길이 = 2·크기 − 1)  ② 투어에서 트리를 되살리기(부모 배열)
+//  ③ 응용: LCA(u, v) = 처음 등장 위치 사이에서 *깊이가 최소*인 항목 — 구간 최솟값(RMQ, 희소 표) 로 O(1) 질의 vs 부모를 따라 올라가는 방법.   ④ 깊이 10^6 사슬 반복.
+struct BT { std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; t.root = t.add(0); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}};
+    for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(i); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }       // 값 = 노드 번호
+std::vector<int> eulerTour(const BT& t, std::vector<int>& depthOut) {                                           // 반복문: 프레임 상태 0 = 막 들어옴, 1 = 왼쪽 자식에서 돌아옴, 2 = 오른쪽 자식에서 돌아옴
+    std::vector<int> out; depthOut.clear(); struct Frame { int u, depth, state; }; std::vector<Frame> st = {{t.root, 0, 0}};
+    while (!st.empty()) { Frame& f = st.back(); int u = f.u, d = f.depth;
+        if (f.state == 0) { out.push_back(u); depthOut.push_back(d); f.state = 1; if (t.L[u] >= 0) st.push_back({t.L[u], d + 1, 0}); }
+        else if (f.state == 1) { if (t.L[u] >= 0) { out.push_back(u); depthOut.push_back(d); } f.state = 2; if (t.R[u] >= 0) st.push_back({t.R[u], d + 1, 0}); }
+        else { if (t.R[u] >= 0) { out.push_back(u); depthOut.push_back(d); } st.pop_back(); } }
+    return out;
 }
+std::vector<int> tourSimple(const BT& t, std::vector<int>& depthOut) {                                           // 재귀(작은 트리) — 정의 그대로
+    std::vector<int> out; depthOut.clear(); struct R { const BT& t; std::vector<int>& out; std::vector<int>& dep; void go(int u, int d) { out.push_back(u); dep.push_back(d); if (t.L[u] >= 0) { go(t.L[u], d + 1); out.push_back(u); dep.push_back(d); } if (t.R[u] >= 0) { go(t.R[u], d + 1); out.push_back(u); dep.push_back(d); } } } r{t, out, depthOut}; r.go(t.root, 0); return out;
+}
+struct Sparse { std::vector<std::vector<int>> tab; std::vector<int> dep; explicit Sparse(const std::vector<int>& d) : dep(d) { int n = (int)d.size(), K = 1; while ((1 << K) <= n) ++K; tab.assign(K, std::vector<int>(n)); std::iota(tab[0].begin(), tab[0].end(), 0); for (int k = 1; k < K; ++k) for (int i = 0; i + (1 << k) <= n; ++i) { int a = tab[k - 1][i], b = tab[k - 1][i + (1 << (k - 1))]; tab[k][i] = dep[a] <= dep[b] ? a : b; } }
+    int argmin(int l, int r) const { int k = 31 - __builtin_clz((unsigned)(r - l + 1)); int a = tab[k][l], b = tab[k][r - (1 << k) + 1]; return dep[a] <= dep[b] ? a : b; } };
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2));
-    eulerTour(root);
-    assert(eulerTourResult.size() == 3 && eulerTourResult[1] == 2);
-    std::cout << "Euler Tour verified." << std::endl;
+    std::mt19937 rng(47);
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 60); BT t = randomBT(n, rng); std::vector<int> d1, d2; std::vector<int> a = tourSimple(t, d1), b = eulerTour(t, d2); assert(a == b && d1 == d2 && (int)a.size() == 2 * n - 1);        // 길이 2n−1, 반복 구현 == 정의
+        for (size_t i = 0; i + 1 < a.size(); ++i) assert(std::abs(d1[i] - d1[i + 1]) == 1);                                                               // 이웃은 깊이가 ±1
+        std::vector<int> first(n, -1), last(n, -1); for (size_t i = 0; i < a.size(); ++i) { if (first[a[i]] < 0) first[a[i]] = (int)i; last[a[i]] = (int)i; }
+        std::vector<int> pre, post; { std::vector<std::pair<int, int>> byFirst, byLast; for (int v = 0; v < n; ++v) { byFirst.push_back({first[v], v}); byLast.push_back({last[v], v}); } std::sort(byFirst.begin(), byFirst.end()); std::sort(byLast.begin(), byLast.end()); for (auto& p : byFirst) pre.push_back(p.second); for (auto& p : byLast) post.push_back(p.second); }
+        std::vector<int> preRef, st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); preRef.push_back(u); if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } assert(pre == preRef);        // 처음 등장 순서 = 전위
+        std::vector<int> postRef; { std::vector<int> s2 = {t.root}; while (!s2.empty()) { int u = s2.back(); s2.pop_back(); postRef.push_back(u); if (t.L[u] >= 0) s2.push_back(t.L[u]); if (t.R[u] >= 0) s2.push_back(t.R[u]); } std::reverse(postRef.begin(), postRef.end()); } assert(post == postRef);        // 마지막 등장 순서 = 후위
+        std::vector<int> size(n, 1); for (int v : postRef) { if (t.L[v] >= 0) size[v] += size[t.L[v]]; if (t.R[v] >= 0) size[v] += size[t.R[v]]; } for (int v = 0; v < n; ++v) assert(last[v] - first[v] + 1 == 2 * size[v] - 1);
+        // ② 투어에서 부모 배열 복원: 아래로 내려가는 걸음(깊이 +1)에서 직전 항목이 부모
+        std::vector<int> parent(n, -2); parent[t.root] = -1; for (size_t i = 1; i < a.size(); ++i) if (d1[i] == d1[i - 1] + 1) parent[a[i]] = a[i - 1];
+        std::vector<int> truth(n, -1); for (int v = 0; v < n; ++v) { if (t.L[v] >= 0) truth[t.L[v]] = v; if (t.R[v] >= 0) truth[t.R[v]] = v; } assert(parent == truth);
+        // ③ LCA by RMQ
+        Sparse sp(d1); for (int q = 0; q < 50; ++q) { int u = (int)(rng() % n), v = (int)(rng() % n); int l = std::min(first[u], first[v]), r = std::max(first[u], first[v]); int viaRmq = a[sp.argmin(l, r)];
+            std::vector<char> anc(n, 0); for (int x = u; x >= 0; x = truth[x]) anc[x] = 1; int x = v; while (!anc[x]) x = truth[x]; assert(viaRmq == x); }
+    }
+    { const int n = 1000000; BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i); t.L[cur] = c; cur = c; } std::vector<int> d; std::vector<int> a = eulerTour(t, d); assert((int)a.size() == 2 * n - 1 && a[n - 1] == n - 1 && a.back() == 0 && d[n - 1] == n - 1);
+      std::cout << "EulerTour: iterative tour = definition on 3000 random trees (length 2n-1, neighbours differ by 1 in depth), first/last occurrences gave pre/post-order, the parent array was recovered from the tour, and RMQ-based LCA matched ancestor climbing; a depth-10^6 chain was toured iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(N)
+// Time Complexity: 투어 O(n), RMQ 전처리 O(n log n) 질의 O(1)
+// Space Complexity: O(n)
 ```
 
 # Part 4. 탐색
 ## TreeSearch()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-bool treeSearch(TreeNode* root, int target) {
-    if (!root) return false;
-    if (root->val == target) return true;
-    return treeSearch(root->left, target) || treeSearch(root->right, target);
-}
+// 정렬되지 않은 이진 트리에서 값 찾기: 모든 노드를 볼 수밖에 없으므로 O(n). 방문 순서에 따라 *어떤 일치를 먼저 만나는지*와 메모리가 다르다.
+//  ① 깊이 우선(재귀·반복) vs 너비 우선 vs 반복 심화(IDDFS): 존재 여부는 항상 선형 탐색 오라클과 같다.   ② 값이 중복될 때 BFS·IDDFS 는 *가장 얕은* 일치를 찾고(깊이 = 오라클의 최소 깊이), DFS 는 더 깊은 것을 찾을 수 있다.
+//  ③ 방문 횟수: 찾지 못하면 DFS·BFS 모두 정확히 n, 찾으면 ≤ n.  IDDFS 는 메모리 O(h) 로 BFS 의 가장 얕은 일치를 얻는 대신 방문 수가 늘어나 완전 이진 트리에서는 약 2n.   ④ 깊이 10^6 사슬을 반복 DFS 로.
+struct BT { std::vector<int> val, L, R, depth; int root = -1; int add(int v, int d) { val.push_back(v); L.push_back(-1); R.push_back(-1); depth.push_back(d); return (int)val.size() - 1; } };
+BT randomBT(int n, int valueRange, std::mt19937& rng) { BT t; t.root = t.add((int)(rng() % valueRange), 0); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add((int)(rng() % valueRange), t.depth[s.first] + 1); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+int dfsRec(const BT& t, int u, int target, long& visits) { if (u < 0) return -1; ++visits; if (t.val[u] == target) return u; int a = dfsRec(t, t.L[u], target, visits); return a >= 0 ? a : dfsRec(t, t.R[u], target, visits); }
+int dfsIter(const BT& t, int target, long& visits) { std::vector<int> st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); ++visits; if (t.val[u] == target) return u; if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } return -1; }
+int bfs(const BT& t, int target, long& visits) { std::queue<int> q; q.push(t.root); while (!q.empty()) { int u = q.front(); q.pop(); ++visits; if (t.val[u] == target) return u; if (t.L[u] >= 0) q.push(t.L[u]); if (t.R[u] >= 0) q.push(t.R[u]); } return -1; }
+int depthLimited(const BT& t, int u, int limit, int target, long& visits) { if (u < 0) return -1; ++visits; if (limit == 0) return t.val[u] == target ? u : -1; int a = depthLimited(t, t.L[u], limit - 1, target, visits); return a >= 0 ? a : depthLimited(t, t.R[u], limit - 1, target, visits); }   // limit 층에서만 검사
+int iddfs(const BT& t, int target, long& visits) { int maxDepth = *std::max_element(t.depth.begin(), t.depth.end()); for (int lim = 0; lim <= maxDepth; ++lim) { int r = depthLimited(t, t.root, lim, target, visits); if (r >= 0) return r; } return -1; }      // 층마다 다시 내려간다
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2), new TreeNode(3));
-    assert(treeSearch(root, 3) == true);
-    assert(treeSearch(root, 4) == false);
-    std::cout << "Tree Search verified." << std::endl;
+    std::mt19937 rng(2);
+    for (int it = 0; it < 5000; ++it) {
+        int n = 1 + (int)(rng() % 80), range = 1 + (int)(rng() % (2 * n)); BT t = randomBT(n, range, rng); int target = (int)(rng() % (range + 3)); long v1 = 0, v2 = 0, v3 = 0, v4 = 0;
+        int a = dfsRec(t, t.root, target, v1), b = dfsIter(t, target, v2), c = bfs(t, target, v3), d = iddfs(t, target, v4); bool exists = std::find(t.val.begin(), t.val.end(), target) != t.val.end();                          // ① 오라클: 배열 선형 탐색
+        assert((a >= 0) == exists && (b >= 0) == exists && (c >= 0) == exists && (d >= 0) == exists && a == b);
+        if (exists) { int minDepth = 1 << 30; for (int i = 0; i < n; ++i) if (t.val[i] == target) minDepth = std::min(minDepth, t.depth[i]); assert(t.depth[c] == minDepth && t.depth[d] == minDepth && t.depth[a] >= minDepth && v1 <= n && v3 <= n); }         // ② 가장 얕은 일치
+        else assert(v1 == n && v2 == n && v3 == n);                                                                                                                                                                                  // ③ 못 찾으면 정확히 n 번
+    }
+    { int n = (1 << 12) - 1; BT t; t.root = t.add(0, 0); std::vector<int> id(n); id[0] = t.root; for (int i = 1; i < n; ++i) id[i] = t.add(i, t.depth[id[(i - 1) / 2]] + 1); for (int i = 1; i < n; ++i) { if (i % 2) t.L[id[(i - 1) / 2]] = id[i]; else t.R[id[(i - 1) / 2]] = id[i]; }
+      long vb = 0, vi = 0; assert(bfs(t, -1, vb) < 0 && iddfs(t, -1, vi) < 0 && vb == n && vi > n && vi < 2L * n); }                                                                                                                             // IDDFS: 완전 이진 트리에서 방문 수 약 2n
+    { const int n = 1000000; BT t; t.root = t.add(0, 0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i, i); t.L[cur] = c; cur = c; } long v = 0; assert(dfsIter(t, n - 1, v) == n - 1 && v == n);
+      std::cout << "TreeSearch: DFS (recursive/iterative), BFS and IDDFS agreed with a linear scan on 5000 random trees; BFS and IDDFS found the shallowest match among duplicates; unsuccessful searches visited exactly n nodes; IDDFS visited about 2n on a complete tree; a 10^6 chain was searched iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H) call stack
+// Time Complexity: O(n) (IDDFS 는 완전 이진 트리에서 O(n), 사슬에서는 O(n²))
+// Space Complexity: DFS·IDDFS O(h), BFS O(너비)
 ```
 ## FindNode()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-TreeNode* findNode(TreeNode* node, int val) {
-    if (!node) return nullptr;
-    if (node->val == val) return node;
-    TreeNode* leftRes = findNode(node->left, val);
-    if (leftRes) return leftRes;
-    return findNode(node->right, val);
+// 노드 찾기: ① 값으로 첫 일치(전위 DFS) · 레벨 순서 첫 일치(BFS) · 일치 전부  ② 경로 문자열("LRL")로 O(경로 길이)  ③ 전위 순서 k 번째 노드를 *부분 트리 크기*로 O(h) 에 (순서 통계)  ④ 번호→노드 해시 색인으로 O(1).
+//  모두 전위 순회 목록·레벨 순서 목록이라는 독립 오라클과 대조한다.  검증: 값이 중복된 무작위 트리에서 첫 일치/전부/k 번째/경로가 오라클과 같고, 없는 값·범위 밖 k·잘못된 경로는 −1.
+struct BT { std::vector<int> val, L, R; int root = -1; int add(int v) { val.push_back(v); L.push_back(-1); R.push_back(-1); return (int)val.size() - 1; } };
+BT randomBT(int n, int range, std::mt19937& rng) { BT t; t.root = t.add((int)(rng() % range)); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add((int)(rng() % range)); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+std::vector<int> preorderIds(const BT& t) { std::vector<int> out, st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(u); if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } return out; }
+std::vector<int> levelIds(const BT& t) { std::vector<int> out; std::queue<int> q; q.push(t.root); while (!q.empty()) { int u = q.front(); q.pop(); out.push_back(u); if (t.L[u] >= 0) q.push(t.L[u]); if (t.R[u] >= 0) q.push(t.R[u]); } return out; }
+int findFirstDfs(const BT& t, int v) { std::vector<int> st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); if (t.val[u] == v) return u; if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } return -1; }
+int findFirstBfs(const BT& t, int v) { std::queue<int> q; q.push(t.root); while (!q.empty()) { int u = q.front(); q.pop(); if (t.val[u] == v) return u; if (t.L[u] >= 0) q.push(t.L[u]); if (t.R[u] >= 0) q.push(t.R[u]); } return -1; }
+std::vector<int> findAll(const BT& t, int v) { std::vector<int> out; for (int u : preorderIds(t)) if (t.val[u] == v) out.push_back(u); return out; }
+int findByPath(const BT& t, const std::string& path) { int u = t.root; for (char c : path) { if (u < 0) return -1; u = c == 'L' ? t.L[u] : c == 'R' ? t.R[u] : -1; } return u; }
+std::vector<int> subtreeSizes(const BT& t) { std::vector<int> sz(t.val.size(), 1); std::vector<int> order = preorderIds(t); for (size_t i = order.size(); i-- > 0;) { int u = order[i]; if (t.L[u] >= 0) sz[u] += sz[t.L[u]]; if (t.R[u] >= 0) sz[u] += sz[t.R[u]]; } return sz; }
+int kthPreorder(const BT& t, const std::vector<int>& sz, int k) {                                               // 0 기반 k 번째 (전위). 왼쪽 부분 트리 크기로 내려간다 — O(h)
+    int u = t.root; if (k < 0 || k >= sz[u]) return -1;
+    while (true) { if (k == 0) return u; --k; int ls = t.L[u] >= 0 ? sz[t.L[u]] : 0; if (k < ls) u = t.L[u]; else { k -= ls; u = t.R[u]; } }
 }
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2));
-    TreeNode* res = findNode(root, 2);
-    assert(res && res->val == 2);
-    std::cout << "Find Node verified." << std::endl;
+    std::mt19937 rng(7);
+    for (int it = 0; it < 5000; ++it) {
+        int n = 1 + (int)(rng() % 80), range = 1 + (int)(rng() % n); BT t = randomBT(n, range, rng); std::vector<int> pre = preorderIds(t), lvl = levelIds(t); std::vector<int> sz = subtreeSizes(t);
+        int v = (int)(rng() % (range + 2)); int wantDfs = -1, wantBfs = -1; for (int u : pre) if (t.val[u] == v) { wantDfs = u; break; } for (int u : lvl) if (t.val[u] == v) { wantBfs = u; break; }
+        assert(findFirstDfs(t, v) == wantDfs && findFirstBfs(t, v) == wantBfs && (wantDfs < 0) == (wantBfs < 0)); std::vector<int> all = findAll(t, v); assert((int)all.size() == (int)std::count(t.val.begin(), t.val.end(), v) && (all.empty() || all[0] == wantDfs));       // ①
+        for (int k = -1; k <= n; ++k) assert(kthPreorder(t, sz, k) == (k >= 0 && k < n ? pre[k] : -1));                                                                                                                                             // ③ k 번째
+        std::string path; int u = t.root; while (u >= 0 && rng() % 4) { int dir = (int)(rng() % 2); path += dir ? 'R' : 'L'; u = dir ? t.R[u] : t.L[u]; } assert(findByPath(t, path) == u);                                                                // ② 경로 (잘못된 방향이면 −1)
+        assert(findByPath(t, "") == t.root && findByPath(t, "X") == -1);
+        std::unordered_map<int, int> index; for (int id = 0; id < n; ++id) index[id] = id; assert(index.count(n - 1) == 1 && index.count(n) == 0);                                                                                          // ④ 번호 색인
+    }
+    { const int n = 1000000; BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i); t.R[cur] = c; cur = c; } std::vector<int> sz = subtreeSizes(t); assert(kthPreorder(t, sz, 777777) == 777777 && findFirstDfs(t, n - 1) == n - 1 && findFirstBfs(t, 123456) == 123456 && findByPath(t, std::string(500000, 'R')) == 500000);
+      std::cout << "FindNode: first-match DFS/BFS, all matches, k-th preorder node via subtree sizes and path lookup agreed with the traversal-list oracles on 5000 duplicate-heavy random trees; a 10^6 chain was handled iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H)
+// Time Complexity: 값 찾기 O(n), 경로 O(경로 길이), k 번째 노드 O(h) (크기 배열 전처리 O(n))
+// Space Complexity: O(n)
 ```
 ## FindParent()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-TreeNode* findParent(TreeNode* root, TreeNode* target) {
-    if (!root || root == target) return nullptr;
-    if (root->left == target || root->right == target) return root;
-    TreeNode* leftRes = findParent(root->left, target);
-    if (leftRes) return leftRes;
-    return findParent(root->right, target);
-}
+// 부모 찾기: 부모 포인터가 없으면 루트에서 내려가며 탐색 O(n), 있으면 O(1).  질의가 q 개면 질의마다 탐색하는 방법은 O(n·q), 한 번 순회로 전부 구해 두면 O(n + q).
+//  ① 세 방법을 대조: 질의마다 DFS · 한 번 순회로 부모 배열(BFS) · 반복 DFS.  연산 수를 세어 n·q vs n + q 를 확인.   ② 경계: 루트의 부모는 없음, 없는 노드는 −1, 자식 포인터가 아니라 *노드 번호*로 찾으므로 값이 같아도 구분됨.
+//  ③ 조상 사슬(루트까지)과 k 번째 조상, "u 는 v 의 조상인가" 를 부모 따라 올라가기 vs 전위 번호 구간으로 판정.   ④ 깊이 10^6 사슬.
+struct BT { std::vector<int> L, R; int root = -1; int add() { L.push_back(-1); R.push_back(-1); return (int)L.size() - 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; t.root = t.add(); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(); (s.second == 0 ? t.L[s.first] : t.R[s.first]) = c; slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+int findParentSearch(const BT& t, int target, long& steps) {                                                   // 질의마다 루트에서 DFS
+    if (target < 0 || target >= (int)t.L.size() || target == t.root) return -1; std::vector<int> st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); ++steps; if (t.L[u] == target || t.R[u] == target) return u; if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } return -1; }
+std::vector<int> parentArray(const BT& t, long& steps) { std::vector<int> p(t.L.size(), -1); std::queue<int> q; q.push(t.root); while (!q.empty()) { int u = q.front(); q.pop(); ++steps; if (t.L[u] >= 0) { p[t.L[u]] = u; q.push(t.L[u]); } if (t.R[u] >= 0) { p[t.R[u]] = u; q.push(t.R[u]); } } return p; }
 
 int main() {
-    TreeNode* child = new TreeNode(2);
-    TreeNode* root = new TreeNode(1, child);
-    TreeNode* parent = findParent(root, child);
-    assert(parent == root);
-    std::cout << "Find Parent verified." << std::endl;
+    std::mt19937 rng(11);
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 80); BT t = randomBT(n, rng); long bulk = 0; std::vector<int> par = parentArray(t, bulk); assert(bulk == n && par[t.root] == -1);
+        long perQuery = 0; int queries = 20; for (int q = 0; q < queries; ++q) { int v = (int)(rng() % (n + 2)) - 1; int expect = v >= 0 && v < n ? par[v] : -1; assert(findParentSearch(t, v, perQuery) == expect); }                                    // ① 존재하지 않는 번호는 −1
+        assert(perQuery <= (long)n * queries);                                                                                                                                                                                     // 질의마다 탐색은 최대 n·q
+        for (int v = 0; v < n; ++v) { if (v == t.root) continue; int p = par[v]; assert(p >= 0 && (t.L[p] == v || t.R[p] == v)); }                                                                                              // 부모 ↔ 자식 링크
+        // ③ 조상 사슬, 조상 판정 (전위 번호 구간 vs 올라가기)
+        std::vector<int> tin(n), sz(n, 1), order; { std::vector<int> st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); tin[u] = (int)order.size(); order.push_back(u); if (t.R[u] >= 0) st.push_back(t.R[u]); if (t.L[u] >= 0) st.push_back(t.L[u]); } for (size_t i = order.size(); i-- > 0;) { int u = order[i]; if (par[u] >= 0) sz[par[u]] += sz[u]; } }
+        for (int q = 0; q < 30; ++q) { int u = (int)(rng() % n), v = (int)(rng() % n); bool climbs = false; for (int x = v; x >= 0; x = par[x]) if (x == u) climbs = true; assert(climbs == (tin[u] <= tin[v] && tin[v] < tin[u] + sz[u])); }
+        int v = (int)(rng() % n); std::vector<int> chain; for (int x = v; x >= 0; x = par[x]) chain.push_back(x); assert(chain.back() == t.root);
+        for (int k = 0; k < (int)chain.size(); ++k) { int x = v; for (int s = 0; s < k; ++s) x = par[x]; assert(x == chain[k]); }
+    }
+    { const int n = 1000000; BT t; t.root = t.add(); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(); t.L[cur] = c; cur = c; } long steps = 0; std::vector<int> p = parentArray(t, steps); assert(p[n - 1] == n - 2 && p[0] == -1 && steps == n);
+      long one = 0; assert(findParentSearch(t, n - 1, one) == n - 2 && one == n - 1);                                                                                                                                                // 단일 질의가 O(n): 마지막 노드의 부모
+      std::cout << "FindParent: per-query DFS, bulk BFS parent arrays and ancestor tests (climbing vs preorder intervals) agreed on 3000 random trees; on a 10^6 chain one query cost " << one << " steps while the bulk pass cost " << steps << " for all queries" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H)
+// Time Complexity: 질의마다 탐색 O(n), 부모 배열 전처리 O(n) 후 질의 O(1)
+// Space Complexity: O(n)
 ```
 ## LowestCommonAncestor()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-TreeNode* LCA(TreeNode* root, TreeNode* p, TreeNode* q) {
-    if (!root || root == p || root == q) return root;
-    TreeNode* left = LCA(root->left, p, q);
-    TreeNode* right = LCA(root->right, p, q);
-    if (left && right) return root;
-    return left ? left : right;
-}
+// 최소 공통 조상(LCA): 두 노드의 공통 조상 중 가장 깊은 것.  다섯 가지 방법을 서로 대조한다.
+//  ① 브루트포스: u 의 조상 집합을 표시하고 v 에서 올라가며 처음 만나는 것  ② 깊이를 맞추고 함께 올라가기 O(h)  ③ 이진 승(binary lifting) O(log n)  ④ 오일러 투어 + 구간 최솟값(희소 표) O(1)  ⑤ 재귀(후위): 양쪽에서 하나씩 찾으면 현재 노드 — 두 노드가 모두 트리에 있다는 전제.
+//  경계: u = v, u 가 v 의 조상(LCA = u), 루트. 사슬 10^6 에서는 LCA(u, v) = min(u, v) — 올라가기는 O(n) 이지만 이진 승·RMQ 는 O(log n)/O(1).  트리 10^5 개 노드에서 질의 10^5 개로 세 빠른 방법이 일치.
+struct BT { std::vector<int> L, R, parent, depth; int root = -1; int add() { L.push_back(-1); R.push_back(-1); parent.push_back(-1); depth.push_back(0); return (int)L.size() - 1; } void link(int p, int c, bool left) { (left ? L[p] : R[p]) = c; parent[c] = p; depth[c] = depth[p] + 1; } };
+BT randomBT(int n, std::mt19937& rng, int shape) { BT t; t.root = t.add(); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}}; for (int i = 1; i < n; ++i) { size_t pick = shape == 0 ? rng() % slots.size() : slots.size() - 1 - (rng() % 3 == 0 && slots.size() > 1 ? 1 : 0); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(); t.link(s.first, c, s.second == 0); slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+int lcaBrute(const BT& t, int u, int v) { std::vector<char> anc(t.L.size(), 0); for (int x = u; x >= 0; x = t.parent[x]) anc[x] = 1; int x = v; while (!anc[x]) x = t.parent[x]; return x; }
+int lcaClimb(const BT& t, int u, int v, long& steps) { while (t.depth[u] > t.depth[v]) { u = t.parent[u]; ++steps; } while (t.depth[v] > t.depth[u]) { v = t.parent[v]; ++steps; } while (u != v) { u = t.parent[u]; v = t.parent[v]; steps += 2; } return u; }
+struct Lifting { std::vector<std::vector<int>> up; const BT& t; explicit Lifting(const BT& tree) : t(tree) { int n = (int)t.L.size(), K = 1; while ((1 << K) < n) ++K; up.assign(K + 1, std::vector<int>(n, -1)); up[0] = t.parent; for (int k = 1; k <= K; ++k) for (int v = 0; v < n; ++v) up[k][v] = up[k - 1][v] < 0 ? -1 : up[k - 1][up[k - 1][v]]; }
+    int lca(int u, int v) const { if (t.depth[u] < t.depth[v]) std::swap(u, v); int diff = t.depth[u] - t.depth[v]; for (size_t k = 0; diff; ++k, diff >>= 1) if (diff & 1) u = up[k][u]; if (u == v) return u; for (int k = (int)up.size() - 1; k >= 0; --k) if (up[k][u] != up[k][v]) { u = up[k][u]; v = up[k][v]; } return t.parent[u]; } };
+struct EulerRmq { std::vector<int> tour, first, dep; std::vector<std::vector<int>> tab; explicit EulerRmq(const BT& t) : first(t.L.size(), -1) {
+        struct F { int u, state; }; std::vector<F> st = {{t.root, 0}}; while (!st.empty()) { F& f = st.back(); int u = f.u; if (f.state == 0) { first[u] = (int)tour.size(); tour.push_back(u); f.state = 1; if (t.L[u] >= 0) st.push_back({t.L[u], 0}); } else if (f.state == 1) { if (t.L[u] >= 0) tour.push_back(u); f.state = 2; if (t.R[u] >= 0) st.push_back({t.R[u], 0}); } else { if (t.R[u] >= 0) tour.push_back(u); st.pop_back(); } }
+        dep.resize(tour.size()); for (size_t i = 0; i < tour.size(); ++i) dep[i] = t.depth[tour[i]]; int m = (int)tour.size(), K = 1; while ((1 << K) <= m) ++K; tab.assign(K, std::vector<int>(m)); std::iota(tab[0].begin(), tab[0].end(), 0);
+        for (int k = 1; k < K; ++k) for (int i = 0; i + (1 << k) <= m; ++i) { int a = tab[k - 1][i], b = tab[k - 1][i + (1 << (k - 1))]; tab[k][i] = dep[a] <= dep[b] ? a : b; } }
+    int lca(int u, int v) const { int l = std::min(first[u], first[v]), r = std::max(first[u], first[v]); int k = 31 - __builtin_clz((unsigned)(r - l + 1)); int a = tab[k][l], b = tab[k][r - (1 << k) + 1]; return tour[dep[a] <= dep[b] ? a : b]; } };
+int lcaRec(const BT& t, int u, int p, int q) { if (u < 0 || u == p || u == q) return u; int a = lcaRec(t, t.L[u], p, q), b = lcaRec(t, t.R[u], p, q); if (a >= 0 && b >= 0) return u; return a >= 0 ? a : b; }
 
 int main() {
-    TreeNode* p = new TreeNode(2);
-    TreeNode* q = new TreeNode(3);
-    TreeNode* root = new TreeNode(1, p, q);
-    TreeNode* lca = LCA(root, p, q);
-    assert(lca == root);
-    std::cout << "LCA verified." << std::endl;
+    std::mt19937 rng(5);
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 60); BT t = randomBT(n, rng, (int)(rng() % 2)); Lifting lf(t); EulerRmq er(t);
+        for (int u = 0; u < n; ++u) for (int v = 0; v < n; ++v) { int want = lcaBrute(t, u, v); long s = 0; assert(lcaClimb(t, u, v, s) == want && lf.lca(u, v) == want && er.lca(u, v) == want && lcaRec(t, t.root, u, v) == want && want == lcaBrute(t, v, u)); }       // 모든 쌍 · 대칭
+        for (int u = 0; u < n; ++u) { assert(lf.lca(u, u) == u && er.lca(t.root, u) == t.root); if (t.parent[u] >= 0) assert(lf.lca(u, t.parent[u]) == t.parent[u]); }                                                                                       // 경계: u = v, 루트, 부모
+    }
+    { const int n = 100000; BT t = randomBT(n, rng, 0); Lifting lf(t); EulerRmq er(t); long climbSteps = 0; for (int q = 0; q < 100000; ++q) { int u = (int)(rng() % n), v = (int)(rng() % n); int a = lf.lca(u, v), b = er.lca(u, v); assert(a == b); if (q < 2000) { long s = 0; assert(lcaClimb(t, u, v, s) == a); climbSteps += s; } } (void)climbSteps; }
+    { const int n = 300000; BT t; t.root = t.add(); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(); t.link(cur, c, true); cur = c; } Lifting lf(t); for (int q = 0; q < 100000; ++q) { int u = (int)(rng() % n), v = (int)(rng() % n); assert(lf.lca(u, v) == std::min(u, v)); }
+      long steps = 0; assert(lcaClimb(t, n - 1, n - 2, steps) == n - 2 && steps == 1);
+      std::cout << "LowestCommonAncestor: brute force, level-and-climb, binary lifting, Euler tour + sparse table and recursive post-order agreed on all node pairs of 3000 random trees; 10^5 queries on a 10^5-node tree matched; on a 3*10^5 chain lifting returned min(u, v) for 10^5 queries" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H)
+// Time Complexity: 올라가기 O(h), 이진 승 O(log n) (전처리 O(n log n)), 오일러 투어 + RMQ O(1) (전처리 O(n log n))
+// Space Complexity: O(n log n)
 ```
 ## PathToNode()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-bool getPath(TreeNode* root, int target, std::vector<int>& path) {
-    if (!root) return false;
-    path.push_back(root->val);
-    if (root->val == target) return true;
-    if (getPath(root->left, target, path) || getPath(root->right, target, path)) return true;
-    path.pop_back();
-    return false;
-}
+// 루트에서 노드까지의 경로: ① 재귀 백트래킹(원래 구현: 경로 vector 에 넣고 못 찾으면 빼기) ② 부모 배열을 한 번 만들어 두고 target 에서 위로 올라가 뒤집기(질의마다 O(경로 길이)) ③ 임의의 두 노드 사이의 경로 = (u→LCA 역방향) + (LCA→v).
+//  검증: 경로는 루트로 시작해 target 으로 끝나고, 연이은 항목이 부모–자식이며, 길이 = 깊이 + 1, 노드가 중복되지 않는다(단순 경로).  두 노드 사이 경로는 걸을 수 있고(이웃끼리), 단순하며, 길이 = 거리 + 1 — 모든 쌍에서 BFS 최단 경로와 같은 길이.
+//  없는 노드는 빈 경로.  깊이 10^6 에서 ② 는 반복문이라 안전(① 은 스택 오버플로 위험, 작은 트리만).
+struct BT { std::vector<int> L, R, parent, depth; int root = -1; int add() { L.push_back(-1); R.push_back(-1); parent.push_back(-1); depth.push_back(0); return (int)L.size() - 1; } void link(int p, int c, bool left) { (left ? L[p] : R[p]) = c; parent[c] = p; depth[c] = depth[p] + 1; } };
+BT randomBT(int n, std::mt19937& rng) { BT t; t.root = t.add(); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(); t.link(s.first, c, s.second == 0); slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+bool pathRec(const BT& t, int u, int target, std::vector<int>& path) { if (u < 0) return false; path.push_back(u); if (u == target) return true; if (pathRec(t, t.L[u], target, path) || pathRec(t, t.R[u], target, path)) return true; path.pop_back(); return false; }
+std::vector<int> pathUp(const BT& t, int target) { std::vector<int> p; if (target < 0 || target >= (int)t.L.size()) return p; for (int x = target; x >= 0; x = t.parent[x]) p.push_back(x); std::reverse(p.begin(), p.end()); return p; }
+int lca(const BT& t, int u, int v) { while (t.depth[u] > t.depth[v]) u = t.parent[u]; while (t.depth[v] > t.depth[u]) v = t.parent[v]; while (u != v) { u = t.parent[u]; v = t.parent[v]; } return u; }
+std::vector<int> pathBetween(const BT& t, int u, int v) { int a = lca(t, u, v); std::vector<int> left, right; for (int x = u; x != a; x = t.parent[x]) left.push_back(x); left.push_back(a); for (int x = v; x != a; x = t.parent[x]) right.push_back(x); std::reverse(right.begin(), right.end()); left.insert(left.end(), right.begin(), right.end()); return left; }
+std::vector<int> bfsDist(const BT& t, int s) { int n = (int)t.L.size(); std::vector<std::vector<int>> g(n); for (int i = 0; i < n; ++i) { if (t.L[i] >= 0) { g[i].push_back(t.L[i]); g[t.L[i]].push_back(i); } if (t.R[i] >= 0) { g[i].push_back(t.R[i]); g[t.R[i]].push_back(i); } } std::vector<int> d(n, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int v : g[u]) if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } } return d; }
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2, new TreeNode(4)));
-    std::vector<int> path;
-    getPath(root, 4, path);
-    assert(path.size() == 3 && path[2] == 4);
-    std::cout << "PathToNode verified." << std::endl;
+    std::mt19937 rng(17);
+    for (int it = 0; it < 300; ++it) {
+        int n = 1 + (int)(rng() % 60); BT t = randomBT(n, rng);
+        for (int target = -1; target <= n; ++target) { std::vector<int> a; bool ok = pathRec(t, t.root, target, a); std::vector<int> b = pathUp(t, target); if (target < 0 || target >= n) { assert(!ok && a.empty() && b.empty()); continue; }
+            assert(ok && a == b && a.front() == t.root && a.back() == target && (int)a.size() == t.depth[target] + 1 && std::set<int>(a.begin(), a.end()).size() == a.size()); for (size_t i = 0; i + 1 < a.size(); ++i) assert(t.parent[a[i + 1]] == a[i]); }       // ① ② 단순 경로, 부모–자식
+        for (int u = 0; u < n; ++u) { std::vector<int> d = bfsDist(t, u); for (int v = 0; v < n; ++v) { std::vector<int> p = pathBetween(t, u, v); assert(p.front() == u && p.back() == v && (int)p.size() == d[v] + 1 && std::set<int>(p.begin(), p.end()).size() == p.size());   // ③ 길이 = 거리 + 1, 단순
+                for (size_t i = 0; i + 1 < p.size(); ++i) assert(t.parent[p[i]] == p[i + 1] || t.parent[p[i + 1]] == p[i]); } }                                                                                                                                               // 이웃끼리
+    }
+    { const int n = 1000000; BT t; t.root = t.add(); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(); t.link(cur, c, true); cur = c; } std::vector<int> p = pathUp(t, n - 1); assert((int)p.size() == n && p[0] == 0 && p[n - 1] == n - 1); std::vector<int> mid = pathBetween(t, 250000, 750000); assert((int)mid.size() == 500001 && mid.front() == 250000 && mid.back() == 750000);
+      std::cout << "PathToNode: recursive backtracking and parent-array paths agreed, were simple parent-child chains of length depth+1, and the u-to-v path through the LCA had length BFS-distance+1 for every pair of 300 random trees; a 10^6-node path was produced iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H)
+// Time Complexity: 재귀 O(n), 부모 배열 O(경로 길이) (전처리 O(n)), 두 노드 사이 O(경로 길이)
+// Space Complexity: O(경로 길이) (재귀 O(h) 호출 스택)
 ```
 ## DistanceBetweenNodes()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x, TreeNode* l=nullptr, TreeNode* r=nullptr) : val(x), left(l), right(r) {} };
-
-TreeNode* findLCA(TreeNode* root, int n1, int n2) {
-    if(!root) return nullptr;
-    if(root->val == n1 || root->val == n2) return root;
-    TreeNode* left = findLCA(root->left, n1, n2);
-    TreeNode* right = findLCA(root->right, n1, n2);
-    if(left && right) return root;
-    return left ? left : right;
-}
-
-int findLevel(TreeNode* root, int k, int level) {
-    if(!root) return -1;
-    if(root->val == k) return level;
-    int left = findLevel(root->left, k, level+1);
-    if(left == -1) return findLevel(root->right, k, level+1);
-    return left;
-}
-
-int findDistance(TreeNode* root, int a, int b) {
-    TreeNode* lca = findLCA(root, a, b);
-    int d1 = findLevel(lca, a, 0);
-    int d2 = findLevel(lca, b, 0);
-    return d1 + d2;
+// 트리에서 두 노드 사이의 거리(간선 수) = depth[u] + depth[v] − 2·depth[LCA(u, v)].
+//  ① 모든 쌍에서 BFS 거리와 같음 + 거리의 성질(대칭, 삼각부등식, d(u,v)=0 ⇔ u=v)  ② 지름(가장 먼 두 노드 사이): 임의 노드에서 가장 먼 노드 a → a 에서 가장 먼 노드 b 의 거리 (두 번 BFS) = 모든 쌍 중 최댓값(브루트포스).
+//  ③ 거리의 총합(Wiener 지수): 모든 쌍의 합 = Σ_{간선} size·(n − size) (간선을 지나는 쌍의 수) — O(n) 이고 O(n²) 합과 같음.  ④ 한 점에서 모든 노드까지 거리의 합을 *재루팅* 으로 모든 점에 대해 O(n).
+//  ⑤ 10^5 개 노드에서 지름·총합이 두 방법으로 일치.
+struct BT { std::vector<int> L, R, parent, depth; int root = -1; int add() { L.push_back(-1); R.push_back(-1); parent.push_back(-1); depth.push_back(0); return (int)L.size() - 1; } void link(int p, int c, bool left) { (left ? L[p] : R[p]) = c; parent[c] = p; depth[c] = depth[p] + 1; } };
+BT randomBT(int n, std::mt19937& rng, int shape) { BT t; t.root = t.add(); std::vector<std::pair<int, int>> slots = {{t.root, 0}, {t.root, 1}}; for (int i = 1; i < n; ++i) { size_t pick = shape == 0 ? rng() % slots.size() : slots.size() - 1 - (rng() % 3 == 0 && slots.size() > 1 ? 1 : 0); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); int c = t.add(); t.link(s.first, c, s.second == 0); slots.push_back({c, 0}); slots.push_back({c, 1}); } return t; }
+int lca(const BT& t, int u, int v) { while (t.depth[u] > t.depth[v]) u = t.parent[u]; while (t.depth[v] > t.depth[u]) v = t.parent[v]; while (u != v) { u = t.parent[u]; v = t.parent[v]; } return u; }
+int dist(const BT& t, int u, int v) { return t.depth[u] + t.depth[v] - 2 * t.depth[lca(t, u, v)]; }
+std::vector<int> bfs(const std::vector<std::vector<int>>& g, int s) { std::vector<int> d(g.size(), -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int v : g[u]) if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } } return d; }
+std::vector<std::vector<int>> adj(const BT& t) { std::vector<std::vector<int>> g(t.L.size()); for (size_t i = 0; i < t.L.size(); ++i) { if (t.L[i] >= 0) { g[i].push_back(t.L[i]); g[t.L[i]].push_back((int)i); } if (t.R[i] >= 0) { g[i].push_back(t.R[i]); g[t.R[i]].push_back((int)i); } } return g; }
+std::vector<long long> sumOfDistancesAll(const BT& t) {                                                           // 재루팅: ans[child] = ans[parent] + (n − 2·size[child])
+    int n = (int)t.L.size(); std::vector<int> order = {t.root}; for (size_t i = 0; i < order.size(); ++i) { int u = order[i]; if (t.L[u] >= 0) order.push_back(t.L[u]); if (t.R[u] >= 0) order.push_back(t.R[u]); }
+    std::vector<long long> size(n, 1), down(n, 0), ans(n, 0); for (size_t i = order.size(); i-- > 1;) { int u = order[i], p = t.parent[u]; size[p] += size[u]; down[p] += down[u] + size[u]; }
+    ans[t.root] = down[t.root]; for (size_t i = 1; i < order.size(); ++i) { int u = order[i], p = t.parent[u]; ans[u] = ans[p] + n - 2 * size[u]; } return ans;
 }
 
 int main() {
-    TreeNode* root = new TreeNode(1, new TreeNode(2), new TreeNode(3));
-    int dist = findDistance(root, 2, 3);
-    assert(dist == 2);
-    std::cout << "DistanceBetweenNodes verified." << std::endl;
+    std::mt19937 rng(19);
+    for (int it = 0; it < 2000; ++it) {
+        int n = 1 + (int)(rng() % 50); BT t = randomBT(n, rng, (int)(rng() % 2)); auto g = adj(t); std::vector<std::vector<int>> D(n); for (int u = 0; u < n; ++u) D[u] = bfs(g, u);
+        for (int u = 0; u < n; ++u) for (int v = 0; v < n; ++v) { assert(dist(t, u, v) == D[u][v] && D[u][v] == D[v][u] && ((D[u][v] == 0) == (u == v))); for (int w = 0; w < n; w += 7) assert(D[u][w] <= D[u][v] + D[v][w]); }          // ① 거리의 성질
+        int a = (int)(std::max_element(D[0].begin(), D[0].end()) - D[0].begin()); std::vector<int> da = bfs(g, a); int diam = *std::max_element(da.begin(), da.end()); int best = 0; for (int u = 0; u < n; ++u) best = std::max(best, *std::max_element(D[u].begin(), D[u].end())); assert(diam == best);   // ② 지름 = 두 번 BFS
+        long long wiener = 0; for (int u = 0; u < n; ++u) for (int v = u + 1; v < n; ++v) wiener += D[u][v]; std::vector<int> sz(n, 1), order = {t.root}; for (size_t i = 0; i < order.size(); ++i) { int u = order[i]; if (t.L[u] >= 0) order.push_back(t.L[u]); if (t.R[u] >= 0) order.push_back(t.R[u]); } for (size_t i = order.size(); i-- > 1;) sz[t.parent[order[i]]] += sz[order[i]];
+        long long byEdges = 0; for (int v = 0; v < n; ++v) if (t.parent[v] >= 0) byEdges += (long long)sz[v] * (n - sz[v]); assert(wiener == byEdges);                                                                   // ③ 간선 기여 공식
+        std::vector<long long> all = sumOfDistancesAll(t); for (int u = 0; u < n; ++u) { long long s = 0; for (int v = 0; v < n; ++v) s += D[u][v]; assert(all[u] == s); }                                                  // ④ 재루팅
+    }
+    { const int n = 100000; BT t = randomBT(n, rng, 0); auto g = adj(t); std::vector<int> d0 = bfs(g, 0); int a = (int)(std::max_element(d0.begin(), d0.end()) - d0.begin()); std::vector<int> da = bfs(g, a); int b = (int)(std::max_element(da.begin(), da.end()) - da.begin()); int diam = da[b]; std::vector<int> db = bfs(g, b);
+      for (int v = 0; v < n; ++v) assert(std::max(da[v], db[v]) <= diam);                                                                                                                                                  // 지름의 양 끝에서 본 이심률이 지름 이하
+      long long byEdges = 0; std::vector<int> sz(n, 1), order = {t.root}; for (size_t i = 0; i < order.size(); ++i) { int u = order[i]; if (t.L[u] >= 0) order.push_back(t.L[u]); if (t.R[u] >= 0) order.push_back(t.R[u]); } for (size_t i = order.size(); i-- > 1;) sz[t.parent[order[i]]] += sz[order[i]]; for (int v = 0; v < n; ++v) if (t.parent[v] >= 0) byEdges += (long long)sz[v] * (n - sz[v]);
+      std::vector<long long> all = sumOfDistancesAll(t); long long totalOrdered = 0; for (long long x : all) totalOrdered += x; assert(totalOrdered == 2 * byEdges);                                                                    // ⑤ 순서쌍 합 = 2 × 비순서쌍 합
+      std::cout << "DistanceBetweenNodes: LCA-based distance equalled BFS distance for all pairs of 2000 random trees; the double-BFS diameter, the edge-contribution Wiener index and the O(n) rerooting sums matched brute force; a 10^5-node tree had diameter " << diam << " and total pair distance " << byEdges << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H)
+// Time Complexity: 거리 O(h) (LCA 방법에 따라 O(1)), 지름 O(n), 총합 O(n)
+// Space Complexity: O(n)
 ```
 
 # Part 5. 이진 탐색 트리(BST)
 ## InsertBST()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <numeric>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* insertBST(TreeNode* root, int val) {
-    if (!root) return new TreeNode(val);
-    if (val < root->val) root->left = insertBST(root->left, val);
-    else root->right = insertBST(root->right, val);
-    return root;
-}
+// 이진 탐색 트리(BST) 삽입: 루트에서 key 와 비교하며 내려가 빈 자리에 붙인다. 평균 O(log n), 최악(정렬된 입력) O(n).  노드는 배열 풀(인덱스)에 두어 해제 문제가 없다.
+//  ① std::set 과 무작위 삽입열 대조(중복은 거부), 중위 순회가 정렬되고 BST 성질 유지.  ② 모양은 *삽입 순서*가 정한다: 같은 키 집합의 모든 순열(n ≤ 7)을 넣으면 서로 다른 모양의 수가 카탈랑 수 C(n).
+//  ③ 정렬된 삽입 → 높이 n − 1 (사슬), 무작위 삽입 → 노드 평균 깊이 ≈ 2·ln n − 2.85 (n = 10^5 에서 약 20).   ④ 재귀(포인터)와 반복(배열) 구현이 같은 모양을 만든다.
+struct BST {
+    std::vector<int> key, L, R; int root = -1; size_t pathSteps = 0;
+    bool insert(int k) {
+        int parent = -1, u = root; bool left = false; while (u >= 0) { parent = u; ++pathSteps; if (k == key[u]) return false; left = k < key[u]; u = left ? L[u] : R[u]; }       // 중복 거부
+        key.push_back(k); L.push_back(-1); R.push_back(-1); int c = (int)key.size() - 1; if (parent < 0) root = c; else (left ? L[parent] : R[parent]) = c; return true;
+    }
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(key[u]); u = R[u]; } return out; }
+    int height() const { if (root < 0) return -1; int best = 0; std::vector<std::pair<int, int>> st = {{root, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); best = std::max(best, p.second); if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return best; }
+    long long internalPathLength() const { long long s = 0; if (root < 0) return 0; std::vector<std::pair<int, int>> st = {{root, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); s += p.second; if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return s; }
+    bool isBst() const { std::vector<int> v = inorder(); for (size_t i = 1; i < v.size(); ++i) if (v[i - 1] >= v[i]) return false; return true; }                // 중위가 *엄격하게* 증가
+    std::string shape(int u) const { if (u < 0) return "."; return "(" + shape(L[u]) + shape(R[u]) + ")"; }                                                                  // 모양만 (작은 트리용)
+};
+struct PNode { int key; PNode *l = nullptr, *r = nullptr; explicit PNode(int k) : key(k) {} };
+PNode* insertRec(PNode* n, int k, std::vector<std::unique_ptr<PNode>>& own) { if (!n) { own.emplace_back(new PNode(k)); return own.back().get(); } if (k < n->key) n->l = insertRec(n->l, k, own); else if (k > n->key) n->r = insertRec(n->r, k, own); return n; }
+std::string shapeP(const PNode* n) { if (!n) return "."; return "(" + shapeP(n->l) + shapeP(n->r) + ")"; }
 
 int main() {
-    TreeNode* root = nullptr;
-    root = insertBST(root, 10);
-    root = insertBST(root, 5);
-    root = insertBST(root, 15);
-    assert(root->left->val == 5 && root->right->val == 15);
-    std::cout << "InsertBST verified." << std::endl;
+    std::mt19937 rng(14);
+    for (int round = 0; round < 500; ++round) {                                                                  // ① std::set 대조
+        BST t; std::set<int> ref; for (int op = 0; op < 300; ++op) { int k = (int)(rng() % 200); bool a = t.insert(k), b = ref.insert(k).second; assert(a == b); (void)a; (void)b; }
+        std::vector<int> in = t.inorder(); assert(in == std::vector<int>(ref.begin(), ref.end()) && t.isBst());
+    }
+    for (int n = 1; n <= 7; ++n) {                                                                               // ② 모양의 수 = 카탈랑
+        std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 1); std::set<std::string> shapes; do { BST t; for (int k : perm) t.insert(k); shapes.insert(t.shape(t.root)); } while (std::next_permutation(perm.begin(), perm.end()));
+        long catalan[] = {1, 1, 2, 5, 14, 42, 132, 429}; assert((long)shapes.size() == catalan[n]);
+    }
+    { BST sorted; for (int i = 0; i < 3000; ++i) sorted.insert(i); assert(sorted.height() == 2999 && sorted.internalPathLength() == 2999LL * 3000 / 2);                // ③ 정렬된 삽입 = 사슬
+      const int n = 100000; std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); BST t; for (int k : keys) t.insert(k); double avgDepth = (double)t.internalPathLength() / n, expect = 2 * std::log((double)n) - 2.85;
+      assert(std::abs(avgDepth - expect) < 0.1 * expect && t.height() < 6 * std::log((double)n) && t.isBst());
+      std::cout << "InsertBST: matched std::set over 150000 random insertions; the number of distinct BST shapes over all permutations of n <= 7 keys was the Catalan number; sorted insertion gave height 2999 while random insertion of 10^5 keys gave average depth " << avgDepth << " (2 ln n - 2.85 = " << expect << ")" << std::endl; }
+    for (int it = 0; it < 2000; ++it) {                                                                          // ④ 재귀 포인터 구현과 같은 모양
+        std::vector<int> keys(1 + (int)(rng() % 30)); for (int& k : keys) k = (int)(rng() % 50); BST a; std::vector<std::unique_ptr<PNode>> own; PNode* root = nullptr; for (int k : keys) { a.insert(k); root = insertRec(root, k, own); } assert(a.shape(a.root) == shapeP(root));
+    }
     return 0;
 }
-// Time Complexity: O(H)
-// Space Complexity: O(H) call stack
+// Time Complexity: 평균 O(log n), 최악 O(n) (정렬된 입력)
+// Space Complexity: O(1) 추가 (반복문), 재귀는 O(h) 호출 스택
 ```
 ## SearchBST()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* searchBST(TreeNode* root, int val) {
-    if (!root || root->val == val) return root;
-    if (val < root->val) return searchBST(root->left, val);
-    return searchBST(root->right, val);
-}
+// BST 탐색: 한 번 비교할 때마다 한쪽 부분 트리를 통째로 버린다 — 비교 횟수 ≤ 높이 + 1.  ① 존재 여부·비교 횟수(≤ h + 1)를 std::set 과 대조  ② 정렬 순서 질의: ceil(≥ k 중 최소)·floor(≤ k 중 최대) = std::set::lower_bound / 이전 원소,
+//  ③ 구간 [lo, hi] 안의 키 모으기: 방문한 노드 수 ≤ 결과 수 + 2·(높이 + 1) (경계 두 경로만 추가로 훑는다)  ④ 총 비용 항등식: 성공 탐색의 비교 합 = 내부 경로 길이 + n, 실패(모든 빈 자리) 탐색의 비교 합 = 외부 경로 길이 = 내부 경로 길이 + 2n.
+struct BST {
+    std::vector<int> key, L, R; int root = -1;
+    void insert(int k) { int parent = -1, u = root; bool left = false; while (u >= 0) { parent = u; if (k == key[u]) return; left = k < key[u]; u = left ? L[u] : R[u]; } key.push_back(k); L.push_back(-1); R.push_back(-1); int c = (int)key.size() - 1; if (parent < 0) root = c; else (left ? L[parent] : R[parent]) = c; }
+    bool contains(int k, int& comparisons) const { int u = root; comparisons = 0; while (u >= 0) { ++comparisons; if (k == key[u]) return true; u = k < key[u] ? L[u] : R[u]; } return false; }
+    bool containsRec(int u, int k) const { if (u < 0) return false; if (k == key[u]) return true; return containsRec(k < key[u] ? L[u] : R[u], k); }
+    int ceilKey(int k) const { int best = -1, u = root; while (u >= 0) { if (key[u] == k) return k; if (key[u] > k) { best = key[u]; u = L[u]; } else u = R[u]; } return best; }                    // ≥ k 중 최소 (없으면 −1; 키는 0 이상)
+    int floorKey(int k) const { int best = -1, u = root; while (u >= 0) { if (key[u] == k) return k; if (key[u] < k) { best = key[u]; u = R[u]; } else u = L[u]; } return best; }
+    void range(int u, int lo, int hi, std::vector<int>& out, long& visited) const { if (u < 0) return; ++visited; if (key[u] > lo) range(L[u], lo, hi, out, visited); if (key[u] >= lo && key[u] <= hi) out.push_back(key[u]); if (key[u] < hi) range(R[u], lo, hi, out, visited); }
+    int height() const { if (root < 0) return -1; int best = 0; std::vector<std::pair<int, int>> st = {{root, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); best = std::max(best, p.second); if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return best; }
+    long long internalPath() const { long long s = 0; std::vector<std::pair<int, int>> st; if (root >= 0) st.push_back({root, 0}); while (!st.empty()) { auto p = st.back(); st.pop_back(); s += p.second; if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return s; }
+};
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->left = new TreeNode(5); root->right = new TreeNode(15);
-    TreeNode* res = searchBST(root, 15);
-    assert(res && res->val == 15);
-    std::cout << "SearchBST verified." << std::endl;
+    std::mt19937 rng(8);
+    for (int round = 0; round < 1000; ++round) {
+        BST t; std::set<int> ref; int n = 1 + (int)(rng() % 100); for (int i = 0; i < n; ++i) { int k = (int)(rng() % 300); t.insert(k); ref.insert(k); } int h = t.height();
+        for (int q = 0; q < 100; ++q) { int k = (int)(rng() % 320); int cmp; bool f = t.contains(k, cmp); assert(f == (ref.count(k) > 0) && f == t.containsRec(t.root, k) && cmp <= h + 1);            // ① 존재 여부, 비교 ≤ h + 1
+            auto lb = ref.lower_bound(k); assert(t.ceilKey(k) == (lb == ref.end() ? -1 : *lb)); auto ub = ref.upper_bound(k); int fl = ub == ref.begin() ? -1 : *std::prev(ub); assert(t.floorKey(k) == fl); }            // ②
+        for (int q = 0; q < 30; ++q) { int lo = (int)(rng() % 300), hi = lo + (int)(rng() % 80); std::vector<int> got; long visited = 0; t.range(t.root, lo, hi, got, visited); std::vector<int> want(ref.lower_bound(lo), ref.upper_bound(hi)); assert(got == want && visited <= (long)got.size() + 2L * (h + 1)); }   // ③
+        long long successful = 0; for (int k : ref) { int c; t.contains(k, c); successful += c; } assert(successful == t.internalPath() + (long long)ref.size());                  // ④ 성공 탐색의 총 비교
+        long long external = 0;
+        { std::vector<std::pair<int, int>> st; if (t.root >= 0) st.push_back({t.root, 0}); while (!st.empty()) { auto p = st.back(); st.pop_back(); if (t.L[p.first] >= 0) st.push_back({t.L[p.first], p.second + 1}); else external += p.second + 1; if (t.R[p.first] >= 0) st.push_back({t.R[p.first], p.second + 1}); else external += p.second + 1; } }
+        assert(external == t.internalPath() + 2LL * (long long)ref.size());                                                                                      // 외부 경로 길이 = 내부 경로 길이 + 2n  (모든 실패 탐색의 비교 합)
+    }
+    { const int mid = 500000; BST t; t.insert(mid); for (int i = 1; i < 2000; ++i) { t.insert(mid + i); t.insert(mid - i); } int cmp; assert(t.contains(mid + 1999, cmp) && cmp == 2000 && !t.contains(-5, cmp));
+      std::cout << "SearchBST: existence, comparison counts (<= height+1), ceil/floor and range queries (visited <= results + 2(h+1)) matched std::set on 1000 random trees; the comparison-total identities (successful = internal path + n) held" << std::endl; }
     return 0;
 }
-// Time Complexity: O(H)
-// Space Complexity: O(H) call stack
+// Time Complexity: 탐색·ceil·floor O(h), 구간 O(h + 결과 수)
+// Space Complexity: O(1) (반복문)
 ```
 ## DeleteBST()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* findMin(TreeNode* root) {
-    while (root && root->left) root = root->left;
-    return root;
-}
-
-TreeNode* deleteBST(TreeNode* root, int key) {
-    if (!root) return nullptr;
-    if (key < root->val) root->left = deleteBST(root->left, key);
-    else if (key > root->val) root->right = deleteBST(root->right, key);
-    else {
-        if (!root->left) { TreeNode* tmp = root->right; delete root; return tmp; }
-        else if (!root->right) { TreeNode* tmp = root->left; delete root; return tmp; }
-        TreeNode* minNode = findMin(root->right);
-        root->val = minNode->val;
-        root->right = deleteBST(root->right, root->val);
+// BST 삭제의 세 경우: 리프(그냥 떼기), 자식 하나(자식으로 대체), 자식 둘(중위 *후계자* 또는 *선행자*의 키로 덮어쓰고 그 노드를 삭제).
+//  ① 반복문 + 배열 풀(해제된 칸 재활용)으로 구현해 std::set 과 무작위 삽입/삭제열(키 중복·없는 키 포함)을 대조하고 매 단계 BST 성질·크기·풀 누수 없음 검사.
+//  ② 후계자만 계속 쓰는 Hibbard 삭제는 삭제·삽입을 많이 반복하면 트리가 한쪽으로 기울어 평균 깊이가 늘어난다 — 후계자/선행자를 번갈아 쓰면 새로 만든 무작위 트리 수준에 머문다 (n = 1000, 200 만 번 삭제+삽입으로 측정).
+//  ③ 삭제 뒤에도 위치 관계: 남은 키의 중위 순서는 변하지 않는다.  ④ 모든 키를 지우면 빈 트리가 되고 풀은 재사용된다.
+struct BST {
+    std::vector<int> key, L, R, freeList; int root = -1; size_t count = 0; bool alternate; bool flip = false; explicit BST(bool alt) : alternate(alt) {}
+    int make(int k) { ++count; if (!freeList.empty()) { int i = freeList.back(); freeList.pop_back(); key[i] = k; L[i] = R[i] = -1; return i; } key.push_back(k); L.push_back(-1); R.push_back(-1); return (int)key.size() - 1; }
+    bool insert(int k) { int parent = -1, u = root; bool left = false; while (u >= 0) { parent = u; if (k == key[u]) return false; left = k < key[u]; u = left ? L[u] : R[u]; } int c = make(k); if (parent < 0) root = c; else (left ? L[parent] : R[parent]) = c; return true; }
+    bool erase(int k) {
+        int parent = -1, u = root; bool left = false; while (u >= 0 && key[u] != k) { parent = u; left = k < key[u]; u = left ? L[u] : R[u]; } if (u < 0) return false;
+        if (L[u] >= 0 && R[u] >= 0) {                                                                                   // 자식 둘: 후계자(오른쪽의 최솟값) 또는 선행자(왼쪽의 최댓값)의 키를 가져오고 그 노드를 지운다
+            bool useSucc = !alternate || (flip = !flip); int p = u, s = useSucc ? R[u] : L[u]; while ((useSucc ? L[s] : R[s]) >= 0) { p = s; s = useSucc ? L[s] : R[s]; } key[u] = key[s];
+            int child = useSucc ? R[s] : L[s]; if (p == u) (useSucc ? R[p] : L[p]) = child; else (useSucc ? L[p] : R[p]) = child; freeList.push_back(s); --count; return true; }
+        int child = L[u] >= 0 ? L[u] : R[u]; if (parent < 0) root = child; else (left ? L[parent] : R[parent]) = child; freeList.push_back(u); --count; return true;                           // 리프 또는 자식 하나
     }
-    return root;
-}
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(key[u]); u = R[u]; } return out; }
+    double avgDepth() const { long long s = 0; size_t n = 0; std::vector<std::pair<int, int>> st; if (root >= 0) st.push_back({root, 0}); while (!st.empty()) { auto p = st.back(); st.pop_back(); s += p.second; ++n; if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return n ? (double)s / n : 0; }
+};
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->right = new TreeNode(20);
-    root = deleteBST(root, 10);
-    assert(root->val == 20);
-    std::cout << "DeleteBST verified." << std::endl;
+    std::mt19937 rng(22);
+    for (int round = 0; round < 300; ++round) {                                                                  // ① std::set 대조
+        BST t(round % 2); std::set<int> ref; for (int op = 0; op < 400; ++op) { int k = (int)(rng() % 60); if (rng() % 2) { bool a = t.insert(k), b = ref.insert(k).second; assert(a == b); (void)a; (void)b; } else { bool a = t.erase(k), b = ref.erase(k) > 0; assert(a == b); (void)a; (void)b; }
+            if (op % 20 == 0) { std::vector<int> in = t.inorder(); assert(in == std::vector<int>(ref.begin(), ref.end()) && t.count == ref.size() && t.key.size() - t.freeList.size() == ref.size()); } }                          // 풀 누수 없음
+        std::vector<int> all(ref.begin(), ref.end()); std::shuffle(all.begin(), all.end(), rng); for (int k : all) { bool ok = t.erase(k); assert(ok); (void)ok; } assert(t.root < 0 && t.count == 0 && t.inorder().empty());                                  // ④ 전부 지우면 빈 트리
+    }
+    // ② Hibbard(후계자만) vs 번갈아: n = 1000 개의 키를 유지하며 200 만 번 (무작위 키 삭제 + 새 무작위 키 삽입).  후계자만 쓰면 오른쪽 부분 트리가 계속 얇아져 평균 깊이가 늘어난다 (Θ(n²) 번의 갱신 뒤 Θ(√n)).
+    double depthHibbard = 0, depthAlt = 0, depthFresh = 0; const int N = 1000; const long ROUNDS = 2000000;
+    for (int variant = 0; variant < 2; ++variant) {
+        BST t(variant == 1); std::vector<int> present; const int range = 1 << 30; while ((int)present.size() < N) { int k = (int)(rng() % range); if (t.insert(k)) present.push_back(k); }
+        if (variant == 0) { double sum = 0; for (int rep = 0; rep < 5; ++rep) { BST fresh(false); std::vector<int> keys(present); std::shuffle(keys.begin(), keys.end(), rng); for (int k : keys) fresh.insert(k); sum += fresh.avgDepth(); } depthFresh = sum / 5; }
+        for (long step = 0; step < ROUNDS; ++step) { size_t idx = rng() % present.size(); bool erased = t.erase(present[idx]); assert(erased); (void)erased; int k; do k = (int)(rng() % range); while (!t.insert(k)); present[idx] = k; }          // 키가 없어질 때까지 새 키를 뽑는다 (충돌 확률 무시할 수준)
+        (variant == 0 ? depthHibbard : depthAlt) = t.avgDepth(); std::sort(present.begin(), present.end()); assert(t.inorder() == present && t.count == present.size());
+    }
+    assert(depthHibbard > depthAlt * 1.25 && depthHibbard > depthFresh * 1.15 && depthAlt < depthFresh * 1.1);                                                                                                      // 후계자만 쓰면 눈에 띄게 깊어진다
+    std::cout << "DeleteBST: leaf / one-child / two-child deletion matched std::set over 120000 random operations with no pool leaks; after 2*10^6 delete+insert rounds on 1000 keys the average depth was " << depthHibbard << " with successor-only (Hibbard) deletion, " << depthAlt << " when alternating successor/predecessor, versus " << depthFresh << " for fresh random trees" << std::endl;
     return 0;
 }
-// Time Complexity: O(H)
-// Space Complexity: O(H)
+// Time Complexity: O(h)
+// Space Complexity: O(1) 추가 (반복문, 노드 풀 재사용)
 ```
 ## FindMin()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* findMin(TreeNode* root) {
-    while (root && root->left) root = root->left;
-    return root;
-}
+// BST 의 최솟값 = 가장 왼쪽 노드: 왼쪽 자식이 없을 때까지 내려간다 (비교 없음, ≤ 높이 번).  정렬되지 않은 이진 트리는 전부 훑어야 한다 (O(n)).
+//  ① BST 의 findMin 을 std::set::begin 과 무작위 삽입/최솟값 제거열로 대조  ② 최솟값을 반복해서 빼면(popMin) 정렬된 열 — 트리 정렬(tree sort): std::sort 와 같다  ③ 어떤 노드의 *부분 트리* 최솟값(후계자 계산의 재료)
+//  ④ 정렬되지 않은 트리의 최솟값 = 선형 탐색  ⑤ 걸음 수: 왼쪽 사슬은 n − 1, 오른쪽 사슬은 0  ⑥ 100 만 노드 왼쪽 사슬을 반복문으로.
+struct BST {
+    std::vector<int> key, L, R; int root = -1;
+    void insert(int k) { int parent = -1, u = root; bool left = false; while (u >= 0) { parent = u; if (k == key[u]) return; left = k < key[u]; u = left ? L[u] : R[u]; } key.push_back(k); L.push_back(-1); R.push_back(-1); int c = (int)key.size() - 1; if (parent < 0) root = c; else (left ? L[parent] : R[parent]) = c; }
+    int findMinNode(int u, long* steps = nullptr) const { while (L[u] >= 0) { u = L[u]; if (steps) ++*steps; } return u; }
+    int popMin() { int parent = -1, u = root; while (L[u] >= 0) { parent = u; u = L[u]; } int v = key[u]; if (parent < 0) root = R[u]; else L[parent] = R[u]; return v; }       // 가장 왼쪽 노드는 오른쪽 자식만 가질 수 있어 그 자식으로 대체
+    bool empty() const { return root < 0; }
+};
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->left = new TreeNode(5); root->left->left = new TreeNode(1);
-    assert(findMin(root)->val == 1);
-    std::cout << "FindMin verified." << std::endl;
+    std::mt19937 rng(31);
+    for (int round = 0; round < 500; ++round) {
+        BST t; std::set<int> ref; for (int op = 0; op < 200; ++op) { if (rng() % 3 && !t.empty()) { int m = t.popMin(); assert(m == *ref.begin()); ref.erase(ref.begin()); } else { int k = (int)(rng() % 100); t.insert(k); ref.insert(k); } if (!t.empty()) assert(t.key[t.findMinNode(t.root)] == *ref.begin()); else assert(ref.empty()); }       // ①
+    }
+    for (int it = 0; it < 500; ++it) {                                                                           // ② 트리 정렬
+        int n = 1 + (int)(rng() % 200); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); BST t; for (int k : keys) t.insert(k); std::vector<int> out; while (!t.empty()) out.push_back(t.popMin()); std::sort(keys.begin(), keys.end()); assert(out == keys);
+    }
+    for (int it = 0; it < 500; ++it) {                                                                           // ③ 부분 트리 최솟값
+        int n = 1 + (int)(rng() % 100); BST t; for (int i = 0; i < n; ++i) t.insert((int)(rng() % 300)); std::vector<int> parent(t.key.size(), -1); for (size_t u = 0; u < t.key.size(); ++u) { if (t.L[u] >= 0) parent[t.L[u]] = (int)u; if (t.R[u] >= 0) parent[t.R[u]] = (int)u; }
+        for (size_t u = 0; u < t.key.size(); ++u) { std::vector<int> st = {(int)u}; int best = 1 << 30; while (!st.empty()) { int x = st.back(); st.pop_back(); best = std::min(best, t.key[x]); if (t.L[x] >= 0) st.push_back(t.L[x]); if (t.R[x] >= 0) st.push_back(t.R[x]); } assert(t.key[t.findMinNode((int)u)] == best); }
+    }
+    for (int it = 0; it < 1000; ++it) {                                                                          // ④ 정렬되지 않은 트리
+        int n = 1 + (int)(rng() % 60); std::vector<int> val(n), L(n, -1), R(n, -1); for (int& v : val) v = (int)(rng() % 1000) - 500; std::vector<std::pair<int, int>> slots = {{0, 0}, {0, 1}}; for (int i = 1; i < n; ++i) { size_t pick = rng() % slots.size(); auto s = slots[pick]; slots[pick] = slots.back(); slots.pop_back(); (s.second == 0 ? L[s.first] : R[s.first]) = i; slots.push_back({i, 0}); slots.push_back({i, 1}); }
+        int best = 1 << 30; std::vector<int> st = {0}; long visited = 0; while (!st.empty()) { int u = st.back(); st.pop_back(); ++visited; best = std::min(best, val[u]); if (L[u] >= 0) st.push_back(L[u]); if (R[u] >= 0) st.push_back(R[u]); } assert(best == *std::min_element(val.begin(), val.end()) && visited == n);
+    }
+    { BST left; left.key = std::vector<int>(1000000); std::iota(left.key.begin(), left.key.end(), 0); left.L.assign(1000000, -1); left.R.assign(1000000, -1); left.root = 999999; for (int i = 999999; i > 0; --i) left.L[i] = i - 1;                          // ⑤ 왼쪽 사슬: 키가 내려갈수록 작아진다
+      long steps = 0; int m = left.findMinNode(left.root, &steps); assert(left.key[m] == 0 && steps == 999999);
+      BST right; right.key = left.key; right.L.assign(1000000, -1); right.R.assign(1000000, -1); right.root = 0; for (int i = 0; i + 1 < 1000000; ++i) right.R[i] = i + 1; long s2 = 0; assert(right.findMinNode(right.root, &s2) == 0 && s2 == 0);
+      std::cout << "FindMin: leftmost-node search matched std::set::begin under random insert/pop-min sequences; repeated popMin sorted 500 random key sets like std::sort; subtree minima and unsorted-tree minima matched exhaustive scans; the left chain took n-1 steps and the right chain 0 (n = 10^6)" << std::endl; }
     return 0;
 }
-// Time Complexity: O(H)
+// Time Complexity: BST O(h), 정렬 안 된 트리 O(n)
 // Space Complexity: O(1)
 ```
 ## FindMax()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* findMax(TreeNode* root) {
-    while (root && root->right) root = root->right;
-    return root;
-}
+// BST 의 최댓값 = 가장 오른쪽 노드.  FindMin 의 거울상: 좌우를 뒤집은 트리의 최솟값과 같다.
+//  ① std::set::rbegin 과 대조  ② popMax 를 반복하면 내림차순 정렬  ③ k 번째로 큰 수: 역중위(오른쪽 → 루트 → 왼쪽) 순회를 k 번째에서 멈춘다 — std::set 의 끝에서 k 번째와 대조, 방문 수 ≤ k + h  ④ 성질: 최댓값은 오른쪽 자식이 없고, 거울 트리에서의 findMin 과 같다.
+//  ⑤ 정렬되지 않은 트리의 최댓값은 O(n) 순회  ⑥ 100 만 노드 오른쪽 사슬.
+struct BST {
+    std::vector<int> key, L, R; int root = -1;
+    void insert(int k) { int parent = -1, u = root; bool left = false; while (u >= 0) { parent = u; if (k == key[u]) return; left = k < key[u]; u = left ? L[u] : R[u]; } key.push_back(k); L.push_back(-1); R.push_back(-1); int c = (int)key.size() - 1; if (parent < 0) root = c; else (left ? L[parent] : R[parent]) = c; }
+    int findMaxNode(int u, long* steps = nullptr) const { while (R[u] >= 0) { u = R[u]; if (steps) ++*steps; } return u; }
+    int popMax() { int parent = -1, u = root; while (R[u] >= 0) { parent = u; u = R[u]; } int v = key[u]; if (parent < 0) root = L[u]; else R[parent] = L[u]; return v; }
+    int kthLargest(int k, long& visited) const { std::vector<int> st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = R[u]; } u = st.back(); st.pop_back(); ++visited; if (--k == 0) return key[u]; u = L[u]; } return -1; }       // 역중위: 큰 것부터
+    void mirror() { std::swap(L, R); }                                                                           // 모든 노드의 좌우 교환 (키는 그대로이므로 거울 트리는 BST 가 아니다)
+    bool empty() const { return root < 0; }
+};
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->right = new TreeNode(20); root->right->right = new TreeNode(30);
-    assert(findMax(root)->val == 30);
-    std::cout << "FindMax verified." << std::endl;
+    std::mt19937 rng(37);
+    for (int round = 0; round < 500; ++round) {
+        BST t; std::set<int> ref; for (int op = 0; op < 200; ++op) { if (rng() % 3 && !t.empty()) { int m = t.popMax(); assert(m == *ref.rbegin()); ref.erase(std::prev(ref.end())); } else { int k = (int)(rng() % 100); t.insert(k); ref.insert(k); } if (!t.empty()) { int mx = t.findMaxNode(t.root); assert(t.key[mx] == *ref.rbegin() && t.R[mx] < 0); } }          // ① ④ 최댓값은 오른쪽 자식이 없다
+    }
+    for (int it = 0; it < 500; ++it) {                                                                           // ② 내림차순 정렬
+        int n = 1 + (int)(rng() % 200); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); BST t; for (int k : keys) t.insert(k); std::vector<int> out; while (!t.empty()) out.push_back(t.popMax()); std::sort(keys.rbegin(), keys.rend()); assert(out == keys);
+    }
+    for (int it = 0; it < 1000; ++it) {                                                                          // ③ k 번째로 큰 수
+        int n = 1 + (int)(rng() % 150); BST t; std::set<int> ref; for (int i = 0; i < n; ++i) { int k = (int)(rng() % 400); t.insert(k); ref.insert(k); } int h = 0; { std::vector<std::pair<int, int>> st = {{t.root, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); h = std::max(h, p.second); if (t.L[p.first] >= 0) st.push_back({t.L[p.first], p.second + 1}); if (t.R[p.first] >= 0) st.push_back({t.R[p.first], p.second + 1}); } }
+        for (int k = 1; k <= (int)ref.size() + 1; k += 1 + (int)(rng() % 5)) { long visited = 0; int got = t.kthLargest(k, visited); if (k <= (int)ref.size()) { auto it2 = ref.rbegin(); std::advance(it2, k - 1); assert(got == *it2 && visited <= k + h + 1); } else assert(got == -1); }
+    }
+    for (int it = 0; it < 500; ++it) {                                                                           // 거울 트리의 최솟값 위치 = 원래 트리의 최댓값 위치
+        BST t; for (int i = 0; i < 80; ++i) t.insert((int)(rng() % 500)); int mx = t.findMaxNode(t.root); BST m = t; m.mirror(); int leftmostOfMirror = m.root; while (m.L[leftmostOfMirror] >= 0) leftmostOfMirror = m.L[leftmostOfMirror]; assert(leftmostOfMirror == mx);
+    }
+    { BST right; right.key = std::vector<int>(1000000); std::iota(right.key.begin(), right.key.end(), 0); right.L.assign(1000000, -1); right.R.assign(1000000, -1); right.root = 0; for (int i = 0; i + 1 < 1000000; ++i) right.R[i] = i + 1; long steps = 0; int m = right.findMaxNode(right.root, &steps); assert(right.key[m] == 999999 && steps == 999999);          // ⑥ 오른쪽 사슬
+      std::cout << "FindMax: rightmost-node search matched std::set::rbegin under random insert/pop-max sequences; popMax sorted descending; the k-th largest via reverse in-order matched std::set with visited <= k + h + 1; the maximum was the mirror image of the minimum; a 10^6 right chain took n-1 steps" << std::endl; }
     return 0;
 }
-// Time Complexity: O(H)
-// Space Complexity: O(1)
+// Time Complexity: O(h), k 번째로 큰 수 O(h + k)
+// Space Complexity: O(1) (k 번째 큰 수는 O(h) 스택)
 ```
 ## Successor()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* getSuccessor(TreeNode* root, TreeNode* p) {
-    TreeNode* succ = nullptr;
-    while(root) {
-        if(p->val < root->val) { succ = root; root = root->left; }
-        else root = root->right;
-    }
-    return succ;
-}
+// 중위 후계자(successor): 정렬 순서에서 바로 다음 키.  규칙 — 오른쪽 자식이 있으면 *오른쪽 부분 트리의 가장 왼쪽*, 없으면 *왼쪽 자식 쪽으로 올라온 첫 조상*.
+//  ① 부모 포인터 버전과 ② 부모 없이 루트에서 내려가며 "마지막으로 왼쪽으로 꺾은 노드" 를 기억하는 버전(트리에 없는 키에도 가능: upper_bound = k 초과 중 최소)을 std::set 과 대조.
+//  ③ 후계자를 최솟값에서 시작해 반복하면 정렬 순서 전체를 도는데, 전체 걸음 수는 간선 수의 2 배 이하(각 간선을 많아야 두 번) — O(n) 이므로 한 번 호출당 분할상환 O(1).   ④ 왼쪽 사슬(높이 n)에서도 반복은 총 O(n).
+struct BST {
+    std::vector<int> key, L, R, P; int root = -1;
+    void insert(int k) { int parent = -1, u = root; bool left = false; while (u >= 0) { parent = u; if (k == key[u]) return; left = k < key[u]; u = left ? L[u] : R[u]; } key.push_back(k); L.push_back(-1); R.push_back(-1); P.push_back(parent); int c = (int)key.size() - 1; if (parent < 0) root = c; else (left ? L[parent] : R[parent]) = c; }
+    int succWithParent(int u, long& steps) const { if (R[u] >= 0) { u = R[u]; ++steps; while (L[u] >= 0) { u = L[u]; ++steps; } return u; } int p = P[u]; ++steps; while (p >= 0 && R[p] == u) { u = p; p = P[p]; ++steps; } return p; }          // 노드 → 노드 (없으면 −1)
+    int upperBoundKey(int k) const { int best = -1, u = root; while (u >= 0) { if (key[u] > k) { best = key[u]; u = L[u]; } else u = R[u]; } return best; }                                                          // 부모 없이: k 초과 중 최소 (키는 0 이상, 없으면 −1)
+    int minNode() const { int u = root; while (L[u] >= 0) u = L[u]; return u; }
+};
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    TreeNode* leftChild = new TreeNode(5);
-    root->left = leftChild; root->right = new TreeNode(15);
-    TreeNode* succ = getSuccessor(root, leftChild);
-    assert(succ && succ->val == 10);
-    std::cout << "Successor verified." << std::endl;
+    std::mt19937 rng(41);
+    for (int round = 0; round < 1000; ++round) {
+        BST t; std::set<int> ref; int n = 1 + (int)(rng() % 120); for (int i = 0; i < n; ++i) { int k = (int)(rng() % 400); t.insert(k); ref.insert(k); }
+        for (size_t u = 0; u < t.key.size(); ++u) { long steps = 0; int s = t.succWithParent((int)u, steps); auto it = ref.upper_bound(t.key[u]); assert((s < 0) == (it == ref.end()) && (s < 0 || t.key[s] == *it)); }                    // ① 노드의 후계자
+        for (int q = 0; q < 50; ++q) { int k = (int)(rng() % 420); auto it = ref.upper_bound(k); assert(t.upperBoundKey(k) == (it == ref.end() ? -1 : *it)); }                                                              // ② 임의 키의 후계자 (트리에 없어도)
+        long total = 0; int u = t.minNode(); std::vector<int> walk; while (u >= 0) { walk.push_back(t.key[u]); u = t.succWithParent(u, total); } assert(walk == std::vector<int>(ref.begin(), ref.end()) && total <= 2L * (long)t.key.size());                    // ③ 전체 순회 걸음 ≤ 2n
+    }
+    { const int n = 1000000; BST t; t.key.resize(n); t.L.assign(n, -1); t.R.assign(n, -1); t.P.assign(n, -1); std::iota(t.key.begin(), t.key.end(), 0); t.root = n - 1; for (int i = n - 1; i > 0; --i) { t.L[i] = i - 1; t.P[i - 1] = i; }    // ④ 왼쪽 사슬 (키 0 이 가장 깊다)
+      long total = 0; int u = t.minNode(); int count = 0; while (u >= 0) { ++count; u = t.succWithParent(u, total); } assert(count == n && total <= 2L * n);
+      std::cout << "Successor: parent-pointer and parent-free successors matched std::set::upper_bound on 1000 random trees (including keys absent from the tree); iterating successors visited every key in order using at most 2n steps, even on a 10^6-deep left chain (" << total << " steps)" << std::endl; }
     return 0;
 }
-// Time Complexity: O(H)
+// Time Complexity: 한 번 O(h), n 번 반복하면 총 O(n)
 // Space Complexity: O(1)
 ```
 ## Predecessor()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-TreeNode* getPredecessor(TreeNode* root, TreeNode* p) {
-    TreeNode* pred = nullptr;
-    while(root) {
-        if(p->val > root->val) { pred = root; root = root->right; }
-        else root = root->left;
-    }
-    return pred;
-}
+// 중위 선행자(predecessor): 정렬 순서에서 바로 앞 키 — Successor 의 거울상.  규칙: 왼쪽 자식이 있으면 *왼쪽 부분 트리의 가장 오른쪽*, 없으면 *오른쪽 자식 쪽으로 올라온 첫 조상*.
+//  ① 부모 포인터 버전  ② 부모 없는 버전(k 미만 중 최대, 트리에 없는 키도 가능) — std::set 의 lower_bound 바로 앞 원소와 대조  ③ 최댓값에서 시작해 선행자를 반복하면 내림차순 전체, 걸음 ≤ 2n
+//  ④ Successor 와의 쌍대성: succ(pred(x)) = x (경계 제외) 와 pred(succ(x)) = x — 모든 노드에서.   ⑤ 삭제 시 선행자 대체(Hibbard 의 대칭형)가 BST 성질을 보존: 두 자식 노드의 키를 선행자 키로 바꾸고 선행자를 지워도 정렬 순서가 유지됨.
+struct BST {
+    std::vector<int> key, L, R, P; int root = -1;
+    void insert(int k) { int parent = -1, u = root; bool left = false; while (u >= 0) { parent = u; if (k == key[u]) return; left = k < key[u]; u = left ? L[u] : R[u]; } key.push_back(k); L.push_back(-1); R.push_back(-1); P.push_back(parent); int c = (int)key.size() - 1; if (parent < 0) root = c; else (left ? L[parent] : R[parent]) = c; }
+    int predWithParent(int u, long& steps) const { if (L[u] >= 0) { u = L[u]; ++steps; while (R[u] >= 0) { u = R[u]; ++steps; } return u; } int p = P[u]; ++steps; while (p >= 0 && L[p] == u) { u = p; p = P[p]; ++steps; } return p; }
+    int predSucc(int u, bool wantSucc, long& steps) const { if (wantSucc) { if (R[u] >= 0) { u = R[u]; ++steps; while (L[u] >= 0) { u = L[u]; ++steps; } return u; } int p = P[u]; ++steps; while (p >= 0 && R[p] == u) { u = p; p = P[p]; ++steps; } return p; } return predWithParent(u, steps); }
+    int lowerNeighbor(int k) const { int best = -1, u = root; while (u >= 0) { if (key[u] < k) { best = key[u]; u = R[u]; } else u = L[u]; } return best; }                                                          // k 미만 중 최대 (없으면 −1)
+    int maxNode() const { int u = root; while (R[u] >= 0) u = R[u]; return u; }
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(key[u]); u = R[u]; } return out; }
+};
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    TreeNode* rightChild = new TreeNode(15);
-    root->left = new TreeNode(5); root->right = rightChild;
-    TreeNode* pred = getPredecessor(root, rightChild);
-    assert(pred && pred->val == 10);
-    std::cout << "Predecessor verified." << std::endl;
+    std::mt19937 rng(43);
+    for (int round = 0; round < 1000; ++round) {
+        BST t; std::set<int> ref; int n = 1 + (int)(rng() % 120); for (int i = 0; i < n; ++i) { int k = (int)(rng() % 400); t.insert(k); ref.insert(k); }
+        for (size_t u = 0; u < t.key.size(); ++u) { long steps = 0; int p = t.predWithParent((int)u, steps); auto it = ref.lower_bound(t.key[u]); assert((p < 0) == (it == ref.begin()) && (p < 0 || t.key[p] == *std::prev(it)));                         // ①
+            long s2 = 0; int s = t.predSucc((int)u, true, s2); if (p >= 0) assert(t.predSucc(p, true, s2) == (int)u); if (s >= 0) assert(t.predWithParent(s, s2) == (int)u); }                                                          // ④ succ(pred(x)) = x, pred(succ(x)) = x
+        for (int q = 0; q < 50; ++q) { int k = (int)(rng() % 420); auto it = ref.lower_bound(k); assert(t.lowerNeighbor(k) == (it == ref.begin() ? -1 : *std::prev(it))); }                                                         // ②
+        long total = 0; int u = t.maxNode(); std::vector<int> walk; while (u >= 0) { walk.push_back(t.key[u]); u = t.predWithParent(u, total); } std::reverse(walk.begin(), walk.end()); assert(walk == std::vector<int>(ref.begin(), ref.end()) && total <= 2L * (long)t.key.size());                    // ③
+    }
+    for (int round = 0; round < 500; ++round) {                                                                  // ⑤ 선행자 대체 삭제
+        BST t; std::set<int> ref; for (int i = 0; i < 60; ++i) { int k = (int)(rng() % 200); t.insert(k); ref.insert(k); }
+        for (size_t u = 0; u < t.key.size(); ++u) if (t.L[u] >= 0 && t.R[u] >= 0) { BST c = t; long s = 0; int p = c.predWithParent((int)u, s); int pk = c.key[p]; c.key[u] = pk;                                    // 키를 선행자 것으로 바꾼 뒤 선행자 노드를 떼어 낸다 (오른쪽 자식이 없다)
+              int child = c.L[p]; int par = c.P[p]; if (par == (int)u) c.L[par] = child; else c.R[par] = child; if (child >= 0) c.P[child] = par; std::vector<int> in = c.inorder(); std::vector<int> want(ref.begin(), ref.end()); want.erase(std::find(want.begin(), want.end(), t.key[u]));
+              assert(in == want); break; }
+    }
+    { const int n = 1000000; BST t; t.key.resize(n); t.L.assign(n, -1); t.R.assign(n, -1); t.P.assign(n, -1); std::iota(t.key.begin(), t.key.end(), 0); t.root = 0; for (int i = 0; i + 1 < n; ++i) { t.R[i] = i + 1; t.P[i + 1] = i; } long total = 0; int u = t.maxNode(); int count = 0; while (u >= 0) { ++count; u = t.predWithParent(u, total); } assert(count == n && total <= 2L * n);
+      std::cout << "Predecessor: parent-pointer and parent-free predecessors matched std::set (including absent keys); succ(pred(x)) = x and pred(succ(x)) = x held for every node; descending iteration cost at most 2n steps (10^6-deep right chain: " << total << "); predecessor-replacement deletion preserved the sorted order" << std::endl; }
     return 0;
 }
-// Time Complexity: O(H)
+// Time Complexity: 한 번 O(h), n 번 반복하면 총 O(n)
 // Space Complexity: O(1)
 ```
 ## ValidateBST()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <climits>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <iostream>
+#include <numeric>
+#include <optional>
+#include <random>
+#include <string>
+#include <vector>
 
-struct TreeNode { int val; TreeNode *left, *right; TreeNode(int x) : val(x), left(nullptr), right(nullptr) {} };
-
-bool isValidBST(TreeNode* root, long minVal, long maxVal) {
-    if (!root) return true;
-    if (root->val <= minVal || root->val >= maxVal) return false;
-    return isValidBST(root->left, minVal, root->val) && isValidBST(root->right, root->val, maxVal);
+// BST 검증: "각 노드가 자기 자식과만 맞는다(왼쪽 < 루트 < 오른쪽)" 는 *부족하다* — 오른쪽 부분 트리의 왼쪽 자식이 루트보다 작을 수 있다.  올바른 판정 세 가지:
+//  ① 위/아래 한계(상한·하한)를 내려보내며 확인  ② 중위 순회가 엄격히 증가하는지  ③ 모든 (조상, 후손) 쌍을 직접 확인하는 O(n·h) 브루트포스.
+//  전수 검증: 모양 C(n) 가지 × 값 n! 가지(n ≤ 6)에서 세 판정이 항상 같고, BST 인 배치는 모양마다 *정확히 하나*(중위 순서대로 번호) — 총 C(n) 개.  국소 판정이 틀리는 트리를 센다.
+//  경계: 키가 INT_MIN / INT_MAX 인 노드 — int 센티널 한계(INT_MIN, INT_MAX)를 쓰면 정상 BST 를 거부한다 → long long 또는 "한계 없음" 으로 표현.  중복 키는 정책(엄격 vs 허용)을 명시.  깊이 10^6 사슬을 반복문으로.
+struct BT { std::vector<int> key, L, R; int root = -1; int add(int k) { key.push_back(k); L.push_back(-1); R.push_back(-1); return (int)key.size() - 1; } };
+bool validBounds(const BT& t) {                                                                                  // 한계를 내려보내는 반복 DFS: long long 한계 (INT_MIN/INT_MAX 키도 안전)
+    struct F { int u; long long lo, hi; }; std::vector<F> st; if (t.root >= 0) st.push_back({t.root, LLONG_MIN, LLONG_MAX});
+    while (!st.empty()) { F f = st.back(); st.pop_back(); if (t.key[f.u] <= f.lo || t.key[f.u] >= f.hi) return false; if (t.L[f.u] >= 0) st.push_back({t.L[f.u], f.lo, t.key[f.u]}); if (t.R[f.u] >= 0) st.push_back({t.R[f.u], t.key[f.u], f.hi}); }
+    return true;
 }
+bool validBoundsInt(const BT& t) {                                                                               // 흔한 실수: int 한계 센티널
+    struct F { int u; int lo, hi; }; std::vector<F> st; if (t.root >= 0) st.push_back({t.root, INT_MIN, INT_MAX});
+    while (!st.empty()) { F f = st.back(); st.pop_back(); if (t.key[f.u] <= f.lo || t.key[f.u] >= f.hi) return false; if (t.L[f.u] >= 0) st.push_back({t.L[f.u], f.lo, t.key[f.u]}); if (t.R[f.u] >= 0) st.push_back({t.R[f.u], t.key[f.u], f.hi}); }
+    return true;
+}
+bool validInorder(const BT& t) { std::optional<int> prev; std::vector<int> st; int u = t.root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = t.L[u]; } u = st.back(); st.pop_back(); if (prev && *prev >= t.key[u]) return false; prev = t.key[u]; u = t.R[u]; } return true; }
+bool validLocal(const BT& t) { for (size_t u = 0; u < t.key.size(); ++u) { if (t.L[u] >= 0 && t.key[t.L[u]] >= t.key[u]) return false; if (t.R[u] >= 0 && t.key[t.R[u]] <= t.key[u]) return false; } return true; }          // 틀린 판정: 부모–자식만 비교
+bool validBrute(const BT& t) { for (size_t a = 0; a < t.key.size(); ++a) { if (t.L[a] >= 0) { std::vector<int> st = {t.L[a]}; while (!st.empty()) { int x = st.back(); st.pop_back(); if (t.key[x] >= t.key[a]) return false; if (t.L[x] >= 0) st.push_back(t.L[x]); if (t.R[x] >= 0) st.push_back(t.R[x]); } }
+        if (t.R[a] >= 0) { std::vector<int> st = {t.R[a]}; while (!st.empty()) { int x = st.back(); st.pop_back(); if (t.key[x] <= t.key[a]) return false; if (t.L[x] >= 0) st.push_back(t.L[x]); if (t.R[x] >= 0) st.push_back(t.R[x]); } } } return true; }
+// 모양 열거 (값은 나중에 배정): 노드 번호는 전위 순서
+struct Shape { std::vector<int> L, R; };
+void shapes(int n, std::vector<Shape>& out) { if (n == 0) { out.push_back({}); return; } for (int l = 0; l < n; ++l) { std::vector<Shape> a, b; shapes(l, a); shapes(n - 1 - l, b); for (auto& x : a) for (auto& y : b) { Shape s; s.L.assign(n, -1); s.R.assign(n, -1); int offX = 1, offY = 1 + l; for (int i = 0; i < l; ++i) { s.L[offX + i] = x.L[i] >= 0 ? x.L[i] + offX : -1; s.R[offX + i] = x.R[i] >= 0 ? x.R[i] + offX : -1; } for (int i = 0; i < n - 1 - l; ++i) { s.L[offY + i] = y.L[i] >= 0 ? y.L[i] + offY : -1; s.R[offY + i] = y.R[i] >= 0 ? y.R[i] + offY : -1; } if (l > 0) s.L[0] = offX; if (n - 1 - l > 0) s.R[0] = offY; out.push_back(s); } } }
 
 int main() {
-    TreeNode* root = new TreeNode(10);
-    root->left = new TreeNode(5); root->right = new TreeNode(15);
-    bool isValid = isValidBST(root, LONG_MIN, LONG_MAX);
-    assert(isValid == true);
-    std::cout << "ValidateBST verified." << std::endl;
+    { BT t; int r = t.add(10), a = t.add(5), b = t.add(15); t.root = r; t.L[r] = a; t.R[r] = b; assert(validBounds(t) && validInorder(t) && validBrute(t) && validLocal(t)); }
+    { BT t; int r = t.add(10), a = t.add(5), b = t.add(15), c = t.add(6); t.root = r; t.L[r] = a; t.R[r] = b; t.L[b] = c; /* 15 의 왼쪽에 6: 국소로는 맞지만 루트 10 보다 작다 */ assert(validLocal(t) && !validBounds(t) && !validInorder(t) && !validBrute(t)); }
+    long catalan[] = {1, 1, 2, 5, 14, 42, 132};
+    for (int n = 1; n <= 6; ++n) {
+        std::vector<Shape> all; shapes(n, all); assert((long)all.size() == catalan[n]); long validCount = 0, localOnly = 0; std::vector<int> perm(n);
+        for (auto& sh : all) { std::iota(perm.begin(), perm.end(), 1); do { BT t; for (int i = 0; i < n; ++i) t.add(perm[i]); t.L = sh.L; t.R = sh.R; t.root = 0; bool a = validBounds(t), b = validInorder(t), c = validBrute(t); assert(a == b && b == c); validCount += a; localOnly += validLocal(t) && !a; } while (std::next_permutation(perm.begin(), perm.end())); }
+        assert(validCount == catalan[n]); if (n >= 3) assert(localOnly > 0);                                                                                // 모양마다 BST 배치는 정확히 하나, 국소 판정만 통과하는 가짜 BST 가 존재
+    }
+    { BT t; int r = t.add(INT_MAX), l = t.add(INT_MIN); t.root = r; t.L[r] = l; assert(validBounds(t) && validInorder(t) && !validBoundsInt(t));                               // 정상 BST 인데 int 센티널 판정은 거부한다
+      BT dup; int r2 = dup.add(5), l2 = dup.add(5); dup.root = r2; dup.L[r2] = l2; assert(!validBounds(dup) && !validInorder(dup)); }                                                 // 중복 키: 이 구현은 엄격한 BST 만 인정
+    std::mt19937 rng(7);
+    for (int it = 0; it < 2000; ++it) {                                                                          // 무작위 BST, 그리고 값 두 개를 바꾼 것
+        int n = 2 + (int)(rng() % 30); BT t; std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); t.root = t.add(keys[0]); for (int i = 1; i < n; ++i) { int c = t.add(keys[i]); int u = t.root; while (true) { int& nx = keys[i] < t.key[u] ? t.L[u] : t.R[u]; if (nx < 0) { nx = c; break; } u = nx; } }
+        assert(validBounds(t) && validInorder(t) && validBrute(t)); int a = (int)(rng() % n), b = (int)(rng() % n); std::swap(t.key[a], t.key[b]); bool v1 = validBounds(t), v2 = validInorder(t), v3 = validBrute(t); assert(v1 == v2 && v2 == v3);
+    }
+    { const int n = 1000000; BT t; t.root = t.add(0); int cur = t.root; for (int i = 1; i < n; ++i) { int c = t.add(i); t.R[cur] = c; cur = c; } assert(validBounds(t) && validInorder(t)); t.key[n / 2] = -5; assert(!validBounds(t) && !validInorder(t));
+      std::cout << "ValidateBST: bounds, in-order and brute-force validators agreed on every labelled shape with n <= 6 (exactly Catalan(n) valid labellings, plus parent-child-only checks that wrongly accept some); INT_MIN/INT_MAX keys exposed the int-sentinel bug; a depth-10^6 chain was validated iteratively" << std::endl; }
     return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(H)
+// Time Complexity: 한계 방식·중위 방식 O(n), 브루트포스 O(n·h)
+// Space Complexity: O(h)
 ```
 
 # Part 6. AVL 트리
 ## AVLInsert()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cassert>
 #include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
-struct AVLNode { int key, height; AVLNode *left, *right; AVLNode(int k): key(k), height(1), left(nullptr), right(nullptr) {} };
-int h(AVLNode* n){ return n? n->height:0; }
-int bf(AVLNode* n){ return n? h(n->left)-h(n->right):0; }
-void upH(AVLNode* n){ if(n) n->height=1+std::max(h(n->left),h(n->right)); }
-AVLNode* rotR(AVLNode* y){ AVLNode* x=y->left; y->left=x->right; x->right=y; upH(y); upH(x); return x; }
-AVLNode* rotL(AVLNode* x){ AVLNode* y=x->right; x->right=y->left; y->left=x; upH(x); upH(y); return y; }
-AVLNode* balance(AVLNode* n){ upH(n); if(bf(n)>1){ if(bf(n->left)<0) n->left=rotL(n->left); return rotR(n); } if(bf(n)<-1){ if(bf(n->right)>0) n->right=rotR(n->right); return rotL(n); } return n; }
-AVLNode* avlInsert(AVLNode* n, int key){ if(!n) return new AVLNode(key); if(key<n->key) n->left=avlInsert(n->left,key); else if(key>n->key) n->right=avlInsert(n->right,key); return balance(n); }
+// AVL 삽입: 보통의 BST 삽입 뒤 *돌아오는 길*에 각 조상에서 높이를 갱신하고 |bf| = 2 이면 단일(LL·RR)·이중(LR·RL) 회전으로 바로잡는다.  핵심 사실 두 가지를 검증한다:
+//  ① 삽입 한 번에 재균형은 *최대 한 번*(회전 한 번 또는 이중 회전 한 번) — 고치고 나면 부분 트리 높이가 삽입 전과 같아져 위쪽은 변하지 않는다  ② 높이 < 1.4405·log2(n + 2) − 0.3277 (+1: 노드 수 기준) — 오름차순 100 만 개를 넣어도 일반 BST 처럼 사슬이 되지 않는다.
+//  전수 확인: 키 n ≤ 8 개의 *모든 삽입 순서*(n! 가지)에서 각 삽입 뒤 불변식이 성립하고, 오름차순 2^k − 1 개를 넣으면 높이 k 의 완전 이진 트리가 된다.  무작위 삽입(중복 포함)은 std::set 과 내용이 같고 매 삽입 뒤 불변식을 검증한다.
+struct Avl {
+    std::vector<int> key, h, L, R, freeList; int root = -1; size_t cnt = 0; long fixes = 0;                       // fixes = 재균형(단일·이중 회전)을 한 노드 수
+    int H(int u) const { return u < 0 ? 0 : h[u]; }
+    int newNode(int k) { int u; if (!freeList.empty()) { u = freeList.back(); freeList.pop_back(); key[u] = k; h[u] = 1; L[u] = R[u] = -1; } else { key.push_back(k); h.push_back(1); L.push_back(-1); R.push_back(-1); u = (int)key.size() - 1; } return u; }
+    void upd(int u) { h[u] = 1 + std::max(H(L[u]), H(R[u])); }
+    int rotR(int y) { int x = L[y]; L[y] = R[x]; R[x] = y; upd(y); upd(x); return x; }
+    int rotL(int x) { int y = R[x]; R[x] = L[y]; L[y] = x; upd(x); upd(y); return y; }
+    int fix(int u) { upd(u); int b = H(L[u]) - H(R[u]);                                                          // 한 노드를 바로잡고 새 부분 트리 루트를 돌려준다
+        if (b > 1) { if (H(L[L[u]]) < H(R[L[u]])) L[u] = rotL(L[u]); ++fixes; return rotR(u); }                  // LL: 오른쪽 회전, LR: 왼쪽-오른쪽
+        if (b < -1) { if (H(R[R[u]]) < H(L[R[u]])) R[u] = rotR(R[u]); ++fixes; return rotL(u); }                 // RR: 왼쪽 회전, RL: 오른쪽-왼쪽
+        return u; }
+    int ins(int u, int k, bool& added) { if (u < 0) { added = true; ++cnt; return newNode(k); } if (k < key[u]) { int c = ins(L[u], k, added); L[u] = c; } else if (k > key[u]) { int c = ins(R[u], k, added); R[u] = c; } else return u; return fix(u); }
+    bool insert(int k) { bool added = false; root = ins(root, k, added); return added; }
+    bool contains(int k) const { int u = root; while (u >= 0 && key[u] != k) u = k < key[u] ? L[u] : R[u]; return u >= 0; }
+    int check(int u, long long lo, long long hi, size_t& seen) const {                                           // 불변식: BST 순서·저장 높이·|bf| ≤ 1 (재귀 깊이 ≤ 1.44 log n)
+        if (u < 0) return 0; assert(key[u] > lo && key[u] < hi); ++seen; int hl = check(L[u], lo, key[u], seen), hr = check(R[u], key[u], hi, seen);
+        assert(std::abs(hl - hr) <= 1 && h[u] == 1 + std::max(hl, hr)); return h[u]; }
+    void validate() const { size_t seen = 0; check(root, -(1LL << 40), 1LL << 40, seen); assert(seen == cnt); }
+    void inorder(int u, std::vector<int>& out) const { if (u < 0) return; inorder(L[u], out); out.push_back(key[u]); inorder(R[u], out); }
+    std::string shape(int u) const { return u < 0 ? "." : "(" + shape(L[u]) + shape(R[u]) + ")"; }
+};
+
 int main() {
-    AVLNode* root=nullptr;
-    for(int k:{10,20,30,40,50,25}) root=avlInsert(root,k);
-    assert(std::abs(bf(root))<=1);
-    std::cout << "AVLInsert verified. Root=" << root->key << std::endl;
+    // 전수: 모든 삽입 순서에서 불변식·삽입당 재균형 ≤ 1
+    for (int n = 1; n <= 8; ++n) {
+        std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); std::set<std::string> shapes; long perms = 0;
+        do { Avl t; for (int k : perm) { long before = t.fixes; bool added = t.insert(k); assert(added); assert(t.fixes - before <= 1); t.validate(); } ++perms; shapes.insert(t.shape(t.root)); std::vector<int> in; t.inorder(t.root, in); assert((int)in.size() == n && std::is_sorted(in.begin(), in.end())); } while (std::next_permutation(perm.begin(), perm.end()));
+        const size_t avlShapes[] = {0, 1, 2, 1, 4, 6, 4, 17, 32}; assert(shapes.size() <= avlShapes[n]);          // 가능한 AVL 모양 수(1,1,2,1,4,6,4,17,32)를 넘지 않는다
+    }
+    // 오름차순 2^k − 1 개 → 완전 이진 트리
+    for (int k = 1; k <= 16; ++k) { Avl t; int n = (1 << k) - 1; for (int i = 1; i <= n; ++i) t.insert(i); t.validate(); assert(t.h[t.root] == k && (int)t.cnt == n); }
+    // 대규모: 오름차순·내림차순 100 만, 중간에서 양쪽으로 퍼지는 순서
+    const double a = 1.4405, b = 0.3277;
+    for (int mode = 0; mode < 3; ++mode) {
+        Avl t; const int n = 1000000; long maxStep = 0;
+        for (int i = 0; i < n; ++i) { int k = mode == 0 ? i : mode == 1 ? n - i : (i % 2 ? n / 2 + i / 2 : n / 2 - i / 2); long before = t.fixes; t.insert(k); maxStep = std::max(maxStep, t.fixes - before); }
+        t.validate(); double hbound = a * std::log2((double)t.cnt + 2) - b + 1; assert(t.h[t.root] <= hbound && t.h[t.root] >= (int)std::ceil(std::log2((double)t.cnt + 1)) && maxStep <= 1);
+        assert((long)t.fixes <= (long)t.cnt);                                                                     // 총 재균형 ≤ 삽입 수
+    }
+    // 무작위(중복 포함) vs std::set
+    std::mt19937 rng(5); Avl t; std::set<int> ref; long maxFix = 0, dup = 0;
+    for (int step = 0; step < 200000; ++step) { int k = (int)(rng() % 300000); long before = t.fixes; bool added = t.insert(k); bool refAdded = ref.insert(k).second; assert(added == refAdded); dup += !added; maxFix = std::max(maxFix, t.fixes - before);
+        if (step < 300 || step % 997 == 0) t.validate(); }
+    t.validate(); std::vector<int> in; t.inorder(t.root, in); assert(in == std::vector<int>(ref.begin(), ref.end()) && maxFix <= 1 && dup > 0);
+    for (int k = 0; k < 300000; k += 777) assert(t.contains(k) == (ref.count(k) > 0));
+    std::cout << "AVLInsert: every insertion order of up to 8 keys kept the AVL invariants with at most one rebalance per insert; ascending 2^k-1 keys gave perfect trees; 10^6 ascending/descending/zig-zag inserts stayed within 1.44*log2(n); 2*10^5 random inserts (with " << dup << " duplicates) matched std::set" << std::endl;
     return 0;
 }
-// Time Complexity: O(log N) / Space Complexity: O(log N)
+// Time Complexity: O(log N)
+// Space Complexity: O(N) (재귀 깊이 O(log N))
 ```
 ## AVLDelete()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cassert>
 #include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
-struct AVLNodeD { int key, height; AVLNodeD *left, *right; AVLNodeD(int k): key(k), height(1), left(nullptr), right(nullptr) {} };
-int hD(AVLNodeD* n){ return n?n->height:0; }
-int bfD(AVLNodeD* n){ return n?hD(n->left)-hD(n->right):0; }
-void upHD(AVLNodeD* n){ if(n) n->height=1+std::max(hD(n->left),hD(n->right)); }
-AVLNodeD* rotRD(AVLNodeD* y){ AVLNodeD* x=y->left; y->left=x->right; x->right=y; upHD(y); upHD(x); return x; }
-AVLNodeD* rotLD(AVLNodeD* x){ AVLNodeD* y=x->right; x->right=y->left; y->left=x; upHD(x); upHD(y); return y; }
-AVLNodeD* balD(AVLNodeD* n){ upHD(n); if(bfD(n)>1){if(bfD(n->left)<0)n->left=rotLD(n->left);return rotRD(n);} if(bfD(n)<-1){if(bfD(n->right)>0)n->right=rotRD(n->right);return rotLD(n);} return n; }
-AVLNodeD* minN(AVLNodeD* n){ while(n->left) n=n->left; return n; }
-AVLNodeD* avlDel(AVLNodeD* n, int key){ if(!n) return nullptr; if(key<n->key) n->left=avlDel(n->left,key); else if(key>n->key) n->right=avlDel(n->right,key); else { if(!n->left||!n->right){ AVLNodeD* t=n->left?n->left:n->right; delete n; return t; } AVLNodeD* s=minN(n->right); n->key=s->key; n->right=avlDel(n->right,s->key); } return balD(n); }
-AVLNodeD* avlIns(AVLNodeD* n, int k){ if(!n) return new AVLNodeD(k); if(k<n->key) n->left=avlIns(n->left,k); else if(k>n->key) n->right=avlIns(n->right,k); return balD(n); }
+// AVL 삭제: 삭제할 노드가 자식 둘이면 오른쪽 부분 트리의 최솟값 노드를 떼어 그 자리에 끼우고(키를 복사하지 않고 노드를 옮긴다), 돌아오는 길의 모든 조상에서 재균형한다.
+//  삽입과 달리 *한 번 고쳐도 부분 트리 높이가 1 줄 수 있어* 위쪽 조상이 연쇄적으로 불균형해진다 — 재균형이 O(log N) 번 필요할 수 있다.  최악 사례: 높이 h 인 피보나치(최소 노드) 트리에서 최댓값을 지우면 정확히 ⌊(h − 1)/2⌋ 번 재균형(h = 2..24 확인).
+//  전수 확인: 키 7 개의 서로 다른 AVL 모양(삽입 순서 전수에서 얻은 것) × 모든 삭제 순서(5040 가지)에서 각 단계 뒤 불변식·std::set 내용 일치.  대규모: 무작위 삽입·삭제 100 만 연산(살아 있는 키 최대 10^5)을 std::set 과 대조하고 노드 재사용(arena 크기 ≤ 최대 동시 노드 수)을 확인.
+struct Avl {
+    std::vector<int> key, h, L, R, freeList; int root = -1; size_t cnt = 0; long fixes = 0;                       // fixes = 재균형(단일·이중 회전)을 한 노드 수
+    int H(int u) const { return u < 0 ? 0 : h[u]; }
+    int newNode(int k) { int u; if (!freeList.empty()) { u = freeList.back(); freeList.pop_back(); key[u] = k; h[u] = 1; L[u] = R[u] = -1; } else { key.push_back(k); h.push_back(1); L.push_back(-1); R.push_back(-1); u = (int)key.size() - 1; } return u; }
+    void upd(int u) { h[u] = 1 + std::max(H(L[u]), H(R[u])); }
+    int rotR(int y) { int x = L[y]; L[y] = R[x]; R[x] = y; upd(y); upd(x); return x; }
+    int rotL(int x) { int y = R[x]; R[x] = L[y]; L[y] = x; upd(x); upd(y); return y; }
+    int fix(int u) { upd(u); int b = H(L[u]) - H(R[u]);                                                          // 한 노드를 바로잡고 새 부분 트리 루트를 돌려준다
+        if (b > 1) { if (H(L[L[u]]) < H(R[L[u]])) L[u] = rotL(L[u]); ++fixes; return rotR(u); }                  // LL: 오른쪽 회전, LR: 왼쪽-오른쪽
+        if (b < -1) { if (H(R[R[u]]) < H(L[R[u]])) R[u] = rotR(R[u]); ++fixes; return rotL(u); }                 // RR: 왼쪽 회전, RL: 오른쪽-왼쪽
+        return u; }
+    int ins(int u, int k, bool& added) { if (u < 0) { added = true; ++cnt; return newNode(k); } if (k < key[u]) { int c = ins(L[u], k, added); L[u] = c; } else if (k > key[u]) { int c = ins(R[u], k, added); R[u] = c; } else return u; return fix(u); }
+    bool insert(int k) { bool added = false; root = ins(root, k, added); return added; }
+    bool contains(int k) const { int u = root; while (u >= 0 && key[u] != k) u = k < key[u] ? L[u] : R[u]; return u >= 0; }
+    int check(int u, long long lo, long long hi, size_t& seen) const {                                           // 불변식: BST 순서·저장 높이·|bf| ≤ 1 (재귀 깊이 ≤ 1.44 log n)
+        if (u < 0) return 0; assert(key[u] > lo && key[u] < hi); ++seen; int hl = check(L[u], lo, key[u], seen), hr = check(R[u], key[u], hi, seen);
+        assert(std::abs(hl - hr) <= 1 && h[u] == 1 + std::max(hl, hr)); return h[u]; }
+    void validate() const { size_t seen = 0; check(root, -(1LL << 40), 1LL << 40, seen); assert(seen == cnt); }
+    void inorder(int u, std::vector<int>& out) const { if (u < 0) return; inorder(L[u], out); out.push_back(key[u]); inorder(R[u], out); }
+    std::string shape(int u) const { return u < 0 ? "." : "(" + shape(L[u]) + shape(R[u]) + ")"; }
+
+    int takeMin(int u, int& m) { if (L[u] < 0) { m = u; return R[u]; } int c = takeMin(L[u], m); L[u] = c; return fix(u); }          // 최소 노드 m 을 떼고 새 루트를 돌려준다
+    int del(int u, int k, bool& gone) { if (u < 0) return -1;
+        if (k < key[u]) { int c = del(L[u], k, gone); L[u] = c; } else if (k > key[u]) { int c = del(R[u], k, gone); R[u] = c; }
+        else { gone = true; int l = L[u], r = R[u]; freeList.push_back(u); --cnt; if (l < 0) return r; if (r < 0) return l; int m = -1; int nr = takeMin(r, m); L[m] = l; R[m] = nr; return fix(m); }
+        return fix(u); }
+    bool erase(int k) { bool gone = false; root = del(root, k, gone); return gone; }
+    int fibTree(int hh, int& nextKey) { if (hh <= 0) return -1; int l = fibTree(hh - 1, nextKey); int u = newNode(nextKey++); int r = fibTree(hh - 2, nextKey); L[u] = l; R[u] = r; upd(u); ++cnt; return u; }   // 왼쪽 T(h−1), 오른쪽 T(h−2)
+};
+
 int main() {
-    AVLNodeD* root=nullptr;
-    for(int k:{10,20,30,40,50}) root=avlIns(root,k);
-    root=avlDel(root,30);
-    assert(std::abs(bfD(root))<=1);
-    std::cout << "AVLDelete verified. Root=" << root->key << std::endl;
+    // 최악 사례: 피보나치 트리에서 최댓값 삭제 → ⌊(h−1)/2⌋ 번 재균형 (삽입은 최대 1 번)
+    for (int hh = 2; hh <= 24; ++hh) { Avl t; int nk = 0; t.root = t.fibTree(hh, nk); t.validate(); assert(t.h[t.root] == hh); long before = t.fixes; bool gone = t.erase(nk - 1); assert(gone); t.validate(); assert(t.fixes - before == (hh - 1) / 2); }
+    // 전수: 서로 다른 AVL 모양 × 모든 삭제 순서
+    { const int n = 7; std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); std::set<std::string> seen; std::vector<std::vector<int>> reps;
+      do { Avl t; for (int k : perm) t.insert(k); if (seen.insert(t.shape(t.root)).second) reps.push_back(perm); } while (std::next_permutation(perm.begin(), perm.end())); assert(reps.size() >= 4);
+      long sequences = 0;
+      for (auto& rep : reps) { std::vector<int> order(n); std::iota(order.begin(), order.end(), 0);
+        do { Avl t; for (int k : rep) t.insert(k); std::set<int> ref(rep.begin(), rep.end());
+             for (int k : order) { bool gone = t.erase(k); bool rg = ref.erase(k) > 0; assert(gone == rg); t.validate(); std::vector<int> in; t.inorder(t.root, in); assert(in == std::vector<int>(ref.begin(), ref.end())); }
+             assert(t.root < 0 && t.cnt == 0); ++sequences; } while (std::next_permutation(order.begin(), order.end())); }
+      assert(sequences == (long)reps.size() * 5040); }
+    // 없는 키 삭제는 아무 변화 없음
+    { Avl t; for (int k = 0; k < 100; k += 2) t.insert(k); long f = t.fixes; size_t c = t.cnt; for (int k = 1; k < 100; k += 2) assert(!t.erase(k)); assert(t.cnt == c && t.fixes == f); t.validate(); }
+    // 대규모 무작위 삽입·삭제
+    std::mt19937 rng(8); Avl t; std::set<int> ref; size_t maxLive = 0; long maxDelFix = 0;
+    for (long step = 0; step < 1000000; ++step) {
+        int k = (int)(rng() % 200000); bool wantInsert = ref.size() < 100000 ? rng() % 100 < 55 : rng() % 100 < 45;
+        if (wantInsert) { bool a = t.insert(k); bool r = ref.insert(k).second; assert(a == r); }
+        else { long before = t.fixes; bool a = t.erase(k); bool r = ref.erase(k) > 0; assert(a == r); maxDelFix = std::max(maxDelFix, t.fixes - before); }
+        maxLive = std::max(maxLive, ref.size()); assert(t.cnt == ref.size());
+        if (step % 25000 == 0) t.validate();
+    }
+    t.validate(); std::vector<int> in; t.inorder(t.root, in); assert(in == std::vector<int>(ref.begin(), ref.end()));
+    assert(t.key.size() <= maxLive + 1 && t.h[t.root] <= 1.4405 * std::log2((double)t.cnt + 2) + 0.6723);        // 노드가 재사용되어 arena 가 최대 동시 노드 수를 넘지 않는다, 높이 한계 유지
+    std::vector<int> all(ref.begin(), ref.end()); std::shuffle(all.begin(), all.end(), rng); for (int k : all) { bool g = t.erase(k); assert(g); } assert(t.root < 0 && t.cnt == 0);                  // 전부 지우기
+    std::cout << "AVLDelete: Fibonacci worst case needed floor((h-1)/2) rebalances for h=2..24; all deletion orders of 7-key AVL shapes kept the invariants; 10^6 random insert/delete operations matched std::set (largest rebalance run in one delete: " << maxDelFix << ") and the arena reused freed nodes" << std::endl;
     return 0;
 }
-// Time Complexity: O(log N) / Space Complexity: O(log N)
+// Time Complexity: O(log N) (재균형은 최대 O(log N) 번)
+// Space Complexity: O(N) (재귀 깊이 O(log N))
 ```
 ## BalanceFactor()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
-struct BFN { int height; BFN *left,*right; BFN(int h): height(h), left(nullptr), right(nullptr){} };
-int getH(BFN* n){ return n?n->height:0; }
-int balanceFactor(BFN* n){ return n?getH(n->left)-getH(n->right):0; }
-int main(){
-    BFN root(3); BFN l(2); BFN r(1); root.left=&l; root.right=&r;
-    assert(balanceFactor(&root)==1);
-    std::cout << "BalanceFactor=" << balanceFactor(&root) << std::endl;
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
+
+// 균형 인수(balance factor) bf(u) = 높이(왼쪽 부분 트리) − 높이(오른쪽 부분 트리) (빈 트리 높이 0, 노드 수 기준).  AVL 트리 = 모든 노드에서 |bf| ≤ 1 인 BST.
+//  ① 모양 전수 확인: 키 n ≤ 8 개의 모든 삽입 순서가 만드는 BST 모양 중 AVL 인 것의 수가 독립적인 점화식 A(n,h) = Σ A(k,h−1)·[A(n−1−k,h−1) + A(n−1−k,h−2)] + A(k,h−2)·A(n−1−k,h−1) 와 같다  (1, 1, 2, 1, 4, 6, 4, 17, 32)
+//  ② 높이 h 인 AVL 트리의 최소 노드 수 = 피보나치형 N(h) = N(h−1) + N(h−2) + 1, 최대 = 2^h − 1 (DP 로 확인), 피보나치 트리는 높이 ≥ 2 인 모든 노드가 bf = +1, 완전 이진 트리는 전부 0, 사슬의 루트는 bf = n
+//  ③ 되짚기(retrace) 근거: 잎 하나를 달면 높이가 변하는 노드는 새 잎의 조상 사슬의 *앞부분*뿐이고(한 번 안 변하면 그 위는 모두 불변), bf 가 달라질 수 있는 것도 조상뿐이다  ④ 100 만 노드 사슬도 반복 계산으로 처리.
+struct BT {
+    std::vector<int> key, L, R; int root = -1;
+    int add(int k) { key.push_back(k); L.push_back(-1); R.push_back(-1); return (int)key.size() - 1; }
+    std::vector<int> heights() const {                                                                              // 높이(노드 수 기준): BFS 순서를 뒤집어 반복 계산
+        std::vector<int> h(L.size(), 0), order; if (root < 0) return h; order.push_back(root);
+        for (size_t i = 0; i < order.size(); ++i) { int u = order[i]; if (L[u] >= 0) order.push_back(L[u]); if (R[u] >= 0) order.push_back(R[u]); }
+        for (size_t i = order.size(); i-- > 0;) { int u = order[i]; h[u] = 1 + std::max(L[u] >= 0 ? h[L[u]] : 0, R[u] >= 0 ? h[R[u]] : 0); }
+        return h; }
+    int bf(const std::vector<int>& h, int u) const { return (L[u] >= 0 ? h[L[u]] : 0) - (R[u] >= 0 ? h[R[u]] : 0); }
+    bool isAvl() const { std::vector<int> h = heights(); for (size_t u = 0; u < L.size(); ++u) if (std::abs(bf(h, (int)u)) > 1) return false; return true; }
+    std::string shape(int u) const { return u < 0 ? "." : "(" + shape(L[u]) + shape(R[u]) + ")"; }                  // 작은 트리 전용(재귀)
+    void insertKey(int k) { int v = add(k); if (root < 0) { root = v; return; } int u = root; while (true) { int& nx = k < key[u] ? L[u] : R[u]; if (nx < 0) { nx = v; return; } u = nx; } }
+};
+int fibTree(BT& t, int h, int& nextKey) { if (h <= 0) return -1; int l = fibTree(t, h - 1, nextKey); int u = t.add(nextKey++); int r = fibTree(t, h - 2, nextKey); t.L[u] = l; t.R[u] = r; return u; }   // 왼쪽 T(h−1), 오른쪽 T(h−2)
+int perfectTree(BT& t, int h, int& nextKey) { if (h <= 0) return -1; int l = perfectTree(t, h - 1, nextKey); int u = t.add(nextKey++); int r = perfectTree(t, h - 1, nextKey); t.L[u] = l; t.R[u] = r; return u; }
+
+int main() {
+    // ② 독립적인 점화식: A[n][h] = 노드 n 개, 높이 h 인 AVL 모양의 수
+    const int NMAX = 64, HMAX = 8; static long long A[NMAX + 1][HMAX + 1]; A[0][0] = 1;
+    for (int n = 1; n <= NMAX; ++n) for (int h = 1; h <= HMAX; ++h) { long long s = 0; for (int k = 0; k < n; ++k) { int m = n - 1 - k; s += A[k][h - 1] * A[m][h - 1]; if (h >= 2) s += A[k][h - 1] * A[m][h - 2] + A[k][h - 2] * A[m][h - 1]; } A[n][h] = s; }
+    long long expect[] = {1, 1, 2, 1, 4, 6, 4, 17, 32};
+    for (int n = 0; n <= 8; ++n) { long long tot = 0; for (int h = 0; h <= HMAX; ++h) tot += A[n][h]; assert(tot == expect[n]); }
+    // ① 모든 삽입 순서 → 모양 → AVL 판정
+    for (int n = 1; n <= 8; ++n) {
+        std::set<std::string> avl, all; std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0);
+        do { BT t; for (int k : perm) t.insertKey(k); std::string s = t.shape(t.root); all.insert(s); if (t.isAvl()) avl.insert(s); } while (std::next_permutation(perm.begin(), perm.end()));
+        const long catalan[] = {1, 1, 2, 5, 14, 42, 132, 429, 1430}; assert((long)all.size() == catalan[n] && (long long)avl.size() == expect[n]);
+    }
+    int N[HMAX + 2]; N[0] = 0; N[1] = 1; for (int h = 2; h <= HMAX; ++h) N[h] = N[h - 1] + N[h - 2] + 1;                    // N: 0, 1, 2, 4, 7, 12, 20, 33
+    for (int h = 1; h <= 6; ++h) { int mn = -1, mx = -1; for (int n = 1; n <= NMAX; ++n) if (A[n][h] > 0) { if (mn < 0) mn = n; mx = n; } assert(mn == N[h] && mx == (1 << h) - 1); }          // 최소·최대 노드 수
+    std::vector<long> fibN(20, 0); fibN[1] = 1; for (int h = 2; h < 20; ++h) fibN[h] = fibN[h - 1] + fibN[h - 2] + 1;
+    for (int h = 1; h <= 18; ++h) {
+        BT f; int k = 0; f.root = fibTree(f, h, k); std::vector<int> hh = f.heights(); assert((long)f.key.size() == fibN[h]);                      // 노드 수 = N(h)
+        assert(hh[f.root] == h && f.isAvl()); for (size_t u = 0; u < f.L.size(); ++u) assert(f.bf(hh, (int)u) == (hh[u] >= 2 ? 1 : 0));          // 높이 ≥ 2 → bf = +1
+        BT pf; int k2 = 0; pf.root = perfectTree(pf, h, k2); std::vector<int> ph = pf.heights(); assert((int)pf.key.size() == (1 << h) - 1); for (size_t u = 0; u < pf.L.size(); ++u) assert(pf.bf(ph, (int)u) == 0);
+    }
+    // ③ 되짚기: 무작위 BST 에 잎을 하나 달 때 높이·bf 가 변하는 노드는 조상 사슬의 앞부분
+    std::mt19937 rng(11);
+    for (int it = 0; it < 300; ++it) {
+        BT t; int n = 5 + (int)(rng() % 300); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); for (int k : keys) t.insertKey(k * 2);   // 짝수 키만 → 사이사이에 새 키를 넣을 수 있다
+        std::vector<int> h0 = t.heights(); std::vector<int> bf0(t.L.size()); for (size_t u = 0; u < t.L.size(); ++u) bf0[u] = t.bf(h0, (int)u);
+        int newKey = 2 * (int)(rng() % n) + 1; t.insertKey(newKey); int leaf = (int)t.key.size() - 1;
+        std::vector<int> par(t.key.size(), -1); for (size_t u = 0; u < t.L.size(); ++u) { if (t.L[u] >= 0) par[t.L[u]] = (int)u; if (t.R[u] >= 0) par[t.R[u]] = (int)u; }
+        std::vector<int> h1 = t.heights(); std::vector<char> anc(t.key.size(), 0); bool stopped = false;
+        for (int u = par[leaf]; u >= 0; u = par[u]) { anc[u] = 1; bool changed = h1[u] != h0[u]; if (stopped) assert(!changed); if (!changed) stopped = true; assert(h1[u] - h0[u] <= 1); }   // 앞부분만 +1, 한 번 안 변하면 위는 모두 불변
+        for (size_t u = 0; u + 1 < t.key.size(); ++u) if (!anc[u]) { assert(h1[u] == h0[u] && t.bf(h1, (int)u) == bf0[u]); }
+    }
+    // ④ 100 만 노드 사슬: 루트 bf = n, AVL 이 아니다
+    { BT c; const int n = 1000000; for (int i = 0; i < n; ++i) c.add(i); c.root = 0; for (int i = 0; i + 1 < n; ++i) c.R[i] = i + 1; std::vector<int> h = c.heights(); assert(h[0] == n && c.bf(h, 0) == -(n - 1) && !c.isAvl()); }
+    std::cout << "BalanceFactor: AVL shape counts for n <= 8 matched the recurrence (1,1,2,1,4,6,4,17,32), min/max AVL sizes matched Fibonacci and 2^h-1, Fibonacci trees had bf=+1 everywhere above the leaves, and a new leaf changed heights only on a prefix of its ancestors" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: O(1) per node (저장된 높이 사용); 전체 재계산은 O(N)
+// Space Complexity: O(N)
 ```
 ## RotateLeft()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
-struct RN{ int key; RN *left,*right; RN(int k): key(k),left(nullptr),right(nullptr){} };
-RN* rotateLeft(RN* x){ RN* y=x->right; x->right=y->left; y->left=x; return y; }
-int main(){
-    RN* x=new RN(10); x->right=new RN(20); x->right->right=new RN(30);
-    RN* nr=rotateLeft(x);
-    assert(nr->key==20 && nr->left->key==10);
-    std::cout << "RotateLeft new root=" << nr->key << std::endl;
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
+
+// 왼쪽 회전(rotateLeft(x)): x 의 오른쪽 자식 y 를 올리고 x 를 y 의 왼쪽 자식으로 내린다; y 의 옛 왼쪽 부분 트리는 x 의 오른쪽으로.  *중위 순서를 바꾸지 않는* 국소 변형이라 AVL·레드-블랙·스플레이·트립이 모두 이것으로 균형을 맞춘다.
+//  모든 모양을 열거해 전수 확인한다 (키 = 중위 순서 번호, n ≤ 7, 모양은 카탈란 수 C(n) 개): ① 어떤 x 에서 돌려도 중위 순서·BST 성질·부모 링크 유지  ② x 의 깊이 +1, y 의 깊이 −1, y 의 부분 트리 크기 = 옛 x 의 크기, 그 밖의 노드는 깊이가 ±1 이내이고 x 의 부분 트리 바깥은 불변
+//  ③ rotateRight(y) 로 정확히 원래 모양으로 복귀  ④ 회전 그래프: 한 모양에서 가능한 회전은 (왼쪽 + 오른쪽) 정확히 n − 1 가지(간선마다 한 번)이고 서로 다른 모양을 만든다 — (n − 1) 정칙 연결 그래프, 오른쪽 사슬 → 왼쪽 사슬의 거리는 n − 1.
+struct T {
+    int n; std::vector<int> L, R, P; int root;
+    explicit T(int nn) : n(nn), L(nn, -1), R(nn, -1), P(nn, -1), root(-1) {}
+    void rotateLeft(int x) { int y = R[x]; R[x] = L[y]; if (L[y] >= 0) P[L[y]] = x; P[y] = P[x]; if (P[x] < 0) root = y; else if (L[P[x]] == x) L[P[x]] = y; else R[P[x]] = y; L[y] = x; P[x] = y; }
+    void rotateRight(int y) { int x = L[y]; L[y] = R[x]; if (R[x] >= 0) P[R[x]] = y; P[x] = P[y]; if (P[y] < 0) root = x; else if (L[P[y]] == y) L[P[y]] = x; else R[P[y]] = x; R[x] = y; P[y] = x; }
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(u); u = R[u]; } return out; }
+    int height(int u) const { if (u < 0) return -1; int best = 0; std::vector<std::pair<int, int>> st = {{u, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); best = std::max(best, p.second); if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return best; }
+    int bf(int u) const { return height(L[u]) - height(R[u]); }
+    bool same(const T& o) const { return root == o.root && L == o.L && R == o.R && P == o.P; }
+    bool linksOk() const { if (P[root] != -1) return false; int cnt = 0; std::vector<int> st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); ++cnt; if (L[u] >= 0) { if (P[L[u]] != u || L[u] >= u) return false; st.push_back(L[u]); } if (R[u] >= 0) { if (P[R[u]] != u || R[u] <= u) return false; st.push_back(R[u]); } } return cnt == n; }   // 키 = 번호이므로 왼쪽 자식 < 부모 < 오른쪽 자식
+};
+T randomBst(int n, std::mt19937& rng) { T t(n); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); t.root = keys[0]; for (int i = 1; i < n; ++i) { int k = keys[i], u = t.root; while (true) { int& nx = k < u ? t.L[u] : t.R[u]; if (nx < 0) { nx = k; t.P[k] = u; break; } u = nx; } } return t; }
+T mirrored(const T& t) { int n = t.n; T m(n); m.root = n - 1 - t.root; for (int k = 0; k < n; ++k) { int mk = n - 1 - k; m.L[mk] = t.R[k] >= 0 ? n - 1 - t.R[k] : -1; m.R[mk] = t.L[k] >= 0 ? n - 1 - t.L[k] : -1; m.P[mk] = t.P[k] >= 0 ? n - 1 - t.P[k] : -1; } return m; }   // 키 k → n−1−k, 좌우 교환
+
+std::map<std::string, T> allShapes(int n) {                                                                       // 모든 삽입 순서(n! 가지)를 BST 에 넣어 서로 다른 모양을 모은다
+    std::map<std::string, T> res; std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0);
+    do { T t(n); t.root = perm[0]; for (int i = 1; i < n; ++i) { int k = perm[i], u = t.root; while (true) { int& nx = k < u ? t.L[u] : t.R[u]; if (nx < 0) { nx = k; t.P[k] = u; break; } u = nx; } }
+         std::string code = std::to_string(t.root); for (int i = 0; i < n; ++i) code += "," + std::to_string(t.P[i]); res.emplace(code, t); } while (std::next_permutation(perm.begin(), perm.end()));
+    return res;
+}
+std::string codeOf(const T& t) { std::string code = std::to_string(t.root); for (int i = 0; i < t.n; ++i) code += "," + std::to_string(t.P[i]); return code; }
+std::vector<int> depths(const T& t) { std::vector<int> d(t.n, 0); std::vector<int> st = {t.root}; while (!st.empty()) { int u = st.back(); st.pop_back(); if (t.L[u] >= 0) { d[t.L[u]] = d[u] + 1; st.push_back(t.L[u]); } if (t.R[u] >= 0) { d[t.R[u]] = d[u] + 1; st.push_back(t.R[u]); } } return d; }
+std::vector<int> subtreeSizes(const T& t) { std::vector<int> s(t.n, 1), order = {t.root}; for (size_t i = 0; i < order.size(); ++i) { int u = order[i]; if (t.L[u] >= 0) order.push_back(t.L[u]); if (t.R[u] >= 0) order.push_back(t.R[u]); } for (size_t i = order.size(); i-- > 1;) s[t.P[order[i]]] += s[order[i]]; return s; }
+bool inSubtree(const T& t, int u, int x) { for (; u >= 0; u = t.P[u]) if (u == x) return true; return false; }
+
+int main() {
+    const long catalan[] = {1, 1, 2, 5, 14, 42, 132, 429};
+    for (int n = 1; n <= 7; ++n) {
+        std::map<std::string, T> shapeMap = allShapes(n); assert((long)shapeMap.size() == catalan[n]);               // 모양 수 = 카탈란 수
+        std::vector<T> shapes; std::map<std::string, int> index; for (auto& kv : shapeMap) { index[kv.first] = (int)shapes.size(); shapes.push_back(kv.second); }
+        std::vector<std::set<int>> adj(shapes.size()); long leftRot = 0, rightRot = 0;
+        for (size_t i = 0; i < shapes.size(); ++i) {
+            const T& t = shapes[i]; assert(t.linksOk()); std::vector<int> d0 = depths(t), s0 = subtreeSizes(t), in0 = t.inorder(); int moves = 0;
+            for (int x = 0; x < n; ++x) {
+                if (t.R[x] >= 0) { T c = t; int y = c.R[x]; c.rotateLeft(x); ++leftRot; ++moves;
+                    bool ok = c.linksOk() && c.inorder() == in0; assert(ok);                                          // ① 중위·BST·링크 유지
+                    std::vector<int> d1 = depths(c), s1 = subtreeSizes(c); assert(d1[x] == d0[x] + 1 && d1[y] == d0[y] - 1 && s1[y] == s0[x]);          // ② 깊이·크기
+                    for (int v = 0; v < n; ++v) { assert(std::abs(d1[v] - d0[v]) <= 1); if (!inSubtree(t, v, x)) assert(d1[v] == d0[v]); }
+                    T back = c; back.rotateRight(y); assert(back.same(t));                                           // ③ 역연산
+                    adj[i].insert(index.at(codeOf(c))); }
+                if (t.L[x] >= 0) { T c = t; c.rotateRight(x); ++rightRot; ++moves; bool ok = c.linksOk() && c.inorder() == in0; assert(ok); adj[i].insert(index.at(codeOf(c))); } }
+            assert(moves == n - 1 && (int)adj[i].size() == n - 1);                                                      // ④ 간선(부모-자식 쌍)마다 정확히 한 번의 회전, 결과는 모두 서로 다른 모양
+        }
+        assert(leftRot == rightRot && leftRot + rightRot == (long)shapes.size() * (n - 1));                              // 거울 대칭으로 왼쪽·오른쪽 회전 수가 같다
+        std::vector<int> dist(shapes.size(), -1); std::queue<int> q; dist[0] = 0; q.push(0); int reached = 1; while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (dist[v] < 0) { dist[v] = dist[u] + 1; ++reached; q.push(v); } } assert(reached == (int)shapes.size());          // 연결 그래프
+        T rightChain(n), leftChain(n); rightChain.root = 0; for (int i = 1; i < n; ++i) { rightChain.R[i - 1] = i; rightChain.P[i] = i - 1; } leftChain.root = n - 1; for (int i = n - 1; i > 0; --i) { leftChain.L[i] = i - 1; leftChain.P[i - 1] = i; }
+        std::vector<int> d2(shapes.size(), -1); std::queue<int> q2; int s = index.at(codeOf(rightChain)); d2[s] = 0; q2.push(s); while (!q2.empty()) { int u = q2.front(); q2.pop(); for (int v : adj[u]) if (d2[v] < 0) { d2[v] = d2[u] + 1; q2.push(v); } } assert(d2[index.at(codeOf(leftChain))] == n - 1);   // 사슬 → 사슬 = n − 1 번
+    }
+    std::mt19937 rng(3);                                                                                          // 큰 트리: 무작위 회전열이 중위·링크를 보존 (n = 2000, 회전 20 만 번)
+    const int n = 2000; T t = randomBst(n, rng);
+    for (int step = 0; step < 200000; ++step) { int x = (int)(rng() % n); if (rng() % 2) { if (t.R[x] >= 0) t.rotateLeft(x); } else if (t.L[x] >= 0) t.rotateRight(x); }
+    std::vector<int> in = t.inorder(); std::vector<int> want(n); std::iota(want.begin(), want.end(), 0); assert(t.linksOk() && in == want);
+    std::cout << "RotateLeft: for every BST shape with n <= 7 (Catalan many) and every pivot, left rotation kept in-order, links and sizes, moved depths by +1/-1 and was undone by right rotation; the rotation graph was (n-1)-regular and connected, right chain to left chain took exactly n-1 rotations; 2*10^5 random rotations on 2000 nodes kept the keys sorted" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: O(1) (포인터 몇 개)
+// Space Complexity: O(1)
 ```
 ## RotateRight()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
-struct RRN{ int key; RRN *left,*right; RRN(int k): key(k),left(nullptr),right(nullptr){} };
-RRN* rotateRight(RRN* y){ RRN* x=y->left; y->left=x->right; x->right=y; return x; }
-int main(){
-    RRN* y=new RRN(30); y->left=new RRN(20); y->left->left=new RRN(10);
-    RRN* nr=rotateRight(y);
-    assert(nr->key==20 && nr->right->key==30);
-    std::cout << "RotateRight new root=" << nr->key << std::endl;
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
+
+// 오른쪽 회전(rotateRight(y)): y 의 왼쪽 자식 x 를 올리고 y 를 x 의 오른쪽 자식으로 내린다 — 왼쪽 회전의 거울상.
+//  ① 대칭성: rotateRight(T, y) == mirror(rotateLeft(mirror(T), n−1−y)) (키를 k → n−1−k 로 바꾸고 좌우를 교환한 트리에서 왼쪽 회전)  ② 무작위 BST 에서 회전 100 만 번 뒤에도 중위 순서·부모 링크가 유지
+//  ③ AVL 응용: z 가 왼쪽으로 무거워(균형 인수 +2) 왼쪽 자식 x 의 균형 인수가 0 또는 +1 이면 오른쪽 회전 *한 번*으로 z·x 모두 |균형 인수| ≤ 1 이 되고, 부분 트리 높이는 x 가 +1 일 때(삽입 경우) 1 줄고 0 일 때(삭제 경우) 그대로
+//  ④ 오른쪽 사슬을 루트에서 n − 1 번 왼쪽 회전하면 왼쪽 사슬이 되고, 같은 횟수의 오른쪽 회전으로 정확히 원래대로 돌아온다 (깊이 5000).
+struct T {
+    int n; std::vector<int> L, R, P; int root;
+    explicit T(int nn) : n(nn), L(nn, -1), R(nn, -1), P(nn, -1), root(-1) {}
+    void rotateLeft(int x) { int y = R[x]; R[x] = L[y]; if (L[y] >= 0) P[L[y]] = x; P[y] = P[x]; if (P[x] < 0) root = y; else if (L[P[x]] == x) L[P[x]] = y; else R[P[x]] = y; L[y] = x; P[x] = y; }
+    void rotateRight(int y) { int x = L[y]; L[y] = R[x]; if (R[x] >= 0) P[R[x]] = y; P[x] = P[y]; if (P[y] < 0) root = x; else if (L[P[y]] == y) L[P[y]] = x; else R[P[y]] = x; R[x] = y; P[y] = x; }
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(u); u = R[u]; } return out; }
+    int height(int u) const { if (u < 0) return -1; int best = 0; std::vector<std::pair<int, int>> st = {{u, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); best = std::max(best, p.second); if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return best; }
+    int bf(int u) const { return height(L[u]) - height(R[u]); }
+    bool same(const T& o) const { return root == o.root && L == o.L && R == o.R && P == o.P; }
+    bool linksOk() const { if (P[root] != -1) return false; int cnt = 0; std::vector<int> st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); ++cnt; if (L[u] >= 0) { if (P[L[u]] != u || L[u] >= u) return false; st.push_back(L[u]); } if (R[u] >= 0) { if (P[R[u]] != u || R[u] <= u) return false; st.push_back(R[u]); } } return cnt == n; }   // 키 = 번호이므로 왼쪽 자식 < 부모 < 오른쪽 자식
+};
+T randomBst(int n, std::mt19937& rng) { T t(n); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); t.root = keys[0]; for (int i = 1; i < n; ++i) { int k = keys[i], u = t.root; while (true) { int& nx = k < u ? t.L[u] : t.R[u]; if (nx < 0) { nx = k; t.P[k] = u; break; } u = nx; } } return t; }
+T mirrored(const T& t) { int n = t.n; T m(n); m.root = n - 1 - t.root; for (int k = 0; k < n; ++k) { int mk = n - 1 - k; m.L[mk] = t.R[k] >= 0 ? n - 1 - t.R[k] : -1; m.R[mk] = t.L[k] >= 0 ? n - 1 - t.L[k] : -1; m.P[mk] = t.P[k] >= 0 ? n - 1 - t.P[k] : -1; } return m; }   // 키 k → n−1−k, 좌우 교환
+
+int main() {
+    std::mt19937 rng(9);
+    for (int it = 0; it < 3000; ++it) {                                                                          // ① 거울 대칭
+        int n = 1 + (int)(rng() % 40); T t = randomBst(n, rng); int y = (int)(rng() % n); if (t.L[y] < 0) continue;
+        T direct = t; direct.rotateRight(y); T m = mirrored(t); m.rotateLeft(n - 1 - y); T viaMirror = mirrored(m); assert(direct.same(viaMirror));
+        std::vector<int> want(n); std::iota(want.begin(), want.end(), 0); assert(direct.inorder() == want && direct.linksOk());
+    }
+    { const int n = 1000; T t = randomBst(n, rng); for (long step = 0; step < 1000000; ++step) { int x = (int)(rng() % n); if (rng() % 2) { if (t.L[x] >= 0) t.rotateRight(x); } else if (t.R[x] >= 0) t.rotateLeft(x); }
+      std::vector<int> in = t.inorder(); assert(t.linksOk() && std::is_sorted(in.begin(), in.end()) && (int)in.size() == n); }                // ②
+    int cases[2] = {0, 0};
+    for (int it = 0; it < 4000; ++it) {                                                                          // ③ AVL: 왼쪽 무거운 노드를 오른쪽 회전 한 번으로
+        T t = randomBst(3 + (int)(rng() % 40), rng);
+        for (int z = 0; z < t.n; ++z) { if (t.bf(z) != 2) continue; int x = t.L[z], bx = t.bf(x); if (bx != 0 && bx != 1) continue;
+            int hz = t.height(z); T c = t; c.rotateRight(z); assert(c.P[z] == x && c.R[x] == z);
+            assert(std::abs(c.bf(x)) <= 1 && std::abs(c.bf(z)) <= 1 && c.height(x) == hz - bx);                  // 높이: 삽입 경우(bx=1) −1, 삭제 경우(bx=0) 불변
+            ++cases[bx]; }
+    }
+    assert(cases[0] > 0 && cases[1] > 0);
+    const int N = 5000; T chain(N); chain.root = 0; for (int i = 1; i < N; ++i) { chain.R[i - 1] = i; chain.P[i] = i - 1; } T orig = chain;
+    for (int i = 0; i + 1 < N; ++i) chain.rotateLeft(chain.root);                                                // 루트를 계속 왼쪽 회전
+    assert(chain.linksOk() && chain.root == N - 1 && chain.R[chain.root] < 0 && chain.height(chain.root) == N - 1);   // 왼쪽 사슬
+    for (int i = 0; i + 1 < N; ++i) chain.rotateRight(chain.root);                                               // ④ 되돌리기
+    assert(chain.same(orig));
+    std::cout << "RotateRight: matched the mirror image of rotateLeft on random trees, kept 10^6 random rotations consistent, repaired " << cases[1] << " insertion-type and " << cases[0] << " deletion-type left-heavy AVL violations with one rotation, and turned a 5000-node right chain into a left chain and back" << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
+// Space Complexity: O(1)
 ```
 ## RotateLeftRight()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
-struct LRN{ int key; LRN *left,*right; LRN(int k): key(k),left(nullptr),right(nullptr){} };
-LRN* rL(LRN* x){ LRN* y=x->right; x->right=y->left; y->left=x; return y; }
-LRN* rR(LRN* y){ LRN* x=y->left; y->left=x->right; x->right=y; return x; }
-LRN* rotateLeftRight(LRN* z){ z->left=rL(z->left); return rR(z); }
-int main(){
-    LRN* z=new LRN(30); z->left=new LRN(10); z->left->right=new LRN(20);
-    LRN* nr=rotateLeftRight(z);
-    assert(nr->key==20);
-    std::cout << "RotateLeftRight new root=" << nr->key << std::endl;
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
+
+// 좌-우 이중 회전(LR): 노드 z 가 왼쪽으로 무거운데 그 왼쪽 자식 x 가 오른쪽으로 무거울 때(지그재그) 한 번의 회전으로는 안 된다 — x 를 먼저 왼쪽 회전해 (왼쪽, 왼쪽) 일직선으로 만든 뒤 z 를 오른쪽 회전.
+//  결과적으로 x 의 오른쪽 자식 y 가 부분 트리의 루트가 되고 x 는 그 왼쪽, z 는 그 오른쪽 자식이 된다.  ① 회전 두 번의 결과 = 명시적 재구성 공식  ② 중위 순서·링크 유지, rotateLeft(y); rotateRight(y) 로 정확히 복귀
+//  ③ AVL 에서 LR 불균형(z: +2, x: −1, y: |bf| ≤ 1)은 이중 회전으로 균형이 돌아오고 y 의 균형 인수는 0, 부분 트리 높이는 1 줄어든다  ④ 일직선 경우(LL: z +2, x +1)에 LR 을 잘못 쓰면 *항상* x 에서 균형이 깨진다 — 경우를 구분해야 하는 이유.
+struct T {
+    int n; std::vector<int> L, R, P; int root;
+    explicit T(int nn) : n(nn), L(nn, -1), R(nn, -1), P(nn, -1), root(-1) {}
+    void rotateLeft(int x) { int y = R[x]; R[x] = L[y]; if (L[y] >= 0) P[L[y]] = x; P[y] = P[x]; if (P[x] < 0) root = y; else if (L[P[x]] == x) L[P[x]] = y; else R[P[x]] = y; L[y] = x; P[x] = y; }
+    void rotateRight(int y) { int x = L[y]; L[y] = R[x]; if (R[x] >= 0) P[R[x]] = y; P[x] = P[y]; if (P[y] < 0) root = x; else if (L[P[y]] == y) L[P[y]] = x; else R[P[y]] = x; R[x] = y; P[y] = x; }
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(u); u = R[u]; } return out; }
+    int height(int u) const { if (u < 0) return -1; int best = 0; std::vector<std::pair<int, int>> st = {{u, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); best = std::max(best, p.second); if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return best; }
+    int bf(int u) const { return height(L[u]) - height(R[u]); }
+    bool same(const T& o) const { return root == o.root && L == o.L && R == o.R && P == o.P; }
+    bool linksOk() const { if (P[root] != -1) return false; int cnt = 0; std::vector<int> st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); ++cnt; if (L[u] >= 0) { if (P[L[u]] != u || L[u] >= u) return false; st.push_back(L[u]); } if (R[u] >= 0) { if (P[R[u]] != u || R[u] <= u) return false; st.push_back(R[u]); } } return cnt == n; }   // 키 = 번호이므로 왼쪽 자식 < 부모 < 오른쪽 자식
+};
+T randomBst(int n, std::mt19937& rng) { T t(n); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); t.root = keys[0]; for (int i = 1; i < n; ++i) { int k = keys[i], u = t.root; while (true) { int& nx = k < u ? t.L[u] : t.R[u]; if (nx < 0) { nx = k; t.P[k] = u; break; } u = nx; } } return t; }
+T mirrored(const T& t) { int n = t.n; T m(n); m.root = n - 1 - t.root; for (int k = 0; k < n; ++k) { int mk = n - 1 - k; m.L[mk] = t.R[k] >= 0 ? n - 1 - t.R[k] : -1; m.R[mk] = t.L[k] >= 0 ? n - 1 - t.L[k] : -1; m.P[mk] = t.P[k] >= 0 ? n - 1 - t.P[k] : -1; } return m; }   // 키 k → n−1−k, 좌우 교환
+
+void rotateLR(T& t, int z) { t.rotateLeft(t.L[z]); t.rotateRight(z); }
+void explicitLR(T& t, int z) {                                                                                  // 공식: x = z.left, y = x.right; y 가 루트, x = y.left (x.right ← y.left), z = y.right (z.left ← y.right)
+    int x = t.L[z], y = t.R[x], pz = t.P[z], yl = t.L[y], yr = t.R[y];
+    t.L[y] = x; t.R[y] = z; t.P[x] = y; t.P[z] = y; t.R[x] = yl; if (yl >= 0) t.P[yl] = x; t.L[z] = yr; if (yr >= 0) t.P[yr] = z;
+    t.P[y] = pz; if (pz < 0) t.root = y; else if (t.L[pz] == z) t.L[pz] = y; else t.R[pz] = y;
+}
+
+int main() {
+    { T t(3); t.root = 2; t.L[2] = 0; t.P[0] = 2; t.R[0] = 1; t.P[1] = 0; rotateLR(t, 2); assert(t.root == 1 && t.L[1] == 0 && t.R[1] == 2 && t.linksOk() && t.height(t.root) == 1); }   // 30, 10, 20 → 20 이 루트
+    std::mt19937 rng(21); int checked = 0;
+    for (int it = 0; it < 5000; ++it) {
+        int n = 3 + (int)(rng() % 40); T t = randomBst(n, rng); std::vector<int> in0 = t.inorder();
+        for (int z = 0; z < n; ++z) { if (t.L[z] < 0 || t.R[t.L[z]] < 0) continue; int x = t.L[z], y = t.R[x];
+            T a = t, b = t; rotateLR(a, z); explicitLR(b, z); assert(a.same(b) && a.linksOk() && a.inorder() == in0);               // ① ②
+            assert(a.L[y] == x && a.R[y] == z && a.P[y] == t.P[z]);                                                       // y 가 새 부분 트리 루트
+            a.rotateLeft(y); a.rotateRight(y); assert(a.same(t)); ++checked; }                                            // 복귀: z 쪽 회전을 무르고 x 쪽 회전을 무른다
+    }
+    int fixedLR = 0, triedLL = 0, brokenLL = 0;
+    for (int it = 0; it < 6000; ++it) {
+        T t = randomBst(3 + (int)(rng() % 40), rng);
+        for (int z = 0; z < t.n; ++z) { if (t.bf(z) != 2) continue; int x = t.L[z], bx = t.bf(x), hz = t.height(z);
+            if (bx == -1 && std::abs(t.bf(t.R[x])) <= 1) { T c = t; int y = c.R[x]; rotateLR(c, z);                       // ③ 올바른 사용
+                assert(c.bf(y) == 0 && std::abs(c.bf(x)) <= 1 && std::abs(c.bf(z)) <= 1 && c.height(y) == hz - 1); ++fixedLR; }
+            else if (bx == 1 && t.R[x] >= 0) { T c = t; int y = c.R[x]; rotateLR(c, z); ++triedLL; if (std::abs(c.bf(x)) > 1) ++brokenLL; (void)y; } }   // ④ 잘못된 사용
+    }
+    assert(fixedLR > 0 && triedLL > 0 && brokenLL == triedLL);
+    { const int n = 1000; T t = randomBst(n, rng); for (long step = 0; step < 1000000; ++step) { int z = (int)(rng() % n); if (t.L[z] >= 0 && t.R[t.L[z]] >= 0) rotateLR(t, z); else if (t.R[z] >= 0) t.rotateLeft(z); }     // 무작위 이중·단일 회전 100 만 번
+      std::vector<int> in = t.inorder(); assert(t.linksOk() && std::is_sorted(in.begin(), in.end()) && (int)in.size() == n); }
+    std::cout << "RotateLeftRight: double rotation equalled the explicit zig-zag reconstruction and was invertible on " << checked << " random pivots; " << fixedLR << " unbalanced AVL (LR) cases were repaired (balance factor 0 at the new root, height reduced by one), while applying it to " << triedLL << " straight (LL) cases broke balance in " << brokenLL << " of them" << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
+// Space Complexity: O(1)
 ```
 ## RotateRightLeft()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
-struct RLN{ int key; RLN *left,*right; RLN(int k): key(k),left(nullptr),right(nullptr){} };
-RLN* rLN(RLN* x){ RLN* y=x->right; x->right=y->left; y->left=x; return y; }
-RLN* rRN(RLN* y){ RLN* x=y->left; y->left=x->right; x->right=y; return x; }
-RLN* rotateRightLeft(RLN* z){ z->right=rRN(z->right); return rLN(z); }
-int main(){
-    RLN* z=new RLN(10); z->right=new RLN(30); z->right->left=new RLN(20);
-    RLN* nr=rotateRightLeft(z);
-    assert(nr->key==20);
-    std::cout << "RotateRightLeft new root=" << nr->key << std::endl;
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
+
+// 우-좌 이중 회전(RL): 노드 z 가 오른쪽으로 무거운데 그 오른쪽 자식 x 가 왼쪽으로 무거울 때(지그재그) — x 를 먼저 오른쪽 회전한 뒤 z 를 왼쪽 회전.  LR 의 거울상이다.
+//  ① 명시적 재구성(x 의 왼쪽 자식 y 가 루트, z 는 y.left, x 는 y.right) = 회전 두 번  ② 대칭: RL(T, z) = mirror(LR(mirror(T), n−1−z))  ③ 중위 보존, 링크 일관성
+//  ④ AVL: RL 불균형(z: −2, x: +1, y: |bf| ≤ 1)을 이중 회전이 고친다 — y 의 균형 인수 0, 높이 1 감소  ⑤ 가장 작은 예: 삽입 순서 10, 30, 20 → 20 이 루트(높이 1).  100 만 번의 무작위 회전 뒤에도 일관.
+struct T {
+    int n; std::vector<int> L, R, P; int root;
+    explicit T(int nn) : n(nn), L(nn, -1), R(nn, -1), P(nn, -1), root(-1) {}
+    void rotateLeft(int x) { int y = R[x]; R[x] = L[y]; if (L[y] >= 0) P[L[y]] = x; P[y] = P[x]; if (P[x] < 0) root = y; else if (L[P[x]] == x) L[P[x]] = y; else R[P[x]] = y; L[y] = x; P[x] = y; }
+    void rotateRight(int y) { int x = L[y]; L[y] = R[x]; if (R[x] >= 0) P[R[x]] = y; P[x] = P[y]; if (P[y] < 0) root = x; else if (L[P[y]] == y) L[P[y]] = x; else R[P[y]] = x; R[x] = y; P[y] = x; }
+    std::vector<int> inorder() const { std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = L[u]; } u = st.back(); st.pop_back(); out.push_back(u); u = R[u]; } return out; }
+    int height(int u) const { if (u < 0) return -1; int best = 0; std::vector<std::pair<int, int>> st = {{u, 0}}; while (!st.empty()) { auto p = st.back(); st.pop_back(); best = std::max(best, p.second); if (L[p.first] >= 0) st.push_back({L[p.first], p.second + 1}); if (R[p.first] >= 0) st.push_back({R[p.first], p.second + 1}); } return best; }
+    int bf(int u) const { return height(L[u]) - height(R[u]); }
+    bool same(const T& o) const { return root == o.root && L == o.L && R == o.R && P == o.P; }
+    bool linksOk() const { if (P[root] != -1) return false; int cnt = 0; std::vector<int> st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); ++cnt; if (L[u] >= 0) { if (P[L[u]] != u || L[u] >= u) return false; st.push_back(L[u]); } if (R[u] >= 0) { if (P[R[u]] != u || R[u] <= u) return false; st.push_back(R[u]); } } return cnt == n; }   // 키 = 번호이므로 왼쪽 자식 < 부모 < 오른쪽 자식
+};
+T randomBst(int n, std::mt19937& rng) { T t(n); std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); t.root = keys[0]; for (int i = 1; i < n; ++i) { int k = keys[i], u = t.root; while (true) { int& nx = k < u ? t.L[u] : t.R[u]; if (nx < 0) { nx = k; t.P[k] = u; break; } u = nx; } } return t; }
+T mirrored(const T& t) { int n = t.n; T m(n); m.root = n - 1 - t.root; for (int k = 0; k < n; ++k) { int mk = n - 1 - k; m.L[mk] = t.R[k] >= 0 ? n - 1 - t.R[k] : -1; m.R[mk] = t.L[k] >= 0 ? n - 1 - t.L[k] : -1; m.P[mk] = t.P[k] >= 0 ? n - 1 - t.P[k] : -1; } return m; }   // 키 k → n−1−k, 좌우 교환
+
+void rotateRL(T& t, int z) { t.rotateRight(t.R[z]); t.rotateLeft(z); }
+void rotateLR(T& t, int z) { t.rotateLeft(t.L[z]); t.rotateRight(z); }
+void explicitRL(T& t, int z) {                                                                                  // x = z.right, y = x.left: y 가 루트, z = y.left (z.right ← y.left), x = y.right (x.left ← y.right)
+    int x = t.R[z], y = t.L[x], pz = t.P[z], yl = t.L[y], yr = t.R[y];
+    t.L[y] = z; t.R[y] = x; t.P[z] = y; t.P[x] = y; t.R[z] = yl; if (yl >= 0) t.P[yl] = z; t.L[x] = yr; if (yr >= 0) t.P[yr] = x;
+    t.P[y] = pz; if (pz < 0) t.root = y; else if (t.L[pz] == z) t.L[pz] = y; else t.R[pz] = y;
+}
+
+int main() {
+    { T t(3); t.root = 0; t.R[0] = 2; t.P[2] = 0; t.L[2] = 1; t.P[1] = 2; rotateRL(t, 0); assert(t.root == 1 && t.L[1] == 0 && t.R[1] == 2 && t.height(t.root) == 1 && t.linksOk()); }          // 10, 30, 20 (키 0, 2, 1)
+    std::mt19937 rng(23); int checked = 0;
+    for (int it = 0; it < 5000; ++it) {
+        int n = 3 + (int)(rng() % 40); T t = randomBst(n, rng); std::vector<int> in0 = t.inorder();
+        for (int z = 0; z < n; ++z) { if (t.R[z] < 0 || t.L[t.R[z]] < 0) continue; int x = t.R[z], y = t.L[x];
+            T a = t, b = t; rotateRL(a, z); explicitRL(b, z); assert(a.same(b) && a.linksOk() && a.inorder() == in0);               // ① ③
+            assert(a.L[y] == z && a.R[y] == x && a.P[y] == t.P[z]);
+            T m = mirrored(t); rotateLR(m, n - 1 - z); T back = mirrored(m); assert(back.same(a));                          // ② RL(T) = mirror(LR(mirror(T)))
+            a.rotateRight(y); a.rotateLeft(y); assert(a.same(t)); ++checked; }                                              // 복귀
+    }
+    int fixedRL = 0;
+    for (int it = 0; it < 6000; ++it) {                                                                          // ④ AVL RL 불균형 수리
+        T t = randomBst(3 + (int)(rng() % 40), rng);
+        for (int z = 0; z < t.n; ++z) { if (t.bf(z) != -2) continue; int x = t.R[z]; if (t.bf(x) != 1 || std::abs(t.bf(t.L[x])) > 1) continue;
+            int y = t.L[x], hz = t.height(z); T c = t; rotateRL(c, z);
+            assert(c.bf(y) == 0 && std::abs(c.bf(x)) <= 1 && std::abs(c.bf(z)) <= 1 && c.height(y) == hz - 1); ++fixedRL; }
+    }
+    assert(fixedRL > 0);
+    { const int n = 1000; T t = randomBst(n, rng); for (long step = 0; step < 1000000; ++step) { int z = (int)(rng() % n); if (t.R[z] >= 0 && t.L[t.R[z]] >= 0 && rng() % 2) rotateRL(t, z); else if (t.L[z] >= 0 && t.R[t.L[z]] >= 0) rotateLR(t, z); }
+      std::vector<int> in = t.inorder(); assert(t.linksOk() && std::is_sorted(in.begin(), in.end()) && (int)in.size() == n); }
+    std::cout << "RotateRightLeft: double rotation equalled the explicit zig-zag reconstruction and the mirror image of the LR rotation on " << checked << " random pivots and was invertible; " << fixedRL << " right-left unbalanced AVL cases were repaired (new root balanced, height reduced by one); 10^6 random double rotations kept the 1000-node tree sorted and consistent" << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
+// Space Complexity: O(1)
 ```
 
 # Part 7. Red-Black Tree
@@ -1245,11 +2458,13 @@ void rbInsert(RBNode*& root, int key) {
     if(y==TNULL) root=n; else if(n->key<y->key) y->left=n; else y->right=n;
     fixInsert(root,n);
 }
+void destroyRB(RBNode* n) { if (n == TNULL) return; destroyRB(n->left); destroyRB(n->right); delete n; }
 int main() {
     TNULL=new RBNode(); TNULL->color=BLACK; RBNode* root=TNULL;
     for(int k:{10,20,30,15,5}) rbInsert(root,k);
     assert(root->color==BLACK);
     std::cout << "RBInsert verified. Root=" << root->key << std::endl;
+    destroyRB(root); delete TNULL;
     return 0;
 }
 // Time Complexity: O(log N)
@@ -1272,6 +2487,8 @@ struct Node { int key; Color c; Node *l, *r, *p; };
 struct RBTree {
     Node *nil, *root;
     RBTree() { nil = new Node{0, BLACK, nullptr, nullptr, nullptr}; nil->l = nil->r = nil->p = nil; root = nil; }
+    void freeSub(Node* n) { if (n == nil) return; freeSub(n->l); freeSub(n->r); delete n; }
+    ~RBTree() { freeSub(root); delete nil; }
     void rotL(Node* x) { Node* y = x->r; x->r = y->l; if (y->l != nil) y->l->p = x; y->p = x->p; if (x->p == nil) root = y; else if (x == x->p->l) x->p->l = y; else x->p->r = y; y->l = x; x->p = y; }
     void rotR(Node* x) { Node* y = x->l; x->l = y->r; if (y->r != nil) y->r->p = x; y->p = x->p; if (x->p == nil) root = y; else if (x == x->p->r) x->p->r = y; else x->p->l = y; y->r = x; x->p = y; }
     void insertFix(Node* z) {
@@ -1880,55 +3097,100 @@ int main() {
 ## HeapInsert()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <functional>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 
-// 힙 삽입(트리 관점의 요약, 정본은 Queue.md Part 5): 완전이진트리의 배열 표현에서 맨 끝(다음 빈 자리)에 넣고 부모보다 작으면 위로 올린다(sift-up).
-// 배열 인덱스로 트리 관계가 정해진다: 부모 (i-1)/2, 왼쪽 자식 2i+1, 오른쪽 자식 2i+2
-void heapInsert(std::vector<int>& h, int v) {
-    h.push_back(v);
-    for (size_t i = h.size() - 1; i > 0 && h[(i - 1) / 2] > h[i]; i = (i - 1) / 2) std::swap(h[i], h[(i - 1) / 2]);
-}
+// 힙 삽입(트리 관점의 요약, 정본은 Queue.md Part 5): 완전 이진 트리의 배열 표현에서 맨 끝(다음 빈 자리)에 넣고 부모보다 작으면 위로 올린다(sift-up).  배열 인덱스로 트리 관계가 정해진다: 부모 (i−1)/2, 왼쪽 자식 2i+1, 오른쪽 자식 2i+2.
+//  ① 트리 관점 확인: 레벨 순서로 노드를 하나씩 "비어 있는 첫 자리"에 붙여 만든 *명시적* 이진 트리의 부모·자식 관계가 인덱스 공식과 같고 깊이 = ⌊log2(i+1)⌋, 높이 = ⌊log2 n⌋  ② 모든 삽입 순서(n ≤ 8)에서 힙 성질이 성립하고 만들 수 있는 서로 다른 힙은 n!/∏(부분 트리 크기) 개 이하
+//  ③ 비용: 내림차순 삽입(매번 새 최솟값)은 총 Σ⌊log2 i⌋ 번 교환(최악), 오름차순은 0 번; 무작위 삽입의 평균 교환은 상수(<3).  100 만 개를 std::priority_queue 가 만든 것과 같은 정렬 결과로 대조 (std::is_heap 으로도 독립 검증).
+struct MinHeap {
+    std::vector<int> a; long swaps = 0;
+    void push(int v) { a.push_back(v); size_t i = a.size() - 1; while (i > 0 && a[(i - 1) / 2] > a[i]) { std::swap(a[i], a[(i - 1) / 2]); i = (i - 1) / 2; ++swaps; } }
+    bool valid() const { for (size_t i = 1; i < a.size(); ++i) if (a[(i - 1) / 2] > a[i]) return false; return true; }
+};
+long sumFloorLog2(int n) { long s = 0; for (int i = 1; i <= n; ++i) s += 31 - __builtin_clz((unsigned)i); return s; }
 
 int main() {
-    std::vector<int> h;
-    for (int v : {5, 3, 8, 1, 9, 2}) heapInsert(h, v);
-    assert(h[0] == 1);                                                         // 최솟값이 루트
-    for (size_t i = 1; i < h.size(); i++) assert(h[(i - 1) / 2] <= h[i]);       // 힙 성질: 부모 <= 자식
-    std::cout << "HeapInsert: root=" << h[0] << std::endl;
+    for (int n = 1; n <= 2000; ++n) {                                                                            // ① 명시적 트리: 노드를 레벨 순서로 첫 빈 자리에 붙인다
+        std::vector<int> L(n, -1), R(n, -1), P(n, -1), dep(n, 0); std::queue<int> open; open.push(0);
+        for (int v = 1; v < n; ++v) { int u = open.front(); if (L[u] < 0) L[u] = v; else { R[u] = v; open.pop(); } P[v] = u; dep[v] = dep[u] + 1; open.push(v); }
+        for (int i = 0; i < n; ++i) { assert(L[i] == (2 * i + 1 < n ? 2 * i + 1 : -1) && R[i] == (2 * i + 2 < n ? 2 * i + 2 : -1) && (i == 0 ? P[i] == -1 : P[i] == (i - 1) / 2)); assert(dep[i] == 31 - __builtin_clz((unsigned)(i + 1))); }
+        assert(*std::max_element(dep.begin(), dep.end()) == 31 - __builtin_clz((unsigned)n));
+    }
+    for (int n = 1; n <= 8; ++n) {                                                                               // ② 모든 삽입 순서
+        std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); std::set<std::vector<int>> shapes;
+        do { MinHeap h; for (int v : perm) { h.push(v); assert(h.valid()); } assert(h.a[0] == 0 && std::is_heap(h.a.begin(), h.a.end(), std::greater<int>())); shapes.insert(h.a); } while (std::next_permutation(perm.begin(), perm.end()));
+        std::vector<long> sz(n, 1); for (int i = n - 1; i > 0; --i) sz[(i - 1) / 2] += sz[i]; double heaps = 1; for (int i = 1; i <= n; ++i) heaps *= i; for (int i = 0; i < n; ++i) heaps /= (double)sz[i];     // 훅 길이 공식 n!/∏ size
+        assert((double)shapes.size() <= heaps + 0.5);
+    }
+    { const int n = 100000; MinHeap down, up; for (int i = n; i >= 1; --i) down.push(i); for (int i = 1; i <= n; ++i) up.push(i); assert(down.swaps == sumFloorLog2(n) && up.swaps == 0 && up.valid() && down.valid()); }          // ③ 최악·최선
+    std::mt19937 rng(17); const int n = 1000000; MinHeap h; std::priority_queue<int, std::vector<int>, std::greater<int>> ref; std::vector<int> vals(n);
+    for (int i = 0; i < n; ++i) { vals[i] = (int)(rng() % 2000001) - 1000000; h.push(vals[i]); ref.push(vals[i]); }
+    assert(h.valid() && std::is_heap(h.a.begin(), h.a.end(), std::greater<int>()) && h.a[0] == *std::min_element(vals.begin(), vals.end()) && h.a[0] == ref.top());
+    double avg = (double)h.swaps / n; assert(avg < 3.0);
+    std::vector<int> sorted = h.a; std::sort(sorted.begin(), sorted.end()); std::vector<int> viaRef; viaRef.reserve(n); while (!ref.empty()) { viaRef.push_back(ref.top()); ref.pop(); } assert(sorted == viaRef);
+    std::cout << "HeapInsert: array index formulas matched an explicit level-order tree up to n=2000, every insertion order of up to 8 keys gave a valid heap, descending inserts cost exactly sum(floor(log2 i)) swaps, and 10^6 random inserts (avg " << avg << " swaps) matched std::priority_queue" << std::endl;
     return 0;
 }
-// Time Complexity: O(log N)
+// Time Complexity: O(log N) (평균 O(1))
 // Space Complexity: O(1)
 ```
 ## HeapDelete()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <functional>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 
-// 힙 삭제(요약, 정본은 Queue.md Part 5): 루트를 빼고 맨 끝 원소를 루트로 옮긴 뒤 더 작은 자식과 교환하며 내린다(sift-down)
-int heapDelete(std::vector<int>& h) {
-    int top = h[0]; h[0] = h.back(); h.pop_back();
-    size_t i = 0, n = h.size();
-    for (;;) {
-        size_t l = 2 * i + 1, r = l + 1, s = i;
-        if (l < n && h[l] < h[s]) s = l;
-        if (r < n && h[r] < h[s]) s = r;
-        if (s == i) break;
-        std::swap(h[i], h[s]); i = s;
-    }
-    return top;
-}
+// 힙 삭제(요약, 정본은 Queue.md Part 5): 루트를 빼고 맨 끝 원소를 루트로 옮긴 뒤 더 작은 자식과 교환하며 내린다(sift-down).  임의 위치 i 삭제도 같다 — 맨 끝 원소를 i 로 옮기고, 부모보다 작으면 올리고(sift-up) 아니면 내린다(sift-down); 둘 중 *하나만* 일어난다.
+//  ① 모든 삽입 순서(n ≤ 8)에서 전부 꺼내면 오름차순, 매 단계 힙 성질  ② 무작위 삽입·pop·임의 위치 삭제 100 만 연산을 std::multiset 과 대조 (중복 값 포함, 크기 최대 10^5)  ③ 교환 ≤ ⌊log2 n⌋, 전부 pop 하는 힙 정렬의 비교 ≤ 2·Σ⌊log2 i⌋ — 100 만 개를 std::sort 와 대조
+//  ④ 임의 위치 삭제에서 sift-up 이 필요한 경우와 sift-down 이 필요한 경우가 모두 실제로 나타남.
+struct MinHeap {
+    std::vector<int> a; long swaps = 0, cmps = 0; long ups = 0, downs = 0;
+    void siftUp(size_t i) { while (i > 0) { ++cmps; if (a[(i - 1) / 2] <= a[i]) break; std::swap(a[i], a[(i - 1) / 2]); i = (i - 1) / 2; ++swaps; } }
+    void siftDown(size_t i) { size_t n = a.size(); for (;;) { size_t l = 2 * i + 1, r = l + 1, s = i; if (l < n) { ++cmps; if (a[l] < a[s]) s = l; } if (r < n) { ++cmps; if (a[r] < a[s]) s = r; } if (s == i) return; std::swap(a[i], a[s]); i = s; ++swaps; } }
+    void push(int v) { a.push_back(v); siftUp(a.size() - 1); }
+    int pop() { int top = a[0]; a[0] = a.back(); a.pop_back(); if (!a.empty()) siftDown(0); return top; }
+    int eraseAt(size_t i) { int v = a[i]; a[i] = a.back(); a.pop_back(); if (i < a.size()) { if (i > 0 && a[(i - 1) / 2] > a[i]) { siftUp(i); ++ups; } else { siftDown(i); ++downs; } } return v; }
+    bool valid() const { for (size_t i = 1; i < a.size(); ++i) if (a[(i - 1) / 2] > a[i]) return false; return true; }
+};
+long sumFloorLog2(int n) { long s = 0; for (int i = 1; i <= n; ++i) s += 31 - __builtin_clz((unsigned)i); return s; }
 
 int main() {
-    std::vector<int> h = {1, 3, 2, 7, 4, 8, 9};                                 // 이미 힙
-    assert(heapDelete(h) == 1 && h[0] == 2);
-    assert(heapDelete(h) == 2 && h[0] == 3);
-    for (size_t i = 1; i < h.size(); i++) assert(h[(i - 1) / 2] <= h[i]);
-    std::cout << "HeapDelete verified." << std::endl;
+    for (int n = 1; n <= 8; ++n) {                                                                               // ① 모든 삽입 순서 × 전부 pop
+        std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0);
+        do { MinHeap h; for (int v : perm) h.push(v); for (int want = 0; want < n; ++want) { assert(h.pop() == want); assert(h.valid()); } assert(h.a.empty()); } while (std::next_permutation(perm.begin(), perm.end()));
+    }
+    { MinHeap h; h.push(7); assert(h.pop() == 7 && h.a.empty()); h.push(3); h.push(3); assert(h.pop() == 3 && h.pop() == 3 && h.a.empty()); }          // 한 개·중복
+    std::mt19937 rng(29); MinHeap h; std::multiset<int> ref;                                                     // ② 임의 연산 대조
+    for (long step = 0; step < 1000000; ++step) {
+        int op = (int)(rng() % 100);
+        if (h.a.empty() || (op < 52 && h.a.size() < 100000)) { int v = (int)(rng() % 5000); h.push(v); ref.insert(v); }
+        else if (op < 76) { int got = h.pop(); assert(got == *ref.begin()); ref.erase(ref.begin()); }
+        else { size_t i = rng() % h.a.size(); int v = h.eraseAt(i); auto it = ref.find(v); assert(it != ref.end()); ref.erase(it); }
+        if (step % 20011 == 0) { assert(h.valid() && h.a.size() == ref.size()); }
+    }
+    assert(h.valid() && h.a.size() == ref.size() && h.a[0] == *ref.begin()); std::vector<int> sortedA = h.a; std::sort(sortedA.begin(), sortedA.end()); assert(sortedA == std::vector<int>(ref.begin(), ref.end()));
+    assert(h.ups > 0 && h.downs > 0);                                                                            // ④
+    const int n = 1000000; MinHeap hs; std::vector<int> vals(n); for (int i = 0; i < n; ++i) { vals[i] = (int)(rng() % 1000000); hs.push(vals[i]); }
+    hs.swaps = hs.cmps = 0; std::vector<int> out; out.reserve(n); long worstSwaps = 0; while (!hs.a.empty()) { long before = hs.swaps; size_t sz = hs.a.size(); out.push_back(hs.pop()); worstSwaps = std::max(worstSwaps, hs.swaps - before); assert(hs.swaps - before <= 31 - __builtin_clz((unsigned)sz)); }          // ③
+    std::sort(vals.begin(), vals.end()); assert(out == vals && hs.cmps <= 2 * sumFloorLog2(n) && hs.swaps <= sumFloorLog2(n));
+    std::cout << "HeapDelete: all insertion orders of up to 8 keys popped in sorted order, 10^6 random push/pop/erase-at operations matched std::multiset (" << h.ups << " sift-up and " << h.downs << " sift-down deletions), and heap-sorting 10^6 keys used " << hs.cmps << " comparisons (bound 2*sum floor(log2 i) = " << 2 * sumFloorLog2(n) << ")" << std::endl;
     return 0;
 }
 // Time Complexity: O(log N)
@@ -1937,30 +3199,50 @@ int main() {
 ## Heapify()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <functional>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 
-// Heapify(요약, 정본은 Queue.md Part 5): 노드 i 의 두 서브트리가 이미 힙일 때, i 를 아래로 내려 전체를 힙으로 만든다 (sift-down 한 번)
+// Heapify(요약, 정본은 Queue.md Part 5): 노드 i 의 두 서브트리가 이미 힙일 때, i 를 아래로 내려 전체를 힙으로 만든다 (sift-down 한 번).  Floyd 의 build-heap = 마지막 내부 노드부터 루트까지 heapify 를 한 번씩 → O(N) (N 번 삽입의 O(N log N) 보다 싸다).
+//  ① 전제 조건의 필요성: n = 7 의 5040 개 순열 중 두 서브트리가 모두 힙인 것은 정확히 5040·(1/3)·(1/3) = 560 개이고 전부 heapify(0) 으로 힙이 된다; 전제를 어긴 순열 중에는 heapify(0) 한 번으로 힙이 안 되는 것이 있다
+//  ② build-heap: n ≤ 9 의 모든 순열에서 힙이 되고 만들어지는 서로 다른 힙의 수 = 훅 길이 공식 n!/∏(부분 트리 크기)  ③ 비용: 교환 ≤ Σ(노드 높이) = n − popcount(n), 비교 ≤ 2n — 무작위·정렬·역정렬 100 만 개로 확인하고 std::is_heap / std::make_heap 으로 독립 검증.
+long swaps = 0, cmps = 0;
 void heapify(std::vector<int>& a, size_t n, size_t i) {
-    for (;;) {
-        size_t l = 2 * i + 1, r = l + 1, s = i;
-        if (l < n && a[l] < a[s]) s = l;
-        if (r < n && a[r] < a[s]) s = r;
-        if (s == i) return;
-        std::swap(a[i], a[s]); i = s;
-    }
+    for (;;) { size_t l = 2 * i + 1, r = l + 1, s = i; if (l < n) { ++cmps; if (a[l] < a[s]) s = l; } if (r < n) { ++cmps; if (a[r] < a[s]) s = r; } if (s == i) return; std::swap(a[i], a[s]); i = s; ++swaps; }
 }
+void buildHeap(std::vector<int>& a) { for (size_t i = a.size() / 2; i-- > 0;) heapify(a, a.size(), i); }
+bool isHeap(const std::vector<int>& a) { for (size_t i = 1; i < a.size(); ++i) if (a[(i - 1) / 2] > a[i]) return false; return true; }
+bool subtreesAreHeaps(const std::vector<int>& a) { for (size_t j = 3; j < a.size(); ++j) if (a[(j - 1) / 2] > a[j]) return false; return true; }              // 루트의 두 서브트리가 힙인가 (루트를 부모로 갖는 간선 제외)
 
 int main() {
-    std::vector<int> a = {9, 1, 2, 3, 4, 5, 6};                                 // 루트만 힙 성질을 어김 (서브트리는 힙)
-    heapify(a, a.size(), 0);
-    assert(a[0] == 1);
-    for (size_t i = 1; i < a.size(); i++) assert(a[(i - 1) / 2] <= a[i]);
-    std::cout << "Heapify verified." << std::endl;
+    { const int n = 7; std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); int satisfied = 0, brokenAfter = 0;                                          // ①
+      do { std::vector<int> a = perm; if (subtreesAreHeaps(a)) { ++satisfied; heapify(a, n, 0); assert(isHeap(a)); std::vector<int> s = a; std::sort(s.begin(), s.end()); assert(s == std::vector<int>({0, 1, 2, 3, 4, 5, 6})); }
+           else { heapify(a, n, 0); if (!isHeap(a)) ++brokenAfter; } } while (std::next_permutation(perm.begin(), perm.end()));
+      assert(satisfied == 560 && brokenAfter > 0); }
+    for (int n = 1; n <= 9; ++n) {                                                                               // ② 모든 순열
+        std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); std::set<std::vector<int>> heaps;
+        do { std::vector<int> a = perm; buildHeap(a); assert(isHeap(a) && std::is_heap(a.begin(), a.end(), std::greater<int>())); heaps.insert(a); } while (std::next_permutation(perm.begin(), perm.end()));
+        std::vector<long> sz(n, 1); for (int i = n - 1; i > 0; --i) sz[(i - 1) / 2] += sz[i]; double want = 1; for (int i = 1; i <= n; ++i) want *= i; for (int i = 0; i < n; ++i) want /= (double)sz[i];
+        assert((double)heaps.size() > want - 0.5 && (double)heaps.size() < want + 0.5);                          // 모든 힙이 결과로 나온다(힙은 자기 자신으로 고정)
+    }
+    std::mt19937 rng(41); const int n = 1000000;
+    for (int mode = 0; mode < 3; ++mode) {                                                                       // ③ 무작위 / 오름차순 / 내림차순(최악)
+        std::vector<int> a(n); for (int i = 0; i < n; ++i) a[i] = mode == 0 ? (int)(rng() % 1000000) : mode == 1 ? i : n - i; std::vector<int> ref = a; swaps = cmps = 0; buildHeap(a);
+        assert(isHeap(a) && std::is_heap(a.begin(), a.end(), std::greater<int>())); std::make_heap(ref.begin(), ref.end(), std::greater<int>()); std::vector<int> s1 = a, s2 = ref; std::sort(s1.begin(), s1.end()); std::sort(s2.begin(), s2.end()); assert(s1 == s2);
+        assert(swaps <= n - __builtin_popcount(n) && cmps <= 2L * n);                                            // Σ 높이 = n − popcount(n)
+        if (mode == 2) assert(swaps > n / 2);
+    }
+    std::cout << "Heapify: 560 of 5040 permutations satisfied the precondition and all became heaps (violators sometimes did not), Floyd build-heap produced exactly n!/prod(size) distinct heaps for n <= 9, and on 10^6 keys used at most n-popcount(n) swaps and 2n comparisons" << std::endl;
     return 0;
 }
-// Time Complexity: O(log N)
+// Time Complexity: heapify O(log N), build-heap O(N)
 // Space Complexity: O(1)
 ```
 ## BuildHeap()
@@ -2519,89 +3801,134 @@ int main() {
 ## TrieInsert() & TrieSearch()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cassert>
 #include <iostream>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
-struct TrieNode {
-    std::vector<TrieNode*> children;
-    bool isEnd;
-    TrieNode() : children(26, nullptr), isEnd(false) {}
+// 트라이(트리 관점의 요약, 정본은 String.md Part 8): 문자마다 간선 하나, 단어 끝에 표시.  삽입·검색은 단어 길이 L 만큼의 걸음 — 사전 크기와 무관.  노드는 arena(벡터)에 두고 인덱스로 잇는다(raw new/delete 없음, 누수 불가).
+//  ① 전수: 알파벳 {a, b}, 길이 ≤ 3 인 15 개 문자열의 *모든 부분 집합* 32768 개 × 길이 ≤ 4 인 31 개 질의 — search / startsWith / countPrefix / 사전순 목록 / 노드 수(= 서로 다른 접두사 수)를 std::set 으로 대조
+//  ② 무작위 대조: 알파벳 26, 빈 단어 포함, 3 만 단어와 3 만 개의 없는 단어 질의  ③ 길이 20 만 의 단어도 반복 구현이라 스택 오버플로 없이 삽입·검색.
+struct Trie {
+    std::vector<std::array<int, 26>> nx; std::vector<int> pass, freeList; std::vector<char> end; size_t live = 0, words = 0;   // pass[u] = u 의 부분 트리에 있는 단어 수, live = 사용 중인 노드 수
+    Trie() { newNode(); }                                                                                        // 노드 0 = 루트
+    int newNode() { std::array<int, 26> e; e.fill(-1); int u; if (!freeList.empty()) { u = freeList.back(); freeList.pop_back(); nx[u] = e; pass[u] = 0; end[u] = 0; } else { nx.push_back(e); pass.push_back(0); end.push_back(0); u = (int)nx.size() - 1; } ++live; return u; }
+    int find(const std::string& s) const { int u = 0; for (char c : s) { u = nx[u][c - 'a']; if (u < 0) return -1; } return u; }
+    bool search(const std::string& w) const { int u = find(w); return u >= 0 && end[u]; }
+    bool startsWith(const std::string& p) const { return find(p) >= 0; }
+    int countPrefix(const std::string& p) const { int u = find(p); return u < 0 ? 0 : pass[u]; }
+    bool insert(const std::string& w) {
+        if (search(w)) return false; int u = 0; ++pass[0];
+        for (char c : w) { int v = nx[u][c - 'a']; if (v < 0) { v = newNode(); nx[u][c - 'a'] = v; } u = v; ++pass[u]; }              // 주의: newNode() 가 nx 를 재할당하므로 참조를 들고 있지 않는다
+        end[u] = 1; ++words; return true; }
+    std::vector<std::string> list() const {                                                                      // 사전순 단어 목록: 반복 DFS
+        std::vector<std::string> out; std::string cur; std::vector<std::pair<int, int>> st = {{0, 0}}; if (end[0]) out.push_back(cur);
+        while (!st.empty()) { auto& top = st.back(); int u = top.first; int& c = top.second; while (c < 26 && nx[u][c] < 0) ++c;
+            if (c == 26) { st.pop_back(); if (!cur.empty()) cur.pop_back(); continue; }
+            int v = nx[u][c]; cur.push_back((char)('a' + c)); ++c; if (end[v]) out.push_back(cur); st.push_back({v, 0}); }
+        return out; }
 };
-
-class Trie {
-    TrieNode* root;
-public:
-    Trie() { root = new TrieNode(); }
-    void insert(std::string word) {
-        TrieNode* curr = root;
-        for (char c : word) {
-            if (!curr->children[c - 'a']) curr->children[c - 'a'] = new TrieNode();
-            curr = curr->children[c - 'a'];
-        }
-        curr->isEnd = true;
-    }
-    bool search(std::string word) {
-        TrieNode* curr = root;
-        for (char c : word) {
-            if (!curr->children[c - 'a']) return false;
-            curr = curr->children[c - 'a'];
-        }
-        return curr->isEnd;
-    }
-};
+size_t distinctPrefixes(const std::set<std::string>& s) { std::set<std::string> p; for (auto& w : s) for (size_t k = 0; k <= w.size(); ++k) p.insert(w.substr(0, k)); return std::max<size_t>(1, p.size()); }                       // 빈 접두사 포함 = 루트 포함 노드 수 (루트는 빈 트라이에도 있다)
+int refCountPrefix(const std::set<std::string>& s, const std::string& p) { int c = 0; for (auto& w : s) if (w.compare(0, p.size(), p) == 0 && w.size() >= p.size()) ++c; return c; }
 
 int main() {
-    Trie trie;
-    trie.insert("apple");
-    assert(trie.search("apple") == true);
-    assert(trie.search("app") == false);
-    std::cout << "Trie Insert & Search verified." << std::endl;
+    std::vector<std::string> universe = {""}; for (int len = 1; len <= 3; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; universe.push_back(s); }   // 15 개
+    std::vector<std::string> queries = {""}; for (int len = 1; len <= 4; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; queries.push_back(s); }   // 31 개
+    assert(universe.size() == 15 && queries.size() == 31);
+    for (int mask = 0; mask < (1 << 15); ++mask) {
+        Trie t; std::set<std::string> ref; for (int i = 0; i < 15; ++i) if (mask >> i & 1) { bool a = t.insert(universe[i]); bool r = ref.insert(universe[i]).second; assert(a == r); assert(!t.insert(universe[i])); }
+        assert(t.words == ref.size() && t.live == distinctPrefixes(ref));
+        for (auto& q : queries) { assert(t.search(q) == (ref.count(q) > 0)); assert(t.countPrefix(q) == refCountPrefix(ref, q)); assert(t.startsWith(q) == (q.empty() || refCountPrefix(ref, q) > 0)); }
+        assert(t.list() == std::vector<std::string>(ref.begin(), ref.end()));
+    }
+    std::mt19937 rng(13); Trie t; std::set<std::string> ref;
+    for (int i = 0; i < 30000; ++i) { std::string w; int len = (int)(rng() % 11); for (int j = 0; j < len; ++j) w += (char)('a' + rng() % 26); bool a = t.insert(w); bool r = ref.insert(w).second; assert(a == r); }
+    assert(t.words == ref.size() && t.live == distinctPrefixes(ref) && t.list() == std::vector<std::string>(ref.begin(), ref.end()));
+    for (int i = 0; i < 30000; ++i) { std::string q; int len = (int)(rng() % 11); for (int j = 0; j < len; ++j) q += (char)('a' + rng() % 26); assert(t.search(q) == (ref.count(q) > 0)); auto it = ref.lower_bound(q); bool pref = it != ref.end() && it->compare(0, q.size(), q) == 0; assert(t.startsWith(q) == pref); }
+    for (auto& w : ref) assert(t.search(w));
+    { Trie big; std::string longWord(200000, 'a'); assert(big.insert(longWord) && big.search(longWord) && !big.search(std::string(199999, 'a')) && big.startsWith(std::string(199999, 'a')) && big.live == 200001); }
+    std::cout << "TrieInsert & TrieSearch: all 32768 subsets of 15 short strings matched std::set on search/prefix/count/listing/node count; 3*10^4 random words and queries matched; a 200000-letter word was handled iteratively" << std::endl;
     return 0;
 }
-// Time Complexity: O(L) where L is word length
-// Space Complexity: O(L) per word
+// Time Complexity: O(L)
+// Space Complexity: O(총 문자 수 · 알파벳) — 노드당 26 개의 간선 슬롯
 ```
 
 ## TrieDelete()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <string>
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <iostream>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
-struct TrieNodeD { std::vector<TrieNodeD*> children; bool isEnd; TrieNodeD() : children(26, nullptr), isEnd(false) {} };
-bool trieDelete(TrieNodeD* root, const std::string& word, int depth=0) {
-    if (!root) return false;
-    if (depth == (int)word.size()) {
-        if (!root->isEnd) return false;
-        root->isEnd = false;
-        for (auto c : root->children) if (c) return false;
-        return true;
-    }
-    int idx = word[depth] - 'a';
-    if (!root->children[idx]) return false;
-    bool shouldDelete = trieDelete(root->children[idx], word, depth+1);
-    if (shouldDelete) {
-        delete root->children[idx]; root->children[idx] = nullptr;
-        for (auto c : root->children) if (c) return false;
-        return !root->isEnd;
-    }
-    return false;
-}
+// 트라이 삭제(트리 관점의 요약, 정본은 String.md Part 8): ① 단어 끝 표시를 지우고 ② 더 이상 어떤 단어도 지나가지 않는 노드(pass == 0)를 *아래에서 위로* 잘라낸다.  접두사가 다른 단어의 일부이면 표시만 지우고 노드는 남겨야 하고, 가지가 하나뿐이면 루트까지 잘린다.
+//  pass[u] = u 의 부분 트리에 있는 단어 수 를 유지하면 "잘라도 되는가"가 O(1) 판정이다; 잘린 노드는 free-list 로 재사용된다.
+//  ① 전수: 알파벳 {a, b}, 길이 ≤ 3 인 15 개 문자열의 모든 부분 집합(32768) × 31 개 질의 문자열 각각을 삭제 — 삭제 성공 여부, 남은 단어, *노드 수 = 남은 단어들의 서로 다른 접두사 수* (정확한 가지치기)를 std::set 으로 대조
+//  ② 무작위 삽입·삭제·검색 100 만 연산을 대조 (노드 수 검증 포함, arena 가 최대 동시 노드 수를 넘지 않음)  ③ 길이 20 만 의 단어를 지우면 노드가 루트 하나만 남는다.
+struct Trie {
+    std::vector<std::array<int, 26>> nx; std::vector<int> pass, freeList; std::vector<char> end; size_t live = 0, words = 0;   // pass[u] = u 의 부분 트리에 있는 단어 수, live = 사용 중인 노드 수
+    Trie() { newNode(); }                                                                                        // 노드 0 = 루트
+    int newNode() { std::array<int, 26> e; e.fill(-1); int u; if (!freeList.empty()) { u = freeList.back(); freeList.pop_back(); nx[u] = e; pass[u] = 0; end[u] = 0; } else { nx.push_back(e); pass.push_back(0); end.push_back(0); u = (int)nx.size() - 1; } ++live; return u; }
+    int find(const std::string& s) const { int u = 0; for (char c : s) { u = nx[u][c - 'a']; if (u < 0) return -1; } return u; }
+    bool search(const std::string& w) const { int u = find(w); return u >= 0 && end[u]; }
+    bool startsWith(const std::string& p) const { return find(p) >= 0; }
+    int countPrefix(const std::string& p) const { int u = find(p); return u < 0 ? 0 : pass[u]; }
+    bool insert(const std::string& w) {
+        if (search(w)) return false; int u = 0; ++pass[0];
+        for (char c : w) { int v = nx[u][c - 'a']; if (v < 0) { v = newNode(); nx[u][c - 'a'] = v; } u = v; ++pass[u]; }              // 주의: newNode() 가 nx 를 재할당하므로 참조를 들고 있지 않는다
+        end[u] = 1; ++words; return true; }
+    std::vector<std::string> list() const {                                                                      // 사전순 단어 목록: 반복 DFS
+        std::vector<std::string> out; std::string cur; std::vector<std::pair<int, int>> st = {{0, 0}}; if (end[0]) out.push_back(cur);
+        while (!st.empty()) { auto& top = st.back(); int u = top.first; int& c = top.second; while (c < 26 && nx[u][c] < 0) ++c;
+            if (c == 26) { st.pop_back(); if (!cur.empty()) cur.pop_back(); continue; }
+            int v = nx[u][c]; cur.push_back((char)('a' + c)); ++c; if (end[v]) out.push_back(cur); st.push_back({v, 0}); }
+        return out; }
+
+    bool erase(const std::string& w) {
+        if (!search(w)) return false;                                                                            // 단어가 아니면 접두사만 있어도 아무것도 바꾸지 않는다
+        std::vector<int> path = {0}; for (char c : w) path.push_back(nx[path.back()][c - 'a']);
+        for (int u : path) --pass[u]; end[path.back()] = 0; --words;
+        for (size_t k = path.size(); k-- > 1;) { int u = path[k]; if (pass[u] > 0) break; nx[path[k - 1]][w[k - 1] - 'a'] = -1; freeList.push_back(u); --live; }   // pass == 0 인 접미 구간만 잘라낸다
+        return true; }
+};
+size_t distinctPrefixes(const std::set<std::string>& s) { std::set<std::string> p; for (auto& w : s) for (size_t k = 0; k <= w.size(); ++k) p.insert(w.substr(0, k)); return std::max<size_t>(1, p.size()); }
+
 int main() {
-    TrieNodeD* root = new TrieNodeD();
-    std::string w = "hello"; TrieNodeD* cur = root;
-    for(char c:w) { int idx=c-'a'; if(!cur->children[idx]) cur->children[idx]=new TrieNodeD(); cur=cur->children[idx]; }
-    cur->isEnd = true;
-    trieDelete(root, "hello");
-    std::cout << "TrieDelete verified." << std::endl;
+    std::vector<std::string> universe = {""}; for (int len = 1; len <= 3; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; universe.push_back(s); }
+    std::vector<std::string> queries = {""}; for (int len = 1; len <= 4; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; queries.push_back(s); }
+    for (int mask = 0; mask < (1 << 15); ++mask) {
+        std::set<std::string> base; for (int i = 0; i < 15; ++i) if (mask >> i & 1) base.insert(universe[i]);
+        for (auto& q : queries) { Trie t; for (auto& w : base) t.insert(w); std::set<std::string> ref = base; bool a = t.erase(q); bool r = ref.erase(q) > 0; assert(a == r);
+            assert(t.words == ref.size() && t.live == distinctPrefixes(ref) && t.list() == std::vector<std::string>(ref.begin(), ref.end()));                   // 정확한 가지치기
+            assert(!t.erase(q)); for (auto& w : ref) assert(t.search(w)); }
+    }
+    std::mt19937 rng(31); Trie t; std::set<std::string> ref; size_t maxLive = 0; long inserts = 0, erases = 0, hits = 0;
+    auto word = [&]() { std::string w; int len = (int)(rng() % 9); for (int j = 0; j < len; ++j) w += (char)('a' + rng() % 3); return w; };            // 알파벳 3 → 접두사 공유가 많다
+    for (long step = 0; step < 1000000; ++step) {
+        std::string w = word(); int op = (int)(rng() % 3);
+        if (op == 0) { bool a = t.insert(w); bool r = ref.insert(w).second; assert(a == r); ++inserts; }
+        else if (op == 1) { bool a = t.erase(w); bool r = ref.erase(w) > 0; assert(a == r); erases += a; }
+        else { bool a = t.search(w); assert(a == (ref.count(w) > 0)); hits += a; }
+        maxLive = std::max(maxLive, t.live);
+        if (step % 5003 == 0) { assert(t.words == ref.size() && t.live == distinctPrefixes(ref)); }
+    }
+    assert(t.words == ref.size() && t.live == distinctPrefixes(ref) && t.list() == std::vector<std::string>(ref.begin(), ref.end()) && t.nx.size() <= maxLive && erases > 1000);
+    for (auto& w : std::vector<std::string>(ref.begin(), ref.end())) { bool a = t.erase(w); assert(a); } assert(t.live == 1 && t.words == 0 && t.list().empty());                          // 전부 지우면 루트만
+    { Trie big; std::string longWord(200000, 'a'); big.insert(longWord); assert(big.live == 200001); bool a = big.erase(longWord); assert(a && big.live == 1 && !big.startsWith("a")); }
+    std::cout << "TrieDelete: exact pruning (node count == number of distinct prefixes) held for every subset of 15 short strings x 31 deletions; 10^6 random insert/erase/search operations matched std::set (" << erases << " successful erases) and the arena reused freed nodes; a 200000-letter word was removed down to the root" << std::endl;
     return 0;
 }
 // Time Complexity: O(L)
-// Space Complexity: O(1)
+// Space Complexity: O(L) (경로 저장)
 ```
 ## RadixTree()
 ### 대표코드
@@ -2614,7 +3941,7 @@ int main() {
 
 // 기수 트리(압축 트라이, radix tree): 자식이 하나뿐인 경로를 하나의 간선(문자열 레이블)으로 합친 트라이.  노드 수가 단어 수에 비례(O(n))하고, 단어를 넣을 때
 // 간선 레이블이 중간에서 갈라지면 그 자리에서 둘로 쪼갠다.  리눅스 커널의 페이지 캐시·IP 라우팅 테이블(LPM)·Redis 의 rax 가 쓴다
-struct Node { std::map<char, std::pair<std::string, Node*>> kids; bool end = false; };
+struct Node { std::map<char, std::pair<std::string, Node*>> kids; bool end = false; ~Node() { for (auto& kv : kids) delete kv.second.second; } };
 static int nodeCount = 1;
 
 void insert(Node* root, const std::string& w) {
@@ -2678,141 +4005,190 @@ int main() {
 ## GeneralTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
-#include <memory>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 일반 트리: 자식 수에 제한이 없다.  표준 표현은 "왼쪽 자식-오른쪽 형제(LCRS)": 모든 노드가 (첫 자식, 다음 형제) 포인터 두 개만 가지므로
-// 일반 트리가 곧 이진 트리가 된다.  성질: 일반 트리의 전위 순회 = LCRS 의 전위 순회,  일반 트리의 후위 순회 = LCRS 의 중위 순회
-struct Node { char label; Node *firstChild = nullptr, *nextSibling = nullptr; };
-Node* addChild(Node* parent, char label) {
-    Node* c = new Node{label};
-    if (!parent->firstChild) parent->firstChild = c;
-    else { Node* s = parent->firstChild; while (s->nextSibling) s = s->nextSibling; s->nextSibling = c; }
-    return c;
-}
-void preorder(const Node* n, std::string& out) { for (; n; n = n->nextSibling) { out += n->label; preorder(n->firstChild, out); } }   // 일반 트리의 전위
-void postorder(const Node* n, std::string& out) { for (; n; n = n->nextSibling) { postorder(n->firstChild, out); out += n->label; } }  // 일반 트리의 후위
-void binaryInorder(const Node* n, std::string& out) { if (!n) return; binaryInorder(n->firstChild, out); out += n->label; binaryInorder(n->nextSibling, out); }
-int height(const Node* n) { int h = 0; for (; n; n = n->nextSibling) h = std::max(h, 1 + height(n->firstChild)); return h; }
+// 일반 트리: 자식 수에 제한이 없다.  표준 표현은 "왼쪽 자식-오른쪽 형제(LCRS)": 모든 노드가 (첫 자식 fc, 다음 형제 ns) 포인터 두 개만 가지므로 일반 트리가 곧 이진 트리가 된다.
+//  성질: 일반 트리의 전위 순회 = LCRS 의 전위 순회,  일반 트리의 후위 순회 = LCRS 의 중위 순회.  노드는 arena 에 두고 마지막 자식 포인터(lc)로 자식 추가를 O(1) 에 한다.
+//  ① 예제(A: B C D, B: E F, D: G)  ② 전수: 노드 n ≤ 8 개인 *모든* 순서 있는 트리(괄호열 = Dyck 단어, 카탈란 C(n−1) 개)가 서로 다른 LCRS 이진 트리가 되고 (LCRS 루트는 오른쪽 자식이 없다), 순회·높이·차수가 *재귀 오라클*과 같으며 LCRS 에서 부모 배열과 괄호열이 그대로 복원
+//  ③ 무작위 트리 300 개와 100 만 노드 사슬·별·무작위 재귀 트리를 *반복* 순회로 대조 (재귀 없이 — 깊이 10^6 에서도 안전).
+struct GT {
+    std::vector<int> fc, ns, lc, par;
+    int node() { fc.push_back(-1); ns.push_back(-1); lc.push_back(-1); par.push_back(-1); return (int)fc.size() - 1; }
+    int addChild(int p) { int c = node(); par[c] = p; if (fc[p] < 0) fc[p] = c; else ns[lc[p]] = c; lc[p] = c; return c; }
+    std::vector<int> preorder(int root) const {                                                                  // LCRS 전위: 방문 → 첫 자식 → 다음 형제 (스택에는 형제를 먼저 넣는다)
+        std::vector<int> out, st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); out.push_back(u); if (u != root && ns[u] >= 0) { } if (ns[u] >= 0 && u != root) st.push_back(ns[u]); if (fc[u] >= 0) st.push_back(fc[u]); } return out; }
+    std::vector<int> binaryInorder(int root) const {                                                             // LCRS 중위: 왼쪽(fc) → 방문 → 오른쪽(ns)
+        std::vector<int> out, st; int u = root; while (u >= 0 || !st.empty()) { while (u >= 0) { st.push_back(u); u = fc[u]; } u = st.back(); st.pop_back(); out.push_back(u); u = (u == root) ? -1 : ns[u]; } return out; }
+    std::vector<int> depthAll(int root) const {                                                                  // 전위 한 번으로 깊이: 첫 자식 +1, 형제는 같은 깊이
+        std::vector<int> d(fc.size(), 0), st = {root}; while (!st.empty()) { int u = st.back(); st.pop_back(); if (ns[u] >= 0 && u != root) { d[ns[u]] = d[u]; st.push_back(ns[u]); } if (fc[u] >= 0) { d[fc[u]] = d[u] + 1; st.push_back(fc[u]); } } return d; }
+    std::string dyck(int root) const {                                                                           // 괄호열: 자식 하나마다 "(" 자식 부분 트리 ")"
+        std::string s; std::vector<std::pair<int, int>> st = {{root, fc[root]}}; while (!st.empty()) { auto& top = st.back(); if (top.second < 0) { st.pop_back(); if (!st.empty()) s += ')'; continue; } int c = top.second; top.second = ns[c]; s += '('; st.push_back({c, fc[c]}); } return s; }
+};
+// 오라클: 자식 목록과 재귀
+struct Ref { std::vector<std::vector<int>> ch; explicit Ref(const GT& t) : ch(t.fc.size()) { for (size_t v = 1; v < t.par.size(); ++v) if (t.par[v] >= 0) ch[t.par[v]].push_back((int)v); }
+    void pre(int u, std::vector<int>& o) const { o.push_back(u); for (int c : ch[u]) pre(c, o); }
+    void post(int u, std::vector<int>& o) const { for (int c : ch[u]) post(c, o); o.push_back(u); }
+    int height(int u) const { int h = 0; for (int c : ch[u]) h = std::max(h, 1 + height(c)); return h; } };
+GT fromDyck(const std::string& s) { GT t; int cur = t.node(); std::vector<int> st = {cur}; for (char c : s) { if (c == '(') { cur = t.addChild(st.back()); st.push_back(cur); } else st.pop_back(); } return t; }
+void genDyck(int open, int close, int m, std::string& cur, std::vector<std::string>& out) { if ((int)cur.size() == 2 * m) { out.push_back(cur); return; } if (open < m) { cur += '('; genDyck(open + 1, close, m, cur, out); cur.pop_back(); } if (close < open) { cur += ')'; genDyck(open, close + 1, m, cur, out); cur.pop_back(); } }
 
 int main() {
-    Node* a = new Node{'A'};                       //        A
-    Node* b = addChild(a, 'B');                    //      / | \  .
-    addChild(a, 'C');                              //     B  C  D
-    Node* d = addChild(a, 'D');                    //    / \    |
-    addChild(b, 'E'); addChild(b, 'F');            //   E   F   G
-    addChild(d, 'G');
-    std::string pre, post, in;
-    preorder(a, pre); postorder(a, post); binaryInorder(a, in);
-    assert(pre == "ABEFCDG");
-    assert(post == "EFBCGDA");
-    assert(in == post);                            // LCRS 중위 순회 == 일반 트리 후위 순회
-    assert(height(a) == 3);
-    std::cout << "GeneralTree preorder=" << pre << " postorder=" << post << std::endl;
+    { GT t; int a = t.node(), b = t.addChild(a), c = t.addChild(a), d = t.addChild(a), e = t.addChild(b), f = t.addChild(b), g = t.addChild(d); (void)c; (void)e; (void)f; (void)g;     // 예제: 레이블 A..G = 0..6
+      std::string pre, post, in; for (int u : t.preorder(0)) pre += (char)('A' + u); Ref r(t); std::vector<int> v; r.post(0, v); for (int u : v) post += (char)('A' + u); for (int u : t.binaryInorder(0)) in += (char)('A' + u);
+      assert(pre == "ABEFCDG" && post == "EFBCGDA" && in == post && r.height(0) == 2); }                         // 간선 기준 높이 2 (노드 기준 3)
+    const long catalan[] = {1, 1, 2, 5, 14, 42, 132, 429};
+    for (int m = 0; m <= 7; ++m) {                                                                               // ② 모든 순서 있는 트리 (노드 m + 1 개)
+        std::vector<std::string> words; std::string cur; genDyck(0, 0, m, cur, words); assert((long)words.size() == catalan[m]); std::set<std::pair<std::vector<int>, std::vector<int>>> shapes;
+        for (auto& w : words) { GT t = fromDyck(w); Ref r(t); std::vector<int> pre, post; r.pre(0, pre); r.post(0, post);
+            assert(t.preorder(0) == pre && t.binaryInorder(0) == post && t.dyck(0) == w);                          // 전위=전위, LCRS 중위=후위, LCRS 에서 괄호열 복원
+            assert(t.ns[0] < 0); shapes.insert({t.fc, t.ns});                                                    // LCRS 루트는 오른쪽 자식이 없다
+            std::vector<int> d = t.depthAll(0); int h = 0; for (int x : d) h = std::max(h, x); assert(h == r.height(0));
+            for (int u = 1; u <= m; ++u) assert(d[u] == d[t.par[u]] + 1); }
+        assert((long)shapes.size() == catalan[m]); }                                                             // 서로 다른 이진 트리 (일대일 대응)
+    std::mt19937 rng(7);
+    for (int it = 0; it < 300; ++it) { GT t; t.node(); int n = 1 + (int)(rng() % 400); for (int i = 1; i < n; ++i) t.addChild((int)(rng() % i)); Ref r(t); std::vector<int> pre, post; r.pre(0, pre); r.post(0, post);
+        assert(t.preorder(0) == pre && t.binaryInorder(0) == post && (int)t.depthAll(0)[n - 1] >= 0); std::vector<int> d = t.depthAll(0); int h = 0; for (int x : d) h = std::max(h, x); assert(h == r.height(0)); }
+    for (int shape = 0; shape < 3; ++shape) {                                                                    // ③ 100 만 노드: 사슬 / 별 / 무작위 재귀 트리
+        GT t; t.node(); const int n = 1000000; for (int i = 1; i < n; ++i) t.addChild(shape == 0 ? i - 1 : shape == 1 ? 0 : (int)(rng() % i));
+        std::vector<int> pre = t.preorder(0), in = t.binaryInorder(0); assert((int)pre.size() == n && (int)in.size() == n);
+        std::vector<int> pos(n); for (int i = 0; i < n; ++i) pos[pre[i]] = i; for (int v = 1; v < n; ++v) assert(pos[t.par[v]] < pos[v]);               // 전위: 부모가 자식보다 먼저
+        std::vector<int> pos2(n); for (int i = 0; i < n; ++i) pos2[in[i]] = i; for (int v = 1; v < n; ++v) assert(pos2[t.par[v]] > pos2[v]);             // 후위: 부모가 자식보다 나중
+        std::vector<int> d = t.depthAll(0); int h = *std::max_element(d.begin(), d.end()); if (shape == 0) assert(h == n - 1 && pre[n - 1] == n - 1 && in[0] == n - 1); if (shape == 1) assert(h == 1 && t.ns[1] == 2);
+        std::vector<int> want(n, 0); for (int v = 1; v < n; ++v) want[v] = want[t.par[v]] + 1; assert(want == d);
+    }
+    std::cout << "GeneralTree: all ordered trees with up to 8 nodes (Catalan many) mapped one-to-one onto LCRS binary trees with preorder=preorder and postorder=binary inorder, random trees matched a recursive oracle, and 10^6-node chain/star/random trees were traversed iteratively" << std::endl;
     return 0;
 }
-// Time Complexity: 자식 추가 O(자식 수), 순회 O(N)
+// Time Complexity: 자식 추가 O(1) (마지막 자식 포인터), 순회 O(N)
 // Space Complexity: O(N)
 ```
 ## NaryTree()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cmath>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
-// N-ary 트리: 모든 노드의 자식이 최대 N 개.  완전 N-ary 트리는 배열에 담을 수 있다 (N=2 가 힙).
-//   부모(i) = (i-1)/N,   자식 k(0-based) 의 인덱스 = N·i + k + 1
-//   n 개 노드의 높이 = ceil(log_N(n·(N-1) + 1)) - 1   (간선 기준),  N 이 클수록 얕아진다 (B-트리·캐시 친화적 힙의 동기)
-int height(long n, int N) { int h = 0; long levelEnd = 1, width = 1; while (levelEnd < n) { width *= N; levelEnd += width; h++; } return h; }
+// N-ary 트리: 모든 노드의 자식이 최대 N 개.  완전 N-ary 트리는 배열에 담을 수 있다 (N = 2 가 이진 힙).  부모(i) = (i−1)/N,  자식 k(0-based) 의 인덱스 = N·i + k + 1.
+//  n 개 노드의 높이(간선 기준) = 가장 깊은 노드(= 마지막 인덱스 n−1)까지의 부모 사슬 길이 = ⌈log_N(n·(N−1) + 1)⌉ − 1.  N 이 클수록 얕아진다 (B-트리·캐시 친화적 힙의 동기).
+//  ① 명시적 트리(레벨 순서로 첫 빈 자리에 붙임)와 인덱스 공식이 N = 1..8 에서 일치  ② 높이 공식 — 정수 루프(height)가 부모 사슬을 직접 센 값과 같다 (N = 2..16, n ≤ 6000) — 100 만 노드: 이진 19, 8진 7
+//  ③ N-ary 힙: 여러 N 으로 같은 데이터를 std::sort 와 대조하고, 내림차순 삽입(최악)의 교환 수가 정확히 Σ(노드 깊이)임을 확인; N 이 커지면 삽입은 싸지고(교환 감소) 삭제의 *비교*는 N = 3 근처에서 최소(이진보다 3-진이 적다).
+int height(long n, int N) { int h = 0; long levelEnd = 1, width = 1; while (levelEnd < n) { width *= N; levelEnd += width; h++; } return h; }   // 정수 루프
+int hopsToRoot(long i, int N) { int h = 0; while (i > 0) { i = (i - 1) / N; ++h; } return h; }                       // 부모 사슬
+struct DHeap {
+    int d; std::vector<int> a; long cmps = 0, swaps = 0;
+    explicit DHeap(int dd) : d(dd) {}
+    void push(int v) { a.push_back(v); size_t i = a.size() - 1; while (i > 0) { ++cmps; size_t p = (i - 1) / d; if (a[p] <= a[i]) break; std::swap(a[p], a[i]); i = p; ++swaps; } }
+    int pop() { int top = a[0]; a[0] = a.back(); a.pop_back(); size_t i = 0, n = a.size();
+        for (;;) { size_t f = d * i + 1; if (f >= n) break; size_t best = f; for (size_t c = f + 1; c < std::min(n, f + d); ++c) { ++cmps; if (a[c] < a[best]) best = c; } ++cmps; if (a[best] >= a[i]) break; std::swap(a[i], a[best]); i = best; ++swaps; }
+        return top; }
+    bool valid() const { for (size_t i = 1; i < a.size(); ++i) if (a[(i - 1) / d] > a[i]) return false; return true; }
+};
 
 int main() {
-    const int N = 3;
-    for (long i = 1; i < 1000; i++) {
-        long parent = (i - 1) / N;
-        long k = (i - 1) % N;
-        assert(N * parent + k + 1 == i);                                      // 부모/자식 인덱스 공식이 서로 역
+    for (int N = 1; N <= 8; ++N)                                                                                 // ① 명시적 트리 vs 인덱스 공식
+        for (int n : {1, 2, 3, 10, 100, 777, 2000}) {
+            std::vector<int> par(n, -1), kids(n, 0), depth(n, 0); std::queue<int> open; open.push(0);
+            for (int v = 1; v < n; ++v) { int u = open.front(); par[v] = u; depth[v] = depth[u] + 1; if (++kids[u] == N) open.pop(); open.push(v); }
+            for (int i = 1; i < n; ++i) { assert(par[i] == (i - 1) / N); long k = (i - 1) % N; assert((long)N * par[i] + k + 1 == i); }
+            assert(*std::max_element(depth.begin(), depth.end()) == depth[n - 1] && depth[n - 1] == hopsToRoot(n - 1, N));
+        }
+    for (int N = 2; N <= 16; ++N) for (int n = 1; n <= 6000; ++n) assert(height(n, N) == hopsToRoot(n - 1, N));    // ② 정수 루프 = 부모 사슬
+    assert(height(1000000, 2) == 19 && height(1000000, 8) == 7 && height(1000000, 16) == 5);
+    long fullLevels = 1; for (int N : {2, 3, 4, 10}) { fullLevels = 1; long width = 1; for (int lv = 0; lv < 6; ++lv) { assert(height(fullLevels, N) == lv && height(fullLevels + 1, N) == lv + 1); width *= N; fullLevels += width; } }   // 수준이 꽉 찬 경계
+    std::mt19937 rng(37); const int n = 100000; std::vector<int> vals(n); for (auto& x : vals) x = (int)(rng() % 1000000); std::vector<int> sorted = vals; std::sort(sorted.begin(), sorted.end());
+    long popCmps[17] = {0}, pushSwaps[17] = {0}; int bestD = 2;
+    for (int d = 2; d <= 16; ++d) {                                                                              // ③ N-ary 힙
+        DHeap h(d); for (int x : vals) h.push(x); assert(h.valid()); pushSwaps[d] = h.swaps; h.cmps = 0; std::vector<int> out; while (!h.a.empty()) { out.push_back(h.pop()); } assert(out == sorted); popCmps[d] = h.cmps;
+        DHeap worst(d); for (int i = n; i >= 1; --i) worst.push(i); long depthSum = 0; for (int i = 0; i < n; ++i) depthSum += hopsToRoot(i, d); assert(worst.swaps == depthSum && worst.valid());          // 최악 삽입 = 깊이 합
+        if (popCmps[d] < popCmps[bestD]) bestD = d;
+        if (d > 2) assert(pushSwaps[d] < pushSwaps[d - 1]);                                                      // 삽입 교환은 N 이 클수록 줄어든다
     }
-    for (int n : {1, 4, 13, 14, 40, 41, 1000}) {                               // 3-ary 의 가득 찬 수준: 1, 4, 13, 40, 121 ...
-        int expect = (int)std::ceil(std::log((double)n * (N - 1) + 1) / std::log((double)N)) - 1;
-        assert(height(n, N) == expect);
-    }
-    assert(height(1000000, 2) == 19 && height(1000000, 8) == 7);               // 같은 N=100만: 이진 19, 8진 7
-    std::cout << "NaryTree: height for 1e6 nodes: binary=" << height(1000000, 2) << " 8-ary=" << height(1000000, 8) << std::endl;
+    assert(bestD == 3 && popCmps[3] < popCmps[2] && popCmps[16] > popCmps[3]);                                   // 삭제 비교는 N = 3 에서 최소
+    std::cout << "NaryTree: index formulas matched explicit trees for N=1..8, the integer height loop matched parent-chain hops for N=2..16, and d-ary heaps for d=2..16 sorted 10^5 keys correctly (pop comparisons minimal at d=" << bestD << ": " << popCmps[2] << " (d=2) vs " << popCmps[3] << " (d=3))" << std::endl;
     return 0;
 }
-// Time Complexity: 인덱스 계산 O(1)
+// Time Complexity: 인덱스 계산 O(1), N-ary 힙 삽입 O(log_N n), 삭제 O(N log_N n)
 // Space Complexity: O(N) 배열
 ```
 # Part 10. 문자열 자료구조
 ## SuffixTrie()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
+// 접미사 트라이: 문자열의 *모든 접미사*를 압축하지 않은 트라이에 넣은 것.  부분 문자열 검색이 O(m) 이고, 노드마다 "지나간 접미사 수"를 두면 패턴의 출현 횟수도 O(m) 에 나온다.
+//  대가는 공간: 노드 수 = 1 + (서로 다른 부분 문자열 수) 로 최악 Θ(n²) — 모든 글자가 다르면 정확히 1 + n(n+1)/2, 같은 글자뿐이면 n + 1.  (압축해서 O(n) 으로 만든 것이 접미사 트리/자동자)
+//  ① 전수: 이진 문자열 길이 ≤ 10 전부에서 노드 수 = 1 + 서로 다른 부분 문자열 수(집합 오라클), 모든 패턴(길이 ≤ 5)의 contains / 출현 횟수가 순진한 탐색과 같다  ② 무작위 문자열(알파벳 4, 길이 ≤ 60)  ③ 최악·최선 공간.
 struct SuffixNode {
-    std::vector<SuffixNode*> children;
+    std::vector<SuffixNode*> children; int through = 0;                                                         // through = 이 노드를 지난 접미사 수 = 경로 문자열의 출현 횟수
     SuffixNode() : children(26, nullptr) {}
+    ~SuffixNode() { for (SuffixNode* c : children) delete c; }
 };
-
 class SuffixTrie {
-    SuffixNode* root;
+    SuffixNode* root; size_t nodes = 1;
 public:
-    SuffixTrie(std::string text) {
-        root = new SuffixNode();
-        for (int i = 0; i < (int)text.length(); i++) {
-            insertSuffix(text.substr(i));
-        }
-    }
-    
-    void insertSuffix(std::string suffix) {
-        SuffixNode* curr = root;
-        for (char c : suffix) {
-            if (!curr->children[c - 'a']) curr->children[c - 'a'] = new SuffixNode();
-            curr = curr->children[c - 'a'];
-        }
-    }
-    
-    bool search(std::string pattern) {
-        SuffixNode* curr = root;
-        for (char c : pattern) {
-            if (!curr->children[c - 'a']) return false;
-            curr = curr->children[c - 'a'];
-        }
-        return true;
-    }
+    explicit SuffixTrie(const std::string& text) : root(new SuffixNode()) { for (size_t i = 0; i < text.size(); ++i) insertSuffix(text, i); }
+    ~SuffixTrie() { delete root; }
+    SuffixTrie(const SuffixTrie&) = delete; SuffixTrie& operator=(const SuffixTrie&) = delete;
+    void insertSuffix(const std::string& t, size_t from) { SuffixNode* cur = root; for (size_t i = from; i < t.size(); ++i) { SuffixNode*& nx = cur->children[t[i] - 'a']; if (!nx) { nx = new SuffixNode(); ++nodes; } cur = nx; ++cur->through; } }
+    const SuffixNode* walk(const std::string& p) const { const SuffixNode* cur = root; for (char c : p) { cur = cur->children[c - 'a']; if (!cur) return nullptr; } return cur; }
+    bool contains(const std::string& p) const { return walk(p) != nullptr; }
+    int occurrences(const std::string& p) const { const SuffixNode* n = walk(p); return !n ? 0 : (n == root ? -1 : n->through); }
+    size_t nodeCount() const { return nodes; }
 };
+size_t distinctSubstrings(const std::string& s) { std::set<std::string> sub; for (size_t i = 0; i < s.size(); ++i) for (size_t l = 1; i + l <= s.size(); ++l) sub.insert(s.substr(i, l)); return sub.size(); }
+int naiveCount(const std::string& t, const std::string& p) { int c = 0; for (size_t i = t.find(p); i != std::string::npos; i = t.find(p, i + 1)) ++c; return c; }
 
 int main() {
-    SuffixTrie st("banana");
-    assert(st.search("nan") == true);
-    assert(st.search("apple") == false);
-    std::cout << "Suffix Trie search verified." << std::endl;
+    { SuffixTrie st("banana"); assert(st.contains("nan") && !st.contains("apple") && st.occurrences("ana") == 2 && st.occurrences("a") == 3 && st.occurrences("banana") == 1 && st.occurrences("nab") == 0); }
+    std::vector<std::string> patterns; for (int len = 1; len <= 5; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; patterns.push_back(s); }
+    for (int len = 1; len <= 10; ++len) for (int m = 0; m < (1 << len); ++m) { std::string t; for (int b = len - 1; b >= 0; --b) t += (m >> b & 1) ? 'b' : 'a'; SuffixTrie st(t); assert(st.nodeCount() == 1 + distinctSubstrings(t));
+        for (auto& p : patterns) { int c = naiveCount(t, p); assert(st.contains(p) == (c > 0) && st.occurrences(p) == c); } }                         // ① 전수
+    std::mt19937 rng(14);
+    for (int it = 0; it < 300; ++it) { int n = 1 + (int)(rng() % 60); std::string t(n, 'a'); for (char& c : t) c = (char)('a' + rng() % 4); SuffixTrie st(t); assert(st.nodeCount() == 1 + distinctSubstrings(t));
+        for (int q = 0; q < 30; ++q) { int pl = 1 + (int)(rng() % 6); std::string p; if (rng() % 2 && n >= pl) p = t.substr(rng() % (n - pl + 1), pl); else for (int i = 0; i < pl; ++i) p += (char)('a' + rng() % 4); int c = naiveCount(t, p); assert(st.contains(p) == (c > 0) && st.occurrences(p) == c); } }
+    { std::string distinct; for (char c = 'a'; c <= 'z'; ++c) distinct += c; SuffixTrie st(distinct); assert(st.nodeCount() == 1 + 26 * 27 / 2);                                  // ③ 최악: 모든 글자가 다르면 Θ(n²)
+      SuffixTrie same(std::string(500, 'a')); assert(same.nodeCount() == 501); }                                                                                              // 최선: n + 1
+    std::cout << "SuffixTrie: node count equalled 1 + (number of distinct substrings) for every binary string up to length 10 and 300 random strings, contains/occurrence counts matched naive search for all patterns, and the quadratic worst case (26 distinct letters -> 352 nodes) was reproduced" << std::endl;
     return 0;
 }
-// Time Complexity: O(N^2) to build naive, O(M) search
-// Space Complexity: O(N^2)
+// Time Complexity: 구성 O(N²), 검색 O(M)
+// Space Complexity: O(N²) 노드 (서로 다른 부분 문자열 수에 비례)
 ```
 
 ## SuffixTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <map>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 접미사 트리: 문자열의 모든 접미사를 압축 트라이로 모은 것.  부분 문자열 검색이 O(m), 서로 다른 부분 문자열 수·최장 반복 부분 문자열·최장 공통 부분 문자열 같은 문제를 선형 시간에 푼다.
-// 끝 표식 '$' 를 붙여 어떤 접미사도 다른 접미사의 접두사가 되지 않게 한다 (모든 접미사가 잎).  여기서는 접미사를 하나씩 넣는 O(n²) 구성 (선형 시간 알고리즘은 Ukkonen)
-struct Node { std::map<char, std::pair<std::string, Node*>> kids; int leafIndex = -1; };
+//  끝 표식 '$' 를 붙여 어떤 접미사도 다른 접미사의 접두사가 되지 않게 한다 (모든 접미사가 잎).  여기서는 접미사를 하나씩 넣는 O(n²) 구성 (선형 시간 알고리즘은 Ukkonen).
+//  ① 전수: 이진 문자열 길이 ≤ 10 전부 — 잎 수 = n + 1, 내부 노드(루트 제외)는 모두 자식 ≥ 2 개이고 ≤ n 개, 간선 글자 총수 − (n + 1) = 서로 다른 부분 문자열 수, find(p) = 순진한 모든 출현 위치  ② 가장 긴 반복 부분 문자열 = 가장 깊은 내부 노드의 문자열 깊이 (완전 탐색과 대조)
+//  ③ 무작위 문자열(알파벳 3, 길이 ≤ 80)  ④ 소멸자가 트리를 해제한다 (누수 없음).
+struct Node { std::map<char, std::pair<std::string, Node*>> kids; int leafIndex = -1; ~Node() { for (auto& kv : kids) delete kv.second.second; } };
 
 void insertSuffix(Node* root, const std::string& s, int start) {
     Node* n = root; size_t i = start;
@@ -2822,14 +4198,14 @@ void insertSuffix(Node* root, const std::string& s, int start) {
         std::string& label = it->second.first; Node* child = it->second.second;
         size_t l = 0; while (l < label.size() && s[i + l] == label[l]) l++;
         if (l == label.size()) { n = child; i += l; continue; }
-        Node* mid = new Node;                                                       // 분할
+        Node* mid = new Node;                                                                                    // 분할
         mid->kids[label[l]] = {label.substr(l), child};
         it->second = {label.substr(0, l), mid};
         n = mid; i += l;
     }
 }
 void leaves(const Node* n, std::set<int>& out) { if (n->leafIndex >= 0) out.insert(n->leafIndex); for (auto& kv : n->kids) leaves(kv.second.second, out); }
-std::set<int> find(const Node* root, const std::string& p) {                         // 패턴의 모든 출현 위치 = 패턴 끝 아래의 잎들
+std::set<int> find(const Node* root, const std::string& p) {                                                      // 패턴의 모든 출현 위치 = 패턴 끝 아래의 잎들
     const Node* n = root; size_t i = 0;
     while (i < p.size()) {
         auto it = n->kids.find(p[i]); if (it == n->kids.end()) return {};
@@ -2840,23 +4216,30 @@ std::set<int> find(const Node* root, const std::string& p) {                    
     std::set<int> r; leaves(n, r); return r;
 }
 size_t edgeChars(const Node* n) { size_t s = 0; for (auto& kv : n->kids) s += kv.second.first.size() + edgeChars(kv.second.second); return s; }
+void shape(const Node* n, bool isRoot, int& leafCount, int& inner, bool& branching, size_t depth, size_t& deepest) {          // 내부 노드의 문자열 깊이 최대값 = 가장 긴 반복 부분 문자열 길이
+    if (n->leafIndex >= 0) { ++leafCount; return; }
+    if (!isRoot) { ++inner; if (n->kids.size() < 2) branching = false; deepest = std::max(deepest, depth); }
+    for (auto& kv : n->kids) shape(kv.second.second, false, leafCount, inner, branching, depth + kv.second.first.size(), deepest); }
+size_t bruteLongestRepeat(const std::string& t) { size_t best = 0; for (size_t l = 1; l < t.size(); ++l) { std::set<std::string> seen; bool rep = false; for (size_t i = 0; i + l <= t.size() && !rep; ++i) rep = !seen.insert(t.substr(i, l)).second; if (rep) best = l; } return best; }
+void checkAll(const std::string& text, const std::vector<std::string>& patterns) {
+    std::string s = text + "$"; Node root; for (size_t i = 0; i < s.size(); i++) insertSuffix(&root, s, (int)i);
+    int leafCount = 0, inner = 0; bool branching = true; size_t deepest = 0; shape(&root, true, leafCount, inner, branching, 0, deepest);
+    std::set<std::string> sub; for (size_t i = 0; i < text.size(); i++) for (size_t l = 1; i + l <= text.size(); l++) sub.insert(text.substr(i, l));
+    assert(leafCount == (int)s.size() && branching && inner <= (int)text.size() && edgeChars(&root) - s.size() == sub.size() && deepest == bruteLongestRepeat(text));
+    for (auto& p : patterns) { std::set<int> want; for (size_t i = text.find(p); i != std::string::npos; i = text.find(p, i + 1)) want.insert((int)i); assert(find(&root, p) == want); } }
 
 int main() {
-    std::string text = "banana", s = text + "$";
-    Node root; for (size_t i = 0; i < s.size(); i++) insertSuffix(&root, s, i);
-    assert((find(&root, "ana") == std::set<int>{1, 3}));
-    assert((find(&root, "na") == std::set<int>{2, 4}));
-    assert((find(&root, "banana") == std::set<int>{0}));
-    assert(find(&root, "nab").empty());
-    // 간선 레이블의 총 길이 = 서로 다른 부분 문자열의 수 ('$' 로 끝나는 n+1 개 포함)
-    assert(edgeChars(&root) - (text.size() + 1) == 15);                              // banana 의 서로 다른 부분 문자열은 15개
-    std::set<std::string> brute; for (size_t i = 0; i < text.size(); i++) for (size_t l = 1; i + l <= text.size(); l++) brute.insert(text.substr(i, l));
-    assert(brute.size() == 15);
-    std::cout << "SuffixTree(banana): 'ana' at {1,3}, 15 distinct substrings" << std::endl;
+    { std::string text = "banana", s = text + "$"; Node root; for (size_t i = 0; i < s.size(); i++) insertSuffix(&root, s, (int)i);
+      assert((find(&root, "ana") == std::set<int>{1, 3}) && (find(&root, "na") == std::set<int>{2, 4}) && (find(&root, "banana") == std::set<int>{0}) && find(&root, "nab").empty() && edgeChars(&root) - s.size() == 15); }
+    std::vector<std::string> patterns; for (int len = 1; len <= 5; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; patterns.push_back(s); }
+    for (int len = 1; len <= 10; ++len) for (int m = 0; m < (1 << len); ++m) { std::string t; for (int b = len - 1; b >= 0; --b) t += (m >> b & 1) ? 'b' : 'a'; checkAll(t, patterns); }
+    std::mt19937 rng(15);
+    for (int it = 0; it < 150; ++it) { int n = 1 + (int)(rng() % 80); std::string t(n, 'a'); for (char& c : t) c = (char)('a' + rng() % 3); std::vector<std::string> ps; for (int q = 0; q < 20; ++q) { int pl = 1 + (int)(rng() % 6); std::string p; if (rng() % 2 && n >= pl) p = t.substr(rng() % (n - pl + 1), pl); else for (int i = 0; i < pl; ++i) p += (char)('a' + rng() % 3); ps.push_back(p); } checkAll(t, ps); }
+    std::cout << "SuffixTree: for every binary string up to length 10 and 150 random strings, leaves = n+1, internal nodes all branch and number at most n, edge characters minus (n+1) equalled the distinct-substring count, the deepest internal node gave the longest repeated substring, and find() returned exactly the naive occurrence set" << std::endl;
     return 0;
 }
 // Time Complexity: 이 구성 O(n²), Ukkonen O(n); 검색 O(m + 출현 수)
-// Space Complexity: O(n)
+// Space Complexity: O(n) 노드 (레이블은 부분 문자열 복사; 인덱스 쌍으로 두면 O(n))
 ```
 ## PatriciaTrie()
 ### 대표코드
@@ -2892,6 +4275,8 @@ int countLeaves(Node* n) { return !n ? 0 : n->leaf ? 1 : countLeaves(n->l) + cou
 int countInner(Node* n) { return (!n || n->leaf) ? 0 : 1 + countInner(n->l) + countInner(n->r); }
 bool decreasing(Node* n) { if (n->leaf) return true; for (Node* c : {n->l, n->r}) if (!c->leaf && c->bit >= n->bit) return false; return decreasing(n->l) && decreasing(n->r); }
 
+void destroy(Node* n) { if (!n) return; if (!n->leaf) { destroy(n->l); destroy(n->r); } delete n; }
+
 int main() {
     std::mt19937 rng(18); Node* root = nullptr; std::set<uint32_t> truth;
     for (int i = 0; i < 2000; i++) { uint32_t k = rng() % 100000; root = insert(root, k); truth.insert(k); }
@@ -2900,6 +4285,7 @@ int main() {
     assert(countInner(root) == (int)truth.size() - 1);                       // 내부 노드는 정확히 n-1 개
     assert(decreasing(root));                                                 // 내려갈수록 비교하는 비트가 낮아진다
     std::cout << "PatriciaTrie: " << truth.size() << " keys, " << countInner(root) << " internal nodes (n-1)" << std::endl;
+    destroy(root);
     return 0;
 }
 // Time Complexity: 삽입·검색 O(키 길이 비트 수)
@@ -2951,6 +4337,8 @@ std::vector<std::string> startsWith(const Node* n, const std::string& p) {
     return out;
 }
 
+void destroy(Node* n) { if (!n) return; destroy(n->lo); destroy(n->eq); destroy(n->hi); delete n; }
+
 int main() {
     Node* root = nullptr;
     std::vector<std::string> words = {"cat", "cap", "can", "car", "card", "care", "dog", "do", "done"};
@@ -2961,6 +4349,7 @@ int main() {
     assert((startsWith(root, "do") == std::vector<std::string>{"do", "dog", "done"}));
     assert(startsWith(root, "x").empty());
     std::cout << "TernarySearchTree verified: autocomplete 'car' -> car, card, care" << std::endl;
+    destroy(root);
     return 0;
 }
 // Time Complexity: O(L + log σ) 평균 (σ = 알파벳 크기)
@@ -2969,103 +4358,207 @@ int main() {
 ## SuffixArray()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
+#include <iostream>
 #include <numeric>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 접미사 배열(트리 관점의 요약, 정본은 String.md Part 9): 접미사 트리를 정렬된 배열로 평평하게 편 것.
-// 접미사 트리의 잎을 사전순으로 훑은 순서 = 접미사 배열.  공간은 정수 n 개로 트리보다 훨씬 작고 캐시 친화적이다
+// 접미사 배열(트리 관점의 요약, 정본은 String.md Part 9): 접미사 트리의 잎을 사전순으로 훑은 순서를 평평한 정수 배열로 둔 것.  트리보다 공간이 훨씬 작고 캐시 친화적이다.  접두사 두 배(prefix doubling) + 계수 정렬로 O(n log n) 에 만들고 Kasai 로 LCP 를 O(n) 에 구한다.
+//  LCP 배열이 접미사 트리의 내부 구조를 담는다: 서로 다른 부분 문자열 수 = n(n+1)/2 − ΣLCP,  가장 긴 반복 부분 문자열 = max LCP,  패턴 P 로 시작하는 접미사는 SA 의 연속 구간 (이진 탐색 O(m log n)).
+//  ① 전수: 이진 문자열 길이 ≤ 14 전부(32766 개)와 3진 길이 ≤ 8 이 순진한 정렬과 같은 SA, 순진한 LCP, 순진한 부분 문자열 집합과 같은 개수  ② 피보나치·주기·같은 글자 문자열  ③ 100 만 글자: *정렬 인증서*(인접 쌍 (s[x], 순위[x+1]) < (s[y], 순위[y+1]), 순열)로 구성과 독립적으로 검증.
+std::vector<int> buildSA(const std::string& s) {
+    int n = (int)s.size(); if (n == 0) return {};
+    int m = std::max(n, 256) + 1; std::vector<int> sa(n), rk(n), tmp(n), cnt(m, 0);
+    for (int i = 0; i < n; ++i) { rk[i] = (unsigned char)s[i]; ++cnt[rk[i]]; } for (int i = 1; i < m; ++i) cnt[i] += cnt[i - 1]; for (int i = n - 1; i >= 0; --i) sa[--cnt[rk[i]]] = i;
+    for (int k = 1;; k <<= 1) {
+        int p = 0; for (int i = n - k; i < n; ++i) if (i >= 0) tmp[p++] = i;                                       // 두 번째 키가 빈 접미사 먼저
+        for (int j = 0; j < n; ++j) if (sa[j] >= k) tmp[p++] = sa[j] - k;                                         // 나머지는 이전 정렬 순서대로
+        std::fill(cnt.begin(), cnt.end(), 0); for (int i = 0; i < n; ++i) ++cnt[rk[i]]; for (int i = 1; i < m; ++i) cnt[i] += cnt[i - 1]; for (int j = n - 1; j >= 0; --j) sa[--cnt[rk[tmp[j]]]] = tmp[j];   // 첫 키로 안정 계수 정렬
+        tmp[sa[0]] = 0; int classes = 1; for (int j = 1; j < n; ++j) { int x = sa[j], y = sa[j - 1]; int x2 = x + k < n ? rk[x + k] : -1, y2 = y + k < n ? rk[y + k] : -1; tmp[x] = (rk[x] == rk[y] && x2 == y2) ? classes - 1 : classes++; }
+        rk = tmp; if (classes == n) break;
+    }
+    return sa;
+}
+std::vector<int> buildLCP(const std::string& s, const std::vector<int>& sa) {                                      // Kasai: lcp[i] = LCP(sa[i−1], sa[i]), lcp[0] = 0
+    int n = (int)s.size(); std::vector<int> rank(n), lcp(n, 0); for (int i = 0; i < n; ++i) rank[sa[i]] = i;
+    for (int i = 0, h = 0; i < n; ++i) { if (rank[i] > 0) { int j = sa[rank[i] - 1]; while (i + h < n && j + h < n && s[i + h] == s[j + h]) ++h; lcp[rank[i]] = h; if (h > 0) --h; } else h = 0; }
+    return lcp;
+}
+std::pair<int, int> equalRange(const std::string& s, const std::vector<int>& sa, const std::string& p) {         // p 로 시작하는 접미사의 SA 구간 [lo, hi)
+    auto lo = std::lower_bound(sa.begin(), sa.end(), p, [&](int i, const std::string& x) { return s.compare(i, x.size(), x) < 0; });
+    auto hi = std::upper_bound(sa.begin(), sa.end(), p, [&](const std::string& x, int i) { return s.compare(i, x.size(), x) > 0; });
+    return {(int)(lo - sa.begin()), (int)(hi - sa.begin())};
+}
+std::vector<int> naiveSA(const std::string& s) { std::vector<int> sa(s.size()); std::iota(sa.begin(), sa.end(), 0); std::sort(sa.begin(), sa.end(), [&](int a, int b) { return s.compare(a, std::string::npos, s, b, std::string::npos) < 0; }); return sa; }
+bool certificate(const std::string& s, const std::vector<int>& sa) {                                               // 순열 + 인접 쌍이 (s[x], 순위[x+1]) 사전순
+    int n = (int)s.size(); if ((int)sa.size() != n) return false; std::vector<int> rank(n, -1); for (int i = 0; i < n; ++i) { if (sa[i] < 0 || sa[i] >= n || rank[sa[i]] != -1) return false; rank[sa[i]] = i; }
+    for (int i = 0; i + 1 < n; ++i) { int x = sa[i], y = sa[i + 1]; int rx = x + 1 < n ? rank[x + 1] : -1, ry = y + 1 < n ? rank[y + 1] : -1; if (s[x] > s[y] || (s[x] == s[y] && rx >= ry)) return false; }
+    return true; }
+void checkAll(const std::string& s) {
+    std::vector<int> sa = buildSA(s), want = naiveSA(s); assert(sa == want); std::vector<int> lcp = buildLCP(s, sa); int n = (int)s.size(); long long sum = 0; int mx = 0;
+    for (int i = 1; i < n; ++i) { int a = sa[i - 1], b = sa[i], h = 0; while (a + h < n && b + h < n && s[a + h] == s[b + h]) ++h; assert(lcp[i] == h); sum += h; mx = std::max(mx, h); }
+    if (n <= 40) { std::set<std::string> subs; for (int i = 0; i < n; ++i) for (int l = 1; i + l <= n; ++l) subs.insert(s.substr(i, l)); assert((long long)subs.size() == (long long)n * (n + 1) / 2 - sum);
+        int best = 0; for (int l = 1; l <= n; ++l) { std::set<std::string> cur; bool repeated = false; for (int i = 0; i + l <= n && !repeated; ++i) repeated = !cur.insert(s.substr(i, l)).second; if (repeated) best = l; } assert(best == mx); }   // 가장 긴 반복 부분 문자열
+}
+
 int main() {
-    std::string s = "banana";
-    std::vector<int> sa(s.size()); std::iota(sa.begin(), sa.end(), 0);
-    std::sort(sa.begin(), sa.end(), [&](int a, int b) { return s.compare(a, std::string::npos, s, b, std::string::npos) < 0; });
-    assert((sa == std::vector<int>{5, 3, 1, 0, 4, 2}));                        // a, ana, anana, banana, na, nana
-    // 패턴 "ana" 로 시작하는 접미사는 SA 에서 연속 구간 (이진 탐색으로 찾는다)
-    auto lo = std::lower_bound(sa.begin(), sa.end(), std::string("ana"), [&](int i, const std::string& x) { return s.compare(i, x.size(), x) < 0; });
-    auto hi = std::upper_bound(sa.begin(), sa.end(), std::string("ana"), [&](const std::string& x, int i) { return s.compare(i, x.size(), x) > 0; });
-    assert(hi - lo == 2);
-    std::cout << "SuffixArray(banana) = 5 3 1 0 4 2" << std::endl;
+    { std::string s = "banana"; assert(buildSA(s) == (std::vector<int>{5, 3, 1, 0, 4, 2})); std::vector<int> lcp = buildLCP(s, buildSA(s)); assert(lcp == (std::vector<int>{0, 1, 3, 0, 0, 2}));
+      auto r = equalRange(s, buildSA(s), "ana"); assert(r.second - r.first == 2); r = equalRange(s, buildSA(s), "x"); assert(r.first == r.second); }                      // a, ana, anana, banana, na, nana
+    for (int len = 0; len <= 14; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; checkAll(s); }         // ① 이진 전수 (길이 ≤ 14)
+    for (int len = 1; len <= 8; ++len) { int total = 1; for (int i = 0; i < len; ++i) total *= 3; for (int m = 0; m < total; ++m) { std::string s; int x = m; for (int i = 0; i < len; ++i) { s += (char)('a' + x % 3); x /= 3; } checkAll(s); } }
+    { std::string f1 = "a", f2 = "ab"; for (int i = 0; i < 12; ++i) { std::string f3 = f2 + f1; f1 = f2; f2 = f3; checkAll(f2.size() > 600 ? f2.substr(0, 600) : f2); } std::string per; for (int i = 0; i < 200; ++i) per += "abc"; checkAll(per); checkAll(std::string(300, 'a')); }          // ② 피보나치·주기
+    std::mt19937 rng(23);
+    for (int it = 0; it < 300; ++it) { int n = 1 + (int)(rng() % 60), sigma = 1 + (int)(rng() % 5); std::string s(n, 'a'); for (char& c : s) c = (char)('a' + rng() % sigma); checkAll(s);
+        std::vector<int> sa = buildSA(s); for (int q = 0; q < 20; ++q) { std::string p; int pl = 1 + (int)(rng() % 4); for (int i = 0; i < pl; ++i) p += (char)('a' + rng() % (sigma + 1)); auto r = equalRange(s, sa, p); int occ = 0; for (int i = 0; i + pl <= n; ++i) occ += s.compare(i, pl, p) == 0; assert(r.second - r.first == occ); for (int k = r.first; k < r.second; ++k) assert(s.compare(sa[k], pl, p) == 0); } }   // 패턴 구간
+    for (int mode = 0; mode < 3; ++mode) {                                                                       // ③ 100 만 글자
+        const int n = 1000000; std::string s(n, 'a'); if (mode == 0) for (char& c : s) c = (char)('a' + rng() % 4); else if (mode == 1) for (int i = 0; i < n; ++i) s[i] = "ab"[i % 2];
+        std::vector<int> sa = buildSA(s); assert(certificate(s, sa)); if (mode == 2) { for (int i = 0; i < n; ++i) assert(sa[i] == n - 1 - i); }                                   // aaaa…: 짧은 접미사가 먼저
+    }
+    std::cout << "SuffixArray: prefix-doubling SA matched naive sorting on every binary string up to length 14 and ternary up to 8 (plus LCP, distinct-substring count and longest repeat), pattern ranges matched naive counts, and 10^6-character strings passed the sortedness certificate" << std::endl;
     return 0;
 }
-// Time Complexity: 구성 O(n log² n), 검색 O(m log n)
+// Time Complexity: 구성 O(n log n), LCP O(n), 패턴 검색 O(m log n)
 // Space Complexity: O(n)
 ```
 # Part 11. 공간 분할 트리
 ## SegmentTree()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
-class SegmentTree {
-    std::vector<int> tree;
-    int n;
-public:
-    SegmentTree(std::vector<int>& arr) {
-        n = arr.size();
-        tree.assign(2 * n, 0);
-        for (int i = 0; i < n; ++i) tree[n + i] = arr[i];
-        for (int i = n - 1; i > 0; --i) tree[i] = tree[i << 1] + tree[i << 1 | 1];
-    }
-    void update(int p, int value) {
-        for (tree[p += n] = value; p > 1; p >>= 1) tree[p >> 1] = tree[p] + tree[p ^ 1];
-    }
-    int query(int l, int r) {
-        int res = 0;
-        for (l += n, r += n; l < r; l >>= 1, r >>= 1) {
-            if (l & 1) res += tree[l++];
-            if (r & 1) res += tree[--r];
-        }
-        return res;
-    }
+// 세그먼트 트리(반복형, 아래에서 위로): 배열 d[1 .. 2·size) 에 완전 이진 트리를 담고 잎은 d[size + i].  한 점 갱신 O(log n), 구간 [l, r) 질의 O(log n).
+//  *모노이드*(결합 법칙 + 항등원) 이면 무엇이든 담을 수 있다 — 합·최솟값·gcd 뿐 아니라 교환 법칙이 없는 문자열 연결·행렬 곱·"최대 부분 배열 합"까지.  교환 법칙이 없으므로 질의는 왼쪽 누적(sl)과 오른쪽 누적(sr)을 따로 두어 순서를 지킨다.
+//  maxRight(l, f): f(구간 값) 이 참인 가장 긴 [l, r) 의 r 을 트리 *내려가기*로 O(log n) 에 찾는다 (f 는 단조).  ① n = 1..70 에서 *모든* 구간 [l, r) 을 순진한 왼쪽→오른쪽 접기와 대조 (합·최솟값·gcd·문자열 연결·2×2 행렬 곱 mod p·최대 부분 배열 합)
+//  ② maxRight 를 모든 (l, K) 에서 순진한 선형 탐색과 대조  ③ build(O(n)) 결과 = 점 갱신 n 번의 결과  ④ n = 10^6, 갱신 10^6 번 — 10^5 번마다 접두사 합 배열로 질의를 대조.
+template <class T, class Op> struct SegTree {
+    int n, size; T e; Op op; std::vector<T> d;
+    SegTree(int n_, T e_, Op op_) : n(n_), e(e_), op(op_) { size = 1; while (size < n) size <<= 1; d.assign(2 * size, e); }
+    void build(const std::vector<T>& a) { for (int i = 0; i < n; ++i) d[size + i] = a[i]; for (int i = size - 1; i >= 1; --i) d[i] = op(d[2 * i], d[2 * i + 1]); }
+    void set(int p, T v) { p += size; d[p] = v; while (p >>= 1) d[p] = op(d[2 * p], d[2 * p + 1]); }
+    T get(int p) const { return d[p + size]; }
+    T query(int l, int r) const { T sl = e, sr = e; for (l += size, r += size; l < r; l >>= 1, r >>= 1) { if (l & 1) sl = op(sl, d[l++]); if (r & 1) sr = op(d[--r], sr); } return op(sl, sr); }
+    template <class F> int maxRight(int l, F f) const {                                                          // f(op(a[l..r−1])) 이 참인 최대 r
+        if (l == n) return n; l += size; T sm = e;
+        do { while (l % 2 == 0) l >>= 1;
+             if (!f(op(sm, d[l]))) { while (l < size) { l = 2 * l; if (f(op(sm, d[l]))) { sm = op(sm, d[l]); ++l; } } return l - size; }
+             sm = op(sm, d[l]); ++l; } while ((l & -l) != l);
+        return n; }
 };
+struct Best { long long sum, best, pre, suf; };                                                                  // 최대 부분 배열 합 모노이드 (best/pre/suf 는 비어 있지 않은 구간)
+const long long NEG = -(1LL << 50);
+Best bestOp(const Best& a, const Best& b) { return {a.sum + b.sum, std::max({a.best, b.best, a.suf + b.pre}), std::max(a.pre, a.sum + b.pre), std::max(b.suf, b.sum + a.suf)}; }
+Best bestLeaf(long long v) { return {v, v, v, v}; }
+const Best bestId = {0, NEG, NEG, NEG};
+struct Mat { long long a, b, c, d; }; const long long MOD = 1000000007LL;
+Mat matOp(const Mat& x, const Mat& y) { return {(x.a * y.a + x.b * y.c) % MOD, (x.a * y.b + x.b * y.d) % MOD, (x.c * y.a + x.d * y.c) % MOD, (x.c * y.b + x.d * y.d) % MOD}; }
+bool operator==(const Mat& x, const Mat& y) { return x.a == y.a && x.b == y.b && x.c == y.c && x.d == y.d; }
+bool operator==(const Best& x, const Best& y) { return x.sum == y.sum && x.best == y.best && x.pre == y.pre && x.suf == y.suf; }
+
+template <class T, class Op> void exhaustive(int n, T e, Op op, const std::vector<T>& a) {                      // 모든 [l, r) × 순진한 접기
+    SegTree<T, Op> st(n, e, op); st.build(a);
+    for (int l = 0; l <= n; ++l) { T acc = e; for (int r = l; r <= n; ++r) { assert(st.query(l, r) == acc); if (r < n) acc = op(acc, a[r]); } }
+    SegTree<T, Op> viaSet(n, e, op); for (int i = 0; i < n; ++i) viaSet.set(i, a[i]); assert(viaSet.d == st.d);   // ③ build = 점 갱신 n 번
+}
 
 int main() {
-    std::vector<int> arr = {1, 2, 3, 4};
-    SegmentTree st(arr);
-    assert(st.query(0, 4) == 10); // sum of all
-    st.update(1, 10); // arr[1] = 10 -> sum = 18
-    assert(st.query(0, 4) == 18);
-    std::cout << "Segment Tree (Iterative) verified." << std::endl;
+    std::mt19937 rng(61);
+    for (int n = 1; n <= 70; ++n) {
+        std::vector<long long> v(n); for (auto& x : v) x = (long long)(rng() % 2001) - 1000;
+        { auto op = [](long long x, long long y) { return x + y; }; exhaustive<long long>(n, 0, op, v); }
+        { auto op = [](long long x, long long y) { return std::min(x, y); }; exhaustive<long long>(n, (1LL << 60), op, v); }
+        { std::vector<long long> g(n); for (int i = 0; i < n; ++i) g[i] = (long long)(rng() % 60); auto op = [](long long x, long long y) { return std::__gcd(x, y); }; exhaustive<long long>(n, 0, op, g); }
+        { std::vector<std::string> s(n); for (int i = 0; i < n; ++i) s[i] = std::string(1, (char)('a' + rng() % 26)); auto op = [](const std::string& x, const std::string& y) { return x + y; }; exhaustive<std::string>(n, "", op, s); }   // 교환 법칙 없음
+        { std::vector<Mat> m(n); for (auto& x : m) x = {(long long)(rng() % 10), (long long)(rng() % 10), (long long)(rng() % 10), (long long)(rng() % 10)}; auto op = [](const Mat& x, const Mat& y) { return matOp(x, y); }; exhaustive<Mat>(n, Mat{1, 0, 0, 1}, op, m); }
+        { std::vector<Best> b(n); for (int i = 0; i < n; ++i) b[i] = bestLeaf(v[i]);
+          SegTree<Best, Best (*)(const Best&, const Best&)> st(n, bestId, bestOp); st.build(b);
+          for (int l = 0; l < n; ++l) { long long run = NEG; for (int r = l + 1; r <= n; ++r) { long long bestSum = NEG; for (int x = l; x < r; ++x) { long long s = 0; for (int y = x; y < r; ++y) { s += v[y]; bestSum = std::max(bestSum, s); } } assert(st.query(l, r).best == bestSum); run = bestSum; } (void)run; } }                // Kadane 대신 O(n³) 완전 탐색과 대조
+    }
+    for (int n : {1, 2, 5, 16, 33, 100}) {                                                                       // ② maxRight (합 ≤ K, 값은 음이 아님)
+        std::vector<long long> a(n); for (auto& x : a) x = (long long)(rng() % 20); auto op = [](long long x, long long y) { return x + y; }; SegTree<long long, decltype(op)> st(n, 0, op); st.build(a);
+        for (int l = 0; l <= n; ++l) for (long long K = 0; K <= 400; K += 7) { int r = l; long long s = 0; while (r < n && s + a[r] <= K) s += a[r++]; assert(st.maxRight(l, [K](long long x) { return x <= K; }) == r); }
+    }
+    { const int n = 1000000; auto op = [](long long x, long long y) { return x + y; }; SegTree<long long, decltype(op)> st(n, 0, op); std::vector<long long> a(n, 0);        // ④
+      for (long step = 1; step <= 1000000; ++step) { int p = (int)(rng() % n); long long v = (long long)(rng() % 1000000) - 500000; a[p] = v; st.set(p, v);
+        if (step % 100000 == 0) { std::vector<long long> pre(n + 1, 0); for (int i = 0; i < n; ++i) pre[i + 1] = pre[i] + a[i]; for (int q = 0; q < 2000; ++q) { int l = (int)(rng() % n), r = l + (int)(rng() % (n - l + 1)); assert(st.query(l, r) == pre[r] - pre[l]); } assert(st.d[1] == pre[n]); } } }
+    std::cout << "SegmentTree: every range query on arrays of size 1..70 matched the naive left-to-right fold for sum/min/gcd/string-concat/2x2-matrix/max-subarray monoids, maxRight matched linear search, build equalled n point updates, and 10^6 updates on 10^6 elements matched prefix sums" << std::endl;
     return 0;
 }
-// Time Complexity: O(N) build, O(log N) query/update
+// Time Complexity: build O(N), update/query/maxRight O(log N)
 // Space Complexity: O(N)
 ```
 
 ## FenwickTree()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
-class FenwickTree {
-    std::vector<int> tree;
-public:
-    FenwickTree(int n) : tree(n + 1, 0) {}
-    void add(int i, int delta) {
-        for (++i; i < (int)tree.size(); i += i & -i) tree[i] += delta;
-    }
-    int query(int i) {
-        int sum = 0;
-        for (++i; i > 0; i -= i & -i) sum += tree[i];
-        return sum;
-    }
+// 펜윅 트리(이진 인덱스 트리): t[i] 가 구간 (i − lowbit(i), i] 의 합을 담는다 (lowbit(i) = i & −i).  갱신은 i += lowbit(i) 로 올라가고 접두사 합은 i −= lowbit(i) 로 내려간다 — 둘 다 O(log n).  세그먼트 트리의 절반 메모리, 상수도 작지만 *역원이 있는 연산*(합)에 한정된다.
+//  ① 구조 성질: 모든 i 에서 t[i] 가 정확히 (i − lowbit(i), i] 의 합  ② 선형 시간 구성(각 칸을 부모에게 한 번 더하기) = 갱신 n 번의 결과  ③ lowerBound(target): 접두사 합이 target 이상이 되는 첫 인덱스를 트리 내려가기로 O(log n) (값은 음이 아님)
+//  ④ 구간 갱신·구간 합(두 BIT)  ⑤ 응용: 역전 수(inversions) 를 병합 정렬 계수와 대조, 동적 k 번째 작은 값을 정렬 벡터와 대조  ⑥ n = 10^6 에서 갱신 10^6 번, 10^5 번마다 접두사 합 배열로 대조.
+struct Fenwick {
+    int n; std::vector<long long> t;
+    explicit Fenwick(int n_) : n(n_), t(n_ + 1, 0) {}
+    explicit Fenwick(const std::vector<long long>& a) : n((int)a.size()), t(a.size() + 1, 0) { for (int i = 1; i <= n; ++i) { t[i] += a[i - 1]; int j = i + (i & -i); if (j <= n) t[j] += t[i]; } }   // O(n) 구성
+    void add(int i, long long v) { for (++i; i <= n; i += i & -i) t[i] += v; }
+    long long prefix(int i) const { long long s = 0; for (++i; i > 0; i -= i & -i) s += t[i]; return s; }          // a[0..i] 의 합 (i = −1 이면 0)
+    long long range(int l, int r) const { return prefix(r) - prefix(l - 1); }                                      // a[l..r]
+    int lowerBound(long long target) const { int pos = 0, pw = 1; while (pw * 2 <= n) pw *= 2; long long rem = target; for (; pw; pw >>= 1) if (pos + pw <= n && t[pos + pw] < rem) { pos += pw; rem -= t[pos]; } return pos; }   // prefix(i) ≥ target 인 첫 i (없으면 n)
 };
+struct RangeFenwick {                                                                                           // 구간 더하기 + 구간 합: 차분 두 개 B1, B2 의 조합
+    int n; Fenwick b1, b2; explicit RangeFenwick(int n_) : n(n_), b1(n_ + 1), b2(n_ + 1) {}
+    void add(int l, int r, long long v) { b1.add(l, v); b1.add(r + 1, -v); b2.add(l, v * l); b2.add(r + 1, -v * (r + 1)); }                // [l, r] 에 v 를 더한다
+    long long prefix(int i) const { return b1.prefix(i) * (i + 1) - b2.prefix(i); }                                // a[0..i] 의 합
+    long long range(int l, int r) const { return prefix(r) - (l ? prefix(l - 1) : 0); }
+};
+long long mergeCount(std::vector<int>& a, std::vector<int>& tmp, int lo, int hi) {                               // 독립 오라클: 병합 정렬로 역전 수
+    if (hi - lo < 2) return 0; int mid = (lo + hi) / 2; long long c = mergeCount(a, tmp, lo, mid) + mergeCount(a, tmp, mid, hi); int i = lo, j = mid, k = lo;
+    while (i < mid && j < hi) { if (a[i] <= a[j]) tmp[k++] = a[i++]; else { tmp[k++] = a[j++]; c += mid - i; } } while (i < mid) tmp[k++] = a[i++]; while (j < hi) tmp[k++] = a[j++]; for (int x = lo; x < hi; ++x) a[x] = tmp[x]; return c; }
 
 int main() {
-    FenwickTree bit(4);
-    bit.add(0, 1); bit.add(1, 2); bit.add(2, 3);
-    assert(bit.query(2) == 6); // sum[0..2] = 1+2+3
-    std::cout << "Fenwick Tree verified." << std::endl;
+    std::mt19937 rng(71);
+    for (int n = 1; n <= 200; ++n) {                                                                             // ① ② ③ 작은 n 전부
+        std::vector<long long> a(n); for (auto& x : a) x = (long long)(rng() % 50); Fenwick built(a), viaAdd(n); for (int i = 0; i < n; ++i) viaAdd.add(i, a[i]); assert(built.t == viaAdd.t);
+        for (int i = 1; i <= n; ++i) { long long s = 0; for (int j = i - (i & -i); j < i; ++j) s += a[j]; assert(built.t[i] == s); }          // t[i] = (i − lowbit, i] 의 합
+        std::vector<long long> pre(n + 1, 0); for (int i = 0; i < n; ++i) pre[i + 1] = pre[i] + a[i];
+        for (int l = 0; l < n; ++l) for (int r = l; r < n; ++r) assert(built.range(l, r) == pre[r + 1] - pre[l]);
+        for (long long target = 0; target <= pre[n] + 3; ++target) { int want = 0; while (want < n && pre[want + 1] < target) ++want; assert(built.lowerBound(target) == want); }
+        RangeFenwick rf(n); std::vector<long long> ref(n, 0); for (int op = 0; op < 60; ++op) { int l = (int)(rng() % n), r = l + (int)(rng() % (n - l)); long long v = (long long)(rng() % 21) - 10; rf.add(l, r, v); for (int i = l; i <= r; ++i) ref[i] += v;
+            int ql = (int)(rng() % n), qr = ql + (int)(rng() % (n - ql)); long long s = 0; for (int i = ql; i <= qr; ++i) s += ref[i]; assert(rf.range(ql, qr) == s); }    // ④
+    }
+    for (int it = 0; it < 200; ++it) {                                                                           // ⑤ 역전 수
+        int n = 1 + (int)(rng() % 300); std::vector<int> a(n); for (auto& x : a) x = (int)(rng() % 50); std::vector<int> sorted = a; std::sort(sorted.begin(), sorted.end()); sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+        Fenwick bit(n + 1); long long inv = 0, brute = 0; for (int i = 0; i < n; ++i) { int rk = (int)(std::lower_bound(sorted.begin(), sorted.end(), a[i]) - sorted.begin()); inv += i - bit.prefix(rk); bit.add(rk, 1); }
+        for (int i = 0; i < n; ++i) for (int j = i + 1; j < n; ++j) brute += a[i] > a[j]; assert(inv == brute); }
+    { const int n = 200000; std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); std::shuffle(a.begin(), a.end(), rng); std::vector<int> b = a, tmp(n); long long want = mergeCount(b, tmp, 0, n); Fenwick bit(n); long long inv = 0; for (int i = 0; i < n; ++i) { inv += i - bit.prefix(a[i]); bit.add(a[i], 1); } assert(inv == want);
+      std::vector<int> rev(n); for (int i = 0; i < n; ++i) rev[i] = n - 1 - i; Fenwick b2(n); long long inv2 = 0; for (int i = 0; i < n; ++i) { inv2 += i - b2.prefix(rev[i]); b2.add(rev[i], 1); } assert(inv2 == (long long)n * (n - 1) / 2); }
+    { const int V = 5000; Fenwick cnt(V); std::vector<int> sortedVals; for (int step = 0; step < 100000; ++step) {                      // 동적 k 번째 작은 값
+        int op = (int)(rng() % 3); if (op < 2 || sortedVals.empty()) { int v = (int)(rng() % V); cnt.add(v, 1); sortedVals.insert(std::upper_bound(sortedVals.begin(), sortedVals.end(), v), v); }
+        else { size_t idx = rng() % sortedVals.size(); int v = sortedVals[idx]; cnt.add(v, -1); sortedVals.erase(sortedVals.begin() + idx); }
+        if (!sortedVals.empty()) { size_t k = rng() % sortedVals.size(); assert(cnt.lowerBound((long long)k + 1) == sortedVals[k]); } } }                                    // (k+1) 번째 작은 값
+    { const int n = 1000000; Fenwick bit(n); std::vector<long long> a(n, 0);                                     // ⑥
+      for (long step = 1; step <= 1000000; ++step) { int p = (int)(rng() % n); long long v = (long long)(rng() % 2001) - 1000; a[p] += v; bit.add(p, v);
+        if (step % 100000 == 0) { std::vector<long long> pre(n + 1, 0); for (int i = 0; i < n; ++i) pre[i + 1] = pre[i] + a[i]; for (int q = 0; q < 2000; ++q) { int i = (int)(rng() % n); assert(bit.prefix(i) == pre[i + 1]); } assert(bit.prefix(n - 1) == pre[n]); } } }
+    std::cout << "FenwickTree: t[i] covered exactly (i-lowbit(i), i] for all n <= 200, linear build equalled n updates, descent-based lowerBound and range-update/range-sum matched naive scans, inversion counts matched merge-sort counting, dynamic k-th value matched a sorted vector, and 10^6 updates on 10^6 elements matched prefix sums" << std::endl;
     return 0;
 }
-// Time Complexity: O(log N) add/query
+// Time Complexity: build O(N), add/prefix O(log N)
 // Space Complexity: O(N)
 ```
 
@@ -3548,6 +5041,8 @@ struct Node {
 };
 struct BTree {
     Node* root = new Node();
+    static void destroy(Node* x) { for (Node* c : x->kids) destroy(c); delete x; }
+    ~BTree() { destroy(root); }
     void splitChild(Node* x, int i) {                                // x->kids[i] 가 꽉 찼을 때 가운데 키를 x 로 올리고 둘로 쪼갠다
         Node* y = x->kids[i]; Node* z = new Node(); z->leaf = y->leaf;
         int mid = y->keys[T - 1];
@@ -3643,6 +5138,8 @@ bool insertRec(Node* n, int k, int& up, Node*& right) {      // 분할이 일어
 }
 struct BPlus {
     Node* root = new Node(true);
+    static void destroy(Node* n) { if (!n->leaf) for (Node* c : n->kids) destroy(c); delete n; }
+    ~BPlus() { destroy(root); }
     void insert(int k) { int u; Node* r; if (insertRec(root, k, u, r)) { Node* nr = new Node(false); nr->keys = {u}; nr->kids = {root, r}; root = nr; } }
     Node* leafFor(int k) const { Node* n = root; while (!n->leaf) n = n->kids[std::upper_bound(n->keys.begin(), n->keys.end(), k) - n->keys.begin()]; return n; }
     bool contains(int k) const { Node* l = leafFor(k); return std::binary_search(l->keys.begin(), l->keys.end(), k); }
@@ -3714,9 +5211,11 @@ Node* insert(Node* root, int k) {
 Node* erase(Node* root, int k) {
     if (!root) return nullptr;
     root = splay(root, k); if (root->key != k) return root;
-    if (!root->l) return root->r;
-    Node* nr = splay(root->l, k); nr->r = root->r; return nr;      // 왼쪽 서브트리의 최댓값을 루트로 올리고 오른쪽을 붙인다
+    Node* dead = root;
+    if (!root->l) { Node* r = root->r; delete dead; return r; }
+    Node* nr = splay(root->l, k); nr->r = root->r; delete dead; return nr;      // 왼쪽 서브트리의 최댓값을 루트로 올리고 오른쪽을 붙인다
 }
+void destroy(Node* n) { std::vector<Node*> st; if (n) st.push_back(n); while (!st.empty()) { Node* c = st.back(); st.pop_back(); if (c->l) st.push_back(c->l); if (c->r) st.push_back(c->r); delete c; } }
 int depthOf(Node* n, int k) { int d = 0; while (n && n->key != k) { n = k < n->key ? n->l : n->r; d++; } return n ? d : -1; }
 bool isBST(Node* n, long lo, long hi) { return !n || (n->key > lo && n->key < hi && isBST(n->l, lo, n->key) && isBST(n->r, n->key, hi)); }
 
@@ -3731,6 +5230,7 @@ int main() {
     for (int rep = 0; rep < 2000; rep++) for (int h : hot) { steps += depthOf(big, h); big = splay(big, h); assert(big->key == h); }
     assert(double(steps) / (2000 * 5) < 6.0);                                  // 평균 깊이 < 6  (log2(10000) ≈ 13)
     std::cout << "SplayTree: average depth of hot keys = " << double(steps) / 10000 << " (balanced tree: ~13)" << std::endl;
+    destroy(root); destroy(big);
     return 0;
 }
 // Time Complexity: 분할상환 O(log N), 작업 집합 크기 w 에서 O(log w)
@@ -3762,7 +5262,8 @@ Node* merge(Node* a, Node* b) {                                              // 
 }
 bool contains(Node* t, int k) { while (t) { if (k == t->key) return true; t = k < t->key ? t->l : t->r; } return false; }
 Node* insert(Node* t, int k) { if (contains(t, k)) return t; Node *a, *b; split(t, k, a, b); return merge(merge(a, new Node(k)), b); }
-Node* erase(Node* t, int k) { Node *a, *b, *c, *d; split(t, k, a, b); split(b, k + 1, c, d); return merge(a, d); }
+void destroy(Node* t) { if (!t) return; destroy(t->l); destroy(t->r); delete t; }
+Node* erase(Node* t, int k) { Node *a, *b, *c, *d; split(t, k, a, b); split(b, k + 1, c, d); destroy(c); return merge(a, d); }
 int height(Node* t) { return t ? 1 + std::max(height(t->l), height(t->r)) : 0; }
 bool valid(Node* t, long lo, long hi) { return !t || (t->key > lo && t->key < hi && (!t->l || t->l->pri <= t->pri) && (!t->r || t->r->pri <= t->pri) && valid(t->l, lo, t->key) && valid(t->r, t->key, hi)); }
 
@@ -3779,6 +5280,7 @@ int main() {
     t = merge(a, b);
     assert(valid(t, -1, 1 << 30));
     std::cout << "Treap: height " << height(t) << " for " << truth.size() << " keys inserted in sorted order." << std::endl;
+    destroy(t);
     return 0;
 }
 // Time Complexity: 기대 O(log N)
@@ -3854,6 +5356,8 @@ Node* rebuild(std::vector<Node*>& v, int lo, int hi) {                       // 
 }
 struct Tree {
     Node* root = nullptr; int n = 0, maxN = 0;
+    static void destroy(Node* x) { if (!x) return; destroy(x->l); destroy(x->r); delete x; }
+    ~Tree() { destroy(root); }
     bool insert(int k) {
         std::vector<Node*> path; Node* cur = root;
         while (cur) { if (cur->key == k) return false; path.push_back(cur); cur = k < cur->key ? cur->l : cur->r; }
@@ -3914,7 +5418,8 @@ void upd(Node* n) { n->sz = 1 + sz(n->l) + sz(n->r); }
 void split(Node* t, int key, Node*& a, Node*& b) { if (!t) { a = b = nullptr; return; } if (t->key < key) { a = t; split(t->r, key, t->r, b); upd(a); } else { b = t; split(t->l, key, a, t->l); upd(b); } }
 Node* merge(Node* a, Node* b) { if (!a || !b) return a ? a : b; if (a->pri > b->pri) { a->r = merge(a->r, b); upd(a); return a; } b->l = merge(a, b->l); upd(b); return b; }
 Node* insert(Node* t, int k) { Node *a, *b; split(t, k, a, b); return merge(merge(a, new Node(k)), b); }
-Node* erase(Node* t, int k) { Node *a, *b, *c, *d; split(t, k, a, b); split(b, k + 1, c, d); return merge(a, d); }
+void destroy(Node* t) { if (!t) return; destroy(t->l); destroy(t->r); delete t; }
+Node* erase(Node* t, int k) { Node *a, *b, *c, *d; split(t, k, a, b); split(b, k + 1, c, d); destroy(c); return merge(a, d); }
 int select(Node* t, int k) { for (;;) { int ls = sz(t->l); if (k < ls) t = t->l; else if (k == ls) return t->key; else { k -= ls + 1; t = t->r; } } }      // 0-기반
 int rankOf(Node* t, int x) { int r = 0; while (t) { if (x <= t->key) t = t->l; else { r += sz(t->l) + 1; t = t->r; } } return r; }              // x 보다 작은 개수
 
@@ -3930,6 +5435,7 @@ int main() {
     }
     int median = select(t, sorted.size() / 2); assert(median == sorted[sorted.size() / 2]);
     std::cout << "OrderStatisticTree: select / rank verified; median of " << sorted.size() << " keys = " << median << std::endl;
+    destroy(t);
     return 0;
 }
 // Time Complexity: select·rank·삽입·삭제 기대 O(log N)
@@ -3962,15 +5468,16 @@ Node* balance(Node* n) {
     return n;
 }
 Node* insert(Node* n, int k) { if (!n) return new Node(k); if (k < n->key) n->l = insert(n->l, k); else if (k > n->key) n->r = insert(n->r, k); else return n; return balance(n); }
-Node* eraseMin(Node* n, int& minKey) { if (!n->l) { minKey = n->key; return n->r; } n->l = eraseMin(n->l, minKey); return balance(n); }
+Node* eraseMin(Node* n, int& minKey) { if (!n->l) { minKey = n->key; Node* r = n->r; delete n; return r; } n->l = eraseMin(n->l, minKey); return balance(n); }
 Node* erase(Node* n, int k) {
     if (!n) return nullptr;
     if (k < n->key) n->l = erase(n->l, k); else if (k > n->key) n->r = erase(n->r, k);
-    else { if (!n->l) return n->r; if (!n->r) return n->l; int m; n->r = eraseMin(n->r, m); n->key = m; }
+    else { if (!n->l) { Node* r = n->r; delete n; return r; } if (!n->r) { Node* l = n->l; delete n; return l; } int m; n->r = eraseMin(n->r, m); n->key = m; }
     return balance(n);
 }
 bool balanced(Node* n) { return !n || ((sz(n->l) + sz(n->r) <= 1 || (w(n->l) <= 3 * w(n->r) && w(n->r) <= 3 * w(n->l))) && n->size == 1 + sz(n->l) + sz(n->r) && balanced(n->l) && balanced(n->r)); }
 int height(Node* n) { return n ? 1 + std::max(height(n->l), height(n->r)) : 0; }
+void destroy(Node* n) { if (!n) return; destroy(n->l); destroy(n->r); delete n; }
 
 int main() {
     Node* t = nullptr; std::set<int> truth; std::mt19937 rng(35);
@@ -3980,6 +5487,7 @@ int main() {
     assert(balanced(t) && sz(t) == (int)truth.size());
     for (int k = 0; k < 8000; k += 5) { Node* c = t; while (c && c->key != k) c = k < c->key ? c->l : c->r; assert((c != nullptr) == (truth.count(k) > 0)); }
     std::cout << "WeightBalancedTree: size " << sz(t) << ", height " << height(t) << ", every node satisfies weight(left) <= 3*weight(right)." << std::endl;
+    destroy(t);
     return 0;
 }
 // Time Complexity: O(log N)
@@ -4019,8 +5527,9 @@ Node* erase(Node* root, int k) {
     if (!root) return nullptr;
     if (k < root->key) { root->l = erase(root->l, k); return root; }
     if (k > root->key) { root->r = erase(root->r, k); return root; }
-    return zip(root->l, root->r);
+    Node* dead = root; Node* z = zip(root->l, root->r); delete dead; return z;
 }
+void destroy(Node* n) { if (!n) return; destroy(n->l); destroy(n->r); delete n; }
 bool valid(Node* n, long lo, long hi) {
     if (!n) return true;
     if (!(n->key > lo && n->key < hi)) return false;
@@ -4039,6 +5548,7 @@ int main() {
     assert(valid(root, -1, 1 << 30));
     for (int k = 0; k < 6000; k += 7) assert(contains(root, k) == (truth.count(k) > 0));
     std::cout << "ZipTree: " << truth.size() << " keys, height " << height(root) << ", heap-on-rank invariant holds." << std::endl;
+    destroy(root);
     return 0;
 }
 // Time Complexity: 기대 O(log N)
@@ -4091,6 +5601,7 @@ bool valid(Node* n, long lo, long hi) {                                       //
     return valid(n->l, lo, n->key) && valid(n->r, n->key, hi);
 }
 int height(Node* n) { return n ? 1 + std::max(height(n->l), height(n->r)) : 0; }
+void destroy(Node* n) { if (!n) return; destroy(n->l); destroy(n->r); delete n; }
 
 int main() {
     Node* t = nullptr;
@@ -4101,6 +5612,7 @@ int main() {
     for (int k : keys) u = insert(u, k);
     assert(valid(u, -1, 1 << 30) && height(u) <= 1.45 * std::log2(5001) + 1);
     std::cout << "WAVLTree: height " << height(t) << " (sorted) / " << height(u) << " (random), all rank differences in {1,2}." << std::endl;
+    destroy(t); destroy(u);
     return 0;
 }
 // Time Complexity: 삽입 O(log N), 회전 최대 2번
@@ -4219,31 +5731,93 @@ int main() {
 ## FingerTree()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <iterator>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <deque>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <vector>
 
-// 핑거 트리(요약, 정본은 AdvancedDataStructures.md Part 4): "핑거" 는 구조 안의 특정 위치를 가리키는 손가락 — 핑거 근처의 연산은 전체 크기가 아니라 핑거까지의 거리에 비례하는 비용만 든다.
-// 핑거 트리는 양 끝에 핑거를 둬 덱 연산이 분할상환 O(1), 연결·분할이 O(log n).  같은 아이디어를 표준 라이브러리에서 볼 수 있다: std::set::insert(힌트, 값) 은 힌트 위치 근처라면 O(1) 분할상환
-long comparisons = 0;
-struct Less { bool operator()(int a, int b) const { ++comparisons; return a < b; } };
+// 핑거 트리(요약, 정본은 AdvancedDataStructures.md Part 4): "핑거" 는 구조 안의 특정 위치를 가리키는 손가락 — 핑거 근처의 연산은 전체 크기가 아니라 *핑거까지의 거리*에 비례하는 비용만 든다.
+//  양 끝에 짧은 목록(1~4 개, 손가락)을 두고 가운데는 "2-3 노드"를 원소로 하는 같은 구조의 트리를 재귀적으로 단다 → 양 끝 push/pop 분할상환 O(1), 노드마다 부분 트리 크기를 저장하면 위치 접근이 O(log min(i, n−i)).  모든 연산이 새 루트를 돌려주는 *영속* 구조다.
+//  여기서는 덱 연산(pushFront/pushBack/viewFront/viewBack)과 색인 at(i) 만 옮겼다 (연결·분할은 정본).  ① 무작위 영속 연산 6000 번을 std::deque 모형과 대조하고 과거 버전이 그대로임을 확인  ② 100 만 번의 덱 연산을 std::deque 와 대조
+//  ③ 분할상환: 100 만 번 push 에 만든 2-3 노드 수 ≤ n/2 + 상수  ④ 핑거 성질: at(i) 가 내려가는 수준 수 ≤ 2 + log2(min(i, n−1−i) + 1) — 양 끝 근처는 얕게, 가운데는 깊게  ⑤ 척추 깊이 < 22 (n = 10^6).
+long nodeCalls = 0;
+struct Node; typedef std::shared_ptr<const Node> NP;
+struct Node { long long val; int size; std::vector<NP> k; };
+NP leaf(long long v) { return std::make_shared<const Node>(Node{v, 1, {}}); }
+NP node(std::vector<NP> k) { ++nodeCalls; int s = 0; for (auto& x : k) s += x->size; return std::make_shared<const Node>(Node{0, s, std::move(k)}); }
+struct FT; typedef std::shared_ptr<const FT> F;
+struct FT { int kind; NP one; std::vector<NP> pre, suf; F mid; int size; };                 // kind: 0 빈 트리, 1 단일 원소, 2 Deep(앞 손가락, 가운데 트리, 뒤 손가락)
+int sz(const std::vector<NP>& d) { int s = 0; for (auto& x : d) s += x->size; return s; }
+F Empty() { static F e = std::make_shared<const FT>(FT{0, nullptr, {}, {}, nullptr, 0}); return e; }
+F Single(NP a) { return std::make_shared<const FT>(FT{1, a, {}, {}, nullptr, a->size}); }
+F Deep(std::vector<NP> pre, F mid, std::vector<NP> suf) { int s = sz(pre) + mid->size + sz(suf); return std::make_shared<const FT>(FT{2, nullptr, std::move(pre), std::move(suf), std::move(mid), s}); }
+F digitToTree(const std::vector<NP>& d) {
+    switch (d.size()) { case 0: return Empty(); case 1: return Single(d[0]); case 2: return Deep({d[0]}, Empty(), {d[1]}); case 3: return Deep({d[0], d[1]}, Empty(), {d[2]}); default: return Deep({d[0], d[1]}, Empty(), {d[2], d[3]}); }
+}
+F pushFront(const F& t, NP a) {
+    if (t->kind == 0) return Single(a);
+    if (t->kind == 1) return Deep({a}, Empty(), {t->one});
+    if (t->pre.size() < 4) { auto p = t->pre; p.insert(p.begin(), a); return Deep(p, t->mid, t->suf); }
+    return Deep({a, t->pre[0]}, pushFront(t->mid, node({t->pre[1], t->pre[2], t->pre[3]})), t->suf);           // 손가락이 넘치면 3 개를 노드로 묶어 가운데로
+}
+F pushBack(const F& t, NP a) {
+    if (t->kind == 0) return Single(a);
+    if (t->kind == 1) return Deep({t->one}, Empty(), {a});
+    if (t->suf.size() < 4) { auto s = t->suf; s.push_back(a); return Deep(t->pre, t->mid, s); }
+    return Deep(t->pre, pushBack(t->mid, node({t->suf[0], t->suf[1], t->suf[2]})), {t->suf[3], a});
+}
+std::pair<NP, F> viewFront(const F& t);
+std::pair<F, NP> viewBack(const F& t);
+F deepL(std::vector<NP> pre, const F& mid, std::vector<NP> suf) { if (!pre.empty()) return Deep(pre, mid, suf); if (mid->kind == 0) return digitToTree(suf); auto v = viewFront(mid); return Deep(v.first->k, v.second, suf); }     // 앞 손가락이 비면 가운데에서 노드 하나를 꺼내 채운다
+F deepR(std::vector<NP> pre, const F& mid, std::vector<NP> suf) { if (!suf.empty()) return Deep(pre, mid, suf); if (mid->kind == 0) return digitToTree(pre); auto v = viewBack(mid); return Deep(pre, v.first, v.second->k); }
+std::pair<NP, F> viewFront(const F& t) { if (t->kind == 1) return {t->one, Empty()}; NP h = t->pre[0]; return {h, deepL(std::vector<NP>(t->pre.begin() + 1, t->pre.end()), t->mid, t->suf)}; }
+std::pair<F, NP> viewBack(const F& t) { if (t->kind == 1) return {Empty(), t->one}; NP h = t->suf.back(); return {deepR(t->pre, t->mid, std::vector<NP>(t->suf.begin(), t->suf.end() - 1)), h}; }
+long long leafAt(const Node* n, int i) { while (!n->k.empty()) { for (auto& c : n->k) { if (i < c->size) { n = c.get(); break; } i -= c->size; } } return n->val; }
+long long digitAt(const std::vector<NP>& d, int i) { for (auto& x : d) { if (i < x->size) return leafAt(x.get(), i); i -= x->size; } return -1; }
+long long at(const F& root, int i, int* levels = nullptr) {                                  // 척추를 따라 내려간다: 앞 손가락 → 가운데(다음 수준) → 뒤 손가락
+    const FT* t = root.get(); int lv = 1;
+    for (;;) { if (t->kind == 1) { if (levels) *levels = lv; return leafAt(t->one.get(), i); } int spr = sz(t->pre); if (i < spr) { if (levels) *levels = lv; return digitAt(t->pre, i); } i -= spr;
+        if (i < t->mid->size) { t = t->mid.get(); ++lv; continue; } i -= t->mid->size; if (levels) *levels = lv; return digitAt(t->suf, i); }
+}
+void flat(const NP& n, std::vector<long long>& out) { if (n->k.empty()) out.push_back(n->val); else for (auto& c : n->k) flat(c, out); }
+void collect(const F& t, std::vector<long long>& out) { if (t->kind == 0) return; if (t->kind == 1) { flat(t->one, out); return; } for (auto& x : t->pre) flat(x, out); collect(t->mid, out); for (auto& x : t->suf) flat(x, out); }
+std::vector<long long> toVec(const F& t) { std::vector<long long> v; collect(t, v); return v; }
+int spineDepth(const F& t) { int d = 0; for (const FT* c = t.get(); c->kind == 2; c = c->mid.get()) ++d; return d; }
 
 int main() {
-    const int N = 100000;
-    std::set<int, Less> plain, hinted;
-    comparisons = 0; for (int i = 0; i < N; i++) plain.insert(i);                           // 매번 루트에서 O(log N)
-    long plainCmp = comparisons;
-    comparisons = 0; auto finger = hinted.end();
-    for (int i = 0; i < N; i++) finger = hinted.insert(finger, i);                          // 직전 삽입 위치(핑거)를 힌트로 -> 분할상환 O(1)
-    long fingerCmp = comparisons;
-    assert(plain.size() == (size_t)N && hinted.size() == (size_t)N && *plain.rbegin() == N - 1 && *hinted.rbegin() == N - 1);
-    assert(fingerCmp * 4 < plainCmp);                                                       // 비교 횟수가 훨씬 적다 (약 N 대 N·log N)
-    std::cout << "finger insertion: " << fingerCmp << " comparisons vs " << plainCmp << " from the root" << std::endl;
+    std::mt19937 rng(12); std::vector<F> ver = {Empty()}; std::vector<std::vector<long long>> model = {{}};                // ① 영속 연산 6000 번
+    for (int step = 0; step < 6000; ++step) {
+        int base = (int)(rng() % ver.size()); const F t = ver[base]; std::vector<long long> m = model[base]; int op = (int)(rng() % 5); F r = t;
+        if (op == 0 || m.empty()) { long long x = rng() % 1000; r = pushFront(t, leaf(x)); m.insert(m.begin(), x); }
+        else if (op == 1) { long long x = rng() % 1000; r = pushBack(t, leaf(x)); m.push_back(x); }
+        else if (op == 2) { auto v = viewFront(t); assert(v.first->val == m.front()); r = v.second; m.erase(m.begin()); }
+        else if (op == 3) { auto v = viewBack(t); assert(v.second->val == m.back()); r = v.first; m.pop_back(); }
+        else { int i = (int)(rng() % m.size()); assert(at(t, i) == m[i]); }
+        if (m.size() > 300) { while (m.size() > 100) { r = viewFront(r).second; m.erase(m.begin()); } }
+        assert(r->size == (int)m.size() && toVec(r) == m); ver.push_back(r); model.push_back(m);
+    }
+    for (size_t i = 0; i < ver.size(); i += 7) assert(toVec(ver[i]) == model[i]);                                    // 옛 버전은 그대로
+    { std::deque<long long> ref; F t = Empty(); for (long step = 0; step < 1000000; ++step) {                      // ② 100 만 번의 덱 연산
+          int op = (int)(rng() % 4); bool grow = ref.size() < 5000 || rng() % 2 == 0;
+          if (ref.empty() || (grow && op < 2)) { long long x = (long long)rng(); if (op == 0) { t = pushFront(t, leaf(x)); ref.push_front(x); } else { t = pushBack(t, leaf(x)); ref.push_back(x); } }
+          else if (op == 2) { auto v = viewFront(t); assert(v.first->val == ref.front()); t = v.second; ref.pop_front(); }
+          else { auto v = viewBack(t); assert(v.second->val == ref.back()); t = v.first; ref.pop_back(); }
+          assert(t->size == (int)ref.size()); if (step % 1000 == 0 && !ref.empty()) { int i = (int)(rng() % ref.size()); assert(at(t, i) == ref[i]); } if (step % 100000 == 0) assert(toVec(t) == std::vector<long long>(ref.begin(), ref.end())); } }
+    const int n = 1000000;                                                                                       // ③ 분할상환
+    { F t = Empty(); nodeCalls = 0; for (int i = 0; i < n; ++i) t = pushFront(t, leaf(i)); long front = nodeCalls; assert(front <= n / 2 + 100 && t->size == n && at(t, 0) == n - 1 && at(t, n - 1) == 0);
+      F u = Empty(); nodeCalls = 0; for (int i = 0; i < n; ++i) u = pushBack(u, leaf(i)); long back = nodeCalls; assert(back <= n / 2 + 100);
+      assert(spineDepth(t) < 22 && spineDepth(u) < 22);                                                          // ⑤
+      for (int q = 0; q < 200000; ++q) { int i = (int)(rng() % n); int lv = 0; assert(at(u, i, &lv) == i); int d = std::min(i, n - 1 - i); assert(lv <= 2 + std::log2((double)d + 1)); }          // ④ 핑거 성질
+      int lvEnd = 0, lvMid = 0; at(u, 0, &lvEnd); at(u, n / 2, &lvMid); assert(lvEnd == 1 && lvMid > 8);
+      std::cout << "FingerTree: 6000 persistent deque operations and 10^6 mixed operations matched std::deque, " << front << " 2-3 nodes were built by 10^6 pushes (<= n/2), and indexing the ends touched " << lvEnd << " level versus " << lvMid << " in the middle" << std::endl; }
     return 0;
 }
-// Time Complexity: 핑거 근처 O(1) 분할상환, 일반 O(log N)
-// Space Complexity: O(N)
+// Time Complexity: 양 끝 push/pop 분할상환 O(1), at(i) O(log min(i, N − i))
+// Space Complexity: O(N), 영속 버전은 구조 공유
 ```
 
 # Part 15. 그래프 확장
@@ -5311,26 +6885,85 @@ int main() {
 ## RopeTree()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <string>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
-// 로프 트리(트리 관점의 요약, 정본은 String.md Part 4): 긴 문자열을 이진 트리로 표현하고 내부 노드에 "왼쪽 부분 트리 전체 길이(weight)"를 기록한다.
-// 색인은 weight 로 좌우를 고르며 내려가는 O(깊이), 연결은 새 루트 하나를 만드는 O(1) 이라 거대한 문서 중간 편집에 복사가 필요 없다.
-// (분할·삽입·삭제·불변 공유는 String.md 의 Rope 항목)
-struct Rope { Rope *l = nullptr, *r = nullptr; size_t w = 0; std::string s; bool leaf() const { return !l && !r; } };
-Rope* leaf(const std::string& s) { Rope* n = new Rope; n->s = s; n->w = s.size(); return n; }
-size_t len(const Rope* n) { return !n ? 0 : n->leaf() ? n->s.size() : n->w + len(n->r); }
-Rope* cat(Rope* a, Rope* b) { Rope* n = new Rope; n->l = a; n->r = b; n->w = len(a); return n; }
-char at(const Rope* n, size_t i) { return n->leaf() ? n->s[i] : i < n->w ? at(n->l, i) : at(n->r, i - n->w); }
-void del(Rope* n) { if (n) { del(n->l); del(n->r); delete n; } }
-int main() {
-    Rope* doc = cat(cat(leaf("Hello, "), leaf("tree ")), leaf("world!"));
-    assert(len(doc) == 18 && at(doc, 0) == 'H' && at(doc, 7) == 't' && at(doc, 12) == 'w' && at(doc, 17) == '!');
-    std::cout << "RopeTree: char[12] = " << at(doc, 12) << std::endl; del(doc); return 0;
+// 로프 트리(트리 관점의 요약, 정본은 String.md Part 4): 긴 문자열을 이진 트리로 표현하고 내부 노드에 "왼쪽 부분 트리 전체 길이(weight)"를 기록한다 — 색인은 weight 로 좌우를 고르며 내려가는 O(깊이), 연결은 새 루트 하나를 만드는 O(1).
+//  그냥 이어 붙이면 트리가 사슬이 되어 깊이가 n 이 되므로 AVL 식 *join* 으로 높이를 O(log n) 에 묶는다.  노드는 불변(shared_ptr<const>) → 편집해도 옛 버전이 그대로이고 새 노드는 O(log n) 개뿐.
+//  ① 예제 ② std::string 과 무작위 편집(삽입·삭제·부분 문자열·양쪽 붙이기) 3000 번을 대조하고 매 단계 AVL 불변식·높이 ≤ 1.45 log2(잎 수) + 2  ③ 옛 버전 150 개가 끝까지 그대로
+//  ④ 순진한 연결(깊이 n − 1) 대 join(깊이 ≤ 30): 2 만 번 이어 붙이기  ⑤ 100 만 글자 문서의 편집 1000 번.
+const size_t LEAF = 16;
+struct Node; typedef std::shared_ptr<const Node> P;
+struct Node { P l, r; std::string s; size_t size; int height; };                                                // 잎: s 사용(≤ LEAF), 내부: l, r
+size_t sizeOf(const P& n) { return n ? n->size : 0; }
+int heightOf(const P& n) { return n ? n->height : -1; }
+bool isLeaf(const P& n) { return !n->l && !n->r; }
+P leaf(std::string s) { size_t n = s.size(); return std::make_shared<const Node>(Node{nullptr, nullptr, std::move(s), n, 0}); }
+P node(P l, P r) { size_t n = sizeOf(l) + sizeOf(r); int h = 1 + std::max(heightOf(l), heightOf(r)); return std::make_shared<const Node>(Node{std::move(l), std::move(r), "", n, h}); }      // size(l) = weight
+P balance(const P& l, const P& r) {                                                                              // 높이 차 ≤ 2 인 두 트리를 AVL 회전으로 합친다
+    if (heightOf(l) > heightOf(r) + 1) { if (heightOf(l->l) >= heightOf(l->r)) return node(l->l, node(l->r, r)); return node(node(l->l, l->r->l), node(l->r->r, r)); }
+    if (heightOf(r) > heightOf(l) + 1) { if (heightOf(r->r) >= heightOf(r->l)) return node(node(l, r->l), r->r); return node(node(l, r->l->l), node(r->l->r, r->r)); }
+    return node(l, r);
 }
-// Time Complexity: 색인 O(깊이), 연결 O(1)
-// Space Complexity: O(노드 수)
+P join(const P& a, const P& b) {                                                                                 // a + b, O(|h(a) − h(b)| + 1)
+    if (!a) return b; if (!b) return a;
+    if (isLeaf(a) && isLeaf(b) && a->size + b->size <= LEAF) return leaf(a->s + b->s);
+    int ha = heightOf(a), hb = heightOf(b);
+    if (ha > hb + 1) return balance(a->l, join(a->r, b));
+    if (hb > ha + 1) return balance(join(a, b->l), b->r);
+    return node(a, b);
+}
+std::pair<P, P> split(const P& n, size_t i) {                                                                    // [0, i) 와 [i, size)
+    if (!n || i == 0) return {nullptr, n}; if (i >= n->size) return {n, nullptr};
+    if (isLeaf(n)) return {leaf(n->s.substr(0, i)), leaf(n->s.substr(i))};
+    size_t w = sizeOf(n->l); if (i < w) { auto t = split(n->l, i); return {t.first, join(t.second, n->r)}; }
+    if (i == w) return {n->l, n->r}; auto t = split(n->r, i - w); return {join(n->l, t.first), t.second};
+}
+P fromString(const std::string& s) { P r; for (size_t i = 0; i < s.size(); i += LEAF) r = join(r, leaf(s.substr(i, LEAF))); return r; }
+char at(const P& n, size_t i) { const Node* c = n.get(); while (c->l || c->r) { size_t w = sizeOf(c->l); if (i < w) c = c->l.get(); else { i -= w; c = c->r.get(); } } return c->s[i]; }          // weight 로 내려가는 반복
+std::string str(const P& n) { std::string out; std::vector<const Node*> st; if (n) st.push_back(n.get()); while (!st.empty()) { const Node* c = st.back(); st.pop_back(); if (!c->l && !c->r) out += c->s; else { if (c->r) st.push_back(c->r.get()); if (c->l) st.push_back(c->l.get()); } } return out; }
+P insert(const P& n, size_t pos, const std::string& s) { auto t = split(n, pos); return join(join(t.first, fromString(s)), t.second); }
+P erase(const P& n, size_t pos, size_t len) { auto a = split(n, pos); auto b = split(a.second, len); return join(a.first, b.second); }
+P substr(const P& n, size_t pos, size_t len) { auto a = split(n, pos); return split(a.second, len).first; }
+bool check(const P& n, size_t& leaves) {                                                                         // 불변식: 크기·높이 정확, AVL 균형, 잎은 1..LEAF 글자
+    if (!n) return true; if (isLeaf(n)) { ++leaves; return n->height == 0 && n->size == n->s.size() && n->size >= 1 && n->size <= LEAF; }
+    return n->l && n->r && n->size == n->l->size + n->r->size && n->height == 1 + std::max(n->l->height, n->r->height) && std::abs(n->l->height - n->r->height) <= 1 && check(n->l, leaves) && check(n->r, leaves); }
+
+int main() {
+    P doc = join(join(leaf("Hello, "), leaf("tree ")), leaf("world!")); assert(sizeOf(doc) == 18 && at(doc, 0) == 'H' && at(doc, 7) == 't' && at(doc, 12) == 'w' && at(doc, 17) == '!');           // ①
+    P edited = insert(doc, 7, "binary "); assert(str(edited) == "Hello, binary tree world!" && str(doc) == "Hello, tree world!");                                                      // 원본 그대로
+    std::mt19937 rng(55); std::string ref; P rope; std::vector<std::pair<P, std::string>> history;               // ②
+    auto randStr = [&](size_t n) { std::string s(n, 'a'); for (char& c : s) c = (char)('a' + rng() % 26); return s; };
+    for (int op = 0; op < 3000; ++op) {
+        int t = (int)(rng() % 6); size_t n = ref.size();
+        if (t <= 1 || n < 5) { size_t pos = rng() % (n + 1); std::string x = randStr(rng() % 60); rope = insert(rope, pos, x); ref.insert(pos, x); }
+        else if (t == 2) { size_t pos = rng() % n, len = rng() % std::min<size_t>(60, n - pos + 1); rope = erase(rope, pos, len); ref.erase(pos, len); }
+        else if (t == 3) { std::string x = randStr(1 + rng() % 30); rope = join(rope, fromString(x)); ref += x; }
+        else if (t == 4) { std::string x = randStr(1 + rng() % 30); rope = join(fromString(x), rope); ref = x + ref; }
+        else { size_t pos = rng() % n, len = rng() % (n - pos + 1); assert(str(substr(rope, pos, len)) == ref.substr(pos, len)); }
+        size_t leaves = 0; assert(sizeOf(rope) == ref.size() && check(rope, leaves)); if (rope) assert(rope->height <= 1.45 * std::log2((double)std::max<size_t>(leaves, 1)) + 2);
+        if (!ref.empty()) { size_t i = rng() % ref.size(); assert(at(rope, i) == ref[i]); } if (op % 20 == 0) history.emplace_back(rope, ref); if (op % 300 == 0) assert(str(rope) == ref); }
+    assert(str(rope) == ref); for (auto& h : history) assert(str(h.first) == h.second);                         // ③
+    int balHeight = 0;
+    { P chain, bal; for (int i = 0; i < 20000; ++i) { chain = chain ? node(chain, leaf("x")) : leaf("x"); bal = join(bal, leaf("x")); }                                                     // ④
+      balHeight = bal->height; assert(chain->height == 19999 && bal->height <= 30 && sizeOf(chain) == 20000 && str(bal) == std::string(20000, 'x') && at(chain, 0) == 'x'); }
+    { std::string big = randStr(1000000); P r = fromString(big); size_t leaves = 0; assert(check(r, leaves) && r->height <= 28);                                                           // ⑤
+      for (int op = 0; op < 1000; ++op) { size_t pos = rng() % big.size(); if (rng() % 2) { std::string x = randStr(1 + rng() % 100); r = insert(r, pos, x); big.insert(pos, x); } else { size_t len = rng() % std::min<size_t>(200, big.size() - pos + 1); r = erase(r, pos, len); big.erase(pos, len); }
+        assert(sizeOf(r) == big.size()); for (int k = 0; k < 10; ++k) { size_t i = rng() % big.size(); assert(at(r, i) == big[i]); } }
+      leaves = 0; assert(check(r, leaves) && str(r) == big);
+      std::cout << "RopeTree: " << history.size() << " historical versions stayed intact, AVL invariants held after every edit, naive concatenation had height 19999 versus " << balHeight << " for join, and a 10^6-character document survived 1000 edits (height " << r->height << ")" << std::endl; }
+    return 0;
+}
+// Time Complexity: 색인·분할·삽입·삭제·붙이기 O(log N)
+// Space Complexity: O(N), 편집마다 O(log N) 새 노드
 ```
 ## RTree()
 ### 대표코드
@@ -5723,6 +7356,9 @@ R* llrbInsert(R* h, int k) {
     return h;
 }
 int rbHeight(R* n) { return n ? 1 + std::max(rbHeight(n->l), rbHeight(n->r)) : 0; }
+void freeB(B* n) { while (n) { B* next = n->r; delete n; n = next; } }                              // 오른쪽 사슬 (왼쪽 자식 없음)
+void freeA(A* n) { if (!n) return; freeA(n->l); freeA(n->r); delete n; }
+void freeR(R* n) { if (!n) return; freeR(n->l); freeR(n->r); delete n; }
 
 int main() {
     const int n = 10000;
@@ -5738,6 +7374,7 @@ int main() {
     assert(hr <= 2 * std::log2(n + 1));                                        // 레드-블랙
     assert(ha <= hr);                                                          // AVL 이 더 엄격하게 균형 -> 더 낮거나 같다
     std::cout << "n=" << n << " sorted insert: BST height " << hb << ", AVL " << ha << " (" << avlRotations << " rotations), red-black " << hr << " (" << llrbRotations << " rotations)" << std::endl;
+    freeB(bst); freeA(avl); freeR(rb);
     return 0;
 }
 // Time Complexity: BST 최악 O(N), AVL·레드-블랙 O(log N)
