@@ -7,12 +7,14 @@
 #include <iostream>
 #include <new>
 #include <queue>
+#include <random>
 #include <utility>
 #include <cassert>
 
 // 큐 만들기(Create): "비어 있는 큐" 라는 초기 상태를 세운다. 새 큐는 크기 0이고 front/rear 가 없으며 dequeue·front 가 실패해야 한다. 표현은 둘로 나뉜다. 배열 큐는 용량을 정해 메모리를 한 번에 확보하고(할당 1 번) front 와 크기로 상태를 나타내며, 연결 큐는 front = rear = nullptr 로 시작해 아무것도 할당하지 않는다.
 // 연결 큐에서는 front 와 rear 두 포인터를 항상 함께 관리해야 한다: 빈 큐는 "둘 다 nullptr", 원소가 하나면 "둘이 같은 노드". 한쪽만 갱신하면 큐가 깨진다(Rear 항목). RAII 로 생성자가 자원을 얻고 소멸자가 반환하며 복사는 금지하고 이동만 허용한다.
 // 검증(전역 operator new/delete 를 교체해 할당 횟수와 생존 블록을 센다): ① 새 큐는 비어 있고 크기 0이며 front/dequeue 가 실패 ② 배열 큐 생성은 할당 1 번, 연결 큐는 0 번이고 첫 enqueue 에서 1 번 ③ 3000 개를 만들고 부숴도 생존 블록이 늘지 않는다 ④ 용량 0 도 정상 ⑤ 이동 후 원본은 빈 큐 ⑥ std::queue 도 같은 초기 상태
+//  ⑦ 만든 직후부터 무작위 연산(인큐 2 : 디큐 1) 10 만 번을 용량 1·2·3·7·64 의 배열 큐(가득 차면 거부)와 연결 큐(거부 없음)에 흘려 보내 각각 std::queue 모형과 대조 — 반환값·front·크기가 매번 같고, 배열 큐는 한 번도 용량을 넘지 않는다
 static long newCalls = 0, liveBlocks = 0;
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
 void* operator new(std::size_t n) { void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); newCalls++; liveBlocks++; return p; }
@@ -50,6 +52,12 @@ int main() {
     for (int i = 0; i < 3000; i++) { ArrayQueue a(i % 40); LinkedQueue l; for (int k = 0; k < i % 7; k++) { a.enqueue(k); l.enqueue(k); } } assert(liveBlocks == baseLive);                    // ③ 누수 0
     { ArrayQueue zero(0); int v; assert(zero.empty() && !zero.enqueue(1) && !zero.dequeue(v) && !zero.front(v)); }                                                                      // ④ 용량 0
     { ArrayQueue a(4); a.enqueue(7); a.enqueue(8); ArrayQueue b(std::move(a)); int v; assert(a.empty() && !a.enqueue(1) && b.size() == 2 && b.dequeue(v) && v == 7 && b.dequeue(v) && v == 8); }  // ⑤ 이동
+    {   std::mt19937 rng(5); for (int cap : {1, 2, 3, 7, 64}) { ArrayQueue a(cap); LinkedQueue l; std::queue<int> ma, ml; long refused = 0;                                           // ⑦ 무작위 대조
+            for (int step = 0; step < 100000; ++step) { int v = (int)rng();
+                if (rng() % 3 != 0) { bool okA = a.enqueue(v), okL = l.enqueue(v); assert(okA == (ma.size() < (std::size_t)cap) && okL); if (okA) ma.push(v); else ++refused; ml.push(v); }
+                else { int x = -1, y = -1; bool gotA = a.dequeue(x), gotL = l.dequeue(y); assert(gotA == !ma.empty() && gotL == !ml.empty()); if (gotA) { assert(x == ma.front()); ma.pop(); } if (gotL) { assert(y == ml.front()); ml.pop(); } }
+                assert(a.size() == ma.size() && l.size() == ml.size() && a.size() <= (std::size_t)cap); int f = 0, g = 0; assert(a.front(f) == !ma.empty() && l.front(g) == !ml.empty()); if (!ma.empty()) assert(f == ma.front() && g == ml.front()); }
+            assert(refused > 0 && a.empty() == ma.empty()); } }
     { std::queue<int> q; assert(q.empty() && q.size() == 0); }                                                                                                                          // ⑥ 실무의 std::queue
     std::cout << "CreateQueue: fresh array and linked queues satisfy the empty-state invariants; array queue costs 1 allocation, linked queue 0 until the first enqueue; 3000 create/destroy cycles left no live blocks" << std::endl; return 0;
 }
@@ -671,6 +679,7 @@ int main() {
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <random>
 #include <vector>
 #include <cassert>
 
@@ -678,6 +687,7 @@ int main() {
 // 예외 안전: 할당이 실패하면 아직 아무것도 바꾸지 않았으므로 큐는 그대로다(강한 보장). 그래서 new 를 가장 먼저 하고 포인터 대입은 마지막에 한다. 포인터 대입 중에는 실패할 수 있는 연산이 없다.
 // 포인터를 주소로 줄이는 이중 포인터 관용구: `Node** tail = &front; ... *tail = n;` 처럼 "마지막 next 칸의 주소" 를 들고 있으면 빈 큐 분기가 필요 없다. 아래에서 두 방식이 같은 결과임을 확인한다.
 // 검증: ① 무작위로 인큐한 뒤 front 부터 순회한 값이 인큐 순서와 같고 길이가 맞다 ② 순환(cycle)이 없음(토끼와 거북이) ③ k 번째 new 에서 할당 실패를 주입하면 front/rear/내용이 그대로이고 누수 0 ④ 이중 포인터 방식과 분기 방식의 결과가 같다 ⑤ 틀린 구현(빈 큐 분기 없음)은 첫 인큐에서 널 포인터를 쓰려 한다는 것을 구조상 검증(실행하지 않고 조건만 확인)
+//  ⑥ 무작위 대조 + 무작위 실패 주입: 인큐 2 만 번 중 1/40 은 새 노드 할당이 실패하도록 하고, 실패한 호출은 아무것도 바꾸지 않았고 성공한 호출만 std::vector 모형에 쌓였는지 500 번마다 front 부터 걸어 rear 와 함께 대조; 끝에 노드가 모두 반환됨
 static long allocCount = 0, failAt = -1, liveNodes = 0;
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
 void* operator new(std::size_t n) { if (++allocCount == failAt) throw std::bad_alloc(); void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
@@ -697,6 +707,12 @@ int main() {
       try { enqueueBranch(front, rear, 99); } catch (const std::bad_alloc&) { threw = true; } failAt = -1; assert(threw && front == beforeFront && rear == beforeRear && length(front) == beforeLen && rear->next == nullptr); freeAll(front); assert(liveNodes == 0); }          // ③ 강한 보장
     { Node *f1 = nullptr, *r1 = nullptr; Node *f2 = nullptr; Node** tail = &f2; for (int i = 0; i < 100; i++) { enqueueBranch(f1, r1, i); enqueueTail(f2, tail, i); } Node *a = f1, *b = f2; bool same = true; while (a && b) { same &= a->data == b->data; a = a->next; b = b->next; } assert(same && !a && !b); freeAll(f1); freeAll(f2); assert(liveNodes == 0); }          // ④ 두 방식 동일
     assert(wouldCrashWithoutEmptyBranch(nullptr) && !wouldCrashWithoutEmptyBranch(reinterpret_cast<Node*>(1)));                                                                                    // ⑤
+    {   std::mt19937 rng(11); Node *front = nullptr, *rear = nullptr; std::vector<int> model; long failures = 0;                                                                   // ⑥ 무작위 대조와 실패 주입
+        for (int step = 0; step < 20000; ++step) { bool inject = rng() % 40 == 0; int v = (int)(rng() % 1000); allocCount = 0; failAt = inject ? 1 : -1; bool threw = false;
+            try { enqueueBranch(front, rear, v); } catch (const std::bad_alloc&) { threw = true; } failAt = -1; assert(threw == inject);
+            if (threw) ++failures; else model.push_back(v);
+            if (step % 500 == 0) { std::vector<int> walk; for (Node* p = front; p; p = p->next) walk.push_back(p->data); assert(walk == model && (model.empty() ? rear == nullptr : rear->data == model.back())); } }
+        std::vector<int> walk; for (Node* p = front; p; p = p->next) walk.push_back(p->data); assert(walk == model && failures > 100 && !hasCycle(front)); freeAll(front); assert(liveNodes == 0); }
     std::cout << "EnqueueNode: both the branch and the tail-address idioms produced identical lists; an injected allocation failure left front, rear and the list untouched" << std::endl; return 0;
 }
 // Time Complexity: O(1)
@@ -2046,6 +2062,7 @@ int main() {
 // enqueue: tail.next 가 비어 있으면 CAS 로 새 노드를 잇고 tail 을 새 노드로 민다. tail.next 가 이미 채워져 있으면 다른 스레드가 잇기만 하고 tail 을 못 민 것이므로 대신 밀어 준다(helping) — 덕분에 스레드가 멈춰도 다른 스레드가 진행한다. dequeue: head.next 의 값을 읽고 head 를 한 칸 CAS 로 전진시킨다. head == tail 이면서 next 가 있으면 tail 이 뒤처진 것이라 먼저 밀어 준다.
 // 이 구현은 원 논문처럼 "카운터가 붙은 포인터" 를 쓴다: 노드를 32 비트 인덱스로 가리키고 64 비트 워드 상위에 32 비트 카운터를 붙여, 성공한 CAS 마다 카운터를 올린다. 꺼낸 더미 노드는 고정 풀로 돌려보내 재사용하므로 메모리가 새지 않으면서도 낡은 CAS 는 카운터 때문에 반드시 실패한다(ABA 방지). 풀이 비면 enqueue 는 false 를 돌려주고 호출자가 재시도한다.
 // 검증: ① 단일 스레드 FIFO ② 생산자 3·소비자 3 이 3 만 개씩 주고받아 모든 값이 정확히 한 번, 소비자마다 같은 생산자의 값은 증가 순서 ③ 작은 풀(64 노드)에서 풀 고갈 재시도가 실제 발생하고도 끝난 뒤 자유 리스트 + 큐 안의 노드 + 더미 == 풀 크기(누수·중복 없음) ④ TSan 으로도 검증
+// audit: stress (보존 법칙이 오라클: 모든 값이 정확히 한 번, 생산자별 순서, 노드 풀이 전부 돌아온다)
 typedef uint64_t W; const uint32_t NIL = 0xFFFFFFFFu;
 inline W mk(uint32_t cnt, uint32_t idx) { return ((W)cnt << 32) | idx; } inline uint32_t ix(W w) { return (uint32_t)w; } inline uint32_t ct(W w) { return (uint32_t)(w >> 32); }
 class MSQueue {
@@ -2186,6 +2203,7 @@ int main() {
 // 동시성 큐(Blocking Bounded Queue): 락프리가 아니라 "뮤텍스 + 조건 변수" 로 만든 생산자–소비자 큐다. 락프리 구조보다 단순하고 정확하며, 큐가 비었을 때 소비자를, 가득 찼을 때 생산자를 CPU 를 쓰지 않고 재운다(블로킹) — 대부분의 스레드 풀·파이프라인이 이것으로 충분하다.
 // 설계 요점: ① 용량을 제한해 생산자가 소비자보다 빠를 때 메모리가 무한히 늘지 않게 한다(역압, backpressure) ② 조건 변수 대기는 반드시 술어(predicate) 루프 안에서 한다 — 가짜 깨어남(spurious wakeup)이나 다른 스레드가 먼저 가져간 경우에도 조건을 다시 확인하기 위해서다 ③ close(): 더 넣을 것이 없다고 알리면 대기 중인 모두를 깨우고, 소비자는 남은 것을 모두 꺼낸 뒤 false 를 받아 종료한다(종료 신호를 센티넬 값으로 넣지 않아도 된다) ④ 시간 제한 대기(wait_for)로 교착을 피한다.
 // 검증: ① 용량 4 인 큐로 생산자 3·소비자 3 이 3 만 개씩 주고받아 모든 값이 정확히 한 번이고 큐 크기가 용량을 넘지 않음 ② 소비자별로 같은 생산자의 값은 증가 순서 ③ close 이후 push 는 실패하고, 소비자는 잔여분을 비운 뒤 종료 ④ 대기(블로킹)가 실제로 일어남을 카운터로 확인 ⑤ try_pop_for 가 시간 제한 안에 빈 큐에서 false 를 돌려줌
+// audit: stress (보존 법칙이 오라클: 모든 값이 정확히 한 번, 생산자별 순서, 큐 크기가 용량을 넘지 않는다)
 template <class T> class BlockingQueue {
     std::deque<T> q; const size_t cap; bool closed = false; std::mutex m; std::condition_variable notFull, notEmpty; size_t maxSize = 0, pushWaits = 0, popWaits = 0;
 public:

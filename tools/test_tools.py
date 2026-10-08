@@ -102,6 +102,14 @@ class AuditTests(unittest.TestCase):
         self.assertIsNotNone(audit.shallow_reason('int main() { assert(1); }'))
         self.assertIsNone(audit.shallow_reason('#include <random>\nint main() { std::mt19937 r(1); assert(r() >= 0); }'))
         self.assertIsNone(audit.shallow_reason('// audit: exhaustive\nint main() { assert(1); }'))
+    def test_weak(self):
+        thin = '#include <cassert>\nint main() { assert(1); assert(2); }'
+        self.assertIsNotNone(audit.weak_reason(thin))
+        for mark in ('exhaustive', 'known-answer', 'stress', 'stl-demo'): self.assertIsNone(audit.weak_reason('// audit: ' + mark + '\n' + thin))
+        self.assertIsNone(audit.weak_reason('#include <random>\nint main() { std::mt19937 r(1); assert(r() >= 0); }'))
+        self.assertIsNone(audit.weak_reason('int naiveSum(){return 0;} int main() { assert(naiveSum() == 0); }'))
+        many = 'int main() {' + ' assert(1);' * 9 + ' }'
+        self.assertIsNone(audit.weak_reason(many))
     def test_marks(self):
         self.assertEqual(audit.marks('// audit: no-sanitize (why)\n// audit: gcc-only'), {'no-sanitize', 'gcc-only'})
         self.assertFalse(audit.applicable('san', '// audit: no-sanitize\nint main(){}'))

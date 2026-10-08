@@ -19,7 +19,9 @@ Usage: python3 -I tools/audit.py [modes] [--only REGEX] [--jobs N] [--repeat N] 
   --list-shallow print entries with <= 4 asserts, <= 40 lines and no randomized check
                  (`// audit: exhaustive` exempts programs that enumerate their whole input space)
   --list-weak    print entries with <= 8 asserts and no randomized or oracle-based check at all
-                 (exempt with `// audit: exhaustive` or, for published test vectors, `// audit: known-answer`)
+                 (exempt with `// audit: exhaustive`, `// audit: known-answer` for published test vectors, or
+                 `// audit: stress` for concurrent stress tests whose conservation laws -- every value delivered exactly
+                 once, per-producer order, pool fully returned -- are the independent oracle)
 """
 import concurrent.futures as cf
 import hashlib
@@ -218,7 +220,7 @@ def shallow_reason(code):
 
 def weak_reason(code):
     """stricter second-level depth check: few assertions and nothing that compares against an independent oracle."""
-    if code is None or re.search(r"//\s*audit:\s*(stl-demo|exhaustive|known-answer)", code):
+    if code is None or re.search(r"//\s*audit:\s*(stl-demo|exhaustive|known-answer|stress)", code):
         return None
     nocomm = re.sub(r"//.*", "", code)
     asserts = len(re.findall(r"\bassert\s*\(", nocomm))
