@@ -112,22 +112,6 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 16. 해시 구조 시각화
-## Visualizations Placeholder
-### 대표코드
-```cpp
-#include <iostream>
-#include <cassert>
-
-int main() {
-    std::cout << "Visualizations for collisions, bucket distribution, probing, resizing, chaining, clustering, avalanche, quality, locality, and memory layout." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
-}
-// Time Complexity: O(1)
-// Space Complexity: O(1)
-```
-
 # Part 16. 해시 성능 시각화
 ## CollisionVisualization
 ### 대표코드

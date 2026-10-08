@@ -222,7 +222,6 @@ int main() {
 }
 // Time Complexity: O(1)
 ```
-
 # Part 2. 그래프 표현
 ## AdjacencyMatrix()
 ### 대표코드
@@ -344,7 +343,6 @@ int main() {
 // Time Complexity: O(1) to find number of incoming edges to a vertex
 // Space Complexity: O(V + E)
 ```
-
 # Part 3. 그래프 탐색
 ## BreadthFirstSearch()
 ### 대표코드
@@ -510,7 +508,6 @@ int main() {
 // Time Complexity: O(V + E)
 // Space Complexity: O(V)
 ```
-
 # Part 4. 연결성
 ## ConnectedComponents()
 ### 대표코드
@@ -741,7 +738,6 @@ int main() {
 }
 // Time Complexity: O(V + E)
 ```
-
 # Part 5. 사이클
 ## DetectCycleDFS()
 ### 대표코드
@@ -827,7 +823,124 @@ int main() {
 }
 // Time Complexity: O(E a(V))
 ```
+## IsTree()
+### 대표코드
+```cpp
+#include <iostream>
+#include <queue>
+#include <vector>
+#include <cassert>
 
+int V_nodes = 5;
+std::vector<std::vector<int>> adj_tree = {{1,2},{0,3},{0},{1},{}}; // 4 edges, but 4 has no edge
+// A graph is a tree iff it is connected AND has exactly V-1 edges.
+bool isTree(int V, std::vector<std::vector<int>>& adj) {
+    int edgeCount = 0;
+    for (int i = 0; i < V; i++) edgeCount += adj[i].size();
+    edgeCount /= 2; // undirected
+    if (edgeCount != V - 1) return false;
+    // BFS connectivity check
+    std::vector<bool> visited(V, false);
+    std::queue<int> q;
+    q.push(0); visited[0] = true; int cnt = 1;
+    while (!q.empty()) {
+        int u = q.front(); q.pop();
+        for (int v : adj[u]) if (!visited[v]) { visited[v]=true; q.push(v); cnt++; }
+    }
+    return cnt == V;
+}
+int main() {
+    std::vector<std::vector<int>> g = {{1,2},{0,3,4},{0},{1},{1}}; // 5 nodes, 4 edges
+    assert(isTree(5, g) == true);
+    std::cout << "IsTree verified." << std::endl;
+    return 0;
+}
+// Time Complexity: O(V + E)
+// Space Complexity: O(V)
+```
+## IsForest()
+### 대표코드
+```cpp
+#include <iostream>
+#include <queue>
+#include <vector>
+#include <cassert>
+
+// A forest has no cycles and E == V - (number of trees/components)
+bool isForest(int V, std::vector<std::vector<int>>& adj) {
+    int edgeCount = 0;
+    for (int i = 0; i < V; i++) edgeCount += adj[i].size();
+    edgeCount /= 2;
+    // BFS to count components and check no cycle via edge count
+    std::vector<bool> visited(V, false);
+    int components = 0;
+    // forest: E == V - components
+    std::queue<int> q;
+    for (int i = 0; i < V; i++) {
+        if (!visited[i]) {
+            components++;
+            q.push(i); visited[i] = true;
+            while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (!visited[v]) { visited[v]=true; q.push(v); } }
+        }
+    }
+    return edgeCount == V - components;
+}
+int main() {
+    // Two trees: 0-1-2 and 3-4 (forest of 2 trees, 5 nodes, 3 edges)
+    std::vector<std::vector<int>> g = {{1},{0,2},{1},{4},{3}};
+    assert(isForest(5, g) == true);
+    std::cout << "IsForest verified." << std::endl;
+    return 0;
+}
+// Time Complexity: O(V + E)
+// Space Complexity: O(V)
+```
+## IsBiconnected()
+### 대표코드
+```cpp
+#include <iostream>
+#include <vector>
+#include <cassert>
+
+int timer_bc = 0;
+std::vector<int> disc_bc, low_bc, parent_bc;
+bool hasBridge = false;
+
+void dfs_bc(int u, std::vector<std::vector<int>>& adj) {
+    disc_bc[u] = low_bc[u] = timer_bc++;
+    int children = 0;
+    for (int v : adj[u]) {
+        if (disc_bc[v] == -1) {
+            children++; parent_bc[v] = u;
+            dfs_bc(v, adj);
+            low_bc[u] = std::min(low_bc[u], low_bc[v]);
+            if (parent_bc[u] == -1 && children > 1) hasBridge = true;
+            if (parent_bc[u] != -1 && low_bc[v] >= disc_bc[u]) hasBridge = true;
+        } else if (v != parent_bc[u]) {
+            low_bc[u] = std::min(low_bc[u], disc_bc[v]);
+        }
+    }
+}
+
+bool isBiconnected(int V, std::vector<std::vector<int>>& adj) {
+    disc_bc.assign(V, -1); low_bc.assign(V, 0); parent_bc.assign(V, -1);
+    hasBridge = false; timer_bc = 0;
+    dfs_bc(0, adj);
+    if (hasBridge) return false;
+    for (int i = 0; i < V; i++) if (disc_bc[i] == -1) return false;
+    return true;
+}
+
+int main() {
+    int V = 5;
+    std::vector<std::vector<int>> g = {{1,2,3},{0,2},{0,1,3,4},{0,2,4},{2,3}};
+    assert(isBiconnected(V, g) == true);
+    std::cout << "IsBiconnected verified." << std::endl;
+    return 0;
+}
+// Time Complexity: O(V + E)
+// Space Complexity: O(V)
+```
 # Part 6. 위상 구조
 ## KahnAlgorithm()
 ### 대표코드
@@ -914,7 +1027,6 @@ int main() {
 }
 // Time Complexity: O(V + E)
 ```
-
 # Part 7. 최소 신장 트리
 ## Kruskal()
 ### 대표코드
@@ -980,7 +1092,105 @@ int main() {
 // Time Complexity: O(E log V)
 // Space Complexity: O(V + E)
 ```
+## Boruvka()
+### 대표코드
+```cpp
+#include <iostream>
+#include <vector>
+#include <tuple>
+#include <cassert>
 
+struct Edge { int u, v, w; };
+
+int findB(std::vector<int>& par, int x) { return par[x] == x ? x : par[x] = findB(par, par[x]); }
+void unionB(std::vector<int>& par, std::vector<int>& rank, int x, int y) {
+    x = findB(par,x); y = findB(par,y);
+    if (rank[x] < rank[y]) std::swap(x,y);
+    par[y] = x; if (rank[x]==rank[y]) rank[x]++;
+}
+
+int boruvka(int V, std::vector<Edge>& edges) {
+    std::vector<int> par(V), rnk(V, 0);
+    for (int i = 0; i < V; i++) par[i] = i;
+    int mstWeight = 0, numComponents = V;
+    while (numComponents > 1) {
+        std::vector<int> cheapest(V, -1);
+        for (int i = 0; i < (int)edges.size(); i++) {
+            int su = findB(par, edges[i].u), sv = findB(par, edges[i].v);
+            if (su != sv) {
+                if (cheapest[su] == -1 || edges[cheapest[su]].w > edges[i].w) cheapest[su] = i;
+                if (cheapest[sv] == -1 || edges[cheapest[sv]].w > edges[i].w) cheapest[sv] = i;
+            }
+        }
+        for (int i = 0; i < V; i++) {
+            if (cheapest[i] != -1) {
+                int su = findB(par, edges[cheapest[i]].u), sv = findB(par, edges[cheapest[i]].v);
+                if (su != sv) { mstWeight += edges[cheapest[i]].w; unionB(par, rnk, su, sv); numComponents--; }
+            }
+        }
+    }
+    return mstWeight;
+}
+
+int main() {
+    int V = 4;
+    std::vector<Edge> edges = {{0,1,10},{0,2,6},{0,3,5},{1,3,15},{2,3,4}};
+    int mst = boruvka(V, edges);
+    assert(mst == 19);
+    std::cout << "Boruvka MST weight: " << mst << std::endl;
+    return 0;
+}
+// Time Complexity: O(E log V)
+// Space Complexity: O(V + E)
+```
+## ReverseDelete()
+### 대표코드
+```cpp
+#include <iostream>
+#include <queue>
+#include <vector>
+#include <algorithm>
+#include <cassert>
+
+struct EdgeRD { int u, v, w; };
+
+int V_rd;
+std::vector<std::vector<int>> adj_rd;
+
+bool isConnectedRD() {
+    std::vector<bool> vis(V_rd, false);
+    std::queue<int> q; q.push(0); vis[0] = true; int cnt = 1;
+    while (!q.empty()) {
+        int u = q.front(); q.pop();
+        for (int v : adj_rd[u]) if (!vis[v]) { vis[v]=true; q.push(v); cnt++; }
+    }
+    return cnt == V_rd;
+}
+int reverseDelete(int V, std::vector<EdgeRD>& edges) {
+    V_rd = V;
+    std::sort(edges.begin(), edges.end(), [](const EdgeRD& a, const EdgeRD& b){ return a.w > b.w; });
+    adj_rd.assign(V, {});
+    for (auto& e : edges) { adj_rd[e.u].push_back(e.v); adj_rd[e.v].push_back(e.u); }
+    int mstWeight = 0;
+    for (auto& e : edges) {
+        adj_rd[e.u].erase(std::find(adj_rd[e.u].begin(), adj_rd[e.u].end(), e.v));
+        adj_rd[e.v].erase(std::find(adj_rd[e.v].begin(), adj_rd[e.v].end(), e.u));
+        if (!isConnectedRD()) { adj_rd[e.u].push_back(e.v); adj_rd[e.v].push_back(e.u); mstWeight += e.w; }
+    }
+    return mstWeight;
+}
+
+int main() {
+    int V = 4;
+    std::vector<EdgeRD> edges = {{0,1,10},{0,2,6},{0,3,5},{1,3,15},{2,3,4}};
+    int mst = reverseDelete(V, edges);
+    assert(mst == 19);
+    std::cout << "ReverseDelete MST weight: " << mst << std::endl;
+    return 0;
+}
+// Time Complexity: O(E log E * (V + E))
+// Space Complexity: O(V + E)
+```
 # Part 8. 서로소 집합
 ## MakeSet()
 ### 대표코드
@@ -1055,7 +1265,30 @@ int main() {
 }
 // Time Complexity: Amortized O(a(N)) -> ~O(1)
 ```
+## PathCompression()
+### 대표코드
+```cpp
+#include <iostream>
+#include <vector>
+#include <cassert>
 
+std::vector<int> parent_pc;
+int findPC(int x) {
+    if (parent_pc[x] != x) parent_pc[x] = findPC(parent_pc[x]); // 경로 압축
+    return parent_pc[x];
+}
+
+int main() {
+    parent_pc = {0, 0, 1, 2, 3}; // 0<-1<-2<-3<-4 체인
+    int root = findPC(4); // 경로 압축 후 모두 0을 가리킴
+    assert(root == 0);
+    assert(parent_pc[4] == 0); // 직접 루트를 가리키게 됨
+    std::cout << "PathCompression verified. Root of 4: " << root << std::endl;
+    return 0;
+}
+// Time Complexity: O(alpha(N)) amortized (Inverse Ackermann)
+// Space Complexity: O(N)
+```
 # Part 9. 최단 경로
 ## Dijkstra()
 ### 대표코드
@@ -1143,471 +1376,6 @@ int main() {
 // Time Complexity: O(V^3)
 // Space Complexity: O(V^2)
 ```
-
-# Part 10. 길찾기
-## AStar()
-### 대표코드
-```cpp
-#include <iostream>
-#include <cassert>
-
-int main() {
-    std::cout << "A* combines Dijkstra's uniform-cost search and Greedy Best-First Search with f(n) = g(n) + h(n)." << std::endl;
-    assert(true);
-    return 0;
-}
-// Time Complexity: O(E log V) heavily depends on heuristic
-```
-## JumpPointSearch()
-### 대표코드
-```cpp
-#include <iostream>
-#include <cassert>
-
-int main() {
-    std::cout << "JPS optimizes grid map A* by ignoring intermediate nodes without forced neighbors." << std::endl;
-    assert(true);
-    return 0;
-}
-// Time Complexity: O(1)
-// Space Complexity: O(1)
-```
-
-# Part 11. 네트워크 플로우
-## EdmondsKarp()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
-#include <algorithm>
-#include <cassert>
-
-int V = 4;
-std::vector<std::vector<int>> capacity, flow, adj;
-
-int bfs(int s, int t, std::vector<int>& parent) {
-    std::fill(parent.begin(), parent.end(), -1);
-    parent[s] = -2;
-    std::queue<std::pair<int, int>> q;
-    q.push({s, 1e9});
-    
-    while (!q.empty()) {
-        auto [cur, f] = q.front(); q.pop();
-        for (int next : adj[cur]) {
-            if (parent[next] == -1 && capacity[cur][next] - flow[cur][next] > 0) {
-                parent[next] = cur;
-                int new_flow = std::min(f, capacity[cur][next] - flow[cur][next]);
-                if (next == t) return new_flow;
-                q.push({next, new_flow});
-            }
-        }
-    }
-    return 0;
-}
-
-int edmondsKarp(int s, int t) {
-    int max_flow = 0, new_flow;
-    std::vector<int> parent(V);
-    while (new_flow = bfs(s, t, parent)) {
-        max_flow += new_flow;
-        int cur = t;
-        while (cur != s) {
-            int prev = parent[cur];
-            flow[prev][cur] += new_flow;
-            flow[cur][prev] -= new_flow;
-            cur = prev;
-        }
-    }
-    return max_flow;
-}
-
-int main() {
-    capacity.assign(V, std::vector<int>(V, 0));
-    flow.assign(V, std::vector<int>(V, 0));
-    adj.assign(V, std::vector<int>());
-    
-    auto addEdge = [](int u, int v, int cap) {
-        adj[u].push_back(v); adj[v].push_back(u);
-        capacity[u][v] += cap;
-    };
-    
-    addEdge(0, 1, 3); addEdge(0, 2, 2); addEdge(1, 2, 5); addEdge(1, 3, 2); addEdge(2, 3, 3);
-    
-    assert(edmondsKarp(0, 3) == 5);
-    std::cout << "Edmonds-Karp Max Flow verified." << std::endl;
-    return 0;
-}
-// Time Complexity: O(V E^2)
-// Space Complexity: O(V^2) for matrix
-```
-
-# Part 12. 매칭
-## BipartiteMatching()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <cassert>
-
-std::vector<std::vector<int>> adj;
-std::vector<int> match;
-std::vector<bool> visited;
-
-bool dfs(int u) {
-    for (int v : adj[u]) {
-        if (visited[v]) continue;
-        visited[v] = true;
-        if (match[v] == -1 || dfs(match[v])) {
-            match[v] = u;
-            return true;
-        }
-    }
-    return false;
-}
-
-int main() {
-    int n = 2, m = 2; // 2 left, 2 right nodes
-    adj.assign(n, std::vector<int>());
-    match.assign(m, -1);
-    
-    adj[0] = {0, 1}; // L0 connected to R0, R1
-    adj[1] = {0};    // L1 connected to R0
-    
-    int size = 0;
-    for (int i = 0; i < n; ++i) {
-        visited.assign(m, false);
-        if (dfs(i)) size++;
-    }
-    assert(size == 2);
-    std::cout << "Bipartite Matching verified." << std::endl;
-    return 0;
-}
-// Time Complexity: O(V * E)
-// Space Complexity: O(V + E)
-```
-
-# Part 13. 그래프 분해
-## Tarjan()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <stack>
-#include <algorithm>
-#include <cassert>
-
-int V = 4;
-std::vector<std::vector<int>> adj = {{1}, {2}, {0}, {2}};
-std::vector<int> dfn(4, 0), low(4, 0);
-std::vector<bool> in_stack(4, false);
-std::stack<int> st;
-int timer = 0, scc_cnt = 0;
-
-void dfs(int u) {
-    dfn[u] = low[u] = ++timer;
-    st.push(u); in_stack[u] = true;
-    
-    for (int v : adj[u]) {
-        if (!dfn[v]) { dfs(v); low[u] = std::min(low[u], low[v]); }
-        else if (in_stack[v]) low[u] = std::min(low[u], dfn[v]);
-    }
-    
-    if (low[u] == dfn[u]) {
-        scc_cnt++;
-        while (true) {
-            int t = st.top(); st.pop(); in_stack[t] = false;
-            if (t == u) break;
-        }
-    }
-}
-
-int main() {
-    for(int i=0; i<V; i++) if(!dfn[i]) dfs(i);
-    assert(scc_cnt == 2); // {0,1,2} and {3}
-    std::cout << "Tarjan's SCC verified." << std::endl;
-    return 0;
-}
-// Time Complexity: O(V + E)
-```
-
-# 부록
-## BFS vs DFS
-### 대표코드
-```cpp
-#include <iostream>
-#include <cassert>
-
-int main() {
-    std::cout << "BFS is optimal for shortest path on unweighted graphs." << std::endl;
-    assert(true);
-    return 0;
-}
-// Time Complexity: O(1)
-// Space Complexity: O(1)
-```
-## DAG가 중요한 이유
-### 대표코드
-```cpp
-#include <iostream>
-#include <cassert>
-
-int main() {
-    std::cout << "DAG allows TopoSort and DP without infinite loops." << std::endl;
-    assert(true);
-    return 0;
-}
-// Time Complexity: O(1)
-// Space Complexity: O(1)
-```
-
-## IsTree()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <cassert>
-
-int V_nodes = 5;
-std::vector<std::vector<int>> adj_tree = {{1,2},{0,3},{0},{1},{}}; // 4 edges, but 4 has no edge
-// A graph is a tree iff it is connected AND has exactly V-1 edges.
-bool isTree(int V, std::vector<std::vector<int>>& adj) {
-    int edgeCount = 0;
-    for (int i = 0; i < V; i++) edgeCount += adj[i].size();
-    edgeCount /= 2; // undirected
-    if (edgeCount != V - 1) return false;
-    // BFS connectivity check
-    std::vector<bool> visited(V, false);
-    std::queue<int> q;
-    q.push(0); visited[0] = true; int cnt = 1;
-    while (!q.empty()) {
-        int u = q.front(); q.pop();
-        for (int v : adj[u]) if (!visited[v]) { visited[v]=true; q.push(v); cnt++; }
-    }
-    return cnt == V;
-}
-#include <queue>
-int main() {
-    std::vector<std::vector<int>> g = {{1,2},{0,3,4},{0},{1},{1}}; // 5 nodes, 4 edges
-    assert(isTree(5, g) == true);
-    std::cout << "IsTree verified." << std::endl;
-    return 0;
-}
-// Time Complexity: O(V + E)
-// Space Complexity: O(V)
-```
-## IsForest()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <cassert>
-
-// A forest has no cycles and E == V - (number of trees/components)
-bool isForest(int V, std::vector<std::vector<int>>& adj) {
-    int edgeCount = 0;
-    for (int i = 0; i < V; i++) edgeCount += adj[i].size();
-    edgeCount /= 2;
-    // BFS to count components and check no cycle via edge count
-    std::vector<bool> visited(V, false);
-    int components = 0;
-    // forest: E == V - components
-    std::queue<int> q;
-    for (int i = 0; i < V; i++) {
-        if (!visited[i]) {
-            components++;
-            q.push(i); visited[i] = true;
-            while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (!visited[v]) { visited[v]=true; q.push(v); } }
-        }
-    }
-    return edgeCount == V - components;
-}
-#include <queue>
-int main() {
-    // Two trees: 0-1-2 and 3-4 (forest of 2 trees, 5 nodes, 3 edges)
-    std::vector<std::vector<int>> g = {{1},{0,2},{1},{4},{3}};
-    assert(isForest(5, g) == true);
-    std::cout << "IsForest verified." << std::endl;
-    return 0;
-}
-// Time Complexity: O(V + E)
-// Space Complexity: O(V)
-```
-## IsBiconnected()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <cassert>
-
-int timer_bc = 0;
-std::vector<int> disc_bc, low_bc, parent_bc;
-bool hasBridge = false;
-
-void dfs_bc(int u, std::vector<std::vector<int>>& adj) {
-    disc_bc[u] = low_bc[u] = timer_bc++;
-    int children = 0;
-    for (int v : adj[u]) {
-        if (disc_bc[v] == -1) {
-            children++; parent_bc[v] = u;
-            dfs_bc(v, adj);
-            low_bc[u] = std::min(low_bc[u], low_bc[v]);
-            if (parent_bc[u] == -1 && children > 1) hasBridge = true;
-            if (parent_bc[u] != -1 && low_bc[v] >= disc_bc[u]) hasBridge = true;
-        } else if (v != parent_bc[u]) {
-            low_bc[u] = std::min(low_bc[u], disc_bc[v]);
-        }
-    }
-}
-
-bool isBiconnected(int V, std::vector<std::vector<int>>& adj) {
-    disc_bc.assign(V, -1); low_bc.assign(V, 0); parent_bc.assign(V, -1);
-    hasBridge = false; timer_bc = 0;
-    dfs_bc(0, adj);
-    if (hasBridge) return false;
-    for (int i = 0; i < V; i++) if (disc_bc[i] == -1) return false;
-    return true;
-}
-
-int main() {
-    int V = 5;
-    std::vector<std::vector<int>> g = {{1,2,3},{0,2},{0,1,3,4},{0,2,4},{2,3}};
-    assert(isBiconnected(V, g) == true);
-    std::cout << "IsBiconnected verified." << std::endl;
-    return 0;
-}
-// Time Complexity: O(V + E)
-// Space Complexity: O(V)
-```
-
-# Part 7. 최소 신장 트리 (보완)
-## Boruvka()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <tuple>
-#include <cassert>
-
-struct Edge { int u, v, w; };
-
-int findB(std::vector<int>& par, int x) { return par[x] == x ? x : par[x] = findB(par, par[x]); }
-void unionB(std::vector<int>& par, std::vector<int>& rank, int x, int y) {
-    x = findB(par,x); y = findB(par,y);
-    if (rank[x] < rank[y]) std::swap(x,y);
-    par[y] = x; if (rank[x]==rank[y]) rank[x]++;
-}
-
-int boruvka(int V, std::vector<Edge>& edges) {
-    std::vector<int> par(V), rnk(V, 0);
-    for (int i = 0; i < V; i++) par[i] = i;
-    int mstWeight = 0, numComponents = V;
-    while (numComponents > 1) {
-        std::vector<int> cheapest(V, -1);
-        for (int i = 0; i < (int)edges.size(); i++) {
-            int su = findB(par, edges[i].u), sv = findB(par, edges[i].v);
-            if (su != sv) {
-                if (cheapest[su] == -1 || edges[cheapest[su]].w > edges[i].w) cheapest[su] = i;
-                if (cheapest[sv] == -1 || edges[cheapest[sv]].w > edges[i].w) cheapest[sv] = i;
-            }
-        }
-        for (int i = 0; i < V; i++) {
-            if (cheapest[i] != -1) {
-                int su = findB(par, edges[cheapest[i]].u), sv = findB(par, edges[cheapest[i]].v);
-                if (su != sv) { mstWeight += edges[cheapest[i]].w; unionB(par, rnk, su, sv); numComponents--; }
-            }
-        }
-    }
-    return mstWeight;
-}
-
-int main() {
-    int V = 4;
-    std::vector<Edge> edges = {{0,1,10},{0,2,6},{0,3,5},{1,3,15},{2,3,4}};
-    int mst = boruvka(V, edges);
-    assert(mst == 19);
-    std::cout << "Boruvka MST weight: " << mst << std::endl;
-    return 0;
-}
-// Time Complexity: O(E log V)
-// Space Complexity: O(V + E)
-```
-## ReverseDelete()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <algorithm>
-#include <cassert>
-
-struct EdgeRD { int u, v, w; };
-
-int V_rd;
-std::vector<std::vector<int>> adj_rd;
-
-bool isConnectedRD() {
-    std::vector<bool> vis(V_rd, false);
-    std::queue<int> q; q.push(0); vis[0] = true; int cnt = 1;
-    while (!q.empty()) {
-        int u = q.front(); q.pop();
-        for (int v : adj_rd[u]) if (!vis[v]) { vis[v]=true; q.push(v); cnt++; }
-    }
-    return cnt == V_rd;
-}
-#include <queue>
-int reverseDelete(int V, std::vector<EdgeRD>& edges) {
-    V_rd = V;
-    std::sort(edges.begin(), edges.end(), [](const EdgeRD& a, const EdgeRD& b){ return a.w > b.w; });
-    adj_rd.assign(V, {});
-    for (auto& e : edges) { adj_rd[e.u].push_back(e.v); adj_rd[e.v].push_back(e.u); }
-    int mstWeight = 0;
-    for (auto& e : edges) {
-        adj_rd[e.u].erase(std::find(adj_rd[e.u].begin(), adj_rd[e.u].end(), e.v));
-        adj_rd[e.v].erase(std::find(adj_rd[e.v].begin(), adj_rd[e.v].end(), e.u));
-        if (!isConnectedRD()) { adj_rd[e.u].push_back(e.v); adj_rd[e.v].push_back(e.u); mstWeight += e.w; }
-    }
-    return mstWeight;
-}
-
-int main() {
-    int V = 4;
-    std::vector<EdgeRD> edges = {{0,1,10},{0,2,6},{0,3,5},{1,3,15},{2,3,4}};
-    int mst = reverseDelete(V, edges);
-    assert(mst == 19);
-    std::cout << "ReverseDelete MST weight: " << mst << std::endl;
-    return 0;
-}
-// Time Complexity: O(E log E * (V + E))
-// Space Complexity: O(V + E)
-```
-
-# Part 8. 분리 집합 (보완)
-## PathCompression()
-### 대표코드
-```cpp
-#include <iostream>
-#include <vector>
-#include <cassert>
-
-std::vector<int> parent_pc;
-int findPC(int x) {
-    if (parent_pc[x] != x) parent_pc[x] = findPC(parent_pc[x]); // 경로 압축
-    return parent_pc[x];
-}
-
-int main() {
-    parent_pc = {0, 0, 1, 2, 3}; // 0<-1<-2<-3<-4 체인
-    int root = findPC(4); // 경로 압축 후 모두 0을 가리킴
-    assert(root == 0);
-    assert(parent_pc[4] == 0); // 직접 루트를 가리키게 됨
-    std::cout << "PathCompression verified. Root of 4: " << root << std::endl;
-    return 0;
-}
-// Time Complexity: O(alpha(N)) amortized (Inverse Ackermann)
-// Space Complexity: O(N)
-```
-
-# Part 9. 최단 경로 (보완)
 ## Johnson()
 ### 대표코드
 ```cpp
@@ -1672,8 +1440,34 @@ int main() {
 // Time Complexity: O(kE) average, O(VE) worst
 // Space Complexity: O(V + E)
 ```
+# Part 10. 길찾기
+## AStar()
+### 대표코드
+```cpp
+#include <iostream>
+#include <cassert>
 
-# Part 10. 길찾기 (보완)
+int main() {
+    std::cout << "A* combines Dijkstra's uniform-cost search and Greedy Best-First Search with f(n) = g(n) + h(n)." << std::endl;
+    assert(true);
+    return 0;
+}
+// Time Complexity: O(E log V) heavily depends on heuristic
+```
+## JumpPointSearch()
+### 대표코드
+```cpp
+#include <iostream>
+#include <cassert>
+
+int main() {
+    std::cout << "JPS optimizes grid map A* by ignoring intermediate nodes without forced neighbors." << std::endl;
+    assert(true);
+    return 0;
+}
+// Time Complexity: O(1)
+// Space Complexity: O(1)
+```
 ## GreedyBestFirstSearch()
 ### 대표코드
 ```cpp
@@ -1698,41 +1492,48 @@ int main() {
 #include <iostream>
 #include <queue>
 #include <vector>
-#include <unordered_map>
+#include <algorithm>
+#include <climits>
 #include <cassert>
 
-// 양방향 BFS: 시작과 목표에서 동시에 탐색, 만나면 종료
-int bidirectionalBFS(int src, int dst, int V, std::vector<std::vector<int>>& adj) {
+// 양방향 BFS: 시작점과 목표점에서 레벨 단위로 번갈아 확장하고, 만나는 순간의 최소 거리를 반환
+// (처음 만난 간선이 최단이라고 단정하지 않고 한 레벨 전체를 보고 최솟값을 취한다)
+int expandLevel(std::queue<int>& q, std::vector<int>& mine, const std::vector<int>& other,
+                const std::vector<std::vector<int>>& adj) {
+    int best = INT_MAX;
+    for (size_t sz = q.size(); sz > 0; --sz) {
+        int u = q.front(); q.pop();
+        for (int v : adj[u]) {
+            if (other[v] != -1) best = std::min(best, mine[u] + 1 + other[v]);
+            if (mine[v] == -1) { mine[v] = mine[u] + 1; q.push(v); }
+        }
+    }
+    return best;
+}
+
+int bidirectionalBFS(int src, int dst, const std::vector<std::vector<int>>& adj) {
     if (src == dst) return 0;
+    int V = adj.size();
     std::vector<int> distF(V, -1), distB(V, -1);
     std::queue<int> qF, qB;
     qF.push(src); distF[src] = 0;
     qB.push(dst); distB[dst] = 0;
-    while (!qF.empty() || !qB.empty()) {
-        if (!qF.empty()) {
-            int u = qF.front(); qF.pop();
-            for (int v : adj[u]) {
-                if (distF[v] == -1) { distF[v] = distF[u]+1; qF.push(v); }
-                if (distB[v] != -1) return distF[v] + distB[v];
-            }
-        }
-        if (!qB.empty()) {
-            int u = qB.front(); qB.pop();
-            for (int v : adj[u]) {
-                if (distB[v] == -1) { distB[v] = distB[u]+1; qB.push(v); }
-                if (distF[v] != -1) return distF[v] + distB[v];
-            }
-        }
+    while (!qF.empty() && !qB.empty()) {
+        // 더 작은 쪽 프런티어를 확장하면 방문 정점 수가 줄어든다
+        int best = (qF.size() <= qB.size()) ? expandLevel(qF, distF, distB, adj)
+                                            : expandLevel(qB, distB, distF, adj);
+        if (best != INT_MAX) return best;
     }
     return -1;
 }
 
 int main() {
-    int V = 6;
     std::vector<std::vector<int>> adj = {{1,2},{0,3},{0,4},{1,5},{2,5},{3,4}};
-    int dist = bidirectionalBFS(0, 5, V, adj);
-    assert(dist == 2);
-    std::cout << "BidirectionalSearch dist(0,5): " << dist << std::endl;
+    assert(bidirectionalBFS(0, 5, adj) == 3);   // 0-1-3-5
+    assert(bidirectionalBFS(0, 0, adj) == 0);
+    std::vector<std::vector<int>> split = {{1},{0},{3},{2}};
+    assert(bidirectionalBFS(0, 3, split) == -1); // 연결되지 않은 경우
+    std::cout << "BidirectionalSearch dist(0,5): " << bidirectionalBFS(0, 5, adj) << std::endl;
     return 0;
 }
 // Time Complexity: O(b^(d/2)) vs O(b^d) for unidirectional
@@ -1817,7 +1618,6 @@ int main() {
 // Time Complexity: O(E log V) similar to A*
 // Space Complexity: O(V)
 ```
-
 # Part 11. 네트워크 플로우
 ## FordFulkerson()
 ### 대표코드
@@ -1869,6 +1669,73 @@ int main() {
 }
 // Time Complexity: O(VE^2) with BFS (Edmonds-Karp)
 // Space Complexity: O(V^2)
+```
+## EdmondsKarp()
+### 대표코드
+```cpp
+#include <iostream>
+#include <vector>
+#include <queue>
+#include <algorithm>
+#include <cassert>
+
+int V = 4;
+std::vector<std::vector<int>> capacity, flow, adj;
+
+int bfs(int s, int t, std::vector<int>& parent) {
+    std::fill(parent.begin(), parent.end(), -1);
+    parent[s] = -2;
+    std::queue<std::pair<int, int>> q;
+    q.push({s, 1e9});
+    
+    while (!q.empty()) {
+        auto [cur, f] = q.front(); q.pop();
+        for (int next : adj[cur]) {
+            if (parent[next] == -1 && capacity[cur][next] - flow[cur][next] > 0) {
+                parent[next] = cur;
+                int new_flow = std::min(f, capacity[cur][next] - flow[cur][next]);
+                if (next == t) return new_flow;
+                q.push({next, new_flow});
+            }
+        }
+    }
+    return 0;
+}
+
+int edmondsKarp(int s, int t) {
+    int max_flow = 0, new_flow;
+    std::vector<int> parent(V);
+    while (new_flow = bfs(s, t, parent)) {
+        max_flow += new_flow;
+        int cur = t;
+        while (cur != s) {
+            int prev = parent[cur];
+            flow[prev][cur] += new_flow;
+            flow[cur][prev] -= new_flow;
+            cur = prev;
+        }
+    }
+    return max_flow;
+}
+
+int main() {
+    capacity.assign(V, std::vector<int>(V, 0));
+    flow.assign(V, std::vector<int>(V, 0));
+    adj.assign(V, std::vector<int>());
+    
+    auto addEdge = [](int u, int v, int cap) {
+        adj[u].push_back(v); adj[v].push_back(u);
+        capacity[u][v] += cap;
+    };
+    
+    addEdge(0, 1, 3); addEdge(0, 2, 2); addEdge(1, 2, 5); addEdge(1, 3, 2); addEdge(2, 3, 3);
+    
+    assert(edmondsKarp(0, 3) == 5);
+    std::cout << "Edmonds-Karp Max Flow verified." << std::endl;
+    return 0;
+}
+// Time Complexity: O(V E^2)
+// Space Complexity: O(V^2) for matrix
 ```
 ## Dinic()
 ### 대표코드
@@ -1958,8 +1825,50 @@ int main() {
 // Time Complexity: O(V * E * maxFlow) or O(E * V^2) with SPFA
 // Space Complexity: O(V + E)
 ```
-
 # Part 12. 매칭
+## BipartiteMatching()
+### 대표코드
+```cpp
+#include <iostream>
+#include <vector>
+#include <cassert>
+
+std::vector<std::vector<int>> adj;
+std::vector<int> match;
+std::vector<bool> visited;
+
+bool dfs(int u) {
+    for (int v : adj[u]) {
+        if (visited[v]) continue;
+        visited[v] = true;
+        if (match[v] == -1 || dfs(match[v])) {
+            match[v] = u;
+            return true;
+        }
+    }
+    return false;
+}
+
+int main() {
+    int n = 2, m = 2; // 2 left, 2 right nodes
+    adj.assign(n, std::vector<int>());
+    match.assign(m, -1);
+    
+    adj[0] = {0, 1}; // L0 connected to R0, R1
+    adj[1] = {0};    // L1 connected to R0
+    
+    int size = 0;
+    for (int i = 0; i < n; ++i) {
+        visited.assign(m, false);
+        if (dfs(i)) size++;
+    }
+    assert(size == 2);
+    std::cout << "Bipartite Matching verified." << std::endl;
+    return 0;
+}
+// Time Complexity: O(V * E)
+// Space Complexity: O(V + E)
+```
 ## HungarianAlgorithm()
 ### 대표코드
 ```cpp
@@ -2000,7 +1909,7 @@ int hungarian(std::vector<std::vector<int>>& cost) {
 int main() {
     std::vector<std::vector<int>> cost = {{4,2,3},{1,3,2},{2,1,4}};
     int minCost = hungarian(cost);
-    assert(minCost == 6);
+    assert(minCost == 5); // 최적 할당: (0→2)=3,(1→0)=1,(2→1)=1;
     std::cout << "Hungarian min cost: " << minCost << std::endl;
     return 0;
 }
@@ -2064,8 +1973,49 @@ int main() {
 // Time Complexity: O(V^3) or O(V * E) with optimization
 // Space Complexity: O(V + E)
 ```
+# Part 13. 그래프 분석
+## Tarjan()
+### 대표코드
+```cpp
+#include <iostream>
+#include <vector>
+#include <stack>
+#include <algorithm>
+#include <cassert>
 
-# Part 13. 그래프 분석 (보완)
+int V = 4;
+std::vector<std::vector<int>> adj = {{1}, {2}, {0}, {2}};
+std::vector<int> dfn(4, 0), low(4, 0);
+std::vector<bool> in_stack(4, false);
+std::stack<int> st;
+int timer = 0, scc_cnt = 0;
+
+void dfs(int u) {
+    dfn[u] = low[u] = ++timer;
+    st.push(u); in_stack[u] = true;
+    
+    for (int v : adj[u]) {
+        if (!dfn[v]) { dfs(v); low[u] = std::min(low[u], low[v]); }
+        else if (in_stack[v]) low[u] = std::min(low[u], dfn[v]);
+    }
+    
+    if (low[u] == dfn[u]) {
+        scc_cnt++;
+        while (true) {
+            int t = st.top(); st.pop(); in_stack[t] = false;
+            if (t == u) break;
+        }
+    }
+}
+
+int main() {
+    for(int i=0; i<V; i++) if(!dfn[i]) dfs(i);
+    assert(scc_cnt == 2); // {0,1,2} and {3}
+    std::cout << "Tarjan's SCC verified." << std::endl;
+    return 0;
+}
+// Time Complexity: O(V + E)
+```
 ## Kosaraju()
 ### 대표코드
 ```cpp
@@ -2131,6 +2081,7 @@ int main() {
 #include <iostream>
 #include <vector>
 #include <cassert>
+#include <algorithm>
 
 // 오일러 회로: 모든 간선을 정확히 한 번씩 지나는 경로
 // 조건: 연결 그래프에서 모든 정점의 차수가 짝수
@@ -2143,7 +2094,6 @@ void eulerTour(int u, std::vector<std::vector<int>>& adj, std::vector<int>& path
     }
     path.push_back(u);
 }
-#include <algorithm>
 int main() {
     // 0-1-2-0 삼각형 (모든 차수 2, 오일러 회로 존재)
     std::vector<std::vector<int>> adj = {{1,2},{0,2},{0,1}};
@@ -2189,7 +2139,6 @@ int main() {
 // Time Complexity: O(N log N)
 // Space Complexity: O(N log N)
 ```
-
 # Part 14. 특수 그래프
 ## BipartiteGraph()
 ### 대표코드
@@ -2249,7 +2198,6 @@ int main() {
 }
 // Space Complexity: O(V + E)
 ```
-
 # Part 15. 그래프 모델
 ## PageRank()
 ### 대표코드
@@ -2287,8 +2235,35 @@ int main() {
 // Time Complexity: O(iter * (V + E))
 // Space Complexity: O(V)
 ```
+# 부록
+## BFS vs DFS
+### 대표코드
+```cpp
+#include <iostream>
+#include <cassert>
 
-# 부록 (보완)
+int main() {
+    std::cout << "BFS is optimal for shortest path on unweighted graphs." << std::endl;
+    assert(true);
+    return 0;
+}
+// Time Complexity: O(1)
+// Space Complexity: O(1)
+```
+## DAG가 중요한 이유
+### 대표코드
+```cpp
+#include <iostream>
+#include <cassert>
+
+int main() {
+    std::cout << "DAG allows TopoSort and DP without infinite loops." << std::endl;
+    assert(true);
+    return 0;
+}
+// Time Complexity: O(1)
+// Space Complexity: O(1)
+```
 ## Prim vs Kruskal
 ### 대표코드
 ```cpp

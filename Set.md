@@ -1,12 +1,13 @@
-﻿# Part 1. 吏묓빀??湲곗큹
+# Part 1. 집합의 기초
 ## CreateSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
 
 int main() {
-    std::unordered_set<int> s; // C++ ?쒖? ?댁떆 湲곕컲 吏묓빀
+    std::unordered_set<int> s; // C++ 표준 해시 기반 집합
     std::cout << "Set created." << std::endl;
     assert(s.empty());
     return 0;
@@ -15,14 +16,15 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## Add()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
 
 int main() {
     std::unordered_set<int> s;
-    s.insert(10); // 吏묓빀???붿냼 異붽?
+    s.insert(10); // 집합에 요소 추가
     std::cout << "Inserted 10." << std::endl;
     assert(s.count(10) == 1);
     return 0;
@@ -30,14 +32,15 @@ int main() {
 // Time Complexity: Amortized O(1)
 ```
 ## Remove()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
 
 int main() {
     std::unordered_set<int> s = {10, 20};
-    s.erase(10); // 吏묓빀?먯꽌 ?붿냼 ??젣
+    s.erase(10); // 집합에서 요소 삭제
     std::cout << "Removed 10." << std::endl;
     assert(s.count(10) == 0);
     return 0;
@@ -45,7 +48,8 @@ int main() {
 // Time Complexity: Amortized O(1)
 ```
 ## Contains()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
@@ -60,7 +64,8 @@ int main() {
 // Time Complexity: Amortized O(1)
 ```
 ## Clear()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
@@ -75,7 +80,8 @@ int main() {
 // Time Complexity: O(N)
 ```
 ## Size()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
@@ -90,7 +96,8 @@ int main() {
 // Time Complexity: O(1)
 ```
 ## IsEmpty()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
@@ -105,7 +112,8 @@ int main() {
 // Time Complexity: O(1)
 ```
 ## Copy()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
@@ -120,9 +128,10 @@ int main() {
 // Time Complexity: O(N)
 ```
 
-# Part 2. 吏묓빀 ?곗궛
+# Part 2. 집합 연산
 ## Union()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <algorithm>
@@ -154,7 +163,8 @@ if __name__ == "__main__":
 ```
 
 ## Intersection()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <algorithm>
@@ -170,7 +180,8 @@ int main() {
 // Time Complexity: O(N + M)
 ```
 ## Difference()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <algorithm>
@@ -186,7 +197,8 @@ int main() {
 // Time Complexity: O(N + M)
 ```
 ## SymmetricDifference()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <algorithm>
@@ -202,7 +214,8 @@ int main() {
 // Time Complexity: O(N + M)
 ```
 ## Complement()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <algorithm>
@@ -218,7 +231,8 @@ int main() {
 // Time Complexity: O(|U| + |A|)
 ```
 ## CartesianProduct()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <cassert>
@@ -234,7 +248,8 @@ int main() {
 // Time Complexity: O(|A| * |B|)
 ```
 ## PowerSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <cassert>
@@ -251,9 +266,10 @@ int main() {
 // Time Complexity: O(2^N)
 ```
 
-# Part 3. 愿怨??먮퀎
+# Part 3. 관계 판별
 ## IsSubset()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <algorithm>
@@ -269,7 +285,8 @@ int main() {
 // Time Complexity: O(|A| + |B|)
 ```
 ## IsProperSubset()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <algorithm>
@@ -286,7 +303,8 @@ int main() {
 // Time Complexity: O(|A| + |B|)
 ```
 ## IsSuperset()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -299,7 +317,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## IsDisjoint()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
@@ -315,7 +334,8 @@ int main() {
 // Time Complexity: O(|B|) on average
 ```
 ## Equals()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -330,9 +350,10 @@ int main() {
 // Time Complexity: O(N)
 ```
 
-# Part 4. 諛섎났怨??먯깋
+# Part 4. 반복과 탐색
 ## Iterator()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -349,7 +370,8 @@ int main() {
 // Time Complexity: O(N)
 ```
 ## ForEach()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -365,7 +387,8 @@ int main() {
 // Time Complexity: O(N)
 ```
 ## Find()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -380,7 +403,8 @@ int main() {
 // Time Complexity: O(log N) for std::set
 ```
 ## Filter()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -399,7 +423,8 @@ int main() {
 // Time Complexity: O(N log N)
 ```
 ## Map()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -414,7 +439,8 @@ int main() {
 // Time Complexity: O(N log N)
 ```
 ## Reduce()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <numeric>
@@ -430,9 +456,10 @@ int main() {
 // Time Complexity: O(N)
 ```
 
-# Part 5. 援ы쁽
+# Part 5. 구현
 ## ArraySet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -449,7 +476,8 @@ int main() {
 // Time Complexity: O(N) for insert
 ```
 ## LinkedSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -462,7 +490,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## HashSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <unordered_set>
 #include <cassert>
@@ -478,7 +507,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## TreeSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -494,7 +524,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## BitSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <bitset>
 #include <cassert>
@@ -510,7 +541,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## ImmutableSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <set>
 #include <cassert>
@@ -526,9 +558,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 6. 鍮꾪듃 吏묓빀
+# Part 6. 비트 집합
 ## SetBit()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -543,7 +576,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## ClearBit()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -558,7 +592,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## ToggleBit()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -574,7 +609,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## TestBit()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -589,7 +625,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## CountBits()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -604,7 +641,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## EnumerateSubsets()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -620,9 +658,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 7. ?쒕줈??吏묓빀
+# Part 7. 서로소 집합
 ## MakeSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <cassert>
@@ -639,7 +678,8 @@ int main() {
 // Space Complexity: O(N)
 ```
 ## FindSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <cassert>
@@ -659,7 +699,8 @@ int main() {
 // Space Complexity: O(N)
 ```
 ## UnionSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <cassert>
@@ -681,7 +722,8 @@ int main() {
 // Space Complexity: O(N)
 ```
 ## UnionByRank()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -694,7 +736,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## PathCompression()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -707,7 +750,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## ConnectedComponents()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -720,8 +764,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 8. 議고빀濡?## Combination()
-### ??쒖퐫??```cpp
+# Part 8. 조합론
+## Combination()
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -740,7 +786,8 @@ int main() {
 // Space Complexity: O(N)
 ```
 ## Permutation()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -758,7 +805,8 @@ int main() {
 // Space Complexity: O(N)
 ```
 ## CombinationWithReplacement()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -771,7 +819,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## NextPermutation()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -788,7 +837,8 @@ int main() {
 // Space Complexity: O(N)
 ```
 ## GrayCode()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -803,9 +853,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 9. 遺遺꾩쭛???먯깋
+# Part 9. 부분집합 탐색
 ## Backtracking()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -818,7 +869,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## BitMaskEnumeration()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -831,7 +883,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## MeetInTheMiddle()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -844,7 +897,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## SubsetSum()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -857,7 +911,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## KnapsackSubset()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -870,9 +925,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 10. ?섑븰??援ъ“
+# Part 10. 수학적 구조
 ## BinaryRelation()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -885,7 +941,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## EquivalenceRelation()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -898,7 +955,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## Partition()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -911,7 +969,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## EquivalenceClass()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -924,7 +983,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## QuotientSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -937,9 +997,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 11. ?곗씠?곕쿋?댁뒪
+# Part 11. 데이터베이스
 ## Distinct()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -952,7 +1013,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## Projection()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -965,7 +1027,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## Selection()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -978,7 +1041,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## Join()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -991,7 +1055,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## GroupBy()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1004,7 +1069,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## DuplicateElimination()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1017,8 +1083,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 12. ?뺣낫寃??## InvertedIndex()
-### ??쒖퐫??```cpp
+# Part 12. 정보검색
+## InvertedIndex()
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1031,7 +1099,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## PostingList()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1044,7 +1113,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## JaccardSimilarity()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1057,7 +1127,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## MinHash()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1070,7 +1141,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## LocalitySensitiveHashing()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1083,8 +1155,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 13. AI? ?곗씠??## LabelSet()
-### ??쒖퐫??```cpp
+# Part 13. AI와 데이터
+## LabelSet()
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1097,7 +1171,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## FeatureSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1110,7 +1185,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## VocabularySet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1123,7 +1199,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## CandidateSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1136,7 +1213,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## ConstraintSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1149,9 +1227,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 14. ?뺣쪧??吏묓빀
+# Part 14. 확률적 집합
 ## BloomFilter()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1164,7 +1243,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## CountingBloomFilter()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1177,7 +1257,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## CuckooFilter()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1190,7 +1271,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## QuotientFilter()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1203,9 +1285,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 15. 蹂묐젹 吏묓빀
+# Part 15. 병렬 집합
 ## ConcurrentSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1218,7 +1301,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## LockFreeSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1231,7 +1315,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## SkipListSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1244,7 +1329,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## ConcurrentHashSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1257,9 +1343,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# Part 16. ?곌뎄 二쇱젣
+# Part 16. 연구 주제
 ## PersistentSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1272,7 +1359,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## ImmutableBitSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1285,7 +1373,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## CompressedBitSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1298,7 +1387,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## RoaringBitmap()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1311,7 +1401,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## SuccinctSet()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1324,7 +1415,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## LearnedSetIndex()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1337,7 +1429,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## DynamicConnectivity()
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1350,8 +1443,10 @@ int main() {
 // Space Complexity: O(1)
 ```
 
-# 遺濡?## Set vs List
-### ??쒖퐫??```cpp
+# 부록
+## Set vs List
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1364,7 +1459,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## Set vs Multiset
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1377,7 +1473,8 @@ int main() {
 // Space Complexity: O(1)
 ```
 ## HashSet vs TreeSet
-### ??쒖퐫??```cpp
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1389,8 +1486,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## BitSet? ?몄젣 ?ъ슜?섎뒗媛?
-### ??쒖퐫??```cpp
+## BitSet은 언제 사용하는가?
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1402,8 +1500,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## Union-Find媛 嫄곗쓽 O(1)???댁쑀
-### ??쒖퐫??```cpp
+## Union-Find가 거의 O(1)인 이유
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1415,8 +1514,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## 吏묓빀怨?洹몃옒?꾩쓽 ?곌껐
-### ??쒖퐫??```cpp
+## 집합과 그래프의 연결
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1428,8 +1528,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## 吏묓빀怨?愿怨?Relation)
-### ??쒖퐫??```cpp
+## 집합과 관계(Relation)
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1441,8 +1542,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## 吏묓빀怨??⑥닔(Function)
-### ??쒖퐫??```cpp
+## 집합과 함수(Function)
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1454,8 +1556,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## SQL? ??吏묓빀 ?대줎 ?꾩뿉???숈옉?섎뒗媛?
-### ??쒖퐫??```cpp
+## SQL은 왜 집합 이론 위에서 동작하는가?
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1467,8 +1570,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## AI?먯꽌 Label Set怨?Vocabulary Set???섎?
-### ??쒖퐫??```cpp
+## AI에서 Label Set과 Vocabulary Set의 의미
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1480,7 +1584,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## 鍮꾪듃留덉뒪?ъ? 吏묓빀?????愿怨?### ??쒖퐫??```cpp
+## 비트마스크와 집합의 대응 관계
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 
@@ -1492,7 +1598,9 @@ int main() {
 // Time Complexity: O(1)
 // Space Complexity: O(1)
 ```
-## 遺遺꾩쭛???닿굅 理쒖쟻??### ??쒖퐫??```cpp
+## 부분집합 열거 최적화
+### 대표코드
+```cpp
 #include <iostream>
 #include <cassert>
 

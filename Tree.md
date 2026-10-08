@@ -1066,7 +1066,7 @@ int main() {
 // Space Complexity: O(H)
 ```
 
-﻿# Part 6. AVL 트리
+# Part 6. AVL 트리
 ## AVLInsert()
 ### 대표코드
 ```cpp
@@ -1203,7 +1203,7 @@ int main(){
 // Time Complexity: O(1)
 ```
 
-﻿# Part 7. Red-Black Tree
+# Part 7. Red-Black Tree
 ## RBInsert()
 ### 대표코드
 ```cpp

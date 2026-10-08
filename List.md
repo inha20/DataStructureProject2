@@ -774,7 +774,7 @@ int main() {
             start++;
         }
     }
-    assert(minLen == 2);
+    assert(minLen == 3); // [2,1,5] 등 길이 3이 최소;
     std::cout << "SlidingWindow Min Length: " << minLen << std::endl;
     return 0;
 }
