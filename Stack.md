@@ -673,27 +673,37 @@ int main() {
 ## ReverseString()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <sstream>
 #include <stack>
 #include <string>
+#include <vector>
 #include <cassert>
 
-std::string reverseString(std::string str) {
-    std::stack<char> s;
-    for (char c : str) s.push(c);
-    std::string reversed = "";
-    while (!s.empty()) {
-        reversed += s.top();
-        s.pop();
-    }
-    return reversed;
+// 문자열 뒤집기(ReverseString): 스택은 넣은 순서의 반대로 꺼내므로 문자를 차례로 push 한 뒤 모두 pop 하면 뒤집힌 문자열이 된다. 그런데 "문자" 가 무엇인가가 실무의 함정이다. std::string 의 원소는 바이트이고, UTF-8 한글은 한 글자가 3 바이트다. 바이트 단위로 뒤집으면 한 글자의 3 바이트 순서가 거꾸로 되어 올바르지 않은 UTF-8(깨진 글자)이 된다.
+// 올바른 방법은 코드 포인트(글자) 단위로 스택에 넣는 것이다. UTF-8 은 첫 바이트의 상위 비트로 길이를 알려 주므로(0xxxxxxx = 1, 110xxxxx = 2, 1110xxxx = 3, 11110xxx = 4 바이트) 글자를 잘라 스택에 넣고 거꾸로 이어 붙이면 된다. 같은 기법으로 문장의 단어 순서를 뒤집는 것도 스택 문제다(공백으로 단어를 나눠 push, pop 하며 잇기).
+// 검증: ① 무작위 ASCII 문자열에서 스택 방식 == std::reverse ② 한글·혼합 문자열의 글자 단위 뒤집기가 정답과 같다 ③ 바이트 단위 뒤집기는 한글에서 올바르지 않은 UTF-8 을 만들고 글자 단위는 항상 올바름 ④ 두 번 뒤집으면 원본(항등) ⑤ 단어 순서 뒤집기와 그 항등성
+std::vector<std::string> splitCodePoints(const std::string& s) {                                   // UTF-8 을 글자 단위로 자른다 (잘못된 바이트는 한 바이트씩)
+    std::vector<std::string> out; for (size_t i = 0; i < s.size();) { unsigned char c = s[i]; size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1; if (i + n > s.size()) n = 1; out.push_back(s.substr(i, n)); i += n; } return out;
 }
-
+bool validUtf8(const std::string& s) {
+    for (size_t i = 0; i < s.size();) { unsigned char c = s[i]; size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0; if (!n || i + n > s.size()) return false; for (size_t k = 1; k < n; k++) if (((unsigned char)s[i + k] >> 6) != 2) return false; i += n; } return true;
+}
+std::string reverseBytes(const std::string& s) { std::stack<char> st; for (char c : s) st.push(c); std::string r; while (!st.empty()) { r += st.top(); st.pop(); } return r; }
+std::string reverseChars(const std::string& s) { std::stack<std::string> st; for (auto& cp : splitCodePoints(s)) st.push(cp); std::string r; while (!st.empty()) { r += st.top(); st.pop(); } return r; }
+std::string reverseWords(const std::string& s) { std::stack<std::string> st; std::istringstream in(s); std::string w; while (in >> w) st.push(w); std::string r; while (!st.empty()) { r += st.top(); st.pop(); if (!st.empty()) r += ' '; } return r; }
 int main() {
-    std::string res = reverseString("hello");
-    std::cout << "Reverse 'hello' -> " << res << std::endl;
-    assert(res == "olleh");
-    return 0;
+    std::mt19937 rng(8);
+    for (int t = 0; t < 500; t++) { std::string s; int n = rng() % 40; for (int i = 0; i < n; i++) s += (char)(32 + rng() % 95); std::string want = s; std::reverse(want.begin(), want.end()); assert(reverseBytes(s) == want && reverseChars(s) == want); }                  // ①
+    assert(reverseChars("안녕하세요") == "요세하녕안" && reverseChars("가나다 abc") == "cba 다나가" && reverseChars("") == "" && reverseChars("a") == "a");                                                               // ②
+    assert(validUtf8("안녕") && !validUtf8(reverseBytes("안녕")) && validUtf8(reverseChars("안녕")));                                                                                                              // ③ 바이트 단위는 깨진다
+    const std::vector<std::string> alphabet = {"a", "Z", "7", " ", "가", "힣", "é", "😀", "한"}; int broken = 0;
+    for (int t = 0; t < 300; t++) { std::string s; int n = rng() % 12; for (int i = 0; i < n; i++) s += alphabet[rng() % alphabet.size()]; std::string r = reverseChars(s); assert(validUtf8(r) && reverseChars(r) == s && splitCodePoints(r).size() == splitCodePoints(s).size()); broken += !validUtf8(reverseBytes(s)); }      // ③ ④
+    assert(broken > 50);
+    assert(reverseWords("the sky is blue") == "blue is sky the" && reverseWords("  hello   world  ") == "world hello" && reverseWords(reverseWords("a bb ccc dddd")) == "a bb ccc dddd");                                         // ⑤
+    std::cout << "ReverseString: stack reversal matched std::reverse on ASCII; byte-wise reversal produced invalid UTF-8 for " << broken << " of 300 mixed Korean/emoji strings while code-point reversal never did" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -702,75 +712,121 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
 #include <stack>
 #include <string>
+#include <utility>
 #include <cassert>
 
-bool isBalanced(std::string expr) {
-    std::stack<char> s;
-    for (char c : expr) {
-        if (c == '(' || c == '{' || c == '[') s.push(c);
-        else if (c == ')' || c == '}' || c == ']') {
-            if (s.empty()) return false;
-            char top = s.top();
-            if ((c == ')' && top == '(') || (c == '}' && top == '{') || (c == ']' && top == '[')) {
-                s.pop();
-            } else return false;
-        }
-    }
-    return s.empty();
+// 괄호 검사(BalancedParentheses): 괄호가 올바르게 짝지어졌는가. 여는 괄호는 push, 닫는 괄호는 스택 top 의 짝인지 확인하고 pop. 괄호가 아닌 문자는 건너뛴다. 가장 최근에 연 것을 가장 먼저 닫아야 하는 구조 자체가 후입선출이다.
+// 단순히 true/false 만 돌려주면 쓸모가 적다. 컴파일러처럼 "어디가, 왜 잘못인가" 를 알려야 한다: ① 닫는 괄호가 남는 경우(UNMATCHED_CLOSER, 위치) ② 종류가 다른 경우 "(]" (MISMATCH, 위치) ③ 끝까지 닫히지 않은 경우(UNCLOSED, 가장 오래된 열린 괄호의 위치). 첫 오류 위치는 앞에서부터 읽을 때 "이 접두사로는 어떤 올바른 문자열도 만들 수 없게 되는 첫 지점" 이다.
+// 괄호가 한 종류뿐이면 스택 없이 카운터 하나로 충분하다(깊이). 여러 종류에서는 어느 괄호가 열려 있는지 알아야 하므로 스택이 꼭 필요하다.
+// 검증(스택을 쓰지 않는 독립 기준 구현: 재귀 하강 파서): 알파벳 {( ) [ ] { } a} 로 길이 7 이하의 모든 문자열(약 96 만 개)에서 상태와 오류 위치가 기준 구현과 같고, 한 종류 괄호는 카운터 방식과 같으며, 무작위 긴 문자열에서도 일치한다
+enum Status { OK, UNMATCHED_CLOSER, MISMATCH, UNCLOSED };
+struct Result { Status status; size_t pos; bool operator==(const Result& o) const { return status == o.status && pos == o.pos; } };
+char opener(char c) { return c == ')' ? '(' : c == ']' ? '[' : c == '}' ? '{' : 0; }
+Result check(const std::string& s) {
+    std::stack<std::pair<char, size_t>> st;
+    for (size_t i = 0; i < s.size(); i++) { char c = s[i];
+        if (c == '(' || c == '[' || c == '{') st.push({c, i});
+        else if (opener(c)) { if (st.empty()) return {UNMATCHED_CLOSER, i}; if (st.top().first != opener(c)) return {MISMATCH, i}; st.pop(); } }
+    if (st.empty()) return {OK, 0};
+    size_t oldest = 0; while (!st.empty()) { oldest = st.top().second; st.pop(); } return {UNCLOSED, oldest};                       // 스택 맨 아래 = 가장 오래된 열린 괄호
 }
-
+char closerOf(char c) { return c == '(' ? ')' : c == '[' ? ']' : '}'; }
+Result descend(const std::string& s, size_t& i, char need) {                                       // 기준 구현: 재귀 하강 (스택 대신 호출 스택을 쓴다)
+    while (i < s.size()) { char c = s[i];
+        if (c == '(' || c == '[' || c == '{') { size_t at = i++; Result r = descend(s, i, closerOf(c)); if (r.status == UNCLOSED) r.pos = at; if (r.status != OK) return r; }          // 바깥 프레임이 나중에 덮어쓰므로 가장 오래된 열린 괄호의 위치가 남는다
+        else if (opener(c)) { if (!need) return {UNMATCHED_CLOSER, i}; if (c != need) return {MISMATCH, i}; i++; return {OK, 0}; }
+        else i++; }
+    return need ? Result{UNCLOSED, 0} : Result{OK, 0};
+}
+Result reference(const std::string& s) { size_t i = 0; return descend(s, i, 0); }
 int main() {
-    bool res = isBalanced("{[()]}");
-    std::cout << "isBalanced('{[()]}') -> " << res << std::endl;
-    assert(res == true);
-    return 0;
+    const char alpha[] = {'(', ')', '[', ']', '{', '}', 'a'}; long strings = 0, ok = 0, unclosed = 0, unmatched = 0, mismatch = 0;
+    for (int len = 0; len <= 7; len++) { long total = 1; for (int i = 0; i < len; i++) total *= 7;
+        for (long code = 0; code < total; code++) { std::string s; long c = code; for (int i = 0; i < len; i++) { s += alpha[c % 7]; c /= 7; }
+            Result a = check(s), b = reference(s); strings++; assert(a == b);                                                                                           // 상태와 오류 위치(UNCLOSED 는 가장 오래된 열린 괄호) 모두 일치
+            ok += a.status == OK; unclosed += a.status == UNCLOSED; unmatched += a.status == UNMATCHED_CLOSER; mismatch += a.status == MISMATCH; } }
+    std::mt19937 rng(3);
+    for (int t = 0; t < 3000; t++) { std::string s; int n = rng() % 30; for (int i = 0; i < n; i++) s += alpha[rng() % 7]; assert(check(s) == reference(s));
+        std::string one; for (char c : s) if (c == '(' || c == ')' || c == 'a') one += c; int depth = 0; bool never = true; for (char c : one) { if (c == '(') depth++; else if (c == ')') { if (--depth < 0) never = false; } } assert((never && depth == 0) == (check(one).status == OK)); }   // 한 종류는 카운터 하나로 충분
+    assert(check("{[()]}").status == OK && check("(]") == (Result{MISMATCH, 1}) && check("())") == (Result{UNMATCHED_CLOSER, 2}) && check("(()") == (Result{UNCLOSED, 0}) && check("a+(b*[c-d])/e").status == OK);
+    std::cout << "BalancedParentheses: " << strings << " exhaustive strings (length <= 7) agreed with the recursive-descent reference - OK " << ok << ", unmatched closer " << unmatched << ", mismatch " << mismatch << ", unclosed " << unclosed << std::endl; return 0;
 }
 // Time Complexity: O(N)
-// Space Complexity: O(N)
+// Space Complexity: O(N) (한 종류 괄호는 O(1))
 ```
 ## InfixToPostfix()
 ### 대표코드
 ```cpp
+#include <cctype>
+#include <cmath>
 #include <iostream>
+#include <random>
 #include <stack>
 #include <string>
+#include <vector>
 #include <cassert>
 
-int precedence(char op) {
-    if (op == '+' || op == '-') return 1;
-    if (op == '*' || op == '/') return 2;
-    return 0;
+// 중위 → 후위 변환(InfixToPostfix, 다익스트라의 션팅 야드 알고리즘): 사람이 쓰는 중위 표기 "1+2*3" 을 괄호와 우선순위가 필요 없는 후위 표기 "1 2 3 * +" 로 바꾼다. 연산자 스택을 쓴다. 규칙: ① 피연산자는 바로 출력 ② 연산자 o 는 스택 top 이 o 보다 우선순위가 높거나(같고 o 가 좌결합이면) 먼저 꺼내 출력한 뒤 o 를 push ③ 여는 괄호는 push, 닫는 괄호는 여는 괄호가 나올 때까지 pop 해 출력 ④ 끝에 스택을 비운다.
+// 결합법칙: a-b-c 는 (a-b)-c 로 좌결합, a^b^c 는 a^(b^c) 로 우결합이다. 우결합 연산자는 같은 우선순위의 top 을 꺼내지 않고 쌓는다. 단항 마이너스(−x)는 이항 연산자 바로 뒤나 여는 괄호 뒤, 식의 맨 앞에 오는 '−' 이며 접두 연산자라 아무것도 꺼내지 않고 push 한다. 이 구현의 단항 마이너스 우선순위는 곱셈보다 높고 ^ 보다 낮다(-2^2 = -(2^2)).
+// 오류도 알려야 한다: 짝이 맞지 않는 괄호, 피연산자 자리에 연산자가 오는 것(1+*2), 연산자가 모자란 것(1 2), 빈 식. 토큰은 여러 자리 정수를 지원한다.
+// 검증: 무작위 식 트리를 만들어 ① 최소 괄호의 중위 문자열로 쓰고(공백·불필요한 괄호도 섞어) 변환한 결과가 트리의 후위 순회와 정확히 같다(좌/우결합·우선순위·단항 포함) ② 여러 자리 정수 ③ 오류 사례들이 모두 거절된다 ④ 변환한 후위식을 계산하면 트리 값과 같다
+struct E { char op; long long v; int l, r; };                                                 // op: '#' 숫자, 'n' 단항 마이너스, 그 외 이항 + - * / % ^
+int prec(char o) { return o == '+' || o == '-' ? 1 : o == '*' || o == '/' || o == '%' ? 2 : o == 'n' ? 3 : o == '^' ? 4 : 0; }
+bool rightAssoc(char o) { return o == '^' || o == 'n'; }
+int gen(std::vector<E>& pool, int depth, std::mt19937& rng) {
+    if (depth == 0 || rng() % 4 == 0) { pool.push_back({'#', (long long)(rng() % 120), -1, -1}); return (int)pool.size() - 1; }
+    if (rng() % 8 == 0) { int c = gen(pool, depth - 1, rng); pool.push_back({'n', 0, c, -1}); return (int)pool.size() - 1; }
+    const char ops[] = {'+', '-', '*', '/', '%', '^'}; char o = ops[rng() % 6]; int l = gen(pool, depth - 1, rng); int r = o == '^' ? (pool.push_back({'#', (long long)(rng() % 4), -1, -1}), (int)pool.size() - 1) : gen(pool, depth - 1, rng);
+    pool.push_back({o, 0, l, r}); return (int)pool.size() - 1;
 }
-
-std::string infixToPostfix(std::string infix) {
-    std::stack<char> s;
-    std::string postfix = "";
-    for (char c : infix) {
-        if (isalnum(c)) postfix += c;
-        else if (c == '(') s.push(c);
-        else if (c == ')') {
-            while (!s.empty() && s.top() != '(') {
-                postfix += s.top(); s.pop();
-            }
-            s.pop();
-        } else {
-            while (!s.empty() && precedence(s.top()) >= precedence(c)) {
-                postfix += s.top(); s.pop();
-            }
-            s.push(c);
-        }
-    }
-    while (!s.empty()) { postfix += s.top(); s.pop(); }
-    return postfix;
+std::string infixOf(const std::vector<E>& p, int i, std::mt19937& rng) {                       // 최소 괄호 (가끔 불필요한 괄호·공백 추가)
+    const E& e = p[i]; if (e.op == '#') return std::to_string(e.v);
+    auto wrap = [&](int c, bool paren) { std::string s = infixOf(p, c, rng); if (paren || rng() % 10 == 0) s = "(" + s + ")"; return s; };
+    if (e.op == 'n') return "-" + wrap(e.l, prec(p[e.l].op) < 3 && p[e.l].op != '#');
+    bool lp = p[e.l].op != '#' && (prec(p[e.l].op) < prec(e.op) || (prec(p[e.l].op) == prec(e.op) && rightAssoc(e.op)));
+    bool rp = p[e.r].op != '#' && (prec(p[e.r].op) < prec(e.op) || (prec(p[e.r].op) == prec(e.op) && !rightAssoc(e.op)));
+    std::string sp = rng() % 3 == 0 ? " " : ""; return wrap(e.l, lp) + sp + e.op + sp + wrap(e.r, rp);
 }
-
+void postfixOf(const std::vector<E>& p, int i, std::vector<std::string>& out) { const E& e = p[i]; if (e.op == '#') { out.push_back(std::to_string(e.v)); return; } postfixOf(p, e.l, out); if (e.op != 'n') postfixOf(p, e.r, out); out.push_back(e.op == 'n' ? "~" : std::string(1, e.op)); }
+bool toPostfix(const std::string& s, std::vector<std::string>& out) {                           // 실패하면 false
+    out.clear(); std::stack<char> st; bool expectOperand = true; int open = 0;
+    for (size_t i = 0; i < s.size();) { char c = s[i];
+        if (c == ' ') { i++; continue; }
+        if (isdigit((unsigned char)c)) { if (!expectOperand) return false; size_t j = i; while (j < s.size() && isdigit((unsigned char)s[j])) j++; out.push_back(s.substr(i, j - i)); i = j; expectOperand = false; continue; }
+        if (c == '(') { if (!expectOperand) return false; st.push(c); open++; i++; continue; }
+        if (c == ')') { if (expectOperand || open == 0) return false; while (st.top() != '(') { out.push_back(std::string(1, st.top() == 'n' ? '~' : st.top())); st.pop(); } st.pop(); open--; i++; continue; }
+        if (std::string("+-*/%^").find(c) == std::string::npos) return false;
+        if (expectOperand) { if (c != '-') return false; st.push('n'); i++; continue; }                         // 접두 단항 마이너스: 아무것도 꺼내지 않는다
+        while (!st.empty() && st.top() != '(' && (prec(st.top()) > prec(c) || (prec(st.top()) == prec(c) && !rightAssoc(c)))) { out.push_back(std::string(1, st.top() == 'n' ? '~' : st.top())); st.pop(); }
+        st.push(c); expectOperand = true; i++; }
+    if (expectOperand || open != 0) return false;
+    while (!st.empty()) { out.push_back(std::string(1, st.top() == 'n' ? '~' : st.top())); st.pop(); } return true;
+}
+bool evalPostfix(const std::vector<std::string>& t, long long& result) {
+    std::vector<long long> st;
+    for (auto& tok : t) { if (isdigit((unsigned char)tok[0])) { st.push_back(std::stoll(tok)); continue; } if (tok == "~") { if (st.empty()) return false; st.back() = -st.back(); continue; } if (st.size() < 2) return false;
+        long long b = st.back(); st.pop_back(); long long a = st.back(); long long r; char o = tok[0];
+        if (o == '+') r = a + b; else if (o == '-') r = a - b; else if (o == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return false; r = a * b; } else if (o == '/') { if (!b) return false; r = a / b; } else if (o == '%') { if (!b) return false; r = a % b; } else { if (b < 0) return false; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return false; r *= a; } }
+        if (r > (1LL << 50) || r < -(1LL << 50)) return false; st.back() = r; }
+    if (st.size() != 1) return false; result = st[0]; return true;
+}
+bool evalTree(const std::vector<E>& p, int i, long long& out) {
+    const E& e = p[i]; if (e.op == '#') { out = e.v; return true; } long long a, b = 0; if (!evalTree(p, e.l, a)) return false; if (e.op == 'n') { out = -a; return true; } if (!evalTree(p, e.r, b)) return false;
+    long long r; if (e.op == '+') r = a + b; else if (e.op == '-') r = a - b; else if (e.op == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return false; r = a * b; } else if (e.op == '/') { if (!b) return false; r = a / b; } else if (e.op == '%') { if (!b) return false; r = a % b; } else { if (b < 0) return false; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return false; r *= a; } }
+    if (r > (1LL << 50) || r < -(1LL << 50)) return false; out = r; return true;
+}
 int main() {
-    std::string res = infixToPostfix("A+B*C");
-    std::cout << "A+B*C -> " << res << std::endl;
-    assert(res == "ABC*+");
-    return 0;
+    std::mt19937 rng(11); int checked = 0, evaluated = 0;
+    for (int t = 0; t < 4000; t++) { std::vector<E> pool; int root = gen(pool, 1 + rng() % 5, rng); std::string infix = infixOf(pool, root, rng); std::vector<std::string> want, got; postfixOf(pool, root, want);
+        assert(toPostfix(infix, got) && got == want); checked++;                                                                                                                       // ① 트리의 후위 순회와 정확히 같다
+        long long a, b; bool okTree = evalTree(pool, root, a), okPost = evalPostfix(got, b); assert(okTree == okPost && (!okTree || a == b)); evaluated += okTree; }                  // ④ 계산 결과도 같다
+    { std::vector<std::string> out; assert(toPostfix("12+345*6", out) && out == (std::vector<std::string>{"12", "345", "6", "*", "+"})); assert(toPostfix("2^3^2", out) && out == (std::vector<std::string>{"2", "3", "2", "^", "^"}));          // ② 여러 자리, 우결합
+      assert(toPostfix("8-3-2", out) && out == (std::vector<std::string>{"8", "3", "-", "2", "-"}) && toPostfix("-2^2", out) && out == (std::vector<std::string>{"2", "2", "^", "~"}) && toPostfix("2*-3", out) && out == (std::vector<std::string>{"2", "3", "~", "*"})); }
+    for (const char* bad : {"", "(1+2", "1+2)", "1+*2", "1 2", "()", "1+", "*3", "(1+2))", "1+(2*)", "a+b", "2^"}) { std::vector<std::string> out; assert(!toPostfix(bad, out)); }                                      // ③ 오류
+    std::cout << "InfixToPostfix: " << checked << " random expressions (with associativity, unary minus, redundant parentheses and spaces) converted to exactly the tree's postfix order; " << evaluated << " of them evaluated identically; 12 malformed inputs were rejected" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -778,32 +834,56 @@ int main() {
 ## PostfixEvaluation()
 ### 대표코드
 ```cpp
+#include <cctype>
+#include <cmath>
 #include <iostream>
+#include <random>
 #include <stack>
 #include <string>
+#include <vector>
 #include <cassert>
 
-int evaluatePostfix(std::string exp) {
-    std::stack<int> s;
-    for (char c : exp) {
-        if (isdigit(c)) s.push(c - '0');
-        else {
-            int val1 = s.top(); s.pop();
-            int val2 = s.top(); s.pop();
-            switch (c) {
-                case '+': s.push(val2 + val1); break;
-                case '*': s.push(val2 * val1); break;
-            }
-        }
-    }
-    return s.top();
+// 후위 표기 계산(PostfixEvaluation, RPN): 피연산자를 만나면 push, 연산자를 만나면 필요한 개수만큼 pop 해 계산하고 결과를 push 한다. 이항 연산자는 오른쪽 피연산자가 먼저 나오므로 b = pop(), a = pop() 순서로 꺼내 a ⊕ b 를 계산한다(뺄셈·나눗셈에서 순서를 거꾸로 하면 틀린다). 끝에 스택에 정확히 하나가 남아야 한다.
+// 현실적인 계산기는 오류를 돌려줘야 한다: 스택 언더플로(연산자에 피연산자가 모자람), 남는 피연산자(연산자가 모자람), 0 으로 나누기, 허용 범위를 넘는 결과(오버플로), 음수 지수. 이 구현은 모두 false 로 알린다. 토큰은 공백으로 구분된 여러 자리 정수, 이항 + - * / % ^, 단항 마이너스 ~ 이다.
+// 유효성은 계산하지 않고도 센 것만으로 판정할 수 있다: 피연산자는 +1, 이항 연산자는 −1(스택이 2 이상이어야 함), 단항은 0(1 이상이어야 함)을 더해 가며 한 번도 모자라지 않고 끝값이 1 이면 올바른 후위식이다.
+// 검증: ① 무작위 식 트리의 후위 표기를 이 계산기로 계산한 값이 트리를 직접 계산한 값과 같다(오류가 나는 식은 오류도 같다) ② 임의의 토큰열에서 계산기의 구조 오류 판정이 "센 값" 규칙과 일치 ③ 뺄셈·나눗셈 순서 고정 사례 ④ 오류 사례 ⑤ 여러 자리 수와 음수
+struct E { char op; long long v; int l, r; };
+int gen(std::vector<E>& pool, int depth, std::mt19937& rng) {
+    if (depth == 0 || rng() % 4 == 0) { pool.push_back({'#', (long long)(rng() % 120), -1, -1}); return (int)pool.size() - 1; }
+    if (rng() % 8 == 0) { int c = gen(pool, depth - 1, rng); pool.push_back({'n', 0, c, -1}); return (int)pool.size() - 1; }
+    const char ops[] = {'+', '-', '*', '/', '%', '^'}; char o = ops[rng() % 6]; int l = gen(pool, depth - 1, rng); int r = o == '^' ? (pool.push_back({'#', (long long)(rng() % 4), -1, -1}), (int)pool.size() - 1) : gen(pool, depth - 1, rng);
+    pool.push_back({o, 0, l, r}); return (int)pool.size() - 1;
 }
-
+void postfixOf(const std::vector<E>& p, int i, std::vector<std::string>& out) { const E& e = p[i]; if (e.op == '#') { out.push_back(std::to_string(e.v)); return; } postfixOf(p, e.l, out); if (e.op != 'n') postfixOf(p, e.r, out); out.push_back(e.op == 'n' ? "~" : std::string(1, e.op)); }
+enum Err { OK, UNDERFLOW, LEFTOVER, DIV0, RANGE, NEGEXP, BADTOKEN };
+Err apply(char o, long long a, long long b, long long& r) {
+    if (o == '+') r = a + b; else if (o == '-') r = a - b; else if (o == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return RANGE; r = a * b; } else if (o == '/') { if (!b) return DIV0; r = a / b; } else if (o == '%') { if (!b) return DIV0; r = a % b; }
+    else { if (b < 0) return NEGEXP; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return RANGE; r *= a; } }
+    return r > (1LL << 50) || r < -(1LL << 50) ? RANGE : OK;
+}
+Err evaluate(const std::vector<std::string>& tokens, long long& result) {
+    std::stack<long long> st;
+    for (auto& t : tokens) {
+        if (isdigit((unsigned char)t[0])) { st.push(std::stoll(t)); continue; }
+        if (t == "~") { if (st.empty()) return UNDERFLOW; long long a = st.top(); st.pop(); st.push(-a); continue; }
+        if (t.size() != 1 || std::string("+-*/%^").find(t[0]) == std::string::npos) return BADTOKEN;
+        if (st.size() < 2) return UNDERFLOW;
+        long long b = st.top(); st.pop(); long long a = st.top(); st.pop();                                    // 오른쪽 피연산자가 먼저 나온다
+        long long r; Err e = apply(t[0], a, b, r); if (e != OK) return e; st.push(r);
+    }
+    if (st.size() != 1) return st.empty() ? UNDERFLOW : LEFTOVER; result = st.top(); return OK;
+}
+bool treeValue(const std::vector<E>& p, int i, long long& out) { const E& e = p[i]; if (e.op == '#') { out = e.v; return true; } long long a, b = 0; if (!treeValue(p, e.l, a)) return false; if (e.op == 'n') { out = -a; return true; } if (!treeValue(p, e.r, b)) return false; return apply(e.op, a, b, out) == OK; }
+bool countRuleValid(const std::vector<std::string>& t) { int d = 0; for (auto& x : t) { if (isdigit((unsigned char)x[0])) d++; else if (x == "~") { if (d < 1) return false; } else { if (d < 2) return false; d--; } } return d == 1; }
 int main() {
-    int res = evaluatePostfix("23*4+");
-    std::cout << "23*4+ -> " << res << std::endl;
-    assert(res == 10);
-    return 0;
+    std::mt19937 rng(5); int ok = 0, err = 0;
+    for (int t = 0; t < 4000; t++) { std::vector<E> pool; int root = gen(pool, 1 + rng() % 5, rng); std::vector<std::string> pf; postfixOf(pool, root, pf); long long want = 0, got = 0; bool treeOk = treeValue(pool, root, want); Err e = evaluate(pf, got);
+        assert(treeOk == (e == OK) && (!treeOk || want == got)); ok += treeOk; err += !treeOk; }                                                                                   // ①
+    for (int t = 0; t < 20000; t++) { std::vector<std::string> tk; int n = rng() % 9; for (int i = 0; i < n; i++) { int k = rng() % 5; tk.push_back(k < 2 ? std::to_string(1 + rng() % 9) : k == 2 ? "+" : k == 3 ? "*" : "~"); } long long r; Err e = evaluate(tk, r); bool structural = e == UNDERFLOW || e == LEFTOVER; assert(structural == !countRuleValid(tk)); }          // ②
+    { long long r; assert(evaluate({"8", "3", "-"}, r) == OK && r == 5 && evaluate({"8", "2", "/"}, r) == OK && r == 4 && evaluate({"2", "3", "^"}, r) == OK && r == 8 && evaluate({"7", "~", "3", "%"}, r) == OK && r == -1); }                      // ③ 순서
+    { long long r; assert(evaluate({"+"}, r) == UNDERFLOW && evaluate({"1", "+"}, r) == UNDERFLOW && evaluate({"1", "2"}, r) == LEFTOVER && evaluate({}, r) == UNDERFLOW && evaluate({"1", "0", "/"}, r) == DIV0 && evaluate({"1", "0", "%"}, r) == DIV0 && evaluate({"2", "1", "~", "^"}, r) == NEGEXP && evaluate({"9", "30", "^"}, r) == RANGE && evaluate({"1", "x"}, r) == BADTOKEN); }      // ④
+    { long long r; assert(evaluate({"12", "345", "+", "6", "*"}, r) == OK && r == 2142 && evaluate({"5", "~", "3", "+"}, r) == OK && r == -2); }                                                                                             // ⑤
+    std::cout << "PostfixEvaluation: " << ok << " random expression trees evaluated exactly like direct tree evaluation and " << err << " erroneous ones (div by zero, range, negative exponent) failed identically; structural errors matched the counting rule on 20000 random token lists" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -811,30 +891,61 @@ int main() {
 ## PrefixEvaluation()
 ### 대표코드
 ```cpp
+#include <cctype>
+#include <cmath>
 #include <iostream>
+#include <random>
 #include <stack>
 #include <string>
+#include <vector>
 #include <cassert>
 
-int evaluatePrefix(std::string exp) {
-    std::stack<int> s;
-    for (int i = exp.length() - 1; i >= 0; i--) {
-        if (isdigit(exp[i])) s.push(exp[i] - '0');
-        else {
-            int val1 = s.top(); s.pop();
-            int val2 = s.top(); s.pop();
-            if (exp[i] == '+') s.push(val1 + val2);
-            else if (exp[i] == '*') s.push(val1 * val2);
-        }
-    }
-    return s.top();
+// 전위 표기 계산(PrefixEvaluation, 폴란드 표기): 연산자가 피연산자 앞에 오는 표기 "+ * 2 3 4". 오른쪽에서 왼쪽으로 스캔하며 피연산자는 push, 연산자는 pop 두 번으로 계산한다. 이때 먼저 꺼낸 것이 왼쪽 피연산자다(후위와 반대): a = pop(), b = pop() 후 a ⊕ b. 한 번의 스캔과 스택 하나로 끝나며, 연산자 우선순위나 괄호가 필요 없다.
+// 후위 표기와의 관계: 같은 식 트리를 전위 순회(루트 → 왼쪽 → 오른쪽)하면 전위식, 후위 순회(왼쪽 → 오른쪽 → 루트)하면 후위식이다. 전위식을 뒤집으면 좌우 대칭 트리의 후위식이 된다. 어느 쪽이든 괄호 없이 트리를 복원할 수 있다(Lisp 의 (+ (* 2 3) 4) 가 전위의 변형이다).
+// 유효성은 오른쪽에서 왼쪽으로 센 값으로 판정한다: 피연산자 +1, 이항 −1(2 이상 필요), 단항 0(1 이상 필요), 끝값 1.
+// 검증: ① 무작위 식 트리의 전위 표기를 이 계산기로 계산한 값이 트리 직접 계산과 같다(오류도 같다) ② 같은 트리의 전위·후위 표기가 같은 값을 준다 ③ 임의의 토큰열에서 구조 오류 판정이 센 값 규칙과 일치 ④ 피연산자 순서 사례(뺄셈·나눗셈은 전위에서 왼쪽이 먼저) ⑤ 오류 사례
+struct E { char op; long long v; int l, r; };
+int gen(std::vector<E>& pool, int depth, std::mt19937& rng) {
+    if (depth == 0 || rng() % 4 == 0) { pool.push_back({'#', (long long)(rng() % 120), -1, -1}); return (int)pool.size() - 1; }
+    if (rng() % 8 == 0) { int c = gen(pool, depth - 1, rng); pool.push_back({'n', 0, c, -1}); return (int)pool.size() - 1; }
+    const char ops[] = {'+', '-', '*', '/', '%', '^'}; char o = ops[rng() % 6]; int l = gen(pool, depth - 1, rng); int r = o == '^' ? (pool.push_back({'#', (long long)(rng() % 4), -1, -1}), (int)pool.size() - 1) : gen(pool, depth - 1, rng);
+    pool.push_back({o, 0, l, r}); return (int)pool.size() - 1;
 }
-
+void prefixOf(const std::vector<E>& p, int i, std::vector<std::string>& out) { const E& e = p[i]; if (e.op == '#') { out.push_back(std::to_string(e.v)); return; } out.push_back(e.op == 'n' ? "~" : std::string(1, e.op)); prefixOf(p, e.l, out); if (e.op != 'n') prefixOf(p, e.r, out); }
+void postfixOf(const std::vector<E>& p, int i, std::vector<std::string>& out) { const E& e = p[i]; if (e.op == '#') { out.push_back(std::to_string(e.v)); return; } postfixOf(p, e.l, out); if (e.op != 'n') postfixOf(p, e.r, out); out.push_back(e.op == 'n' ? "~" : std::string(1, e.op)); }
+enum Err { OK, UNDERFLOW, LEFTOVER, DIV0, RANGE, NEGEXP, BADTOKEN };
+Err apply(char o, long long a, long long b, long long& r) {
+    if (o == '+') r = a + b; else if (o == '-') r = a - b; else if (o == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return RANGE; r = a * b; } else if (o == '/') { if (!b) return DIV0; r = a / b; } else if (o == '%') { if (!b) return DIV0; r = a % b; }
+    else { if (b < 0) return NEGEXP; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return RANGE; r *= a; } }
+    return r > (1LL << 50) || r < -(1LL << 50) ? RANGE : OK;
+}
+Err evalPrefix(const std::vector<std::string>& tokens, long long& result) {
+    std::stack<long long> st;
+    for (size_t k = tokens.size(); k-- > 0;) { const std::string& t = tokens[k];                                  // 오른쪽에서 왼쪽으로
+        if (isdigit((unsigned char)t[0])) { st.push(std::stoll(t)); continue; }
+        if (t == "~") { if (st.empty()) return UNDERFLOW; long long a = st.top(); st.pop(); st.push(-a); continue; }
+        if (t.size() != 1 || std::string("+-*/%^").find(t[0]) == std::string::npos) return BADTOKEN;
+        if (st.size() < 2) return UNDERFLOW;
+        long long a = st.top(); st.pop(); long long b = st.top(); st.pop();                                      // 먼저 꺼낸 것이 왼쪽 피연산자
+        long long r; Err e = apply(t[0], a, b, r); if (e != OK) return e; st.push(r); }
+    if (st.size() != 1) return st.empty() ? UNDERFLOW : LEFTOVER; result = st.top(); return OK;
+}
+Err evalPostfix(const std::vector<std::string>& tokens, long long& result) {
+    std::stack<long long> st;
+    for (auto& t : tokens) { if (isdigit((unsigned char)t[0])) { st.push(std::stoll(t)); continue; } if (t == "~") { if (st.empty()) return UNDERFLOW; long long a = st.top(); st.pop(); st.push(-a); continue; } if (st.size() < 2) return UNDERFLOW;
+        long long b = st.top(); st.pop(); long long a = st.top(); st.pop(); long long r; Err e = apply(t[0], a, b, r); if (e != OK) return e; st.push(r); }
+    if (st.size() != 1) return st.empty() ? UNDERFLOW : LEFTOVER; result = st.top(); return OK;
+}
+bool treeValue(const std::vector<E>& p, int i, long long& out) { const E& e = p[i]; if (e.op == '#') { out = e.v; return true; } long long a, b = 0; if (!treeValue(p, e.l, a)) return false; if (e.op == 'n') { out = -a; return true; } if (!treeValue(p, e.r, b)) return false; return apply(e.op, a, b, out) == OK; }
+bool countRuleValid(const std::vector<std::string>& t) { int d = 0; for (size_t k = t.size(); k-- > 0;) { const std::string& x = t[k]; if (isdigit((unsigned char)x[0])) d++; else if (x == "~") { if (d < 1) return false; } else { if (d < 2) return false; d--; } } return d == 1; }
 int main() {
-    int res = evaluatePrefix("+*234");
-    std::cout << "+*234 -> " << res << std::endl;
-    assert(res == 10);
-    return 0;
+    std::mt19937 rng(9); int ok = 0, err = 0;
+    for (int t = 0; t < 4000; t++) { std::vector<E> pool; int root = gen(pool, 1 + rng() % 5, rng); std::vector<std::string> pre, post; prefixOf(pool, root, pre); postfixOf(pool, root, post); long long want = 0, a = 0, b = 0; bool treeOk = treeValue(pool, root, want); Err e1 = evalPrefix(pre, a), e2 = evalPostfix(post, b);
+        assert(treeOk == (e1 == OK) && treeOk == (e2 == OK) && (!treeOk || (want == a && a == b))); ok += treeOk; err += !treeOk; }                                                      // ① ②
+    for (int t = 0; t < 20000; t++) { std::vector<std::string> tk; int n = rng() % 9; for (int i = 0; i < n; i++) { int k = rng() % 5; tk.push_back(k < 2 ? std::to_string(1 + rng() % 9) : k == 2 ? "+" : k == 3 ? "*" : "~"); } long long r; Err e = evalPrefix(tk, r); assert((e == UNDERFLOW || e == LEFTOVER) == !countRuleValid(tk)); }       // ③
+    { long long r; assert(evalPrefix({"-", "8", "3"}, r) == OK && r == 5 && evalPrefix({"/", "8", "2"}, r) == OK && r == 4 && evalPrefix({"+", "*", "2", "3", "4"}, r) == OK && r == 10 && evalPrefix({"-", "~", "5", "~", "2"}, r) == OK && r == -3); }                // ④
+    { long long r; assert(evalPrefix({"+", "1"}, r) == UNDERFLOW && evalPrefix({"1", "2"}, r) == LEFTOVER && evalPrefix({"/", "1", "0"}, r) == DIV0 && evalPrefix({"^", "2", "~", "1"}, r) == NEGEXP && evalPrefix({}, r) == UNDERFLOW); }                         // ⑤
+    std::cout << "PrefixEvaluation: " << ok << " random trees gave identical values by prefix scan, postfix scan and direct tree evaluation; " << err << " erroneous ones failed identically; the counting rule matched on 20000 random token lists" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -842,30 +953,32 @@ int main() {
 ## DecimalToBinary()
 ### 대표코드
 ```cpp
+#include <bitset>
+#include <climits>
+#include <cstdint>
 #include <iostream>
+#include <random>
 #include <stack>
+#include <string>
 #include <cassert>
 
-std::string decimalToBinary(int n) {
-    if (n == 0) return "0";
-    std::stack<int> s;
-    while (n > 0) {
-        s.push(n % 2);
-        n /= 2;
-    }
-    std::string res = "";
-    while (!s.empty()) { 
-        res += std::to_string(s.top()); 
-        s.pop(); 
-    }
-    return res;
-}
-
+// 십진수 → 이진수(DecimalToBinary): n 을 2 로 나눈 나머지를 구하는 순서는 낮은 자리부터인데 출력은 높은 자리부터여야 한다. 나머지를 차례로 스택에 쌓았다가 꺼내면 순서가 뒤집혀 올바른 이진 표기가 된다 — 스택을 쓰는 가장 기본적인 예다.
+// 경계 조건이 함정이다: ① n = 0 은 반복문이 한 번도 돌지 않으므로 "0" 을 따로 돌려줘야 한다 ② 음수: 부호를 따로 붙이거나(−1101) 고정 폭 2 의 보수 표현으로 바꾼다. 2 의 보수는 부호 없는 형으로 바꿔 같은 알고리즘을 적용한다 ③ INT_MIN 은 −n 이 오버플로하므로 부호 없는 64 비트로 먼저 넓혀서 절댓값을 구한다 ④ 폭을 맞추려면 앞을 0 으로 채운다.
+// 역변환(이진 → 십진)은 왼쪽부터 읽으며 v = 2v + 비트 로 누적한다 — 스택이 필요 없다(호너의 방법).
+// 검증: ① 0..5000 전부와 무작위 32/64 비트 값에서 std::bitset 출력과 같다(앞 0 제거 후) ② 음수의 부호 표기와 32 비트 2 의 보수 표기가 표준(bitset<32>)과 같다 ③ INT_MIN, INT_MAX, LLONG_MIN, 0 ④ 역변환 왕복 ⑤ 고정 폭 채우기
+std::string toBinaryMagnitude(unsigned long long n) { if (n == 0) return "0"; std::stack<int> s; while (n > 0) { s.push((int)(n % 2)); n /= 2; } std::string r; while (!s.empty()) { r += (char)('0' + s.top()); s.pop(); } return r; }
+std::string toBinarySigned(long long v) { if (v >= 0) return toBinaryMagnitude((unsigned long long)v); return "-" + toBinaryMagnitude(0ULL - (unsigned long long)v); }           // 0 - u: INT64_MIN 에서도 오버플로 없이 절댓값
+std::string toBinaryTwosComplement(long long v, int width) { unsigned long long u = (unsigned long long)v; if (width < 64) u &= (1ULL << width) - 1; std::string m = toBinaryMagnitude(u); return std::string(m.size() < (size_t)width ? width - m.size() : 0, '0') + m; }
+unsigned long long fromBinary(const std::string& s) { unsigned long long v = 0; for (char c : s) v = v * 2 + (c - '0'); return v; }
+std::string stripZeros(std::string s) { size_t i = s.find('1'); return i == std::string::npos ? "0" : s.substr(i); }
 int main() {
-    std::string res = decimalToBinary(13);
-    std::cout << "13 in binary -> " << res << std::endl;
-    assert(res == "1101");
-    return 0;
+    for (int n = 0; n <= 5000; n++) assert(toBinarySigned(n) == stripZeros(std::bitset<32>(n).to_string()));                                                                       // ①
+    std::mt19937_64 rng(4);
+    for (int t = 0; t < 20000; t++) { unsigned long long u = rng() >> (rng() % 64); assert(toBinaryMagnitude(u) == stripZeros(std::bitset<64>(u).to_string()) && fromBinary(toBinaryMagnitude(u)) == u); }                          // ① ④ 64 비트와 왕복
+    for (int t = 0; t < 5000; t++) { int v = (int)rng(); assert(toBinaryTwosComplement(v, 32) == std::bitset<32>((unsigned)v).to_string()); long long w = (long long)rng(); assert(toBinaryTwosComplement(w, 64) == std::bitset<64>((unsigned long long)w).to_string()); assert(toBinarySigned(v) == (v < 0 ? "-" : "") + stripZeros(std::bitset<64>((unsigned long long)(v < 0 ? -(long long)v : (long long)v)).to_string())); }       // ②
+    assert(toBinarySigned(0) == "0" && toBinarySigned(INT_MAX) == std::string(31, '1') && toBinarySigned(INT_MIN) == "-1" + std::string(31, '0') && toBinarySigned(LLONG_MIN) == "-1" + std::string(63, '0') && toBinaryTwosComplement(-1, 8) == "11111111" && toBinaryTwosComplement(5, 8) == "00000101");        // ③ ⑤
+    assert(toBinarySigned(13) == "1101" && toBinarySigned(-13) == "-1101" && toBinaryTwosComplement(-13, 8) == "11110011" && fromBinary("1101") == 13);
+    std::cout << "DecimalToBinary: stack-based conversion matched std::bitset for 0..5000, 20000 random 64-bit values and 5000 negative 32/64-bit values; INT_MIN, LLONG_MIN and zero handled; binary->decimal round trips held" << std::endl; return 0;
 }
 // Time Complexity: O(log N)
 // Space Complexity: O(log N)
@@ -873,32 +986,37 @@ int main() {
 ## BaseConversion()
 ### 대표코드
 ```cpp
+#include <cctype>
+#include <climits>
+#include <cstdlib>
 #include <iostream>
+#include <random>
 #include <stack>
 #include <string>
 #include <cassert>
 
-std::string convertBase(int n, int base) {
-    if (n == 0) return "0";
-    std::stack<int> s;
-    while (n > 0) {
-        s.push(n % base);
-        n /= base;
-    }
-    std::string res = "";
-    std::string digits = "0123456789ABCDEF";
-    while (!s.empty()) { 
-        res += digits[s.top()]; 
-        s.pop(); 
-    }
-    return res;
+// 진법 변환(BaseConversion): 십진수를 2~36 진법으로 바꾼다. 나머지를 쌓았다가 거꾸로 꺼내는 스택 알고리즘은 이진수와 같고 자릿수 문자만 "0-9A-Z" 로 늘어난다. 반대 방향(문자열 → 정수)은 왼쪽부터 v = v·base + 자릿값 으로 누적한다(호너의 방법).
+// 정확하게 하려면 ① 0 과 음수(부호를 분리하고 부호 없는 형으로 절댓값을 구해 최솟값 오버플로 방지) ② 입력 검증(진법 범위, 자릿값이 진법 이상인 글자, 빈 문자열, 부호만 있는 문자열) ③ 오버플로 검출(누적 전에 v > (LLONG_MAX − digit)/base 이면 오류) ④ 대소문자 허용을 처리해야 한다.
+// 검증: ① 2..36 진법과 0·±경계값·무작위 64 비트에서 변환 결과가 C 표준 strtoll 의 해석과 왕복으로 일치(변환 → strtoll(base) == 원래 값) ② 십진은 std::to_string 과 같다 ③ 파싱 오류 입력이 모두 거절 ④ 오버플로 경계 LLONG_MAX/LLONG_MIN 은 허용되고 한 칸 넘으면 거절 ⑤ 대소문자 입력
+std::string toBase(long long value, int base) {
+    static const char* D = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; unsigned long long u = value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value;
+    if (u == 0) return "0"; std::stack<int> s; while (u > 0) { s.push((int)(u % base)); u /= base; } std::string r = value < 0 ? "-" : ""; while (!s.empty()) { r += D[s.top()]; s.pop(); } return r;
 }
-
+bool fromBase(const std::string& str, int base, long long& out) {                                    // 실패하면 false
+    if (base < 2 || base > 36 || str.empty()) return false; size_t i = 0; bool neg = false; if (str[0] == '-' || str[0] == '+') { neg = str[0] == '-'; i = 1; } if (i == str.size()) return false;
+    unsigned long long v = 0, limit = neg ? (unsigned long long)LLONG_MAX + 1 : (unsigned long long)LLONG_MAX;
+    for (; i < str.size(); i++) { char c = (char)toupper((unsigned char)str[i]); int d = isdigit((unsigned char)c) ? c - '0' : isalpha((unsigned char)c) ? c - 'A' + 10 : 99; if (d >= base) return false; if (v > (limit - d) / base) return false; v = v * base + d; }
+    out = neg ? (long long)(0ULL - v) : (long long)v; return true;
+}
 int main() {
-    std::string res = convertBase(255, 16);
-    std::cout << "255 in base 16 -> " << res << std::endl;
-    assert(res == "FF");
-    return 0;
+    std::mt19937_64 rng(6); long long checked = 0;
+    for (int base = 2; base <= 36; base++) { for (long long v : {0LL, 1LL, -1LL, (long long)base, (long long)base - 1, (long long)base * base, LLONG_MAX, LLONG_MIN, LLONG_MAX - 1, LLONG_MIN + 1}) { std::string s = toBase(v, base); long long back; assert(fromBase(s, base, back) && back == v && std::strtoll(s.c_str(), nullptr, base) == v); checked++; }
+        for (int t = 0; t < 400; t++) { long long v = (long long)(rng() >> (rng() % 64)) * ((rng() & 1) ? 1 : -1); std::string s = toBase(v, base); long long back; assert(fromBase(s, base, back) && back == v && std::strtoll(s.c_str(), nullptr, base) == v); checked++; } }       // ①
+    for (int t = 0; t < 2000; t++) { long long v = (long long)rng() >> (rng() % 63); assert(toBase(v, 10) == std::to_string(v)); }                                                                                 // ②
+    { long long x; for (const char* bad : {"", "-", "+", "12G", "z", "2"}) assert(!fromBase(bad, bad[0] == 'z' ? 10 : bad[0] == '2' ? 2 : 16, x)); assert(!fromBase("10", 1, x) && !fromBase("10", 37, x) && !fromBase("1 0", 10, x)); }                // ③
+    { long long x; assert(fromBase("9223372036854775807", 10, x) && x == LLONG_MAX && !fromBase("9223372036854775808", 10, x) && fromBase("-9223372036854775808", 10, x) && x == LLONG_MIN && !fromBase("-9223372036854775809", 10, x)); }          // ④ 오버플로 경계
+    { long long x; assert(fromBase("ff", 16, x) && x == 255 && fromBase("FF", 16, x) && x == 255 && fromBase("zZ", 36, x) && x == 35 * 36 + 35 && toBase(255, 16) == "FF" && toBase(-255, 16) == "-FF" && toBase(35 * 36 + 35, 36) == "ZZ"); }          // ⑤
+    std::cout << "BaseConversion: " << checked << " conversions in bases 2..36 (including LLONG_MIN/MAX) round-tripped through strtoll; decimal output equalled std::to_string; malformed inputs and overflow boundaries were rejected" << std::endl; return 0;
 }
 // Time Complexity: O(log_base N)
 // Space Complexity: O(log_base N)
@@ -906,111 +1024,143 @@ int main() {
 ## Undo()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
 #include <stack>
 #include <string>
+#include <vector>
 #include <cassert>
 
-std::stack<std::string> undoStack;
-std::string currentState = "";
-
-void typeChar(char c) {
-    undoStack.push(currentState);
-    currentState += c;
-}
-
-void undo() {
-    if (!undoStack.empty()) {
-        currentState = undoStack.top();
-        undoStack.pop();
-    }
-}
-
+// 실행 취소(Undo/Redo): 편집기의 되돌리기는 두 스택으로 만든다. undo 스택에는 지금까지 실행한 명령이, redo 스택에는 되돌린 명령이 쌓인다. 새 편집을 하면 redo 스택은 비운다(되돌린 미래는 더 이상 유효하지 않다).
+// 두 가지 구현이 있다. ① 스냅샷 방식: 편집할 때마다 문서 전체를 저장 — 단순하지만 메모리가 문서 크기 × 편집 횟수. ② 명령(command) 방식: 편집마다 "무엇을 어디에 넣었다/지웠다" 만 저장하고 되돌릴 때 역연산(넣은 것을 지우고, 지운 것을 다시 넣기)을 적용 — 메모리는 편집의 크기에만 비례한다. 이 항목은 ② 를 구현하고 ① 을 기준 구현으로 삼아 대조한다.
+// 명령에는 되돌릴 정보가 모두 있어야 한다: 삽입은 (위치, 넣은 문자열), 삭제는 (위치, 지운 문자열 — 되살려야 하므로 내용을 보관). 
+// 검증: 무작위 편집(삽입·삭제)·undo·redo 6 만 번을 스냅샷 기록 배열(현재 위치 포인터)과 대조: ① 모든 단계에서 문서가 같다 ② undo 후 새 편집은 redo 를 무효화 ③ 끝까지 undo 하면 빈 문서, 다시 끝까지 redo 하면 마지막 상태 ④ 명령 방식의 저장 바이트가 스냅샷 방식보다 적다
+struct Cmd { bool insert; size_t pos; std::string text; };                                                     // 삽입이면 text 를 pos 에 넣었다, 삭제면 pos 에서 text 를 지웠다
+class Editor {
+    std::string doc_; std::stack<Cmd> undo_, redo_; size_t stored_ = 0;
+    void apply(const Cmd& c) { if (c.insert) doc_.insert(c.pos, c.text); else doc_.erase(c.pos, c.text.size()); }
+    static Cmd inverse(const Cmd& c) { return {!c.insert, c.pos, c.text}; }
+public:
+    void insertText(size_t pos, const std::string& t) { Cmd c{true, std::min(pos, doc_.size()), t}; apply(c); undo_.push(c); stored_ += t.size(); redo_ = std::stack<Cmd>(); }
+    void eraseText(size_t pos, size_t len) { if (pos >= doc_.size()) return; len = std::min(len, doc_.size() - pos); Cmd c{false, pos, doc_.substr(pos, len)}; apply(c); undo_.push(c); stored_ += c.text.size(); redo_ = std::stack<Cmd>(); }
+    bool undo() { if (undo_.empty()) return false; Cmd c = undo_.top(); undo_.pop(); apply(inverse(c)); redo_.push(c); return true; }
+    bool redo() { if (redo_.empty()) return false; Cmd c = redo_.top(); redo_.pop(); apply(c); undo_.push(c); return true; }
+    const std::string& text() const { return doc_; } size_t storedBytes() const { return stored_ + (undo_.size() + redo_.size()) * sizeof(Cmd); } size_t undoDepth() const { return undo_.size(); } size_t redoDepth() const { return redo_.size(); }
+};
 int main() {
-    typeChar('A');
-    typeChar('B');
-    assert(currentState == "AB");
-    undo();
-    std::cout << "After undo: " << currentState << std::endl;
-    assert(currentState == "A");
-    return 0;
+    std::mt19937 rng(7); Editor ed; std::vector<std::string> history = {""}; size_t at = 0; size_t snapshotBytes = 0; bool sawRedoCleared = false;
+    for (int step = 0; step < 60000; step++) {
+        int op = rng() % 10;
+        if (op < 4) { std::string t; int n = 1 + rng() % 6; for (int i = 0; i < n; i++) t += (char)('a' + rng() % 26); size_t pos = rng() % (ed.text().size() + 1); size_t redoBefore = ed.redoDepth(); ed.insertText(pos, t); std::string d = history[at]; d.insert(pos, t); history.resize(at + 1); history.push_back(d); at++; if (redoBefore) { assert(ed.redoDepth() == 0); sawRedoCleared = true; } snapshotBytes += d.size(); }
+        else if (op < 6 && !ed.text().empty()) { size_t pos = rng() % ed.text().size(), len = 1 + rng() % 5; ed.eraseText(pos, len); std::string d = history[at]; d.erase(pos, std::min(len, d.size() - pos)); history.resize(at + 1); history.push_back(d); at++; snapshotBytes += d.size(); }
+        else if (op < 8) { bool ok = ed.undo(); assert(ok == (at > 0)); if (ok) at--; }
+        else { bool ok = ed.redo(); assert(ok == (at + 1 < history.size())); if (ok) at++; }
+        assert(ed.text() == history[at]);                                                                                                                                                  // ① 매 단계 문서가 같다
+        if (ed.text().size() > 200) { size_t cut = ed.text().size() - 100; ed.eraseText(0, cut); std::string d = history[at]; d.erase(0, cut); history.resize(at + 1); history.push_back(d); at++; assert(ed.text() == history[at]); snapshotBytes += d.size(); }          // 문서가 너무 길어지면 앞을 잘라 낸다 (이것도 되돌릴 수 있는 편집)
+    }
+    assert(sawRedoCleared);                                                                                                                                                                 // ② 새 편집이 redo 를 지웠다
+    { Editor e; e.insertText(0, "hello"); e.insertText(5, " world"); e.eraseText(0, 6); assert(e.text() == "world"); while (e.undo()) {} assert(e.text().empty()); while (e.redo()) {} assert(e.text() == "world"); e.undo(); e.insertText(0, "X"); assert(!e.redo() && e.text() == "Xhello world"); }      // ③
+    { Editor e; std::string doc; size_t snap = 0; for (int i = 0; i < 2000; i++) { e.insertText(e.text().size(), "word "); doc += "word "; snap += doc.size(); } assert(e.storedBytes() < snap / 20); }                                       // ④ 명령 방식 저장량 << 스냅샷 방식
+    std::cout << "Undo: command-based undo/redo matched a snapshot-history model for 60000 randomized edits (command log " << ed.storedBytes() << " bytes vs " << snapshotBytes << " bytes of snapshots written); a new edit invalidated redo; 2000 appends needed far fewer stored bytes than full snapshots" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(N)
+// Time Complexity: undo·redo·편집 O(편집 크기)
+// Space Complexity: O(총 편집 크기) (스냅샷 방식은 O(문서 크기 × 편집 수))
 ```
 ## BrowserHistory()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
 #include <stack>
 #include <string>
+#include <vector>
 #include <cassert>
 
-std::stack<std::string> backStack, forwardStack;
-std::string currentUrl = "home.com";
-
-void visit(std::string url) {
-    backStack.push(currentUrl);
-    currentUrl = url;
-    forwardStack = std::stack<std::string>();
-}
-
-void back() {
-    if (!backStack.empty()) {
-        forwardStack.push(currentUrl);
-        currentUrl = backStack.top();
-        backStack.pop();
-    }
-}
-
+// 브라우저 방문 기록(BrowserHistory): 뒤로 가기·앞으로 가기는 스택 두 개와 "현재 페이지" 로 만든다. visit(url) 은 현재 페이지를 back 스택에 쌓고 새 페이지로 이동하며 forward 스택을 비운다(새 길을 열면 되돌아갔던 앞길은 사라진다). back 은 현재를 forward 에 쌓고 back 의 top 으로, forward 는 반대. 
+// 여러 칸 이동(back(k), forward(k))은 요청한 만큼 또는 스택이 허락하는 만큼만 이동한다. 같은 동작을 "배열 + 현재 위치 인덱스" 로 구현할 수도 있다(방문 시 인덱스 뒤를 잘라 냄) — 이 항목은 스택 구현을 그 배열 구현과 대조한다.
+// 검증: 무작위 visit/back(k)/forward(k) 5 만 번에서 ① 현재 페이지가 배열 모델과 항상 같다 ② 이동한 칸 수가 배열 모델과 같다 ③ visit 후 forward 는 항상 0 칸 ④ back 스택 크기 + forward 스택 크기 + 1 == 배열 모델의 길이(잘라낸 뒤) ⑤ 빈 기록에서의 이동은 제자리
+class BrowserHistory {
+    std::stack<std::string> back_, forward_; std::string current_;
+public:
+    explicit BrowserHistory(std::string home) : current_(std::move(home)) {}
+    void visit(const std::string& url) { back_.push(current_); current_ = url; forward_ = std::stack<std::string>(); }
+    int back(int steps) { int moved = 0; while (moved < steps && !back_.empty()) { forward_.push(current_); current_ = back_.top(); back_.pop(); moved++; } return moved; }
+    int forward(int steps) { int moved = 0; while (moved < steps && !forward_.empty()) { back_.push(current_); current_ = forward_.top(); forward_.pop(); moved++; } return moved; }
+    const std::string& current() const { return current_; } size_t backSize() const { return back_.size(); } size_t forwardSize() const { return forward_.size(); }
+};
+class ArrayHistory {                                                                             // 기준 구현: 배열과 현재 인덱스
+    std::vector<std::string> pages_; int cur_ = 0;
+public:
+    explicit ArrayHistory(std::string home) : pages_{std::move(home)} {}
+    void visit(const std::string& url) { pages_.resize(cur_ + 1); pages_.push_back(url); cur_++; }
+    int back(int steps) { int m = std::min(steps, cur_); cur_ -= m; return m; }
+    int forward(int steps) { int m = std::min(steps, (int)pages_.size() - 1 - cur_); cur_ += m; return m; }
+    const std::string& current() const { return pages_[cur_]; } size_t length() const { return pages_.size(); }
+};
 int main() {
-    visit("google.com");
-    visit("github.com");
-    assert(currentUrl == "github.com");
-    back();
-    std::cout << "Back to: " << currentUrl << std::endl;
-    assert(currentUrl == "google.com");
-    return 0;
+    std::mt19937 rng(8); BrowserHistory h("home.com"); ArrayHistory a("home.com"); int visits = 0, backs = 0, forwards = 0;
+    for (int step = 0; step < 50000; step++) {
+        int op = rng() % 5;
+        if (op < 2) { std::string u = "site" + std::to_string(rng() % 1000) + ".com"; h.visit(u); a.visit(u); visits++; assert(h.forwardSize() == 0); }                          // ③
+        else if (op < 4) { int k = 1 + rng() % 5; int m1 = h.back(k), m2 = a.back(k); assert(m1 == m2); backs += m1; }
+        else { int k = 1 + rng() % 5; int m1 = h.forward(k), m2 = a.forward(k); assert(m1 == m2); forwards += m1; }                                                                // ②
+        assert(h.current() == a.current());                                                                                                                                            // ①
+        assert(h.backSize() + h.forwardSize() + 1 == a.length());                                                                                                                       // ④ 배열 모델의 길이 = back + 현재 + forward
+    }
+    { BrowserHistory e("start"); assert(e.back(3) == 0 && e.forward(3) == 0 && e.current() == "start"); e.visit("a"); e.visit("b"); assert(e.back(1) == 1 && e.current() == "a" && e.forward(5) == 1 && e.current() == "b" && e.back(5) == 2 && e.current() == "start"); e.visit("c"); assert(e.forward(1) == 0 && e.back(1) == 1 && e.current() == "start"); }          // ⑤
+    std::cout << "BrowserHistory: the two-stack history matched an array-plus-index model over 50000 random operations (" << visits << " visits, " << backs << " pages back, " << forwards << " pages forward)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(N)
+// Time Complexity: visit O(1) (forward 비우기는 O(forward 크기)), back·forward O(이동한 칸 수)
+// Space Complexity: O(방문한 페이지 수)
 ```
 
 # Part 5. DFS
 ## DepthFirstSearch()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <utility>
 #include <vector>
-#include <stack>
 #include <cassert>
 
-std::vector<int> adj[4];
-bool visited[4] = {false};
-std::vector<int> result;
-
-void DFS(int start) {
-    std::stack<int> s;
-    s.push(start);
-    while (!s.empty()) {
-        int v = s.top(); s.pop();
-        if (!visited[v]) {
-            visited[v] = true;
-            result.push_back(v);
-            for (auto it = adj[v].rbegin(); it != adj[v].rend(); ++it) {
-                s.push(*it);
-            }
-        }
-    }
+// 깊이 우선 탐색 (스택 관점의 요약, 정본은 Graph.md Part 3): 스택으로 갈 수 있는 데까지 깊이 들어가고, 막히면 되돌아온다. 이 구현은 스택에 (정점, 다음 이웃 위치)를 두어 재귀 DFS 와 같은 순서를 내면서 각 정점의 발견 시각 disc 과 종료 시각 fin 을 기록한다.
+// 두 시각이 DFS 의 모든 구조를 알려 준다. 간선 u→v 는 구간 [disc, fin] 의 포함 관계로 분류된다: v 가 u 를 감싸면 역방향(back; 사이클의 증거), u 가 v 를 감싸면 트리/순방향(forward), 두 구간이 겹치지 않고 v 가 먼저 끝났으면 교차(cross). 무방향 그래프에서는 교차 간선이 존재할 수 없다 — 이것이 DFS 트리가 "깊이" 구조라는 정의 그 자체다.
+// 정리: 유향 그래프에 사이클이 있다 ⇔ DFS 에서 역방향 간선(자기 루프 포함)이 있다. 아래에서 이를 위상 정렬 기반(Kahn)의 독립 판정과 대조한다.
+// 검증: ① 무작위 유향 그래프에서 DFS 가 도달 가능한 모든 정점을 정확히 한 번 방문(BFS 와 같은 집합) ② 구간이 중첩 구조(laminar)를 이룸 ③ "사이클 있음 ⇔ 역방향 간선 있음" 이 Kahn 과 일치 ④ 간선 분류에서 "v 가 나중에 시작해 나중에 끝나는 비포함" 경우는 존재하지 않음 ⑤ 무방향 그래프에서 교차 간선이 없음
+typedef std::vector<std::vector<int>> Graph;
+struct Dfs { std::vector<int> disc, fin, parent, order; };
+Dfs run(const Graph& g, const std::vector<int>& roots) {
+    int n = g.size(); Dfs d{std::vector<int>(n, 0), std::vector<int>(n, 0), std::vector<int>(n, -1), {}}; int t = 0; std::vector<std::pair<int, size_t>> st;
+    for (int r : roots) { if (d.disc[r]) continue; d.disc[r] = ++t; d.order.push_back(r); st.push_back({r, 0});
+        while (!st.empty()) { int v = st.back().first; size_t& i = st.back().second;
+            if (i < g[v].size()) { int w = g[v][i++]; if (!d.disc[w]) { d.disc[w] = ++t; d.parent[w] = v; d.order.push_back(w); st.push_back({w, 0}); } }
+            else { d.fin[v] = ++t; st.pop_back(); } } }
+    return d;
 }
-
+bool hasCycleKahn(const Graph& g) { int n = g.size(); std::vector<int> in(n, 0); for (auto& a : g) for (int w : a) in[w]++; std::queue<int> q; for (int v = 0; v < n; v++) if (!in[v]) q.push(v); int seen = 0; while (!q.empty()) { int v = q.front(); q.pop(); seen++; for (int w : g[v]) if (--in[w] == 0) q.push(w); } return seen != n; }
 int main() {
-    adj[0] = {1, 2};
-    adj[1] = {3};
-    DFS(0);
-    assert(result[0] == 0 && result[1] == 1 && result[2] == 3 && result[3] == 2);
-    std::cout << "DFS traversal verified." << std::endl;
-    return 0;
+    std::mt19937 rng(13); long back = 0, forward = 0, cross = 0, tree = 0;
+    for (int t = 0; t < 1500; t++) {
+        int n = 1 + rng() % 14; Graph g(n); int m = rng() % (2 * n + 1); for (int k = 0; k < m; k++) g[rng() % n].push_back(rng() % n);
+        std::vector<int> roots(n); for (int i = 0; i < n; i++) roots[i] = i; Dfs d = run(g, roots);
+        for (int v = 0; v < n; v++) assert(d.disc[v] && d.fin[v] > d.disc[v]);                                                                                                           // 모든 정점 방문
+        std::vector<int> one = {0}; Dfs from0 = run(g, one); std::vector<char> reach(n, 0); std::queue<int> q; q.push(0); reach[0] = 1; while (!q.empty()) { int v = q.front(); q.pop(); for (int w : g[v]) if (!reach[w]) { reach[w] = 1; q.push(w); } }
+        for (int v = 0; v < n; v++) assert((from0.disc[v] != 0) == (bool)reach[v]);                                                                                                     // ① 도달 가능한 집합과 같다
+        for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) { bool disjoint = d.fin[a] < d.disc[b] || d.fin[b] < d.disc[a]; bool nested = (d.disc[a] < d.disc[b] && d.fin[b] < d.fin[a]) || (d.disc[b] < d.disc[a] && d.fin[a] < d.fin[b]); assert(disjoint || nested); }   // ② 구간의 중첩 구조
+        bool backEdge = false; std::vector<char> usedTree(n, 0);
+        for (int u = 0; u < n; u++) for (int v : g[u]) { bool vContainsU = d.disc[v] <= d.disc[u] && d.fin[u] <= d.fin[v], uContainsV = d.disc[u] < d.disc[v] && d.fin[v] < d.fin[u], vBefore = d.fin[v] < d.disc[u];
+            assert(vContainsU || uContainsV || vBefore);                                                                                                                                // ④ 다른 경우는 없다
+            if (d.parent[v] == u && !usedTree[v] && uContainsV) { usedTree[v] = 1; tree++; } else if (vContainsU) { backEdge = true; back++; } else if (uContainsV) forward++; else cross++; }
+        assert(backEdge == hasCycleKahn(g));                                                                                                                                              // ③ 사이클 ⇔ 역방향 간선
+    }
+    for (int t = 0; t < 500; t++) { int n = 1 + rng() % 14; Graph g(n); int m = rng() % (2 * n + 1); for (int k = 0; k < m; k++) { int a = rng() % n, b = rng() % n; g[a].push_back(b); g[b].push_back(a); } std::vector<int> roots(n); for (int i = 0; i < n; i++) roots[i] = i; Dfs d = run(g, roots);
+        for (int u = 0; u < n; u++) for (int v : g[u]) assert(!(d.fin[v] < d.disc[u]));                                                                                                 // ⑤ 무방향: 교차 간선 없음
+    }
+    std::cout << "DepthFirstSearch: discovery/finish times classified " << tree << " tree, " << back << " back, " << forward << " forward and " << cross << " cross edges on 1500 random digraphs; cycle <=> back edge matched Kahn's algorithm and undirected graphs had no cross edges" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
 // Space Complexity: O(V)
@@ -1112,32 +1262,43 @@ int main() {
 ## TopologicalSort()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <utility>
 #include <vector>
-#include <stack>
 #include <cassert>
 
-std::vector<int> adj[4];
-bool visited[4] = {false};
-
-void dfs(int v, std::stack<int>& s) {
-    visited[v] = true;
-    for (int u : adj[v]) {
-        if (!visited[u]) dfs(u, s);
-    }
-    s.push(v);
+// 위상 정렬(TopologicalSort): 방향 비순환 그래프(DAG)의 정점을 모든 간선 u→v 에서 u 가 v 앞에 오도록 일렬로 세운다. DFS 로 하면 한 정점의 모든 후손이 끝난 "뒤에" 그 정점이 끝나므로 종료 순서의 역순이 위상 순서다. 종료되는 정점을 스택에 push 해 두었다가 위에서부터 꺼내면 그 순서가 된다. 건설 순서, 빌드 의존성, 과목 선수 관계에 쓴다.
+// 사이클이 있으면 위상 순서가 존재하지 않는다. DFS 에서는 "현재 경로(스택) 위에 있는 정점을 다시 만나면" 사이클이다 — 정점을 흰색(미방문)/회색(경로 위)/검정(완료)으로 칠하면 회색 정점으로 가는 간선이 사이클의 증거다. 이 구현은 재귀 없이 명시적 스택으로 해서 정점이 많아도 안전하다.
+// 위상 순서는 유일하지 않다(순서가 정해지지 않은 정점끼리는 임의). 유일할 필요충분조건은 모든 연속한 두 정점 사이에 간선이 있는 것(해밀턴 경로)이다.
+// 검증: 무작위 DAG(정점 이름을 섞어 만든 것)와 사이클 있는 그래프 합쳐 3000 개에서 ① DAG 는 결과가 유효한 위상 순서(모든 간선에서 위치 증가) ② 사이클 판정이 Kahn 알고리즘과 일치 ③ 사이클이 있을 때 실제 사이클(간선으로 이어진 정점열)을 돌려줌 ④ 해밀턴 경로가 있는 DAG 는 순서가 유일 ⑤ 모든 위상 순서의 개수가 작은 그래프에서 순열 전수 조사와 일치하는 결과 중 하나
+typedef std::vector<std::vector<int>> Graph;
+struct Result { bool ok; std::vector<int> order, cycle; };
+Result topoSort(const Graph& g) {
+    int n = g.size(); std::vector<int> color(n, 0), parent(n, -1); std::vector<int> finished; std::vector<std::pair<int, size_t>> st;
+    for (int s = 0; s < n; s++) { if (color[s]) continue; color[s] = 1; st.push_back({s, 0});
+        while (!st.empty()) { int v = st.back().first; size_t& i = st.back().second;
+            if (i < g[v].size()) { int w = g[v][i++];
+                if (color[w] == 0) { color[w] = 1; parent[w] = v; st.push_back({w, 0}); }
+                else if (color[w] == 1) { std::vector<int> cyc = {w}; for (int x = v; x != w; x = parent[x]) cyc.push_back(x); std::reverse(cyc.begin(), cyc.end()); return {false, {}, cyc}; } }       // 회색 정점으로 가는 간선 = 사이클
+            else { color[v] = 2; finished.push_back(v); st.pop_back(); } } }
+    std::reverse(finished.begin(), finished.end()); return {true, finished, {}};                                  // 종료 순서의 역순 (스택에서 꺼내는 순서)
 }
-
+bool cyclicKahn(const Graph& g) { int n = g.size(); std::vector<int> in(n, 0); for (auto& a : g) for (int w : a) in[w]++; std::queue<int> q; for (int v = 0; v < n; v++) if (!in[v]) q.push(v); int seen = 0; while (!q.empty()) { int v = q.front(); q.pop(); seen++; for (int w : g[v]) if (--in[w] == 0) q.push(w); } return seen != n; }
+bool validOrder(const Graph& g, const std::vector<int>& order) { int n = g.size(); if ((int)order.size() != n) return false; std::vector<int> pos(n, -1); for (int i = 0; i < n; i++) { if (pos[order[i]] >= 0) return false; pos[order[i]] = i; } for (int u = 0; u < n; u++) for (int v : g[u]) if (pos[u] >= pos[v]) return false; return true; }
 int main() {
-    adj[0] = {1};
-    adj[1] = {2};
-    std::stack<int> s;
-    for (int i = 0; i < 3; i++) {
-        if (!visited[i]) dfs(i, s);
-    }
-    assert(s.top() == 0);
-    std::cout << "Topological Sort Top: " << s.top() << std::endl;
-    return 0;
+    std::mt19937 rng(14); int dags = 0, cyclic = 0;
+    for (int t = 0; t < 3000; t++) { int n = 1 + rng() % 12; std::vector<int> label(n); for (int i = 0; i < n; i++) label[i] = i; std::shuffle(label.begin(), label.end(), rng); Graph g(n); int m = rng() % (2 * n + 1);
+        for (int k = 0; k < m; k++) { int a = rng() % n, b = rng() % n; if (a == b) continue; if (a > b) std::swap(a, b); g[label[a]].push_back(label[b]); }                       // 번호가 증가하는 간선만 -> DAG
+        if (t % 3 == 0 && n >= 2) { int a = rng() % n, b = rng() % n; g[a].push_back(b); }                                                                                       // 가끔 임의 간선(자기 루프 포함)을 더해 사이클을 만든다
+        Result r = topoSort(g); bool cyc = cyclicKahn(g); assert(r.ok == !cyc);                                                                                                    // ② Kahn 과 일치
+        if (r.ok) { assert(validOrder(g, r.order)); dags++; }                                                                                                                      // ①
+        else { assert(!r.cycle.empty()); for (size_t i = 0; i < r.cycle.size(); i++) { int u = r.cycle[i], v = r.cycle[(i + 1) % r.cycle.size()]; assert(std::find(g[u].begin(), g[u].end(), v) != g[u].end()); } cyclic++; } }   // ③ 실제 사이클
+    { Graph path(6); std::vector<int> perm = {3, 0, 5, 1, 4, 2}; for (int i = 0; i + 1 < 6; i++) path[perm[i]].push_back(perm[i + 1]); Result r = topoSort(path); assert(r.ok && r.order == perm); }                                          // ④ 해밀턴 경로 -> 유일
+    { Graph g(5); g[0] = {2}; g[1] = {2, 3}; g[2] = {4}; g[3] = {4}; Result r = topoSort(g); assert(r.ok && validOrder(g, r.order)); std::vector<int> p = {0, 1, 2, 3, 4}; int valid = 0; do { valid += validOrder(g, p); } while (std::next_permutation(p.begin(), p.end())); assert(valid == 5); }          // ⑤ 이 그래프의 위상 순서는 정확히 5 가지(0 이 1 보다 먼저인 2 가지 + 1 이 먼저인 3 가지), 결과는 그중 하나
+    std::cout << "TopologicalSort: " << dags << " random DAGs produced valid orders and " << cyclic << " cyclic graphs were rejected with a verified cycle, matching Kahn's algorithm on all 3000" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
 // Space Complexity: O(V)
@@ -1147,54 +1308,83 @@ int main() {
 ## MonotonicStack()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstddef>
 #include <iostream>
+#include <random>
 #include <stack>
 #include <vector>
 #include <cassert>
 
-int main() {
-    std::vector<int> arr = {3, 1, 4, 2};
-    std::stack<int> s; // 단조 감소 스택 유지
-    for (int val : arr) {
-        while (!s.empty() && s.top() < val) {
-            s.pop();
-        }
-        s.push(val);
-    }
-    assert(s.top() == 2);
-    std::cout << "Monotonic stack implemented." << std::endl;
-    return 0;
+// 단조 스택(Monotonic Stack): 스택의 값이 항상 한 방향(예: 위로 갈수록 작아지는 감소)으로 정렬되도록 유지하는 기법이다. 새 값 x 를 넣기 전에 규칙을 어기는 top 들을 pop 한다. pop 되는 순간이 바로 "그 원소의 다음으로 큰 값이 x" 라는 사실이 확정되는 순간이므로, O(N²) 비교 없이 모든 원소의 "다음/이전 더 큰/작은 값" 을 O(N) 에 구한다.
+// 왜 O(N): 각 원소는 한 번 push 되고 많아야 한 번 pop 되므로 반복문 안의 pop 총합이 N 이하다(분할상환).
+// 변형 네 가지: 이전/다음 × 더 큰/더 작은. 또 "엄격히(>)" 인지 "같아도(>=)" 인지에 따라 값이 같은 원소 처리가 달라지므로 중복이 있는 입력에서 특히 중요하다. 이 항목은 네 변형 모두를 같은 틀(비교 함수만 교체)로 구현해 브루트포스(O(N²))와 대조한다. 응용: NextGreaterElement, PreviousGreaterElement, LargestRectangle, DailyTemperatures, StockSpan.
+// 검증: 무작위 배열(중복 많음)에서 ① 네 변형의 모든 결과가 브루트포스와 같다 ② 스택의 값이 매 단계 단조(비교 규칙에 맞게 정렬) ③ pop 총 횟수 ≤ N 이고 push 횟수 == N ④ 엄격/비엄격 차이가 중복 입력에서 실제로 다른 결과를 낸다
+enum Dir { NEXT, PREV };
+// 각 i 에 대해 NEXT 는 i 오른쪽에서, PREV 는 왼쪽에서 pred(candidate, value) 를 처음 만족하는 원소의 인덱스(없으면 -1)를 구한다. pred 는 "더 크다/작다(엄격 또는 비엄격)" 판정.
+template <class Pred> std::vector<int> nearest(const std::vector<int>& a, Dir dir, Pred pred, long* pops = nullptr) {
+    int n = a.size(); std::vector<int> res(n, -1); std::stack<int> st; long p = 0;
+    for (int step = 0; step < n; step++) { int i = dir == NEXT ? n - 1 - step : step;                              // NEXT 는 오른쪽에서 왼쪽으로 훑는다
+        while (!st.empty() && !pred(a[st.top()], a[i])) { st.pop(); p++; }                                         // 후보가 되지 못하는(조건을 만족 못 하는) top 은 이후에도 쓸모없다
+        res[i] = st.empty() ? -1 : st.top(); st.push(i); }
+    if (pops) *pops = p; return res;
 }
-// Time Complexity: O(N)
+template <class Pred> std::vector<int> brute(const std::vector<int>& a, Dir dir, Pred pred) {
+    int n = a.size(); std::vector<int> res(n, -1); for (int i = 0; i < n; i++) { if (dir == NEXT) { for (int j = i + 1; j < n; j++) if (pred(a[j], a[i])) { res[i] = j; break; } } else { for (int j = i - 1; j >= 0; j--) if (pred(a[j], a[i])) { res[i] = j; break; } } } return res;
+}
+int main() {
+    std::mt19937 rng(21); long popsMax = 0;
+    auto greater = [](int c, int v) { return c > v; }; auto greaterEq = [](int c, int v) { return c >= v; }; auto less = [](int c, int v) { return c < v; }; auto lessEq = [](int c, int v) { return c <= v; };
+    int strictDiffers = 0;
+    for (int t = 0; t < 3000; t++) { int n = rng() % 30; std::vector<int> a(n); for (int& x : a) x = rng() % 8; long pops;
+        for (Dir d : {NEXT, PREV}) { assert(nearest(a, d, greater, &pops) == brute(a, d, greater) && pops <= n); popsMax = std::max(popsMax, pops); assert(nearest(a, d, greaterEq) == brute(a, d, greaterEq) && nearest(a, d, less) == brute(a, d, less) && nearest(a, d, lessEq) == brute(a, d, lessEq));       // ① ③
+            strictDiffers += nearest(a, d, greater) != nearest(a, d, greaterEq); }                                                                                                                                                                  // ④
+        // ② 불변식: 단조 감소 스택 (아래 -> 위로 값이 줄어든다)을 직접 유지하며 매번 확인
+        std::stack<int> st; std::vector<int> vals; for (int x : a) { while (!st.empty() && st.top() <= x) { st.pop(); vals.pop_back(); } st.push(x); vals.push_back(x); for (size_t k = 1; k < vals.size(); k++) assert(vals[k - 1] > vals[k]); } }
+    assert(strictDiffers > 100);
+    { std::vector<int> a = {2, 1, 2, 4, 3}; auto ng = nearest(a, NEXT, greater); assert((ng == std::vector<int>{3, 2, 3, -1, -1})); auto nge = nearest(a, NEXT, greaterEq); assert((nge == std::vector<int>{2, 2, 3, -1, -1})); }
+    std::cout << "MonotonicStack: all four nearest-greater/smaller variants (strict and non-strict) matched brute force on 3000 random arrays with many duplicates; pops never exceeded N (max " << popsMax << " for N<=29); strict vs non-strict differed on " << strictDiffers << " inputs" << std::endl; return 0;
+}
+// Time Complexity: O(N) (각 원소가 한 번 push, 한 번 pop)
 // Space Complexity: O(N)
 ```
 ## NextGreaterElement()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
-#include <vector>
+#include <random>
 #include <stack>
+#include <unordered_map>
+#include <vector>
 #include <cassert>
 
-std::vector<int> nextGreater(std::vector<int>& arr) {
-    std::stack<int> s;
-    std::vector<int> res(arr.size(), -1);
-    for (int i = 0; i < (int)arr.size(); ++i) {
-        while (!s.empty() && arr[s.top()] < arr[i]) {
-            res[s.top()] = arr[i];
-            s.pop();
-        }
-        s.push(i);
-    }
+// 다음 큰 원소(NextGreaterElement): 각 원소의 오른쪽에서 자신보다 큰 첫 원소(없으면 −1). 왼쪽에서 오른쪽으로 훑으며 아직 답을 못 찾은 원소의 인덱스를 스택에 쌓고, 새 원소 x 가 스택 top 보다 크면 그 top 의 답이 x 라고 확정하고 pop 한다(단조 감소 스택). 각 원소가 한 번씩만 들어가고 나가므로 O(N).
+// 변형 둘. ① 원형 배열: 끝 다음에 처음으로 이어진다. 배열을 두 번 훑는다(인덱스 mod N) — 둘째 바퀴는 답이 없는 원소만 처리한다. ② 질의 배열: A 의 부분집합 B 의 각 원소가 A 에서 갖는 다음 큰 원소(LeetCode 496). A 를 한 번 훑어 해시맵에 value → 답 을 저장하고 B 는 조회만 한다(값이 서로 다르다고 가정).
+// 검증: 무작위 배열에서 ① 선형 버전이 O(N²) 브루트포스와 같다(중복 포함) ② 원형 버전이 "배열을 두 배로 이어 붙여 브루트포스" 한 것과 같다 ③ 질의 버전이 직접 검색과 같다 ④ 정렬된 증가/감소 배열의 경계 사례 ⑤ pop 횟수가 N 이하
+std::vector<int> nextGreater(const std::vector<int>& a, long* pops = nullptr) {
+    std::stack<int> st; std::vector<int> res(a.size(), -1); long p = 0;
+    for (int i = 0; i < (int)a.size(); ++i) { while (!st.empty() && a[st.top()] < a[i]) { res[st.top()] = a[i]; st.pop(); p++; } st.push(i); }
+    if (pops) *pops = p; return res;
+}
+std::vector<int> nextGreaterCircular(const std::vector<int>& a) {
+    int n = a.size(); std::stack<int> st; std::vector<int> res(n, -1);
+    for (int i = 0; i < 2 * n; ++i) { int x = a[i % n]; while (!st.empty() && a[st.top()] < x) { res[st.top()] = x; st.pop(); } if (i < n) st.push(i); }          // 첫 바퀴에서만 push, 둘째 바퀴는 남은 원소의 답을 찾는다
     return res;
 }
-
+std::vector<int> nextGreaterOfQueries(const std::vector<int>& universe, const std::vector<int>& queries) {
+    std::unordered_map<int, int> ans; std::stack<int> st; for (int x : universe) { while (!st.empty() && st.top() < x) { ans[st.top()] = x; st.pop(); } st.push(x); } while (!st.empty()) { ans[st.top()] = -1; st.pop(); }
+    std::vector<int> r; for (int q : queries) r.push_back(ans[q]); return r;
+}
 int main() {
-    std::vector<int> arr = {2, 1, 2, 4, 3};
-    std::vector<int> res = nextGreater(arr);
-    std::cout << "Next Greater of 2 -> " << res[0] << std::endl;
-    assert(res[0] == 4);
-    return 0;
+    std::mt19937 rng(7);
+    for (int t = 0; t < 3000; t++) { int n = rng() % 25; std::vector<int> a(n); for (int& x : a) x = rng() % 10; long pops;
+        std::vector<int> want(n, -1); for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (a[j] > a[i]) { want[i] = a[j]; break; } assert(nextGreater(a, &pops) == want && pops <= n);                           // ① ⑤
+        std::vector<int> dbl = a; dbl.insert(dbl.end(), a.begin(), a.end()); std::vector<int> wc(n, -1); for (int i = 0; i < n; i++) for (int j = i + 1; j < i + n; j++) if (dbl[j] > a[i]) { wc[i] = dbl[j]; break; } assert(nextGreaterCircular(a) == wc); }         // ②
+    for (int t = 0; t < 500; t++) { int n = 1 + rng() % 20; std::vector<int> u(n); for (int i = 0; i < n; i++) u[i] = i; std::shuffle(u.begin(), u.end(), rng); std::vector<int> q; for (int i = 0; i < n; i++) if (rng() % 2) q.push_back(u[i]);
+        std::vector<int> r = nextGreaterOfQueries(u, q); for (size_t k = 0; k < q.size(); k++) { int pos = std::find(u.begin(), u.end(), q[k]) - u.begin(); int w = -1; for (int j = pos + 1; j < n; j++) if (u[j] > q[k]) { w = u[j]; break; } assert(r[k] == w); } }     // ③
+    { std::vector<int> inc = {1, 2, 3, 4}, dec = {4, 3, 2, 1}; assert((nextGreater(inc) == std::vector<int>{2, 3, 4, -1}) && (nextGreater(dec) == std::vector<int>{-1, -1, -1, -1}) && nextGreater({}).empty() && (nextGreaterCircular(dec) == std::vector<int>{-1, 4, 4, 4}) && (nextGreaterCircular(std::vector<int>{1, 2, 1}) == std::vector<int>{2, -1, 2})); }          // ④
+    std::cout << "NextGreaterElement: linear, circular and query variants matched brute force on 3000 + 500 random inputs; pops never exceeded N" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -1202,30 +1392,45 @@ int main() {
 ## PreviousGreaterElement()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
-#include <vector>
+#include <random>
 #include <stack>
+#include <vector>
 #include <cassert>
 
-std::vector<int> prevGreater(std::vector<int>& arr) {
-    std::stack<int> s;
-    std::vector<int> res(arr.size(), -1);
-    for (int i = 0; i < (int)arr.size(); ++i) {
-        while (!s.empty() && arr[s.top()] <= arr[i]) {
-            s.pop();
-        }
-        if (!s.empty()) res[i] = arr[s.top()];
-        s.push(i);
-    }
+// 이전 큰 원소(PreviousGreaterElement): 각 원소의 왼쪽에서 자신보다 큰 첫 원소의 인덱스(없으면 −1). 왼쪽부터 훑으며 스택을 "아래에서 위로 값이 줄어드는" 상태로 유지한다: x 를 넣기 전에 x 이하인 top 들을 pop 하면(그들은 이후 어떤 원소에게도 가장 가까운 큰 원소가 될 수 없다) 남은 top 이 x 의 이전 큰 원소다.
+// 엄격한 큰(>)과 같아도 되는 큰(>=)의 차이가 중복에서 드러난다. 주식의 스팬(StockSpan)은 "나보다 큰 값이 처음 나타난 날 이후 며칠째" 이므로 이 문제와 같은 구조이고, 합계 구간 문제(모든 부분배열 최솟값의 합)에서는 한쪽은 엄격하게 다른 쪽은 비엄격하게 해야 같은 값을 두 번 세지 않는다 — 대칭의 열쇠다.
+// 이 항목은 이전 큰/이전 작은 원소를 구하고, 이를 이용해 "모든 부분배열의 최솟값의 합"(왼쪽은 엄격 이전 작은, 오른쪽은 비엄격 다음 작은)을 O(N) 으로 계산해 O(N³) 브루트포스와 대조한다.
+// 검증: ① 엄격/비엄격 이전 큰 원소가 브루트포스와 같다 ② 이전 작은 원소도 같다 ③ 부분배열 최솟값의 합이 O(N³) 브루트포스와 같다(중복 포함) ④ 경계 사례
+std::vector<int> prevGreater(const std::vector<int>& a, bool strict) {
+    std::stack<int> st; std::vector<int> res(a.size(), -1);
+    for (int i = 0; i < (int)a.size(); ++i) { while (!st.empty() && (strict ? a[st.top()] <= a[i] : a[st.top()] < a[i])) st.pop(); res[i] = st.empty() ? -1 : st.top(); st.push(i); }
     return res;
 }
-
+std::vector<int> prevSmaller(const std::vector<int>& a, bool strict) {
+    std::stack<int> st; std::vector<int> res(a.size(), -1);
+    for (int i = 0; i < (int)a.size(); ++i) { while (!st.empty() && (strict ? a[st.top()] >= a[i] : a[st.top()] > a[i])) st.pop(); res[i] = st.empty() ? -1 : st.top(); st.push(i); }
+    return res;
+}
+std::vector<int> nextSmaller(const std::vector<int>& a, bool strict) {
+    std::stack<int> st; int n = a.size(); std::vector<int> res(n, n);
+    for (int i = n - 1; i >= 0; --i) { while (!st.empty() && (strict ? a[st.top()] >= a[i] : a[st.top()] > a[i])) st.pop(); res[i] = st.empty() ? n : st.top(); st.push(i); }
+    return res;
+}
+long long sumOfSubarrayMins(const std::vector<int>& a) {                                    // 각 원소가 최솟값이 되는 구간 수 = (왼쪽 거리) × (오른쪽 거리)
+    int n = a.size(); auto L = prevSmaller(a, true); auto R = nextSmaller(a, false); long long total = 0; for (int i = 0; i < n; i++) total += (long long)a[i] * (i - L[i]) * (R[i] - i); return total;
+}
 int main() {
-    std::vector<int> arr = {4, 2, 3};
-    std::vector<int> res = prevGreater(arr);
-    assert(res[1] == 4 && res[2] == 4);
-    std::cout << "Previous greater working." << std::endl;
-    return 0;
+    std::mt19937 rng(9);
+    for (int t = 0; t < 3000; t++) { int n = rng() % 25; std::vector<int> a(n); for (int& x : a) x = rng() % 8;
+        for (bool strict : {true, false}) {
+            std::vector<int> g(n, -1), s(n, -1);                                                                                                                                  // 브루트포스: 왼쪽으로 가며 처음 만나는 큰/작은 원소
+            for (int i = 0; i < n; i++) for (int j = i - 1; j >= 0 && (g[i] < 0 || s[i] < 0); j--) { if (g[i] < 0 && (strict ? a[j] > a[i] : a[j] >= a[i])) g[i] = j; if (s[i] < 0 && (strict ? a[j] < a[i] : a[j] <= a[i])) s[i] = j; }
+            assert(prevGreater(a, strict) == g && prevSmaller(a, strict) == s); }                                                                                                  // ① ② 엄격/비엄격 모두
+        long long brute = 0; for (int i = 0; i < n; i++) { int mn = a[i]; for (int j = i; j < n; j++) { mn = std::min(mn, a[j]); brute += mn; } } assert(sumOfSubarrayMins(a) == brute); }                                // ③
+    { std::vector<int> a = {3, 1, 2, 4}; assert((prevGreater(a, true) == std::vector<int>{-1, 0, 0, -1}) && (prevGreater({}, true).empty()) && (prevGreater(std::vector<int>{2, 2, 2}, true) == std::vector<int>{-1, -1, -1}) && (prevGreater(std::vector<int>{2, 2, 2}, false) == std::vector<int>{-1, 0, 1})); assert(sumOfSubarrayMins({3, 1, 2, 4}) == 17); }       // ④
+    std::cout << "PreviousGreaterElement: strict/non-strict previous greater and smaller matched brute force on 3000 random arrays; the O(N) sum of subarray minimums equalled the O(N^3) brute force" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -1233,64 +1438,77 @@ int main() {
 ## LargestRectangle()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <stack>
 #include <algorithm>
+#include <iostream>
+#include <random>
+#include <stack>
+#include <vector>
 #include <cassert>
 
-int largestRectangleArea(std::vector<int>& heights) {
-    std::stack<int> s;
-    int maxArea = 0;
-    heights.push_back(0); 
-    for (int i = 0; i < (int)heights.size(); ++i) {
-        while (!s.empty() && heights[s.top()] > heights[i]) {
-            int h = heights[s.top()]; s.pop();
-            int w = s.empty() ? i : i - s.top() - 1;
-            maxArea = std::max(maxArea, h * w);
-        }
-        s.push(i);
+// 히스토그램에서 가장 큰 직사각형(LargestRectangle): 너비 1 인 막대들의 높이가 주어질 때 막대들 안에 완전히 들어가는 가장 큰 직사각형의 넓이. 단조 증가 스택이 정석이다: 높이가 올라가는 동안 막대 인덱스를 쌓고, 더 낮은 막대 h[i] 를 만나면 top 을 pop 하며 "그 막대 높이로 만들 수 있는 최대 폭" 을 확정한다 — 폭의 왼쪽 끝은 새 top 바로 다음, 오른쪽 끝은 i−1 이다. 끝에 높이 0 짜리 막대를 하나 덧붙여 스택을 모두 비우는 센티넬 기법을 쓴다.
+// 이 문제는 다른 문제의 구성 요소가 된다: 0/1 행렬에서 1 로만 이루어진 가장 큰 직사각형(MaximalRectangle)은 각 행을 "아래로 연속한 1 의 개수" 히스토그램으로 보고 행마다 이 알고리즘을 적용한다 → O(행×열).
+// 검증: ① 무작위 히스토그램(중복·0 포함)에서 O(N²) 브루트포스(모든 구간의 최소 × 폭)와 같다 ② 입력 벡터를 변경하지 않음(센티넬을 복사본에 붙임) ③ 0/1 행렬에서 MaximalRectangle 이 O(R²C²) 브루트포스와 같다 ④ 경계: 빈 입력, 하나, 단조 증가/감소, 모두 같은 높이
+long long largestRectangle(const std::vector<int>& heights) {
+    std::vector<int> h = heights; h.push_back(0);                                              // 센티넬: 마지막에 모두 pop 되게 한다
+    std::stack<int> st; long long best = 0;
+    for (int i = 0; i < (int)h.size(); ++i) {
+        while (!st.empty() && h[st.top()] > h[i]) { long long height = h[st.top()]; st.pop(); long long width = st.empty() ? i : i - st.top() - 1; best = std::max(best, height * width); }
+        st.push(i);
     }
-    return maxArea;
+    return best;
 }
-
+long long maximalRectangle(const std::vector<std::vector<int>>& m) {
+    if (m.empty()) return 0; std::vector<int> run(m[0].size(), 0); long long best = 0;
+    for (auto& row : m) { for (size_t c = 0; c < row.size(); c++) run[c] = row[c] ? run[c] + 1 : 0; best = std::max(best, largestRectangle(run)); } return best;
+}
 int main() {
-    std::vector<int> heights = {2, 1, 5, 6, 2, 3};
-    int res = largestRectangleArea(heights);
-    assert(res == 10);
-    std::cout << "Max rectangle area: " << res << std::endl;
-    return 0;
+    std::mt19937 rng(5);
+    for (int t = 0; t < 4000; t++) { int n = rng() % 16; std::vector<int> h(n); for (int& x : h) x = rng() % 7; std::vector<int> copy = h; long long brute = 0;
+        for (int i = 0; i < n; i++) { int mn = h[i]; for (int j = i; j < n; j++) { mn = std::min(mn, h[j]); brute = std::max(brute, (long long)mn * (j - i + 1)); } } assert(largestRectangle(h) == brute && h == copy); }                          // ① ②
+    for (int t = 0; t < 1500; t++) { int R = 1 + rng() % 6, C = 1 + rng() % 6; std::vector<std::vector<int>> m(R, std::vector<int>(C)); for (auto& row : m) for (int& x : row) x = rng() % 3 != 0; long long brute = 0;
+        for (int r1 = 0; r1 < R; r1++) for (int r2 = r1; r2 < R; r2++) for (int c1 = 0; c1 < C; c1++) for (int c2 = c1; c2 < C; c2++) { bool all = true; for (int r = r1; r <= r2 && all; r++) for (int c = c1; c <= c2; c++) if (!m[r][c]) { all = false; break; } if (all) brute = std::max(brute, (long long)(r2 - r1 + 1) * (c2 - c1 + 1)); }
+        assert(maximalRectangle(m) == brute); }                                                                                                                                                                            // ③
+    assert(largestRectangle({}) == 0 && largestRectangle({5}) == 5 && largestRectangle({1, 2, 3, 4}) == 6 && largestRectangle({4, 3, 2, 1}) == 6 && largestRectangle({3, 3, 3, 3}) == 12 && largestRectangle({2, 1, 5, 6, 2, 3}) == 10);             // ④
+    std::cout << "LargestRectangle: the single-pass monotonic-stack solution matched O(N^2) brute force on 4000 random histograms, and the row-by-row maximal rectangle matched an exhaustive search on 1500 random binary matrices" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: O(N), 행렬 버전 O(R·C)
 // Space Complexity: O(N)
 ```
 ## DailyTemperatures()
 ### 대표코드
 ```cpp
 #include <iostream>
-#include <vector>
+#include <random>
 #include <stack>
+#include <vector>
 #include <cassert>
 
-std::vector<int> dailyTemperatures(std::vector<int>& temp) {
-    std::stack<int> s;
-    std::vector<int> res(temp.size(), 0);
-    for (int i = 0; i < (int)temp.size(); ++i) {
-        while (!s.empty() && temp[s.top()] < temp[i]) {
-            res[s.top()] = i - s.top();
-            s.pop();
-        }
-        s.push(i);
-    }
-    return res;
+// 일일 온도(DailyTemperatures): 각 날짜에 대해 더 따뜻한 날까지 며칠을 기다려야 하는지(없으면 0). 다음 큰 원소의 "값" 대신 "거리(인덱스 차이)" 를 구하는 문제다. 아직 답을 못 찾은 날짜의 인덱스를 스택에 쌓고, 오늘 온도가 top 날의 온도보다 높으면 그 날의 답은 오늘 − 그 날이다.
+// 뒤에서부터 훑는 방법도 있다: 오른쪽에서 왼쪽으로 가며 오늘보다 같거나 낮은 날들은 pop 하면 top 이 더 따뜻한 첫날이다(답 = 거리). 두 방향이 같은 결과를 줌을 확인한다. 스택 없이 "이미 구한 답을 건너뛰며 점프" 하는 O(N) 방법(답 배열로 다음 후보를 찾음)도 있다.
+// 검증: ① 무작위 온도열에서 앞→뒤 스택, 뒤→앞 스택, 점프 방식이 모두 O(N²) 브루트포스와 같다 ② 답이 0 인 날은 정확히 "그 날 이후 더 따뜻한 날이 없는" 날 ③ 증가열의 답은 모두 1, 감소열은 모두 0 ④ 최대 대기 일수와 답의 합이 브루트포스와 같다
+std::vector<int> forwardStack(const std::vector<int>& t) {
+    std::vector<int> ans(t.size(), 0); std::stack<int> st;
+    for (int i = 0; i < (int)t.size(); ++i) { while (!st.empty() && t[st.top()] < t[i]) { ans[st.top()] = i - st.top(); st.pop(); } st.push(i); }
+    return ans;
 }
-
+std::vector<int> backwardStack(const std::vector<int>& t) {
+    int n = t.size(); std::vector<int> ans(n, 0); std::stack<int> st;
+    for (int i = n - 1; i >= 0; --i) { while (!st.empty() && t[st.top()] <= t[i]) st.pop(); ans[i] = st.empty() ? 0 : st.top() - i; st.push(i); }
+    return ans;
+}
+std::vector<int> jumping(const std::vector<int>& t) {                                         // 스택 없이: 이미 구한 답으로 후보를 건너뛴다
+    int n = t.size(); std::vector<int> ans(n, 0);
+    for (int i = n - 2; i >= 0; --i) { int j = i + 1; while (j < n && t[j] <= t[i]) { if (ans[j] == 0) { j = n; break; } j += ans[j]; } ans[i] = j < n ? j - i : 0; }
+    return ans;
+}
 int main() {
-    std::vector<int> temp = {73, 74, 75, 71, 69, 72, 76, 73};
-    std::vector<int> res = dailyTemperatures(temp);
-    assert(res[0] == 1 && res[1] == 1 && res[2] == 4);
-    std::cout << "Daily temperatures verified." << std::endl;
-    return 0;
+    std::mt19937 rng(8);
+    for (int t = 0; t < 4000; t++) { int n = rng() % 30; std::vector<int> a(n); for (int& x : a) x = 30 + rng() % 8; std::vector<int> want(n, 0); for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (a[j] > a[i]) { want[i] = j - i; break; }
+        assert(forwardStack(a) == want && backwardStack(a) == want && jumping(a) == want);                                                                                                         // ①
+        for (int i = 0; i < n; i++) { bool warmerLater = false; for (int j = i + 1; j < n; j++) warmerLater |= a[j] > a[i]; assert((want[i] == 0) == !warmerLater); }                                 // ②
+        int mx = 0, sum = 0; for (int x : want) { mx = std::max(mx, x); sum += x; } int mx2 = 0, sum2 = 0; for (int x : forwardStack(a)) { mx2 = std::max(mx2, x); sum2 += x; } assert(mx == mx2 && sum == sum2); }          // ④
+    { std::vector<int> inc = {1, 2, 3, 4, 5}, dec = {5, 4, 3, 2, 1}; assert((forwardStack(inc) == std::vector<int>{1, 1, 1, 1, 0}) && (forwardStack(dec) == std::vector<int>{0, 0, 0, 0, 0}) && (forwardStack({73, 74, 75, 71, 69, 72, 76, 73}) == std::vector<int>{1, 1, 4, 2, 1, 1, 0, 0})); }       // ③
+    std::cout << "DailyTemperatures: forward-stack, backward-stack and jumping solutions all matched brute force on 4000 random temperature sequences" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -1299,32 +1517,36 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
 #include <stack>
+#include <utility>
+#include <vector>
 #include <cassert>
 
+// 주식 스팬(StockSpan): 오늘 가격 이하였던 연속된 날의 수(오늘 포함). 즉 "오늘보다 가격이 높았던 가장 가까운 과거의 날" 까지의 거리다. 스택에 (가격, 스팬) 쌍을 쌓고 새 가격 p 가 오면 top 의 가격이 p 이하인 동안 pop 하며 그 스팬을 오늘 스팬에 합친다 — 합쳐진 날들은 이미 "p 이하" 라는 사실이 확정되어 다시 볼 필요가 없다. 온라인(데이터가 하나씩 들어옴)으로 동작하며 호출당 분할상환 O(1).
+// 오프라인으로 전체 배열이 있을 때는 이전 큰 원소의 인덱스(PreviousGreaterElement)로 span[i] = i − prevGreater[i] 로 구할 수 있다. 두 방식은 같은 결과를 줘야 한다.
+// 검증: 무작위 가격열에서 ① 온라인 StockSpanner 결과가 O(N²) 브루트포스와 같다 ② 오프라인(이전 큰 원소) 방식과 같다 ③ 스택 크기 변화: 총 pop 횟수 ≤ 호출 수 ④ LeetCode 예제(100, 80, 60, 70, 60, 75, 85 → 1, 1, 1, 2, 1, 4, 6)
 class StockSpanner {
-    std::stack<std::pair<int, int>> s; 
+    std::stack<std::pair<int, int>> st_; long pops_ = 0;
 public:
-    int next(int price) {
-        int span = 1;
-        while (!s.empty() && s.top().first <= price) {
-            span += s.top().second;
-            s.pop();
-        }
-        s.push({price, span});
-        return span;
-    }
+    int next(int price) { int span = 1; while (!st_.empty() && st_.top().first <= price) { span += st_.top().second; st_.pop(); pops_++; } st_.push({price, span}); return span; }
+    long pops() const { return pops_; } size_t depth() const { return st_.size(); }
 };
-
-int main() {
-    StockSpanner ss;
-    assert(ss.next(100) == 1);
-    assert(ss.next(80) == 1);
-    assert(ss.next(120) == 3);
-    std::cout << "StockSpan functional." << std::endl;
-    return 0;
+std::vector<int> offline(const std::vector<int>& p) {
+    int n = p.size(); std::vector<int> prevGreater(n, -1), span(n); std::stack<int> st;
+    for (int i = 0; i < n; i++) { while (!st.empty() && p[st.top()] <= p[i]) st.pop(); prevGreater[i] = st.empty() ? -1 : st.top(); st.push(i); span[i] = i - prevGreater[i]; }
+    return span;
 }
-// Time Complexity: Amortized O(1) per call
+int main() {
+    std::mt19937 rng(10);
+    for (int t = 0; t < 3000; t++) { int n = rng() % 40; std::vector<int> p(n); for (int& x : p) x = 1 + rng() % 12; StockSpanner ss; std::vector<int> online; for (int x : p) online.push_back(ss.next(x));
+        std::vector<int> want(n); for (int i = 0; i < n; i++) { int s = 1; for (int j = i - 1; j >= 0 && p[j] <= p[i]; j--) s++; want[i] = s; }
+        assert(online == want && offline(p) == want && ss.pops() <= n); }                                                                                                                               // ① ② ③
+    { StockSpanner ss; std::vector<int> got; for (int x : {100, 80, 60, 70, 60, 75, 85}) got.push_back(ss.next(x)); assert((got == std::vector<int>{1, 1, 1, 2, 1, 4, 6})); }                                // ④
+    { StockSpanner ss; for (int i = 1; i <= 1000; i++) ss.next(i); assert(ss.depth() == 1 && ss.pops() == 999); StockSpanner d; for (int i = 1000; i >= 1; i--) d.next(i); assert(d.depth() == 1000 && d.pops() == 0); }          // 증가열은 매번 모두 합치고, 감소열은 합칠 것이 없다
+    std::cout << "StockSpan: the online one-stack spanner matched brute force and the offline previous-greater formula on 3000 random price series; total pops stayed <= the number of calls" << std::endl; return 0;
+}
+// Time Complexity: next() 분할상환 O(1)
 // Space Complexity: O(N)
 ```
 
@@ -1332,93 +1554,148 @@ int main() {
 ## MinStack()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <climits>
 #include <iostream>
+#include <random>
 #include <stack>
+#include <vector>
 #include <cassert>
 
+// 최솟값 스택(MinStack): push, pop, top 에 더해 현재 스택의 최솟값 getMin() 을 O(1) 에 돌려주는 스택이다. 최솟값만 변수로 들고 있으면 최솟값을 pop 했을 때 새 최솟값을 알 수 없으므로 "각 시점의 최솟값 이력" 을 보관해야 한다.
+// 두 가지 구현. ① 보조 스택: 값을 push 할 때 현재 최솟값 이하이면 보조 스택에도 push, pop 한 값이 보조 스택의 top 과 같으면 보조에서도 pop. 같은 값이 여러 번 들어오는 경우를 위해 "이하(<=)" 로 비교해야 한다(< 로 하면 같은 최솟값 두 개 중 하나를 pop 할 때 최솟값을 잃는다). ② 차이 부호화: 스택 하나에 (값 − 그 시점 최솟값 이전의 최솟값) 형태로 저장하고 최솟값 변수만 별도로 들어, 보조 스택 없이 O(1) 추가 공간을 쓴다 — 값 범위가 넓어 오버플로할 수 있으므로 long long 으로 저장한다.
+// 검증: 무작위 push/pop/top/getMin 6 만 번을 벡터를 매번 훑어 최솟값을 구하는 브루트포스와 대조 ① 보조 스택 방식 ② 차이 부호화 방식 ③ 같은 값이 여러 개일 때 "<" 비교(잘못된 구현)가 실제로 틀린다는 반례 ④ 극단값 INT_MIN/INT_MAX 가 섞여도 정확
 class MinStack {
-    std::stack<int> s, min_s;
+    std::stack<int> s_, mins_;
 public:
-    void push(int val) {
-        s.push(val);
-        if (min_s.empty() || val <= min_s.top()) min_s.push(val);
-    }
-    void pop() {
-        if (s.top() == min_s.top()) min_s.pop();
-        s.pop();
-    }
-    int getMin() { return min_s.top(); }
+    void push(int v) { s_.push(v); if (mins_.empty() || v <= mins_.top()) mins_.push(v); }
+    void pop() { if (s_.top() == mins_.top()) mins_.pop(); s_.pop(); }
+    int top() const { return s_.top(); } int getMin() const { return mins_.top(); } bool empty() const { return s_.empty(); } size_t auxSize() const { return mins_.size(); }
 };
-
+class MinStackBuggy {                                                                          // 틀린 구현: '<' 로 비교
+    std::stack<int> s_, mins_;
+public:
+    void push(int v) { s_.push(v); if (mins_.empty() || v < mins_.top()) mins_.push(v); }
+    void pop() { if (s_.top() == mins_.top()) mins_.pop(); s_.pop(); }
+    int getMin() const { return mins_.empty() ? INT_MAX : mins_.top(); }
+};
+class MinStackDelta {                                                                          // 보조 스택 없이 차이만 저장
+    std::stack<long long> s_; long long min_ = 0;
+public:
+    void push(int v) { if (s_.empty()) { s_.push(0); min_ = v; } else { s_.push((long long)v - min_); if (v < min_) min_ = v; } }       // 저장값 < 0 이면 v 가 새 최솟값
+    void pop() { long long d = s_.top(); s_.pop(); if (d < 0) min_ = min_ - d; }                                                         // 새 최솟값이었다면 이전 최솟값 복원
+    int top() const { long long d = s_.top(); return (int)(d < 0 ? min_ : min_ + d); } int getMin() const { return (int)min_; } bool empty() const { return s_.empty(); }
+};
 int main() {
-    MinStack ms;
-    ms.push(3); ms.push(1); ms.push(4);
-    assert(ms.getMin() == 1);
-    ms.pop(); ms.pop();
-    assert(ms.getMin() == 3);
-    std::cout << "MinStack verified." << std::endl;
-    return 0;
+    std::mt19937 rng(12); MinStack a; MinStackDelta b; std::vector<int> ref; int buggyWrong = 0;
+    for (int step = 0; step < 60000; step++) {
+        if (rng() % 5 < 3 || ref.empty()) { int v = (rng() % 20 == 0) ? (rng() & 1 ? INT_MIN : INT_MAX) : (int)(rng() % 10); a.push(v); b.push(v); ref.push_back(v); } else { a.pop(); b.pop(); ref.pop_back(); }
+        if (!ref.empty()) { int mn = *std::min_element(ref.begin(), ref.end()); assert(a.getMin() == mn && b.getMin() == mn && a.top() == ref.back() && b.top() == ref.back()); } else assert(a.empty() && b.empty());          // ① ② ④
+        if (ref.size() > 200) while (ref.size() > 100) { a.pop(); b.pop(); ref.pop_back(); }
+    }
+    { MinStackBuggy bad; bad.push(2); bad.push(2); bad.push(5); bad.pop(); bad.pop(); /* 스택: [2], 최솟값은 2 여야 한다 */ buggyWrong += bad.getMin() != 2; MinStack good; good.push(2); good.push(2); good.push(5); good.pop(); good.pop(); assert(good.getMin() == 2 && buggyWrong == 1); }       // ③ '<' 비교는 같은 최솟값이 겹치면 틀린다
+    { MinStack g; for (int i = 0; i < 100; i++) g.push(5); assert(g.auxSize() == 100); MinStackDelta d; d.push(INT_MAX); d.push(INT_MIN); assert(d.getMin() == INT_MIN); d.pop(); assert(d.getMin() == INT_MAX && d.top() == INT_MAX); }
+    std::cout << "MinStack: auxiliary-stack and delta-encoded implementations matched a brute-force minimum over 60000 random operations including INT_MIN/INT_MAX; the strict-comparison variant lost the minimum when equal minima repeated" << std::endl; return 0;
 }
-// Time Complexity: O(1) per operation
-// Space Complexity: O(N)
+// Time Complexity: push·pop·top·getMin 모두 O(1)
+// Space Complexity: 보조 스택 방식 O(N), 차이 부호화 O(1) 추가
 ```
 ## MaxStack()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <climits>
 #include <iostream>
+#include <list>
+#include <map>
+#include <random>
 #include <stack>
+#include <vector>
 #include <cassert>
 
-class MaxStack {
-    std::stack<int> s, max_s;
+// 최댓값 스택(MaxStack): push, pop, top, peekMax 를 O(1) 에, 거기에 최댓값 원소를 제거하는 popMax 를 지원하는 스택(LeetCode 716). peekMax 는 MinStack 과 대칭인 보조 스택으로 O(1) 이다. popMax 는 까다롭다: 최댓값이 스택 중간에 있으므로 그 위의 원소를 임시 스택으로 옮겼다가 최댓값을 제거하고 다시 push 해야 한다 — 이 방식은 popMax 가 O(N) 이다. 같은 값이 여럿이면 가장 위(가장 최근)의 것을 제거한다.
+// O(log N) 으로 만드는 방법: 이중 연결 리스트에 스택을 저장하고(위치를 가리키는 반복자는 삭제해도 다른 반복자를 무효화하지 않음), 값 → 그 값이 있는 노드들의 반복자 목록을 std::map 에 둔다. 최댓값은 map 의 마지막 키, 그 키의 마지막 반복자가 가장 위의 최댓값 노드다. 어디서든 O(1) 삭제가 가능하고 map 조작이 O(log N).
+// 검증: 무작위 push/pop/top/peekMax/popMax 5 만 번을 벡터 브루트포스(popMax 는 가장 위의 최댓값 위치를 직접 찾아 삭제)와 대조: ① 보조 스택 + 임시 스택 방식 ② 연결 리스트 + 맵 방식(둘 다) ③ 같은 값 여러 개에서 가장 최근의 것이 제거됨 ④ 연산 후 스택 순서가 정확히 유지됨(popMax 로 중간 원소가 빠져도 나머지의 상대 순서 불변)
+class MaxStackSimple {
+    std::stack<int> s_, mx_;
 public:
-    void push(int val) {
-        s.push(val);
-        if (max_s.empty() || val >= max_s.top()) max_s.push(val);
-    }
-    void pop() {
-        if (s.top() == max_s.top()) max_s.pop();
-        s.pop();
-    }
-    int getMax() { return max_s.top(); }
+    void push(int v) { s_.push(v); if (mx_.empty() || v >= mx_.top()) mx_.push(v); }
+    int pop() { int v = s_.top(); s_.pop(); if (v == mx_.top()) mx_.pop(); return v; }
+    int top() const { return s_.top(); } int peekMax() const { return mx_.top(); } bool empty() const { return s_.empty(); }
+    int popMax() { int m = mx_.top(); std::stack<int> buf; while (s_.top() != m) { buf.push(pop()); } pop(); while (!buf.empty()) { push(buf.top()); buf.pop(); } return m; }       // 최댓값 위의 원소를 잠시 치웠다 되돌린다: O(N)
 };
-
+class MaxStackFast {
+    std::list<int> l_; std::map<int, std::vector<std::list<int>::iterator>> where_;
+public:
+    void push(int v) { l_.push_back(v); where_[v].push_back(std::prev(l_.end())); }
+    int pop() { int v = l_.back(); auto& w = where_[v]; w.pop_back(); if (w.empty()) where_.erase(v); l_.pop_back(); return v; }
+    int top() const { return l_.back(); } int peekMax() const { return where_.rbegin()->first; } bool empty() const { return l_.empty(); }
+    int popMax() { auto it = std::prev(where_.end()); int v = it->first; auto node = it->second.back(); it->second.pop_back(); if (it->second.empty()) where_.erase(it); l_.erase(node); return v; }    // 가장 위의 최댓값 노드를 O(log N) 에 제거
+    std::vector<int> contents() const { return std::vector<int>(l_.begin(), l_.end()); }
+};
 int main() {
-    MaxStack ms;
-    ms.push(1); ms.push(5); ms.push(2);
-    assert(ms.getMax() == 5);
-    std::cout << "MaxStack verified." << std::endl;
-    return 0;
+    std::mt19937 rng(14); MaxStackSimple a; MaxStackFast b; std::vector<int> ref; long popMaxCalls = 0;
+    for (int step = 0; step < 50000; step++) {
+        int op = rng() % 10;
+        if (op < 5 || ref.empty()) { int v = rng() % 12; a.push(v); b.push(v); ref.push_back(v); }
+        else if (op < 7) { int x = a.pop(), y = b.pop(); assert(x == ref.back() && y == ref.back()); ref.pop_back(); }
+        else if (op < 9) { int mx = *std::max_element(ref.begin(), ref.end()); size_t at = ref.size() - 1; while (ref[at] != mx) at--; int x = a.popMax(), y = b.popMax(); assert(x == mx && y == mx); ref.erase(ref.begin() + at); popMaxCalls++; }       // 가장 위의 최댓값 제거
+        else { assert(a.top() == ref.back() && b.top() == ref.back()); }
+        if (!ref.empty()) { assert(a.peekMax() == *std::max_element(ref.begin(), ref.end()) && b.peekMax() == a.peekMax() && b.contents() == ref); } else assert(a.empty() && b.empty());          // ④ 순서 유지
+        if (ref.size() > 300) while (ref.size() > 150) { a.pop(); b.pop(); ref.pop_back(); }
+    }
+    { MaxStackFast s; s.push(5); s.push(1); s.push(5); assert(s.popMax() == 5 && s.contents() == (std::vector<int>{5, 1})); MaxStackSimple t; t.push(5); t.push(1); t.push(5); assert(t.popMax() == 5 && t.top() == 1); }          // ③ 최근의 5 가 먼저 제거
+    std::cout << "MaxStack: both the two-stack and the list-plus-map implementations matched a brute-force vector over 50000 random operations (" << popMaxCalls << " popMax calls) with exact element order preserved" << std::endl; return 0;
 }
-// Time Complexity: O(1) per operation
+// Time Complexity: 보조 스택 방식 push·pop·top·peekMax O(1), popMax O(N) / 리스트+맵 방식 popMax 포함 O(log N)
 // Space Complexity: O(N)
 ```
 ## TwoStacksInArray()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
+#include <stack>
+#include <vector>
 #include <cassert>
 
+// 한 배열에 스택 두 개(TwoStacksInArray): 두 스택을 따로 용량 N/2 씩 잡으면 한쪽이 가득 차도 다른 쪽의 빈 칸을 못 쓴다. 한 배열의 양 끝에서 마주 보며 자라게 하면 — 스택 1 은 왼쪽 끝에서 오른쪽으로, 스택 2 는 오른쪽 끝에서 왼쪽으로 — 두 스택의 크기 합이 N 이 될 때까지만 거절되어 공간을 100% 쓸 수 있다.
+// 경계: 비었을 때 top1 = −1, top2 = N. 가득 참 조건은 top1 + 1 == top2 (둘이 맞닿음). 한쪽이 전부를 차지할 수도 있다. 비어 있는 쪽 pop 은 거절한다.
+// 비교 방식: 짝수 칸은 스택 1, 홀수 칸은 스택 2 로 번갈아 쓰는 인터리브 방식은 한 스택당 최대 N/2 개라 공간을 낭비한다.
+// 검증: 무작위 push1/push2/pop1/pop2/peek 6 만 번을 std::stack 두 개(합이 N 을 넘으면 거절하는 규칙)와 대조: ① 모든 결과와 크기 일치 ② 한 스택이 N 개를 독점 가능 ③ 합이 N 일 때 어느 쪽 push 든 거절 ④ 인터리브 방식은 한쪽이 N/2 에서 막힘
 class TwoStacks {
-    int arr[100];
-    int top1 = -1, top2 = 100;
+    std::vector<int> a_; int top1_, top2_;
 public:
-    void push1(int x) { if (top1 < top2 - 1) arr[++top1] = x; }
-    void push2(int x) { if (top1 < top2 - 1) arr[--top2] = x; }
-    int getTop1() { return arr[top1]; }
-    int getTop2() { return arr[top2]; }
+    explicit TwoStacks(int n) : a_(n), top1_(-1), top2_(n) {}
+    bool full() const { return top1_ + 1 == top2_; }
+    bool push1(int x) { if (full()) return false; a_[++top1_] = x; return true; } bool push2(int x) { if (full()) return false; a_[--top2_] = x; return true; }
+    bool pop1(int& out) { if (top1_ < 0) return false; out = a_[top1_--]; return true; } bool pop2(int& out) { if (top2_ >= (int)a_.size()) return false; out = a_[top2_++]; return true; }
+    bool peek1(int& out) const { if (top1_ < 0) return false; out = a_[top1_]; return true; } bool peek2(int& out) const { if (top2_ >= (int)a_.size()) return false; out = a_[top2_]; return true; }
+    int size1() const { return top1_ + 1; } int size2() const { return (int)a_.size() - top2_; }
 };
-
+class Interleaved {                                                                             // 비교용: 짝수 칸 / 홀수 칸
+    std::vector<int> a_; int n1_ = 0, n2_ = 0;
+public:
+    explicit Interleaved(int n) : a_(n) {}
+    bool push1(int x) { int idx = 2 * n1_; if (idx >= (int)a_.size()) return false; a_[idx] = x; n1_++; return true; } bool push2(int x) { int idx = 2 * n2_ + 1; if (idx >= (int)a_.size()) return false; a_[idx] = x; n2_++; return true; }
+};
 int main() {
-    TwoStacks ts;
-    ts.push1(10);
-    ts.push2(20);
-    assert(ts.getTop1() == 10 && ts.getTop2() == 20);
-    std::cout << "Two stacks in array tested." << std::endl;
-    return 0;
+    const int N = 50; std::mt19937 rng(6); TwoStacks t(N); std::stack<int> r1, r2;
+    for (int step = 0; step < 60000; step++) {
+        int op = rng() % 6; int v = rng() % 1000, out = -1;
+        if (op == 0) { bool ok = t.push1(v); assert(ok == (r1.size() + r2.size() < (size_t)N)); if (ok) r1.push(v); }
+        else if (op == 1) { bool ok = t.push2(v); assert(ok == (r1.size() + r2.size() < (size_t)N)); if (ok) r2.push(v); }
+        else if (op == 2) { bool ok = t.pop1(out); assert(ok == !r1.empty()); if (ok) { assert(out == r1.top()); r1.pop(); } }
+        else if (op == 3) { bool ok = t.pop2(out); assert(ok == !r2.empty()); if (ok) { assert(out == r2.top()); r2.pop(); } }
+        else { bool ok1 = t.peek1(out); assert(ok1 == !r1.empty() && (!ok1 || out == r1.top())); bool ok2 = t.peek2(out); assert(ok2 == !r2.empty() && (!ok2 || out == r2.top())); }
+        assert((size_t)t.size1() == r1.size() && (size_t)t.size2() == r2.size() && t.full() == (r1.size() + r2.size() == (size_t)N));                        // ①
+    }
+    { TwoStacks one(10); int pushed = 0; while (one.push1(pushed)) pushed++; assert(pushed == 10 && !one.push2(0) && one.size2() == 0); TwoStacks two(10); pushed = 0; while (two.push2(pushed)) pushed++; assert(pushed == 10 && !two.push1(0)); }       // ② ③
+    { Interleaved il(10); int pushed = 0; while (il.push1(pushed)) pushed++; assert(pushed == 5); }                                                                                                                // ④ 한 스택이 N/2 에서 막힘
+    std::cout << "TwoStacksInArray: two stacks growing toward each other matched two std::stack models for 60000 operations; one stack can use all " << N << " cells while the interleaved layout stops at half" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(N)
+// Time Complexity: push·pop·peek O(1)
+// Space Complexity: O(N) — 두 스택이 공간을 공유하므로 낭비 없음
 ```
 ## MultipleStacks()
 ### 대표코드
