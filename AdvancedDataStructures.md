@@ -3847,86 +3847,283 @@ int main() {
 ## SkipList()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <climits>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 스킵 리스트(리스트 관점의 요약, 정본은 List.md Part 10): 정렬된 연결 리스트에 확률적으로 층을 쌓아 탐색을 기대 O(log N) 으로 만든다. DB 에서는 LevelDB·RocksDB 의 memtable 색인이 이것이다 —
+// 회전이 없어 "삽입 전용(insert-only) + 읽기 동시성" 구현이 쉽고, 0층을 따라가면 이미 정렬된 순서라 memtable 을 SSTable 로 내보내는(flush) 순회가 공짜다
+struct N { int k; std::vector<N*> nx; };
+struct SL {
+    N* head = new N{INT_MIN, std::vector<N*>(12, nullptr)}; std::mt19937 g{3}; int lvl = 1;
+    void add(int k) { N* up[12]; N* x = head; for (int i = lvl - 1; i >= 0; i--) { while (x->nx[i] && x->nx[i]->k < k) x = x->nx[i]; up[i] = x; }
+        int h = 1; while (h < 12 && (g() & 1)) h++; if (h > lvl) { for (int i = lvl; i < h; i++) up[i] = head; lvl = h; } N* n = new N{k, std::vector<N*>(h)};
+        for (int i = 0; i < h; i++) { n->nx[i] = up[i]->nx[i]; up[i]->nx[i] = n; } }
+};
 int main() {
-    std::cout << "Skip List uses probabilistic layers to achieve O(log N) operations." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    SL s; std::mt19937 g(1); std::vector<int> v; for (int i = 0; i < 2000; i++) { int k = g() % 100000; v.push_back(k); s.add(k); } std::sort(v.begin(), v.end());
+    std::vector<int> out; for (N* x = s.head->nx[0]; x; x = x->nx[0]) out.push_back(x->k); assert(out == v);      // 0층 순회 = 정렬된 순서 (memtable flush)
+    std::cout << "SkipList: level-0 walk yields sorted order, " << s.lvl << " levels for 2000 keys" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 탐색·삽입 기대 O(log N)
+// Space Complexity: 기대 O(N)
 ```
 ## MemTable()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// MemTable: LSM 트리의 쓰기 버퍼. 쓰기는 먼저 WAL 에 기록하고 메모리의 memtable 에 반영한다. LevelDB/RocksDB 의 memtable 은 삽입 전용 스킵 리스트이다 — 갱신·삭제도 "기존 항목 수정" 이 아니라
+// "(키, 시퀀스 번호, 종류) 항목 추가" 로 처리하기 때문에 구조에서 삭제가 필요 없다.  항목의 순서는 키 오름차순, 같은 키 안에서는 시퀀스 내림차순(최신이 앞)이다.
+// 읽기는 "스냅샷 시퀀스 s 이하에서 가장 새로운 항목" 을 찾으므로 쓰기와 독립된 일관된 시점 읽기(MVCC)가 공짜로 된다.  크기가 한도에 이르면 불변(immutable) memtable 로 바꾸고 새 memtable 을 열며 불변본을 SSTable 로 내보낸다(flush)
+struct Entry { std::string key, val; uint64_t seq; bool del; };
+struct SLNode { Entry e; std::vector<SLNode*> next; };
+struct MemTable {
+    static const int MAXH = 12; SLNode* head = new SLNode{{}, std::vector<SLNode*>(MAXH, nullptr)}; int height = 1; uint64_t seqNext = 1; size_t bytes = 0; size_t count = 0; bool frozen = false; std::mt19937 rng{11};
+    static bool before(const Entry& a, const std::string& key, uint64_t seq) { return a.key < key || (a.key == key && a.seq > seq); }   // a 가 (key, seq) 앞에 놓이는가
+    ~MemTable() { for (SLNode* x = head; x;) { SLNode* n = x->next[0]; delete x; x = n; } }
+    uint64_t write(const std::string& key, const std::string& val, bool del) {
+        assert(!frozen); uint64_t seq = seqNext++; SLNode* up[MAXH]; SLNode* x = head;
+        for (int i = height - 1; i >= 0; i--) { while (x->next[i] && before(x->next[i]->e, key, seq)) x = x->next[i]; up[i] = x; }
+        int h = 1; while (h < MAXH && (rng() & 3) == 0) h++; if (h > height) { for (int i = height; i < h; i++) up[i] = head; height = h; }
+        SLNode* n = new SLNode{{key, val, seq, del}, std::vector<SLNode*>(h)}; for (int i = 0; i < h; i++) { n->next[i] = up[i]->next[i]; up[i]->next[i] = n; }
+        bytes += key.size() + val.size() + 16; count++; return seq;
+    }
+    uint64_t put(const std::string& k, const std::string& v) { return write(k, v, false); }
+    uint64_t del(const std::string& k) { return write(k, "", true); }
+    int get(const std::string& key, uint64_t snapshot, std::string& val) const {      // 1 찾음, 0 삭제됨(툼스톤), -1 이 memtable 에는 없음 (아래 레벨을 계속 찾아야 함)
+        const SLNode* x = head; for (int i = height - 1; i >= 0; i--) while (x->next[i] && before(x->next[i]->e, key, snapshot)) x = x->next[i];
+        x = x->next[0]; if (!x || x->e.key != key) return -1; if (x->e.del) return 0; val = x->e.val; return 1;
+    }
+    std::vector<Entry> flushOrder() const {                                 // 키당 가장 새 항목 하나(툼스톤 포함)를 키 순서로 -> SSTable 입력
+        std::vector<Entry> out; for (SLNode* x = head->next[0]; x; x = x->next[0]) if (out.empty() || out.back().key != x->e.key) out.push_back(x->e); return out;
+    }
+};
+
 int main() {
-    std::cout << "MemTable (often a SkipList or RBTree) buffers writes in RAM." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    MemTable m; std::mt19937 g(2); struct Op { std::string k, v; uint64_t seq; bool del; }; std::vector<Op> ops; size_t expectBytes = 0;
+    for (int i = 0; i < 6000; i++) {
+        std::string k = "k" + std::to_string(g() % 400), v = "v" + std::to_string(g()); bool del = g() % 5 == 0;
+        uint64_t seq = del ? m.del(k) : m.put(k, v); ops.push_back({k, del ? "" : v, seq, del}); expectBytes += k.size() + (del ? 0 : v.size()) + 16;
+    }
+    assert(m.bytes == expectBytes && m.count == ops.size());               // 바이트 회계
+    for (int t = 0; t < 20000; t++) {                                      // 임의의 스냅샷 시점 읽기가 그 시점의 값과 같다
+        std::string k = "k" + std::to_string(g() % 420); uint64_t snap = g() % (ops.size() + 1); const Op* last = nullptr;
+        for (auto& o : ops) if (o.k == k && o.seq <= snap) last = &o;
+        std::string v; int r = m.get(k, snap, v);
+        if (!last) assert(r == -1); else if (last->del) assert(r == 0); else assert(r == 1 && v == last->v);
+    }
+    auto fl = m.flushOrder(); std::map<std::string, Op> newest; for (auto& o : ops) newest[o.k] = o;
+    assert(fl.size() == newest.size()); size_t i = 0;
+    for (auto& kv : newest) { assert(fl[i].key == kv.first && fl[i].seq == kv.second.seq && fl[i].del == kv.second.del && (fl[i].del || fl[i].val == kv.second.v)); i++; }    // 키 순서, 키당 최신 항목
+    m.frozen = true;
+    std::cout << "MemTable: " << m.count << " versions of " << fl.size() << " keys (" << m.bytes << " bytes), snapshot reads and flush order verified" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 쓰기·읽기 기대 O(log N), flush 순회 O(N)
+// Space Complexity: O(쓰기 수) — 갱신도 새 항목이라 한도에 이를 때까지 커진다
 ```
 ## SSTable()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "SSTable is an immutable, sorted disk file dumped from a MemTable." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// SSTable(Sorted String Table): LSM 트리가 디스크에 쓰는 불변 정렬 파일. 구성: [데이터 블록들] [인덱스 블록] [블룸 필터 블록] [푸터].
+//   데이터 블록: 약 4 KB (여기서는 작게) 단위로 (키 길이, 값 길이, 삭제 표시, 키, 값) 레코드를 키 순서로 늘어놓고 끝에 CRC32 를 붙인다.
+//   인덱스 블록: 블록마다 (마지막 키, 오프셋, 크기) — 이분 탐색으로 키가 있을 법한 블록 하나만 고른다.   필터 블록: 파일 전체 키의 블룸 필터 — 없는 키는 디스크를 읽지 않고 거절.
+//   푸터(고정 32 바이트): 인덱스·필터 위치, 개수, 자체 CRC, 매직 번호 — 파일 끝에서 시작해 나머지를 찾아간다.
+// 읽기는 "푸터 -> 인덱스·필터 메모리에 적재 -> 키마다 블룸 -> 이분 탐색 -> 블록 하나 읽고 CRC 검사 -> 블록 안 순차 탐색" 이므로 조회당 블록 읽기가 최대 1 번이다
+static uint32_t crcTab[256]; static bool crcInit = false;
+uint32_t crc32(const char* p, size_t n) { if (!crcInit) { for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1; crcTab[i] = c; } crcInit = true; }
+    uint32_t c = ~0u; for (size_t i = 0; i < n; i++) c = crcTab[(c ^ (uint8_t)p[i]) & 0xFF] ^ (c >> 8); return ~c; }
+void putVar(std::string& s, uint32_t v) { while (v >= 128) { s.push_back((char)((v & 127) | 128)); v >>= 7; } s.push_back((char)v); }
+uint32_t getVar(const std::string& s, size_t& p) { uint32_t v = 0, sh = 0; for (;;) { uint8_t b = s[p++]; v |= (uint32_t)(b & 127) << sh; if (!(b & 128)) break; sh += 7; } return v; }
+void put32(std::string& s, uint32_t v) { for (int i = 0; i < 4; i++) s.push_back((char)(v >> (8 * i))); }
+uint32_t get32(const std::string& s, size_t p) { uint32_t v = 0; for (int i = 0; i < 4; i++) v |= (uint32_t)(uint8_t)s[p + i] << (8 * i); return v; }
+uint64_t hmix(const std::string& k, uint64_t seed) { uint64_t h = 1469598103934665603ULL ^ seed; for (unsigned char c : k) { h ^= c; h *= 1099511628211ULL; } h ^= h >> 32; h *= 0x9e3779b97f4a7c15ULL; return h ^ (h >> 29); }
+struct Rec { std::string key, val; bool del; };
+const uint64_t MAGIC = 0x53535441424c4531ULL;                              // "SSTABLE1"
+std::string build(const std::vector<Rec>& recs, size_t blockSize = 256) {
+    std::string f, blk, lastKey; struct IE { std::string last; uint32_t off, size; }; std::vector<IE> idx;
+    auto flushBlock = [&]() { if (blk.empty()) return; uint32_t off = f.size(); f += blk; put32(f, crc32(blk.data(), blk.size())); idx.push_back({lastKey, off, (uint32_t)blk.size()}); blk.clear(); };
+    for (auto& r : recs) { putVar(blk, r.key.size()); putVar(blk, r.val.size()); blk.push_back(r.del ? 1 : 0); blk += r.key; blk += r.val; lastKey = r.key; if (blk.size() >= blockSize) flushBlock(); }
+    flushBlock();
+    uint32_t indexOff = f.size(); std::string ib; putVar(ib, idx.size()); for (auto& e : idx) { putVar(ib, e.last.size()); ib += e.last; putVar(ib, e.off); putVar(ib, e.size); } f += ib;
+    uint32_t filterOff = f.size(); size_t m = std::max<size_t>(64, recs.size() * 10); std::string fb((m + 7) / 8, 0);
+    for (auto& r : recs) for (int i = 0; i < 4; i++) { size_t p = hmix(r.key, i) % m; fb[p >> 3] |= (char)(1 << (p & 7)); }
+    f += fb;
+    std::string foot; put32(foot, indexOff); put32(foot, ib.size()); put32(foot, filterOff); put32(foot, fb.size()); put32(foot, recs.size()); put32(foot, crc32(foot.data(), foot.size()));
+    for (int i = 0; i < 8; i++) foot.push_back((char)(MAGIC >> (8 * i))); f += foot; return f;                // 32 바이트
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+struct Table {
+    const std::string& f; bool ok = false; struct IE { std::string last; uint32_t off, size; }; std::vector<IE> idx; std::string filter; uint32_t count = 0; long blockReads = 0, bloomSkips = 0;
+    explicit Table(const std::string& file) : f(file) {
+        if (f.size() < 32) return; size_t b = f.size() - 32; uint64_t magic = 0; for (int i = 0; i < 8; i++) magic |= (uint64_t)(uint8_t)f[b + 24 + i] << (8 * i);
+        if (magic != MAGIC || crc32(f.data() + b, 20) != get32(f, b + 20)) return;                   // 푸터 검증
+        uint32_t ioff = get32(f, b), isz = get32(f, b + 4), foff = get32(f, b + 8), fsz = get32(f, b + 12); count = get32(f, b + 16);
+        std::string ib = f.substr(ioff, isz); size_t p = 0; uint32_t n = getVar(ib, p);
+        for (uint32_t i = 0; i < n; i++) { uint32_t kl = getVar(ib, p); std::string last = ib.substr(p, kl); p += kl; uint32_t off = getVar(ib, p), sz = getVar(ib, p); idx.push_back({last, off, sz}); }
+        filter = f.substr(foff, fsz); ok = true;
+    }
+    bool maybe(const std::string& key) const { size_t m = filter.size() * 8; for (int i = 0; i < 4; i++) { size_t p = hmix(key, i) % m; if (!((filter[p >> 3] >> (p & 7)) & 1)) return false; } return true; }
+    bool readBlock(const IE& e, std::vector<Rec>& out) {                    // CRC 가 맞아야만 읽는다
+        blockReads++; std::string blk = f.substr(e.off, e.size); if (crc32(blk.data(), blk.size()) != get32(f, e.off + e.size)) return false;
+        size_t p = 0; while (p < blk.size()) { uint32_t kl = getVar(blk, p), vl = getVar(blk, p); bool del = blk[p++]; Rec r{blk.substr(p, kl), blk.substr(p + kl, vl), del}; p += kl + vl; out.push_back(r); } return true;
+    }
+    int get(const std::string& key, Rec& out) {                             // 1 찾음, 0 없음, -1 손상
+        if (!maybe(key)) { bloomSkips++; return 0; }
+        auto it = std::lower_bound(idx.begin(), idx.end(), key, [](const IE& e, const std::string& k) { return e.last < k; }); if (it == idx.end()) return 0;
+        std::vector<Rec> rs; if (!readBlock(*it, rs)) return -1; for (auto& r : rs) if (r.key == key) { out = r; return 1; } return 0;
+    }
+    bool scan(const std::string& lo, const std::string& hi, std::vector<Rec>& out) {
+        auto it = std::lower_bound(idx.begin(), idx.end(), lo, [](const IE& e, const std::string& k) { return e.last < k; });
+        for (; it != idx.end(); ++it) { std::vector<Rec> rs; if (!readBlock(*it, rs)) return false; bool past = false; for (auto& r : rs) { if (r.key > hi) { past = true; break; } if (r.key >= lo) out.push_back(r); } if (past) break; } return true;
+    }
+};
+
+int main() {
+    assert(crc32("123456789", 9) == 0xCBF43926u);                          // CRC-32 표준 시험값
+    std::mt19937 g(5); std::vector<Rec> recs; char kb[16];
+    for (int i = 0; i < 4000; i++) { std::snprintf(kb, sizeof kb, "key%06d", i * 3); std::string v(1 + g() % 30, 'a' + g() % 26); recs.push_back({kb, v, g() % 10 == 0}); if (recs.back().del) recs.back().val.clear(); }
+    std::string file = build(recs); Table t(file); assert(t.ok && t.count == recs.size());
+    for (auto& r : recs) { Rec o; assert(t.get(r.key, o) == 1 && o.val == r.val && o.del == r.del); }      // 모든 키 조회 (툼스톤 포함)
+    assert(t.blockReads == (long)recs.size());                             // 조회당 블록 읽기 정확히 1 번
+    long fp = 0, T = 4000; t.blockReads = 0; t.bloomSkips = 0;
+    for (int i = 0; i < T; i++) { std::snprintf(kb, sizeof kb, "key%06d", i * 3 + 1); Rec o; assert(t.get(kb, o) == 0); }       // 없는 키
+    fp = t.blockReads; assert(t.bloomSkips + fp == T && fp < T * 0.05);    // 블룸이 대부분 디스크 읽기 없이 거절
+    std::vector<Rec> sc; assert(t.scan("key000300", "key000600", sc)); size_t want = 0; for (auto& r : recs) want += r.key >= "key000300" && r.key <= "key000600"; assert(sc.size() == want);
+    std::string bad = file; bad[t.idx[3].off + 5] ^= 0x40; Table tb(bad); Rec o; int code = -2; for (auto& r : recs) if (r.key <= t.idx[3].last && r.key > t.idx[2].last) { code = tb.get(r.key, o); break; }
+    assert(code == -1);                                                    // 데이터 블록 한 바이트 변조 -> CRC 로 탐지
+    std::string badFoot = file; badFoot[badFoot.size() - 30] ^= 1; assert(!Table(badFoot).ok);                // 푸터 변조 -> 파일 거부
+    std::cout << "SSTable: " << recs.size() << " records in " << t.idx.size() << " blocks, file " << file.size() << " bytes; 1 block read per hit, bloom rejected " << t.bloomSkips << "/" << T << " misses, corruption detected" << std::endl; return 0;
+}
+// Time Complexity: 조회 O(log (블록 수) + 블록 안 레코드 수), 블록 읽기 1 회
+// Space Complexity: 파일 O(N), 메모리에는 인덱스·필터만
 ```
 ## WriteAheadLog()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
+#include <map>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Write Ahead Log (WAL) sequential appends prevent data loss before flush." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 선행 기록 로그(WAL): "데이터를 바꾸기 전에 바꾸려는 내용을 먼저 로그 끝에 순차 기록하고 디스크에 동기화(fsync)한다" 는 규칙. 장애 후에는 로그를 처음부터 재생해 상태를 복원한다.
+// 레코드 = [CRC32 4][길이 4][종류 1][내용]. 재생은 레코드를 하나씩 읽다가 길이가 모자라거나(찢어진 쓰기, torn write) CRC 가 틀리면 거기서 멈추고 그 앞의 레코드만 인정한다 -> 항상 "일부 접두사"로 복구되므로 일관적이다.
+// 보장: fsync 가 끝난 레코드는 반드시 복구되고, 끝나지 않은 꼬리는 일부만 남거나 사라져도 상태가 어긋나지 않는다.  fsync 가 비싸므로 여러 레코드를 한 번에 동기화하는 그룹 커밋(group commit)으로 횟수를 줄인다
+static uint32_t crcTab[256]; static bool crcInit = false;
+uint32_t crc32(const char* p, size_t n) { if (!crcInit) { for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1; crcTab[i] = c; } crcInit = true; }
+    uint32_t c = ~0u; for (size_t i = 0; i < n; i++) c = crcTab[(c ^ (uint8_t)p[i]) & 0xFF] ^ (c >> 8); return ~c; }
+void put32(std::string& s, uint32_t v) { for (int i = 0; i < 4; i++) s.push_back((char)(v >> (8 * i))); }
+uint32_t get32(const std::string& s, size_t p) { uint32_t v = 0; for (int i = 0; i < 4; i++) v |= (uint32_t)(uint8_t)s[p + i] << (8 * i); return v; }
+struct WAL {
+    std::string buf; size_t synced = 0; long syncs = 0;                   // buf = 파일 내용, synced = 디스크에 확정된 바이트 수
+    void append(uint8_t type, const std::string& payload) { std::string body; put32(body, payload.size()); body.push_back((char)type); body += payload; put32(buf, crc32(body.data(), body.size())); buf += body; }
+    void sync() { synced = buf.size(); syncs++; }
+    std::string crashImage(size_t keepUnsynced) const { return buf.substr(0, std::min(buf.size(), synced + keepUnsynced)); }      // 장애: 동기화 안 된 꼬리는 일부만 남을 수 있다
+};
+struct Replay { std::vector<std::pair<uint8_t, std::string>> recs; size_t validBytes = 0; };
+Replay replay(const std::string& img) {
+    Replay r; size_t p = 0;
+    while (p + 9 <= img.size()) {
+        uint32_t len = get32(img, p + 4); if (p + 9 + len > img.size()) break;                      // 찢어진 레코드
+        if (crc32(img.data() + p + 4, 5 + len) != get32(img, p)) break;                              // 손상된 레코드
+        r.recs.push_back({(uint8_t)img[p + 8], img.substr(p + 9, len)}); p += 9 + len; r.validBytes = p;
+    }
+    return r;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+typedef std::map<std::string, std::string> KV;
+void apply(KV& kv, uint8_t type, const std::string& payload) { size_t c = payload.find('='); if (type == 1) kv[payload.substr(0, c)] = payload.substr(c + 1); else kv.erase(payload); }       // 1 = set k=v, 2 = del k
+
+int main() {
+    std::mt19937 g(3);
+    for (int trial = 0; trial < 300; trial++) {
+        WAL w; std::vector<std::pair<uint8_t, std::string>> ops; size_t syncedOps = 0;
+        int n = 5 + g() % 60;
+        for (int i = 0; i < n; i++) {
+            uint8_t type = g() % 4 ? 1 : 2; std::string k = "k" + std::to_string(g() % 20), payload = type == 1 ? k + "=" + std::string(g() % 12, 'x') + std::to_string(i) : k;
+            w.append(type, payload); ops.push_back({type, payload}); if (g() % 5 == 0) { w.sync(); syncedOps = ops.size(); }
+        }
+        size_t tail = w.buf.size() - w.synced; std::string img = w.crashImage(tail ? g() % (tail + 1) : 0);           // 동기화 안 된 꼬리의 임의 길이만 남은 채 정전
+        Replay r = replay(img);
+        assert(r.recs.size() >= syncedOps && r.recs.size() <= ops.size());                           // 동기화된 레코드는 모두 복구, 그 이상은 접두사만
+        KV got, want; for (auto& rc : r.recs) apply(got, rc.first, rc.second);
+        for (size_t i = 0; i < r.recs.size(); i++) { assert(r.recs[i] == ops[i]); apply(want, ops[i].first, ops[i].second); }       // 복구된 것은 정확히 처음 j 개
+        assert(got == want);
+    }
+    WAL w; for (int i = 0; i < 10; i++) w.append(1, "k" + std::to_string(i) + "=v"); w.sync();
+    std::string corrupt = w.buf; Replay whole = replay(corrupt); assert(whole.recs.size() == 10 && whole.validBytes == corrupt.size());
+    size_t rec = corrupt.size() / 10; corrupt[rec * 4 + 12] ^= 0x20; assert(replay(corrupt).recs.size() == 4);   // 다섯 번째 레코드의 한 비트 변조 -> 그 앞 4 개만 인정
+    WAL perOp, grouped; for (int i = 0; i < 160; i++) { perOp.append(1, "a=b"); perOp.sync(); grouped.append(1, "a=b"); if (i % 16 == 15) grouped.sync(); }
+    assert(perOp.syncs == 160 && grouped.syncs == 10);
+    std::cout << "WriteAheadLog: 300 random crashes recover a consistent prefix (all synced records kept); bit corruption stops replay at the bad record; group commit " << grouped.syncs << " syncs vs " << perOp.syncs << std::endl; return 0;
+}
+// Time Complexity: append O(레코드), 재생 O(로그 길이)
+// Space Complexity: 로그 크기 (체크포인트 후 앞부분 삭제)
 ```
 ## BTreeIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <vector>
 #include <cassert>
 
+// B-트리 인덱스(트리 관점의 요약, 정본은 Tree.md Part 13): 데이터베이스는 "디스크 페이지 읽기 횟수" 로 비용을 센다. 이분 탐색은 log2 N 번 페이지를 건드리지만, 페이지 하나에 키 수백 개를 담는 B-트리는 log_F N (F ≈ 수백) 번 — 수억 행도 3~4 번 읽기이다.
+// 아래는 페이지 크기 64 키로 2 단 인덱스(루트 페이지 + 리프 페이지)를 만들어 읽기 횟수를 이분 탐색과 비교한다
 int main() {
-    std::cout << "B+Tree Index is standard in RDBMS for point and range queries." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int P = 64; std::vector<int> keys; for (int i = 0; i < 4000; i++) keys.push_back(i * 2);
+    std::vector<int> firstKey; for (size_t i = 0; i < keys.size(); i += P) firstKey.push_back(keys[i]);                        // 리프 페이지마다 첫 키 (이것이 루트 페이지)
+    long btreeReads = 0, binReads = 0;
+    for (int q = 0; q < 8000; q += 2) {
+        btreeReads += 1;                                                    // 루트 페이지 1 번
+        size_t leaf = std::upper_bound(firstKey.begin(), firstKey.end(), q) - firstKey.begin() - 1; btreeReads += 1;       // 리프 페이지 1 번
+        auto b = keys.begin() + leaf * P, e = keys.begin() + std::min(keys.size(), (leaf + 1) * P); assert(std::binary_search(b, e, q));
+        size_t lo = 0, hi = keys.size(); long pages = 0; long last = -1; while (lo < hi) { size_t mid = (lo + hi) / 2; if ((long)(mid / P) != last) { pages++; last = mid / P; } if (keys[mid] < q) lo = mid + 1; else hi = mid; } binReads += pages;
+    }
+    assert(btreeReads / 4000 == 2 && binReads / 4000 > 4);
+    std::cout << "BTreeIndex: page reads per lookup B-tree 2 vs binary search " << (double)binReads / 4000 << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회 O(log_F N) 페이지 읽기
+// Space Complexity: O(N)
 ```
 ## HashIndex()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <vector>
 #include <cassert>
 
+// 해시 인덱스(해시 관점의 요약, 정본은 Hash.md Part 9): 키의 해시로 버킷 페이지를 골라 "=" 조건을 평균 페이지 1~2 번 읽기로 찾는다(넘치면 오버플로 페이지를 사슬로). B-트리보다 등치 조회가 빠르지만
+// 키 순서를 모르므로 범위 조건·정렬·접두사 검색은 못 한다 — PostgreSQL 의 hash index, 메모리 DB 의 기본 인덱스. 아래는 페이지 용량 4 인 버킷으로 페이지 읽기를 센다
+struct Page { std::vector<int> keys; int overflow = -1; };
 int main() {
-    std::cout << "Hash Index is O(1) for equality but does not support range scans." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int B = 600; std::vector<Page> pages(B); long readsTotal = 0;
+    auto pageOf = [&](int k) { return (unsigned)(k * 2654435761u) % B; };
+    for (int k = 0; k < 2000; k++) { int p = pageOf(k); while (pages[p].keys.size() == 4) { if (pages[p].overflow < 0) { pages.push_back({}); pages[p].overflow = pages.size() - 1; } p = pages[p].overflow; } pages[p].keys.push_back(k); }
+    for (int k = 0; k < 2000; k++) { int p = pageOf(k); readsTotal++; bool found = false; for (;;) { for (int x : pages[p].keys) found |= x == k; if (found || pages[p].overflow < 0) break; p = pages[p].overflow; readsTotal++; } assert(found); }
+    assert((double)readsTotal / 2000 < 1.6);
+    std::cout << "HashIndex: equality lookup averages " << (double)readsTotal / 2000 << " page reads (range scans impossible)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 등치 조회 평균 O(1) 페이지 읽기
+// Space Complexity: O(N)
 ```
 
 # Part 14. 운영체제
@@ -3934,269 +4131,1030 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <set>
 #include <cassert>
 
+// 버디 할당기(메모리 관점의 요약, 정본은 Memory.md Part 6): 메모리를 2^k 페이지 블록으로만 나눈다. 할당은 요청보다 크거나 같은 가장 작은 빈 블록을 찾아 필요한 크기가 될 때까지 반으로 쪼개고(남는 반쪽은 빈 목록에),
+// 해제는 "버디"(블록 시작 주소 XOR 크기)가 비어 있으면 합쳐 위 차수로 올린다.  버디의 주소가 XOR 한 번으로 구해져 빠르고, 외부 단편화가 제한된다 (Linux 페이지 할당기)
+const int MAXO = 6; std::set<int> freeList[MAXO + 1];
+int alloc(int k) { int j = k; while (j <= MAXO && freeList[j].empty()) j++; if (j > MAXO) return -1; int b = *freeList[j].begin(); freeList[j].erase(b); while (j > k) { j--; freeList[j].insert(b + (1 << j)); } return b; }
+void freeBlk(int b, int k) { while (k < MAXO && freeList[k].count(b ^ (1 << k))) { freeList[k].erase(b ^ (1 << k)); b &= ~(1 << k); k++; } freeList[k].insert(b); }
 int main() {
-    std::cout << "Buddy Allocator merges adjacent blocks (powers of 2) for page allocation." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    freeList[MAXO].insert(0); int a = alloc(0), b = alloc(1), c = alloc(2);      // 64 페이지에서 1, 2, 4 페이지 요청
+    assert(a == 0 && b == 2 && c == 4 && freeList[MAXO].empty());
+    freeBlk(a, 0); freeBlk(b, 1); freeBlk(c, 2);                           // 전부 해제하면 버디끼리 합쳐 원래의 64 페이지 블록으로
+    assert(freeList[MAXO].size() == 1 && *freeList[MAXO].begin() == 0);
+    std::cout << "BuddyAllocator: split on alloc, coalesce on free back to one order-" << MAXO << " block" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 할당·해제 O(MAXO) 차수 이동
+// Space Complexity: 빈 블록 목록
 ```
 ## SlabAllocator()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <vector>
 #include <cassert>
 
+// 슬랩 할당기(메모리 관점의 요약, 정본은 Memory.md Part 6): 같은 크기의 객체(inode, 소켓 버퍼 ...)를 자주 할당·해제할 때 미리 같은 크기 칸으로 나눈 "슬랩" 페이지를 두고 빈 칸 목록에서 O(1) 로 꺼낸다.
+// 해제된 칸은 초기화된 채로 재사용되어 생성 비용도 절약되고 내부 단편화가 거의 없다. 슬랩이 가득/일부/빔 상태를 오가며 다 비면 페이지를 돌려준다 (Linux kmem_cache)
+struct Slab { std::vector<char> mem; std::vector<int> freeIdx; int used = 0; Slab(int objs, int sz) : mem(objs * sz) { for (int i = objs - 1; i >= 0; i--) freeIdx.push_back(i); } };
+struct Cache {
+    int sz, objs; std::vector<Slab*> slabs; Cache(int sz, int objs) : sz(sz), objs(objs) {}
+    char* alloc() { for (Slab* s : slabs) if (!s->freeIdx.empty()) { int i = s->freeIdx.back(); s->freeIdx.pop_back(); s->used++; return &s->mem[i * sz]; } slabs.push_back(new Slab(objs, sz)); return alloc(); }
+    void free(char* p) { for (Slab* s : slabs) if (p >= s->mem.data() && p < s->mem.data() + s->mem.size()) { s->freeIdx.push_back((p - s->mem.data()) / sz); s->used--; return; } }
+};
 int main() {
-    std::cout << "Slab Allocator caches kernel objects to prevent frequent construct/destruct." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    Cache c(16, 8); std::vector<char*> v; for (int i = 0; i < 20; i++) v.push_back(c.alloc());
+    assert(c.slabs.size() == 3);                                           // 20 개 -> 8 칸 슬랩 3 개
+    for (char* p : v) c.free(p); int empty = 0; for (Slab* s : c.slabs) empty += s->used == 0; assert(empty == 3);
+    char* again = c.alloc(); assert(c.slabs.size() == 3 && again != nullptr);   // 해제된 칸을 재사용 (새 슬랩 없음)
+    std::cout << "SlabAllocator: 20 objects in 3 slabs, freed slots reused without new slabs" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 할당·해제 O(1) (슬랩 탐색 제외)
+// Space Complexity: 슬랩 × 객체 수 × 크기
 ```
 ## RadixTree()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
 #include <cassert>
 
-int main() {
-    std::cout << "Radix Tree uses address prefixes directly to traverse nodes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
-}
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// 기수 트리(트리 관점의 요약, 문자열용은 Tree.md Part 9, 정수 키용 본격판은 이 Part 의 XArray): 키를 고정 비트 폭 조각(여기서는 4 비트 = 16-분)으로 잘라 한 층에 한 조각씩 내려가는 트리.
+// 비교가 아니라 인덱싱으로 O(키 비트 수 / 조각 폭) 에 찾고 정렬 순서가 자연스럽게 유지된다 (Linux 의 radix tree -> XArray)
+struct N { N* c[16] = {}; bool has = false; long v = 0; };
+void put(N* r, uint32_t k, long v) { N* n = r; for (int s = 28; s >= 0; s -= 4) { int i = (k >> s) & 15; if (!n->c[i]) n->c[i] = new N; n = n->c[i]; } n->has = true; n->v = v; }
+bool get(N* r, uint32_t k, long& v) { N* n = r; for (int s = 28; s >= 0 && n; s -= 4) n = n->c[(k >> s) & 15]; if (!n || !n->has) return false; v = n->v; return true; }
+int main() { N root; put(&root, 0xDEADBEEF, 42); put(&root, 7, 9); long v; assert(get(&root, 0xDEADBEEF, v) && v == 42 && get(&root, 7, v) && v == 9 && !get(&root, 8, v)); std::cout << "RadixTree: 8-level 16-ary lookup" << std::endl; return 0; }
+// Time Complexity: 조회·삽입 O(키 비트 / 4)
+// Space Complexity: 쓰인 경로 비례
 ```
 ## XArray()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// XArray(Linux 커널 4.20+, 옛 radix tree 의 후속): 정수 인덱스 -> 값을 저장하는 희소 배열. 한 노드가 64 칸(인덱스 6 비트)이고 깊이는 가장 큰 인덱스에 맞춰 필요한 만큼 자란다
+// (루트 위에 새 루트를 얹어 키울 수 있음). 페이지 캐시(파일 오프셋 -> 페이지)가 대표 용도다.  각 노드는 "칸이 쓰였는가" 비트맵과, 세 가지 태그(dirty, writeback, towrite ...)별 비트맵을 가진다.
+// 태그 비트맵은 "이 칸 또는 이 칸 아래에 태그된 항목이 있는가" 를 뜻해서, 태그된 다음 항목 찾기(xa_find_tagged)가 아래쪽 전체를 훑지 않고 비트 연산 몇 번으로 건너뛴다 (더티 페이지 쓰기 되돌림에 필수)
+struct XNode { int shift; XNode* parent = nullptr; int offset = 0; uint64_t used = 0; uint64_t tags[3] = {0, 0, 0}; XNode* child[64] = {}; long val[64]; };
+struct XArray {
+    XNode* root = nullptr; long size = 0, nodes = 0;
+    static uint64_t maxIndex(const XNode* n) { return n->shift + 6 >= 64 ? ~0ULL : (1ULL << (n->shift + 6)) - 1; }
+    XNode* mk(int shift, XNode* parent, int off) { nodes++; XNode* n = new XNode; n->shift = shift; n->parent = parent; n->offset = off; return n; }
+    void grow(uint64_t index) {
+        if (!root) root = mk(0, nullptr, 0);
+        while (index > maxIndex(root)) { XNode* r = mk(root->shift + 6, nullptr, 0); r->child[0] = root; r->used = 1; for (int t = 0; t < 3; t++) if (root->tags[t]) r->tags[t] = 1; root->parent = r; root->offset = 0; root = r; }
+    }
+    void store(uint64_t index, long v) {
+        grow(index); XNode* n = root;
+        while (n->shift > 0) { int off = (index >> n->shift) & 63; if (!n->child[off]) { n->child[off] = mk(n->shift - 6, n, off); n->used |= 1ULL << off; } n = n->child[off]; }
+        int off = index & 63; if (!((n->used >> off) & 1)) { n->used |= 1ULL << off; size++; } n->val[off] = v;
+    }
+    XNode* leafOf(uint64_t index) const { if (!root || index > maxIndex(root)) return nullptr; XNode* n = root; while (n->shift > 0) { n = n->child[(index >> n->shift) & 63]; if (!n) return nullptr; } return n; }
+    bool load(uint64_t index, long& v) const { XNode* n = leafOf(index); int off = index & 63; if (!n || !((n->used >> off) & 1)) return false; v = n->val[off]; return true; }
+    bool hasTag(uint64_t index, int t) const { XNode* n = leafOf(index); return n && ((n->tags[t] >> (index & 63)) & 1); }
+    bool setTag(uint64_t index, int t) { XNode* n = leafOf(index); int off = index & 63; if (!n || !((n->used >> off) & 1)) return false; for (; n; off = n->offset, n = n->parent) n->tags[t] |= 1ULL << off; return true; }     // 위로 올라가며 비트 켬
+    void clearTag(uint64_t index, int t) {
+        XNode* n = leafOf(index); if (!n) return; int off = index & 63; n->tags[t] &= ~(1ULL << off);
+        while (n->parent && n->tags[t] == 0) { off = n->offset; n = n->parent; n->tags[t] &= ~(1ULL << off); }              // 아래에 태그가 없으면 부모의 비트도 끈다
+    }
+    bool erase(uint64_t index) {
+        XNode* n = leafOf(index); int off = index & 63; if (!n || !((n->used >> off) & 1)) return false;
+        for (int t = 0; t < 3; t++) clearTag(index, t);
+        n->used &= ~(1ULL << off); size--;
+        while (n && n->used == 0) {                                        // 비어 버린 노드는 위로 올라가며 해제
+            XNode* p = n->parent; if (p) { p->child[n->offset] = nullptr; p->used &= ~(1ULL << n->offset); } else root = nullptr; delete n; nodes--; n = p;
+        }
+        while (root && root->shift > 0 && root->used == 1) { XNode* c = root->child[0]; c->parent = nullptr; delete root; nodes--; root = c; }          // 루트에 자식이 0 번 하나뿐이면 높이를 줄인다
+        return true;
+    }
+    bool nextIn(const XNode* n, uint64_t base, uint64_t start, int tag, uint64_t& out) const {      // tag < 0 이면 존재하는 항목, 아니면 태그된 항목 중 start 이상 최소 인덱스
+        uint64_t mask = tag < 0 ? n->used : n->tags[tag];
+        if (n->shift == 0) { int from = start > base ? (int)(start - base) : 0; if (from >= 64) return false; mask &= ~0ULL << from; if (!mask) return false; out = base + __builtin_ctzll(mask); return true; }
+        int from = start > base ? (int)((start - base) >> n->shift) : 0; if (from >= 64) return false;
+        mask &= ~0ULL << from;
+        while (mask) { int s = __builtin_ctzll(mask); mask &= mask - 1; if (nextIn(n->child[s], base + ((uint64_t)s << n->shift), start, tag, out)) return true; }
+        return false;
+    }
+    bool findNext(uint64_t start, uint64_t& out, int tag = -1) const { return root && nextIn(root, 0, start, tag, out); }
+    ~XArray() { std::vector<XNode*> st; if (root) st.push_back(root); while (!st.empty()) { XNode* n = st.back(); st.pop_back(); for (auto* c : n->child) if (c) st.push_back(c); delete n; } }
+};
+
 int main() {
-    std::cout << "XArray modernizes Radix Tree indexing in recent Linux kernels." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    XArray xa; std::map<uint64_t, long> ref; std::set<uint64_t> tg[3]; std::mt19937_64 g(1);
+    auto randIdx = [&]() { return g() % 10 < 7 ? g() % 6000 : g() % (1ULL << 40); };
+    for (int step = 0; step < 60000; step++) {
+        uint64_t i = randIdx(); int op = g() % 8; long v = (long)g();
+        if (op <= 2) { xa.store(i, v); ref[i] = v; }
+        else if (op == 3) { bool e = xa.erase(i); assert(e == (ref.erase(i) > 0)); for (auto& s : tg) s.erase(i); }
+        else if (op == 4) { int t = g() % 3; bool ok = xa.setTag(i, t); assert(ok == (ref.count(i) > 0)); if (ok) tg[t].insert(i); }
+        else if (op == 5) { int t = g() % 3; xa.clearTag(i, t); tg[t].erase(i); }
+        else if (op == 6) { long got = 0; bool f = xa.load(i, got); auto it = ref.find(i); assert(f == (it != ref.end()) && (!f || got == it->second)); }
+        else { uint64_t out; bool f = xa.findNext(i, out); auto it = ref.lower_bound(i); assert(f == (it != ref.end()) && (!f || out == it->first));
+               int t = g() % 3; f = xa.findNext(i, out, t); auto jt = tg[t].lower_bound(i); assert(f == (jt != tg[t].end()) && (!f || out == *jt)); }
+        assert(xa.size == (long)ref.size());
+    }
+    for (auto& kv : ref) { long v; assert(xa.load(kv.first, v) && v == kv.second); for (int t = 0; t < 3; t++) assert(xa.hasTag(kv.first, t) == (tg[t].count(kv.first) > 0)); }
+    XArray dense; for (uint64_t i = 0; i < 4096; i++) dense.store(i, (long)i); assert(dense.nodes == 65);           // 0..4095: 잎 64 개 + 루트 1 개
+    long nodesBefore = xa.nodes; std::vector<uint64_t> keys; for (auto& kv : ref) keys.push_back(kv.first); for (uint64_t k : keys) assert(xa.erase(k));
+    assert(xa.size == 0 && xa.root == nullptr && xa.nodes == 0);           // 모두 지우면 노드가 전부 해제된다
+    std::cout << "XArray: 60000 mixed ops match std::map (+3 tag sets, next/next-tagged search); " << nodesBefore << " nodes freed to 0; dense 4096 entries use " << dense.nodes << " nodes" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회·저장·삭제 O(높이 = ⌈log64 (최대 인덱스)⌉), 다음 항목 찾기 O(높이 + 건너뛴 칸을 비트로)
+// Space Complexity: 쓰인 인덱스 구간 비례, 노드 64 칸
 ```
 ## PageTable()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
 #include <cassert>
 
+// 페이지 테이블(메모리 관점의 요약, 정본은 Memory.md Part 9): 가상 주소 -> 물리 주소 변환표. 32비트 2 단 구조 = 상위 10비트(디렉터리) + 중간 10비트(테이블) + 하위 12비트(페이지 안 오프셋, 4 KB).
+// 쓰는 영역의 테이블만 만들어 두므로 주소 공간이 커도 메모리가 적게 들고, 없는 항목에 접근하면 페이지 폴트가 난다 (OS 가 처리). TLB 는 최근 변환을 캐시한다
+struct PT {
+    uint32_t* dir[1024] = {};
+    void map(uint32_t va, uint32_t pa) { uint32_t d = va >> 22, t = (va >> 12) & 1023; if (!dir[d]) dir[d] = new uint32_t[1024](); dir[d][t] = (pa & ~4095u) | 1; }        // 비트 0 = present
+    bool translate(uint32_t va, uint32_t& pa) const { uint32_t d = va >> 22, t = (va >> 12) & 1023; if (!dir[d] || !(dir[d][t] & 1)) return false; pa = (dir[d][t] & ~4095u) | (va & 4095); return true; }
+};
 int main() {
-    std::cout << "Multi-level Page Tables map sparse virtual spaces efficiently." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    PT pt; pt.map(0x00400000, 0x1000); pt.map(0xBFFFF000, 0x7000); uint32_t pa;
+    assert(pt.translate(0x00400123, pa) && pa == 0x1123 && pt.translate(0xBFFFFABC, pa) && pa == 0x7ABC && !pt.translate(0x00800000, pa));        // 매핑 안 된 주소 = 페이지 폴트
+    int tables = 0; for (auto* t : pt.dir) tables += t != nullptr; assert(tables == 2);
+    std::cout << "PageTable: 2 mapped pages need only " << tables << " second-level tables" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 변환 O(레벨 수) = 메모리 접근 2 번 (TLB 적중 시 0)
+// Space Complexity: 사용한 영역 비례
 ```
 
 # Part 15. 최신 연구
 ## LearnedIndex()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 학습된 인덱스(Learned Index, Kraska et al. 2018): "B-트리는 키 -> 위치 함수(= 누적분포 CDF 에 N 을 곱한 것)를 근사하는 모델이다" 라는 관점. 그 함수를 직접 학습하면 이분 탐색의 log N 번 비교를 모델 한 번의 계산과 아주 작은 보정 탐색으로 대신할 수 있다.
+// RMI(Recursive Model Index) 2 단: 1 단 선형 모델이 키를 보고 "어느 2 단 모델이 담당할지" 고르고, 각 2 단 선형 모델(최소제곱 회귀)이 위치를 예측한다. 모델마다 학습 때 실제 위치와 예측의 오차 구간 [errLo, errHi] 를 기록해 두므로
+// 조회는 "예측 위치 + 오차 구간" 안에서만 이분 탐색하면 되고 결과가 항상 정확하다 (모델이 틀려도 느려질 뿐 틀린 답은 없다).  분포가 매끄러울수록 오차 구간이 작다
+struct Lin { double a = 0, b = 0; double at(double x) const { return a * x + b; } };
+Lin fit(const std::vector<double>& xs, const std::vector<double>& ys) {
+    Lin m; size_t n = xs.size(); if (!n) return m; double mx = 0, my = 0; for (size_t i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; } mx /= n; my /= n;
+    double sxx = 0, sxy = 0; for (size_t i = 0; i < n; i++) { sxx += (xs[i] - mx) * (xs[i] - mx); sxy += (xs[i] - mx) * (ys[i] - my); }
+    m.a = sxx > 0 ? sxy / sxx : 0; m.b = my - m.a * mx; return m;
+}
+struct RMI {
+    std::vector<double> keys; int B; Lin root; std::vector<Lin> leaf; std::vector<double> eLo, eHi; long outOfWindow = 0;
+    int route(double x) const { int i = (int)std::floor(root.at(x)); return std::min(std::max(i, 0), B - 1); }
+    RMI(std::vector<double> k, int B) : keys(std::move(k)), B(B), leaf(B), eLo(B, 0), eHi(B, 0) {
+        size_t n = keys.size(); std::vector<double> ys(n); for (size_t i = 0; i < n; i++) ys[i] = (double)i * B / n;           // CDF 를 모델 개수로 스케일
+        root = fit(keys, ys);
+        std::vector<std::vector<double>> kx(B), ky(B); for (size_t i = 0; i < n; i++) { int m = route(keys[i]); kx[m].push_back(keys[i]); ky[m].push_back((double)i); }
+        for (int m = 0; m < B; m++) { leaf[m] = fit(kx[m], ky[m]); double lo = 1e18, hi = -1e18;
+            for (size_t j = 0; j < kx[m].size(); j++) { double e = ky[m][j] - leaf[m].at(kx[m][j]); lo = std::min(lo, e); hi = std::max(hi, e); } if (!kx[m].empty()) { eLo[m] = lo; eHi[m] = hi; } }
+    }
+    long lowerBound(double x, long* window = nullptr) {                      // x 이상인 첫 위치
+        int m = route(x); double p = leaf[m].at(x); long n = keys.size();
+        long lo = std::max(0L, (long)std::floor(p + eLo[m])), hi = std::min(n, (long)std::ceil(p + eHi[m]) + 1);
+        if (lo > hi) lo = hi; if (window) *window = hi - lo;
+        long r = std::lower_bound(keys.begin() + lo, keys.begin() + hi, x) - keys.begin();
+        bool ok = (r == 0 || keys[r - 1] < x) && (r == n || keys[r] >= x);   // 없는 키를 물었을 때 구간 밖으로 어긋날 수 있다 -> 확인 후 보정
+        if (!ok) { outOfWindow++; r = std::lower_bound(keys.begin(), keys.end(), x) - keys.begin(); }
+        return r;
+    }
+};
+
 int main() {
-    std::cout << "Learned Index replaces B-Tree traversal with ML regression models." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937_64 g(7); const int N = 100000; const char* names[3] = {"uniform", "lognormal", "20 clusters (step-like CDF)"};
+    for (int dist = 0; dist < 3; dist++) {
+        std::vector<double> k(N); std::lognormal_distribution<double> ln(0, 1.0); std::uniform_real_distribution<double> U(0, 1e9);
+        for (auto& x : k) x = dist == 0 ? U(g) : dist == 1 ? ln(g) * 1e6 : (double)(g() % 20) * 1e8 + U(g) * 1e5;                 // 마지막은 계단형 CDF (모델에게 어려움)
+        std::sort(k.begin(), k.end()); k.erase(std::unique(k.begin(), k.end()), k.end());
+        RMI idx(k, 1000); double win = 0; long maxWin = 0;
+        for (size_t i = 0; i < k.size(); i += 7) { long w = 0; long r = idx.lowerBound(k[i], &w); assert(r == (long)i); win += w; maxWin = std::max(maxWin, w); }   // 모든 키를 정확히 찾는다
+        for (int t = 0; t < 20000; t++) { double q = U(g) * (dist == 1 ? 1e-3 : 1) + (dist == 2 ? (double)(g() % 20) * 1e8 : 0); long r = idx.lowerBound(q); assert(r == std::lower_bound(k.begin(), k.end(), q) - k.begin()); }   // 없는 키도 정확
+        double avgWin = win / ((k.size() + 6) / 7);
+        std::cout << names[dist] << ": avg search window " << avgWin << " (binary search over all: " << k.size() << "), max " << maxWin << ", log2 comparisons " << std::log2(std::max(1.0, avgWin)) << " vs " << std::log2((double)k.size()) << std::endl;
+        assert(avgWin < k.size() / 100.0);                                 // 어느 분포든 창이 전체의 1% 미만 (균등 분포는 수십 칸, 꼬리가 긴 분포는 수백 칸)
+        if (dist == 0) assert(avgWin < 32);                                // 균등 분포: 모델이 위치를 거의 직접 계산한다
+    }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회 O(1) 모델 계산 + O(log (오차 구간)), 구성 O(N)
+// Space Complexity: O(모델 수) (키 배열 제외)
 ```
 ## LearnedHash()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 학습된 해시(해시 관점의 요약, 정본은 Hash.md Part 15): 해시 함수가 키를 버킷에 "고르게" 뿌리는 일은 곧 키 분포의 누적분포 CDF 를 아는 일이다 — h(x) = ⌊CDF(x)·m⌋ 이면 키가 버킷에 정확히 균등하게 놓인다.
+// 일반 해시는 분포를 몰라 무작위로 뿌리므로 n=m 일 때 버킷의 약 36.8% 가 비고 키의 약 37% 가 충돌한다. 표본에서 학습한 CDF(여기서는 1000 개 표본점 사이 선형 보간)를 쓰면 키가 규칙적으로 늘어나는 데이터(타임스탬프, 증가하는 ID, 센서 값)에서 충돌이 거의 사라진다.
+// 주의: 키가 분포에서 독립적으로 무작위로 뽑힌 값이라면 CDF(키)도 무작위라서 학습해도 이득이 없다 — 이득은 키가 "무작위보다 규칙적일 때"만 생기고, 분포가 바뀌면 다시 학습해야 한다
 int main() {
-    std::cout << "Learned Hash adjusts buckets dynamically based on data distribution models." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int n = 100000, m = 100000; std::vector<double> keys(n); for (int i = 0; i < n; i++) keys[i] = (double)i * i * 0.7 + (i % 17) * 0.3 + 5;       // 비선형이지만 매끄러운 증가열
+    std::vector<double> sample; for (int i = 0; i < n; i += 100) sample.push_back(keys[i]); sample.push_back(keys.back());
+    auto cdf = [&](double x) { size_t i = std::upper_bound(sample.begin(), sample.end(), x) - sample.begin(); if (!i) return 0.0; if (i == sample.size()) return 1.0 - 1e-12; return ((double)(i - 1) + (x - sample[i - 1]) / (sample[i] - sample[i - 1])) / (sample.size() - 1); };
+    std::vector<int> a(m, 0), b(m, 0); for (double x : keys) { a[std::min<size_t>((size_t)(cdf(x) * m), m - 1)]++; uint64_t h = std::hash<double>{}(x) * 0x9e3779b97f4a7c15ULL; b[(h ^ (h >> 29)) % m]++; }
+    long ca = 0, cb = 0; for (int i = 0; i < m; i++) { ca += std::max(0, a[i] - 1); cb += std::max(0, b[i] - 1); }
+    assert(ca * 10 < cb); std::cout << "LearnedHash: colliding keys learned-CDF " << ca << " vs random hash " << cb << " of " << n << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 해시 계산 O(log (분위점 수)) 이분 탐색
+// Space Complexity: O(분위점 수)
 ```
 ## AdaptiveRadixTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <map>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 적응형 기수 트리(ART, Leis et al. 2013; HyPer, DuckDB 의 인덱스): 바이트 단위 기수 트리인데 자식 수에 따라 노드 형식을 바꿔 공간과 속도를 동시에 잡는다.
+//   Node4 (정렬된 키 4 개 + 자식 4 개, 선형 탐색)  Node16 (키 16 개, SIMD 비교 가능)  Node48 (256 바이트 색인표 -> 자식 48 개)  Node256 (직접 배열)
+// 노드가 차면 다음 형식으로 키우고(grow), 줄어들면 작은 형식으로 줄인다(shrink).  공통 접두사는 노드에 압축 저장하고(경로 압축), 잎은 전체 키를 가지고 있어 한 키만 남은 가지는 중간 노드 없이 잎으로 바로 이어진다(느긋한 확장).
+// 키가 서로의 접두사가 되지 않도록 끝에 0 바이트를 붙여 쓴다. 정렬된 순회가 곧 키 순서이고, 해시 테이블과 달리 범위 질의·접두사 질의가 된다
+enum Kind : uint8_t { LEAF, N4, N16, N48, N256 };
+struct Node { Kind kind; std::vector<uint8_t> prefix; int n = 0; explicit Node(Kind k) : kind(k) {} };
+struct Leaf : Node { std::string key; long val; Leaf(const std::string& k, long v) : Node(LEAF), key(k), val(v) {} };
+struct Node4 : Node { uint8_t k[4]; Node* c[4]; Node4() : Node(N4) {} };
+struct Node16 : Node { uint8_t k[16]; Node* c[16]; Node16() : Node(N16) {} };
+struct Node48 : Node { uint8_t idx[256]; Node* c[48]; Node48() : Node(N48) { std::fill(idx, idx + 256, 255); std::fill(c, c + 48, nullptr); } };
+struct Node256 : Node { Node* c[256]; Node256() : Node(N256) { std::fill(c, c + 256, nullptr); } };
+
+Node** findChild(Node* n, uint8_t b) {
+    switch (n->kind) {
+        case N4:   { auto* x = (Node4*)n;  for (int i = 0; i < n->n; i++) if (x->k[i] == b) return &x->c[i]; return nullptr; }
+        case N16:  { auto* x = (Node16*)n; for (int i = 0; i < n->n; i++) if (x->k[i] == b) return &x->c[i]; return nullptr; }
+        case N48:  { auto* x = (Node48*)n; return x->idx[b] != 255 ? &x->c[x->idx[b]] : nullptr; }
+        case N256: { auto* x = (Node256*)n; return x->c[b] ? &x->c[b] : nullptr; }
+        default: return nullptr;
+    }
+}
+template <class T> void insertSorted(T* x, uint8_t b, Node* child) { int i = x->n; while (i > 0 && x->k[i - 1] > b) { x->k[i] = x->k[i - 1]; x->c[i] = x->c[i - 1]; i--; } x->k[i] = b; x->c[i] = child; x->n++; }
+void addChild(Node*& ref, uint8_t b, Node* child) {
+    switch (ref->kind) {
+        case N4:  { auto* x = (Node4*)ref; if (x->n < 4) { insertSorted(x, b, child); return; }
+                    auto* y = new Node16; y->prefix = x->prefix; y->n = x->n; for (int i = 0; i < x->n; i++) { y->k[i] = x->k[i]; y->c[i] = x->c[i]; } delete x; ref = y; addChild(ref, b, child); return; }       // 4 -> 16 으로 성장
+        case N16: { auto* x = (Node16*)ref; if (x->n < 16) { insertSorted(x, b, child); return; }
+                    auto* y = new Node48; y->prefix = x->prefix; for (int i = 0; i < x->n; i++) { y->idx[x->k[i]] = i; y->c[i] = x->c[i]; } y->n = x->n; delete x; ref = y; addChild(ref, b, child); return; }
+        case N48: { auto* x = (Node48*)ref; if (x->n < 48) { int pos = 0; while (x->c[pos]) pos++; x->idx[b] = pos; x->c[pos] = child; x->n++; return; }
+                    auto* y = new Node256; y->prefix = x->prefix; for (int i = 0; i < 256; i++) if (x->idx[i] != 255) y->c[i] = x->c[x->idx[i]]; y->n = x->n; delete x; ref = y; addChild(ref, b, child); return; }
+        case N256: { auto* x = (Node256*)ref; x->c[b] = child; x->n++; return; }
+        default: return;
+    }
+}
+void removeChild(Node*& ref, uint8_t b) {
+    switch (ref->kind) {
+        case N4: case N16: {
+            uint8_t* keys = ref->kind == N4 ? ((Node4*)ref)->k : ((Node16*)ref)->k; Node** ch = ref->kind == N4 ? ((Node4*)ref)->c : ((Node16*)ref)->c;
+            int i = 0; while (keys[i] != b) i++; for (; i + 1 < ref->n; i++) { keys[i] = keys[i + 1]; ch[i] = ch[i + 1]; } ref->n--;
+            if (ref->kind == N16 && ref->n <= 3) { auto* x = (Node16*)ref; auto* y = new Node4; y->prefix = x->prefix; y->n = x->n; for (int j = 0; j < x->n; j++) { y->k[j] = x->k[j]; y->c[j] = x->c[j]; } delete x; ref = y; }     // 16 -> 4 로 축소
+            return; }
+        case N48: { auto* x = (Node48*)ref; x->c[x->idx[b]] = nullptr; x->idx[b] = 255; x->n--;
+                    if (x->n <= 12) { auto* y = new Node16; y->prefix = x->prefix; for (int i = 0; i < 256; i++) if (x->idx[i] != 255) insertSorted(y, (uint8_t)i, x->c[x->idx[i]]); delete x; ref = y; } return; }
+        case N256: { auto* x = (Node256*)ref; x->c[b] = nullptr; x->n--;
+                     if (x->n <= 37) { auto* y = new Node48; y->prefix = x->prefix; for (int i = 0; i < 256; i++) if (x->c[i]) { int pos = y->n++; y->idx[i] = pos; y->c[pos] = x->c[i]; } delete x; ref = y; } return; }
+        default: return;
+    }
+}
+struct ART {
+    Node* root = nullptr; long size = 0;
+    static std::string term(const std::string& k) { return k + '\0'; }
+    void insert(const std::string& k, long v) { std::string key = term(k); if (insertRec(root, key, 0, v)) size++; }
+    bool insertRec(Node*& ref, const std::string& key, size_t depth, long v) {              // 새 키면 true
+        if (!ref) { ref = new Leaf(key, v); return true; }
+        if (ref->kind == LEAF) {
+            auto* l = (Leaf*)ref; if (l->key == key) { l->val = v; return false; }
+            size_t i = depth; while (i < l->key.size() && i < key.size() && l->key[i] == key[i]) i++;
+            Node* n4 = new Node4; n4->prefix.assign(key.begin() + depth, key.begin() + i);          // 공통 구간을 접두사로 압축
+            Node* nl = new Leaf(key, v); addChild(n4, (uint8_t)l->key[i], l); addChild(n4, (uint8_t)key[i], nl); ref = n4; return true;
+        }
+        size_t p = 0; while (p < ref->prefix.size() && depth + p < key.size() && ref->prefix[p] == (uint8_t)key[depth + p]) p++;
+        if (p < ref->prefix.size()) {                                       // 접두사 중간에서 갈라진다 -> 위에 새 노드를 끼운다
+            Node* n4 = new Node4; n4->prefix.assign(ref->prefix.begin(), ref->prefix.begin() + p); uint8_t oldByte = ref->prefix[p];
+            ref->prefix.erase(ref->prefix.begin(), ref->prefix.begin() + p + 1); Node* nl = new Leaf(key, v);
+            addChild(n4, oldByte, ref); addChild(n4, (uint8_t)key[depth + p], nl); ref = n4; return true;
+        }
+        depth += ref->prefix.size(); uint8_t b = key[depth]; Node** ch = findChild(ref, b);
+        if (ch) return insertRec(*ch, key, depth + 1, v);
+        addChild(ref, b, new Leaf(key, v)); return true;
+    }
+    bool find(const std::string& k, long& v) const {
+        std::string key = term(k); Node* n = root; size_t depth = 0;
+        while (n) {
+            if (n->kind == LEAF) { auto* l = (Leaf*)n; if (l->key != key) return false; v = l->val; return true; }
+            for (size_t j = 0; j < n->prefix.size(); j++) if (depth + j >= key.size() || n->prefix[j] != (uint8_t)key[depth + j]) return false;
+            depth += n->prefix.size(); Node** ch = findChild(n, (uint8_t)key[depth]); if (!ch) return false; n = *ch; depth++;
+        }
+        return false;
+    }
+    bool erase(const std::string& k) { std::string key = term(k); bool r = eraseRec(root, key, 0); if (r) size--; return r; }
+    bool eraseRec(Node*& ref, const std::string& key, size_t depth) {
+        if (!ref) return false;
+        if (ref->kind == LEAF) { if (((Leaf*)ref)->key != key) return false; delete (Leaf*)ref; ref = nullptr; return true; }
+        for (size_t j = 0; j < ref->prefix.size(); j++) if (depth + j >= key.size() || ref->prefix[j] != (uint8_t)key[depth + j]) return false;
+        depth += ref->prefix.size(); uint8_t b = key[depth]; Node** ch = findChild(ref, b); if (!ch || !eraseRec(*ch, key, depth + 1)) return false;
+        if (*ch == nullptr) {
+            removeChild(ref, b);
+            if (ref->kind == N4 && ref->n == 1) {                           // 자식이 하나만 남으면 경로 압축: 이 노드를 없애고 자식에 접두사를 합친다
+                auto* x = (Node4*)ref; Node* only = x->c[0]; uint8_t ob = x->k[0];
+                if (only->kind != LEAF) { std::vector<uint8_t> np = x->prefix; np.push_back(ob); np.insert(np.end(), only->prefix.begin(), only->prefix.end()); only->prefix = np; }
+                delete x; ref = only;
+            }
+        }
+        return true;
+    }
+    static void walk(Node* n, std::vector<std::pair<std::string, long>>& out) {            // 정렬된 순회
+        if (!n) return; if (n->kind == LEAF) { auto* l = (Leaf*)n; out.push_back({l->key.substr(0, l->key.size() - 1), l->val}); return; }
+        switch (n->kind) {
+            case N4:   for (int i = 0; i < n->n; i++) walk(((Node4*)n)->c[i], out); break;
+            case N16:  for (int i = 0; i < n->n; i++) walk(((Node16*)n)->c[i], out); break;
+            case N48:  for (int b = 0; b < 256; b++) if (((Node48*)n)->idx[b] != 255) walk(((Node48*)n)->c[((Node48*)n)->idx[b]], out); break;
+            default:   for (int b = 0; b < 256; b++) if (((Node256*)n)->c[b]) walk(((Node256*)n)->c[b], out);
+        }
+    }
+    static void census(Node* n, long cnt[5]) {
+        if (!n) return; cnt[n->kind]++; if (n->kind == LEAF) return;
+        switch (n->kind) { case N4: for (int i = 0; i < n->n; i++) census(((Node4*)n)->c[i], cnt); break; case N16: for (int i = 0; i < n->n; i++) census(((Node16*)n)->c[i], cnt); break;
+            case N48: for (int b = 0; b < 256; b++) if (((Node48*)n)->idx[b] != 255) census(((Node48*)n)->c[((Node48*)n)->idx[b]], cnt); break; default: for (int b = 0; b < 256; b++) if (((Node256*)n)->c[b]) census(((Node256*)n)->c[b], cnt); }
+    }
+    static void destroy(Node* n) {
+        if (!n) return; std::vector<Node*> kids;
+        switch (n->kind) { case LEAF: delete (Leaf*)n; return; case N4: for (int i = 0; i < n->n; i++) kids.push_back(((Node4*)n)->c[i]); delete (Node4*)n; break; case N16: for (int i = 0; i < n->n; i++) kids.push_back(((Node16*)n)->c[i]); delete (Node16*)n; break;
+            case N48: for (int i = 0; i < 48; i++) if (((Node48*)n)->c[i]) kids.push_back(((Node48*)n)->c[i]); delete (Node48*)n; break; default: for (int i = 0; i < 256; i++) if (((Node256*)n)->c[i]) kids.push_back(((Node256*)n)->c[i]); delete (Node256*)n; }
+        for (Node* c : kids) destroy(c);
+    }
+};
+
 int main() {
-    std::cout << "ART dynamically changes node sizes (4, 16, 48, 256) based on fanout." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 g(4);
+    { ART t; std::map<std::string, long> ref;                               // 가변 길이 문자열 키: 삽입·삭제·조회를 std::map 과 대조
+      for (int step = 0; step < 60000; step++) {
+          std::string k; int len = 1 + g() % 10; for (int i = 0; i < len; i++) k += "abcde0123"[g() % 9]; int op = g() % 10; long v = step;
+          if (op < 5) { t.insert(k, v); ref[k] = v; } else if (op < 8) { assert(t.erase(k) == (ref.erase(k) > 0)); } else { long got; bool f = t.find(k, got); auto it = ref.find(k); assert(f == (it != ref.end()) && (!f || got == it->second)); }
+          assert(t.size == (long)ref.size());
+      }
+      std::vector<std::pair<std::string, long>> out; ART::walk(t.root, out); assert((out == std::vector<std::pair<std::string, long>>(ref.begin(), ref.end())));    // 순회 = 정렬된 키
+      for (auto& kv : std::map<std::string, long>(ref)) { assert(t.erase(kv.first)); } assert(t.size == 0 && t.root == nullptr); ART::destroy(t.root); }
+    { ART dense, sparse; long cd[5] = {0}, cs[5] = {0}; auto be = [](uint32_t x) { std::string s(4, 0); for (int i = 0; i < 4; i++) s[i] = (char)(x >> (24 - 8 * i)); return s; };
+      for (uint32_t i = 0; i < 70000; i++) dense.insert(be(i), i);          // 촘촘한 정수 키: 아래쪽 노드가 256 칸까지 가득 찬다
+      for (int i = 0; i < 20000; i++) sparse.insert(be(g()), i);            // 드문 정수 키: 대부분 작은 노드
+      for (uint32_t i = 0; i < 70000; i += 13) { long v; assert(dense.find(be(i), v) && v == i); }
+      ART::census(dense.root, cd); ART::census(sparse.root, cs);
+      assert(cd[N256] > 200 && cs[N4] > cs[N256] * 5);                       // 촘촘하면 256 칸 노드, 드물면 4 칸 노드가 대부분
+      ART mid; long cm[5] = {0}; for (int b1 = 0; b1 < 10; b1++) for (int b2 = 0; b2 < 40; b2++) mid.insert(std::string(1, 'A') + std::string(1, (char)(65 + b1)) + std::string(1, (char)(40 + b2)), b1 * 40 + b2);
+      ART::census(mid.root, cm); assert(cm[N16] == 1 && cm[N48] == 10);        // 자식 10 개 -> Node16, 자식 40 개 -> Node48
+      for (int b1 = 0; b1 < 10; b1++) for (int b2 = 0; b2 < 40; b2++) if (b2 >= 3) assert(mid.erase(std::string(1, 'A') + std::string(1, (char)(65 + b1)) + std::string(1, (char)(40 + b2))));
+      long cm2[5] = {0}; ART::census(mid.root, cm2); assert(cm2[N48] == 0 && cm2[N16] == 1 && cm2[N4] == 10);    // 자식이 3 개로 줄어든 아래층 노드 10 개는 Node48 -> Node16 -> Node4 로 축소, 위층(자식 10 개)은 Node16 유지
+      ART::destroy(mid.root);
+      std::cout << "AdaptiveRadixTree: 60000 string-key ops match std::map; dense ints node census N4/N16/N48/N256 = " << cd[N4] << "/" << cd[N16] << "/" << cd[N48] << "/" << cd[N256]
+                << ", sparse ints = " << cs[N4] << "/" << cs[N16] << "/" << cs[N48] << "/" << cs[N256] << std::endl; ART::destroy(dense.root); ART::destroy(sparse.root); }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회·삽입·삭제 O(키 길이) (키 수와 무관)
+// Space Complexity: 노드 형식 적응으로 키당 평균 약 8.1 바이트 오버헤드 (논문 보고, 이 코드는 구조만 검증)
 ```
 ## CacheObliviousBTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <list>
+#include <random>
+#include <unordered_map>
+#include <vector>
 #include <cassert>
 
+// 캐시 무관(cache-oblivious) 탐색 트리: 캐시 블록 크기 B 를 코드에서 전혀 쓰지 않는데도 모든 B(디스크 블록·L1 라인·메모리 페이지 ...)에 대해 동시에 O(log_B N) 번의 블록 전송으로 탐색한다.
+// 비결은 van Emde Boas 배치: 높이 h 의 완전 이진 트리를 위쪽 절반(높이 h/2)과 그 아래에 매달린 2^(h/2) 개의 아래쪽 절반 부분 트리들로 나누고, 위쪽을 먼저, 이어서 아래쪽 부분 트리들을 차례로 — 각 조각에 같은 규칙을 재귀 — 메모리에 놓는다.
+// 재귀가 내려가다 보면 어느 B 에서든 "한 블록에 통째로 들어가는 부분 트리" 가 나오고, 그 안의 탐색은 블록 하나로 끝난다.  BFS(층별) 배치는 깊은 층에서 노드마다 블록이 달라 log2 N - log2 B 번 읽는다.
+// 아래는 같은 트리를 BFS / vEB / 정렬 배열 이분 탐색 세 배치로 놓고 "작은 LRU 캐시" 시뮬레이터로 탐색당 블록 미스를 셈한다
+void veb(int d0, long i0, int h, std::vector<std::pair<int, long>>& out) {         // (깊이, 층 안의 순번) 을 vEB 순서로
+    if (h == 1) { out.push_back({d0, i0}); return; }
+    int top = h / 2, bot = h - top; veb(d0, i0, top, out); for (long j = 0; j < (1L << top); j++) veb(d0 + top, (i0 << top) + j, bot, out);
+}
+struct Cache {                                                              // 완전 연관 LRU, 용량 = 블록 cap 개
+    size_t cap, B; std::list<long> lru; std::unordered_map<long, std::list<long>::iterator> where; long misses = 0;
+    Cache(size_t cap, size_t B) : cap(cap), B(B) {}
+    void access(long pos) { long blk = pos / B; auto it = where.find(blk); if (it != where.end()) { lru.erase(it->second); } else { misses++; if (lru.size() == cap) { where.erase(lru.back()); lru.pop_back(); } } lru.push_front(blk); where[blk] = lru.begin(); }
+};
 int main() {
-    std::cout << "Cache Oblivious structures optimize for unknown block sizes using recursive layout." << std::endl;
-    assert(1 == 1); // Solved
+    const int h = 20; const long n = (1L << h) - 1; std::vector<std::pair<int, long>> order; order.reserve(n); veb(0, 0, h, order);
+    std::vector<long> vebPos(n); for (long p = 0; p < n; p++) vebPos[((1L << order[p].first) - 1) + order[p].second] = p;      // BFS 번호 -> vEB 위치
+    auto keyOfBfs = [&](long id) { int d = 63 - __builtin_clzll(id + 1); long i = id - ((1L << d) - 1); return (((2 * i + 1) << (h - 1 - d)) - 1); };      // 해당 노드의 중위 순번 키 (0..n-1)
+    std::mt19937_64 g(3);
+    for (size_t B : {4u, 16u, 64u, 256u}) {
+        double bfs = 0, vb = 0, bin = 0; int Q = 1500;
+        for (int t = 0; t < Q; t++) {
+            long target = g() % n; Cache cb(8, B), cv(8, B), cs(8, B);
+            for (long id = 0;;) { cb.access(id); cv.access(vebPos[id]); long k = keyOfBfs(id); if (k == target) break; id = target < k ? 2 * id + 1 : 2 * id + 2; }      // 같은 경로를 두 배치로 접근
+            long lo = 0, hi = n; while (lo < hi) { long mid = (lo + hi) / 2; cs.access(mid); if (mid == target) break; if (mid < target) lo = mid + 1; else hi = mid; }       // 정렬 배열 이분 탐색
+            bfs += cb.misses; vb += cv.misses; bin += cs.misses;
+        }
+        bfs /= Q; vb /= Q; bin /= Q; double logB = std::log((double)n) / std::log((double)B);
+        assert(vb <= 4 * logB + 2 && vb <= bfs + 0.5);                      // 모든 B 에서 O(log_B N), 그리고 BFS 보다 나쁘지 않다
+        if (B >= 64) assert(vb * 2 < bfs && vb * 2 < bin);                  // 블록이 크면 BFS·이분 탐색의 절반 이하
+        std::cout << "B=" << B << ": log_B N = " << logB << ", misses per search  vEB " << vb << " | BFS layout " << bfs << " | sorted-array binary search " << bin << std::endl;
+    }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 탐색 O(log_B N) 블록 전송 (모든 B 에 대해 동시에)
+// Space Complexity: O(N)
 ```
 ## FusionTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 퓨전 트리(Fredman–Willard 1990): 워드 램(word RAM) 모델에서 w 비트 정수 N 개의 predecessor 를 비교 기반의 O(log N) 이 아니라 O(log_w N) 에 푸는 트리. 노드 하나가 키 k(~w^(1/5)) 개를 가지고
+// "한 노드 안의 순위(rank)" 를 워드 연산 O(1) 번으로 구한다.  핵심 3 가지: ① 스케치 — 노드 키들을 서로 구별하는 데 필요한 비트 위치(인접 키가 갈라지는 최상위 비트, 최대 k-1 개)만 모은 짧은 압축 키.
+// 스케치는 키의 순서를 보존한다.  ② 병렬 비교 — 스케치들을 한 워드에 필드별로 채우고(각 필드 최상위에 1 센티넬 비트) 질의 스케치를 복제해 한 번 빼면, 필드마다 센티넬이 남았는가가 "키 >= 질의" 를 알려 준다 -> popcount 로 순위.
+// ③ 보정 — 질의 q 의 스케치는 q 가 키들 사이 어디인지 정확히 알려 주지 못한다. 순위 위치의 이웃 중 q 와 가장 긴 공통 접두사를 가진 키 y 를 고르고, 둘이 갈라지는 비트 e 로 q 를 "y 가 속한 부분 트리의 경계" q'(e 윗부분은 y 와 같고, e 비트는 q 쪽, 아래는 전부 1 또는 0)로 바꿔 다시 스케치 비교하면 정확한 순위가 나온다.
+// 이 구현은 노드당 키 7 개, 필드 8 비트(센티넬 1 + 스케치 6~7 비트)이고, 스케치 추출은 원 논문의 곱셈 요령(O(1)) 대신 비트 위치 루프(≤ 6)로 단순화했다 — 병렬 비교와 보정 논리는 원본 그대로이다
+typedef uint64_t u64;
+const int K = 7; const u64 ONES = 0x0101010101010101ULL, SENT = 0x8080808080808080ULL;
+struct FNode {
+    int k = 0, r = 0; u64 x[K]; int bpos[K]; u64 packed = ~0ULL;
+    u64 sketch(u64 v) const { u64 s = 0; for (int j = 0; j < r; j++) s = s << 1 | ((v >> bpos[j]) & 1); return s; }
+    void build(const std::vector<u64>& keys) {
+        k = keys.size(); for (int i = 0; i < k; i++) x[i] = keys[i];
+        std::vector<int> pos; for (int i = 0; i + 1 < k; i++) pos.push_back(63 - __builtin_clzll(x[i] ^ x[i + 1]));     // 인접 키가 갈라지는 최상위 비트
+        std::sort(pos.rbegin(), pos.rend()); pos.erase(std::unique(pos.begin(), pos.end()), pos.end()); r = pos.size(); for (int j = 0; j < r; j++) bpos[j] = pos[j];
+        packed = ~0ULL; for (int i = 0; i < k; i++) { packed &= ~(0xFFULL << (8 * i)); packed |= (0x80ULL | sketch(x[i])) << (8 * i); }       // 필드 i = 센티넬 | 스케치, 쓰지 않는 필드는 0xFF
+    }
+    int countLT(u64 s) const { u64 d = packed - s * ONES; return __builtin_popcountll(~d & SENT); }          // 스케치 < s 인 키의 수 (센티넬이 꺼진 필드)
+    int countLE(u64 s) const { return countLT(s + 1); }
+    int rank(u64 q) const {                                                  // q 이하인 키의 수
+        if (k == 0) return 0;
+        int i = countLE(sketch(q)); int yi = i == 0 ? 0 : i == k ? k - 1 : ((x[i - 1] ^ q) <= (x[i] ^ q) ? i - 1 : i); u64 y = x[yi];       // 스케치 순위 이웃 중 q 와 공통 접두사가 더 긴 키
+        if (q == y) return yi + 1;
+        int e = 63 - __builtin_clzll(q ^ y); u64 low = (1ULL << e) - 1, prefix = y & ~((2ULL << e) - 1);                                          // 갈라지는 비트 e, 그 아래 비트들, 그 위 접두사
+        if ((q >> e) & 1) return countLE(sketch(prefix | (1ULL << e) | low));  // q 는 y 의 부분 트리 전체보다 크다 -> 부분 트리 끝(전부 1) 기준 순위
+        return countLT(sketch(prefix | (1ULL << e)));                          // q 는 y 의 부분 트리 전체보다 작다 -> 부분 트리 시작(전부 0) 앞의 키 수
+    }
+};
+struct FusionTree {
+    std::vector<FNode> nodes; std::vector<std::array<int, K + 1>> kid; int root = -1;
+    int build(const std::vector<u64>& a, long lo, long hi) {
+        int id = nodes.size(); nodes.emplace_back(); kid.push_back({-1, -1, -1, -1, -1, -1, -1, -1}); long m = hi - lo; std::vector<u64> keys;
+        if (m <= K) { keys.assign(a.begin() + lo, a.begin() + hi); nodes[id].build(keys); return id; }
+        long prev = lo;
+        for (int j = 0; j < K; j++) { long s = lo + m * (j + 1) / (K + 1); keys.push_back(a[s]); int c = build(a, prev, s); kid[id][j] = c; prev = s + 1; }
+        kid[id][K] = build(a, prev, hi); nodes[id].build(keys); return id;
+    }
+    void build(const std::vector<u64>& a) { nodes.clear(); kid.clear(); root = a.empty() ? -1 : build(a, 0, a.size()); }
+    bool pred(u64 q, u64& out) const {                                       // q 이하 최대 키
+        bool found = false; int v = root;
+        while (v >= 0) { const FNode& nd = nodes[v]; int r = nd.rank(q); if (r > 0) { out = nd.x[r - 1]; found = true; } v = kid[v][r]; }
+        return found;
+    }
+    int height() const { int h = 0; for (int v = root; v >= 0; v = kid[v][0]) h++; return h; }
+};
+
 int main() {
-    std::cout << "Fusion Tree exploits bit parallelism to break O(log N) bounds theoretically." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937_64 g(5); long trials = 0;
+    for (int round = 0; round < 6; round++) for (int t = 0; t < 40000; t++) {          // 노드 하나의 rank 를 전수 대조: 다양한 키 구조
+        int k = 1 + g() % K; std::vector<u64> keys; u64 base = g();
+        for (int i = 0; i < k; i++) keys.push_back(round == 0 ? g() : round == 1 ? (base & ~0xFFFFULL) | (g() & 0xFFFF) : round == 2 ? (base & 0xFFFFFFFFULL) | (g() << 48) : round == 3 ? g() % 100 : round == 4 ? (g() & 0x8000000000000001ULL) | 0x40 : (base >> (g() % 64)) ^ (g() & 3));
+        std::sort(keys.begin(), keys.end()); keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+        FNode nd; nd.build(keys); int kk = keys.size();
+        std::vector<u64> qs = {0, ~0ULL, g(), g() % 128, keys[g() % kk], keys[g() % kk] + 1, keys[g() % kk] - 1, keys[g() % kk] ^ (1ULL << (g() % 64))};
+        for (u64 q : qs) { int want = std::upper_bound(keys.begin(), keys.end(), q) - keys.begin(); assert(nd.rank(q) == want); trials++; }
+    }
+    std::vector<u64> a(200000); for (auto& x : a) x = g(); std::sort(a.begin(), a.end()); a.erase(std::unique(a.begin(), a.end()), a.end());
+    FusionTree ft; ft.build(a);
+    for (int t = 0; t < 100000; t++) { u64 q = t % 3 == 0 ? g() : t % 3 == 1 ? a[g() % a.size()] : a[g() % a.size()] + 1; u64 out = 0; bool f = ft.pred(q, out); auto it = std::upper_bound(a.begin(), a.end(), q);
+        assert(f == (it != a.begin()) && (!f || out == *(it - 1))); }
+    u64 out; assert(!ft.pred(a[0] - 1 > a[0] ? 0 : a[0] - 1, out) || out <= a[0]);
+    std::cout << "FusionTree: " << trials << " node-rank queries match brute force; " << a.size() << " keys, fanout " << K + 1 << ", height " << ft.height() << " (binary search would need " << (int)std::ceil(std::log2((double)a.size())) << " comparisons)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: predecessor O(log_{k+1} N) 노드 방문 × 노드당 O(1) 워드 연산 (스케치 추출 제외)
+// Space Complexity: O(N)
 ```
 ## vanEmdeBoasTree()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
 #include <cassert>
 
+// 반 엠데 보아스 트리(트리 관점의 요약, 정본은 Tree.md Part 16): 우주 U 를 √U 칸 클러스터 √U 개로 나누고 "비어 있지 않은 클러스터" 요약(summary)을 같은 구조로 재귀해 insert/successor 를 O(log log U) 에 한다.
+// 아래는 재귀를 한 단계만 펼친 2 단 구조(U = 2^16: 256 클러스터 × 256 비트 + 요약 256 비트)로, successor 가 "내 클러스터에서 다음 비트 -> 없으면 요약에서 다음 클러스터" 두 걸음임을 보인다
+struct V {
+    uint64_t cl[256][4] = {}, sm[4] = {};
+    void ins(uint32_t x) { cl[x >> 8][(x & 255) >> 6] |= 1ULL << (x & 63); sm[(x >> 8) >> 6] |= 1ULL << ((x >> 8) & 63); }
+    static int next(const uint64_t* w, int from) { for (int i = from >> 6; i < 4; i++) { uint64_t m = w[i] & (i == (from >> 6) ? ~0ULL << (from & 63) : ~0ULL); if (m) return i * 64 + __builtin_ctzll(m); } return -1; }
+    long succ(uint32_t x) const { uint32_t c = x >> 8, lo = (x & 255) + 1; if (lo < 256) { int b = next(cl[c], lo); if (b >= 0) return c * 256 + b; } if (c + 1 < 256) { int cc = next(sm, c + 1); if (cc >= 0) return cc * 256 + next(cl[cc], 0); } return -1; }
+};
 int main() {
-    std::cout << "vEB Tree supports O(log log U) priority queue operations on universe U." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    V v; std::set<uint32_t> ref; std::mt19937 g(1); for (int i = 0; i < 3000; i++) { uint32_t x = g() % 65536; v.ins(x); ref.insert(x); }
+    for (int t = 0; t < 20000; t++) { uint32_t x = g() % 65536; auto it = ref.upper_bound(x); assert(v.succ(x) == (it == ref.end() ? -1L : (long)*it)); }
+    std::cout << "vanEmdeBoasTree: 2-level successor matches std::set" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: successor O(1) 클러스터 2 번 + 요약 1 번 (이 2 단 판), 완전 재귀판은 O(log log U)
+// Space Complexity: O(U) 비트
 ```
 ## XFastTrie()
 ### 대표코드
 ```cpp
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <unordered_map>
 #include <cassert>
 
+// X-빠른 트라이(Willard 1983): w 비트 정수의 predecessor/successor 를 O(log w) 에 하는 구조. 이진 트라이를 만들되 각 깊이(접두사 길이 l = 0..w)의 "존재하는 노드" 를 해시 표에 넣는다.
+// 질의 x: x 의 접두사 중 가장 긴 것을 찾는다 — 접두사 길이에 대해 "있다/없다" 가 단조라 이진 탐색으로 O(log w) 번 해시 조회. 그 노드 아래 x 쪽 자식이 없으므로 한쪽 방향의 부분 트리 전체가 x 의 한쪽에 있다 ->
+// 노드마다 저장한 부분 트리의 최소/최대 잎으로 이웃이 바로 정해지고, 잎들을 정렬 순서로 잇는 이중 연결 리스트로 반대쪽 이웃도 구한다.  삽입·삭제는 모든 깊이를 갱신하는 O(w), 공간은 O(n w) — Y-빠른 트라이가 줄인다
+const int W = 32;
+struct XFast {
+    struct Leaf { uint32_t key; Leaf *prev = nullptr, *next = nullptr; }; struct Info { Leaf *mn, *mx; };
+    std::unordered_map<uint64_t, Info> lvl[W + 1]; long probes = 0; long n = 0;
+    static uint64_t pre(uint32_t x, int l) { return l == 0 ? 0 : (uint64_t)x >> (W - l); }
+    Leaf* leafOf(uint32_t x) { auto it = lvl[W].find(x); return it == lvl[W].end() ? nullptr : it->second.mn; }
+    int longest(uint32_t x) {                                              // x 의 접두사 중 트라이에 존재하는 가장 긴 길이 (이진 탐색)
+        int lo = 0, hi = W; while (lo < hi) { int mid = (lo + hi + 1) / 2; probes++; if (lvl[mid].count(pre(x, mid))) lo = mid; else hi = mid - 1; } return lo;
+    }
+    Leaf* predLeaf(uint32_t x) {                                           // 가장 큰 key <= x
+        if (!n) return nullptr; int l = longest(x); if (l == W) return leafOf(x); const Info& in = lvl[l][pre(x, l)];
+        bool bit = (x >> (W - l - 1)) & 1; return bit ? in.mx : in.mn->prev;  // 오른쪽 자식이 없다면 부분 트리 전체가 x 보다 작다 -> 최대 잎, 왼쪽 자식이 없다면 전부 크다 -> 최소 잎의 이전
+    }
+    Leaf* succLeaf(uint32_t x) {                                           // 가장 작은 key >= x
+        if (!n) return nullptr; int l = longest(x); if (l == W) return leafOf(x); const Info& in = lvl[l][pre(x, l)];
+        bool bit = (x >> (W - l - 1)) & 1; return bit ? in.mx->next : in.mn;
+    }
+    bool insert(uint32_t x) {
+        if (leafOf(x)) return false; Leaf* p = predLeaf(x); Leaf* s = p ? p->next : (n ? lvl[0][0].mn : nullptr);      // 삽입 전에 이웃을 찾는다
+        Leaf* L = new Leaf; L->key = x; L->prev = p; L->next = s; if (p) p->next = L; if (s) s->prev = L;
+        for (int l = 0; l <= W; l++) { auto it = lvl[l].find(pre(x, l)); if (it == lvl[l].end()) lvl[l][pre(x, l)] = {L, L}; else { if (x < it->second.mn->key) it->second.mn = L; if (x > it->second.mx->key) it->second.mx = L; } }
+        n++; return true;
+    }
+    bool erase(uint32_t x) {
+        Leaf* L = leafOf(x); if (!L) return false; if (L->prev) L->prev->next = L->next; if (L->next) L->next->prev = L->prev;
+        for (int l = W; l >= 0; l--) { auto it = lvl[l].find(pre(x, l)); Info& in = it->second; if (in.mn == L && in.mx == L) lvl[l].erase(it); else { if (in.mn == L) in.mn = L->next; if (in.mx == L) in.mx = L->prev; } }
+        delete L; n--; return true;
+    }
+};
 int main() {
-    std::cout << "X-Fast Trie indexes trie levels with hash tables for fast predecessors." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    XFast t; std::set<uint32_t> ref; std::mt19937 g(5); long maxProbes = 0;
+    for (int step = 0; step < 60000; step++) {
+        uint32_t x = g() % 3 ? g() % 20000 : g(); int op = g() % 6;
+        if (op < 2) assert(t.insert(x) == ref.insert(x).second); else if (op == 2) assert(t.erase(x) == (ref.erase(x) > 0));
+        else { t.probes = 0; if (op == 3) { auto* l = t.predLeaf(x); auto it = ref.upper_bound(x); assert((l != nullptr) == (it != ref.begin()) && (!l || l->key == *std::prev(it))); }
+               else if (op == 4) { auto* l = t.succLeaf(x); auto it = ref.lower_bound(x); assert((l != nullptr) == (it != ref.end()) && (!l || l->key == *it)); } else { assert((t.leafOf(x) != nullptr) == (ref.count(x) > 0)); } maxProbes = std::max(maxProbes, t.probes); }
+        assert(t.n == (long)ref.size());
+    }
+    assert(maxProbes <= 6);                                                // 이진 탐색: ⌈log2(33)⌉ = 6 번 이하의 해시 조회
+    long entries = 0; for (auto& m : t.lvl) entries += m.size(); assert(entries <= t.n * (W + 1));
+    std::cout << "XFastTrie: pred/succ verified; max hash probes per query " << maxProbes << " (log2(w+1) ~ 5), table entries " << entries << " for " << t.n << " keys" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: pred/succ O(log w), 삽입·삭제 O(w)
+// Space Complexity: O(n w)
 ```
 ## YFastTrie()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <unordered_map>
 #include <cassert>
 
+// Y-빠른 트라이(Willard 1983): X-빠른 트라이의 공간 O(n w) 를 O(n) 으로 줄인다. 키를 정렬된 순서로 크기 Θ(w) 의 "버킷"으로 나누고 버킷마다 균형 BST 를 두며, X-빠른 트라이에는 버킷의 대표값(rep)만 넣는다 (n/w 개 x O(w) = O(n) 공간).
+// 질의: X-빠른 트라이로 대표값 중 x 이하 최대인 버킷을 O(log w) 에 찾고, 그 버킷의 BST 에서 O(log w). 삽입·삭제도 버킷 안에서 O(log w) 이고, 버킷이 2w 를 넘으면 반으로 쪼개고(대표값 삽입), w/2 미만이면 이웃과 합친다(대표값 삭제) —
+// 이 구조 변경은 w 번의 연산마다 한 번이라 O(w) 비용이 분할상환 O(1) 로 희석된다.  버킷 b 는 대표값 r_b 부터 다음 대표값 직전까지의 키를 가진다 (맨 앞 대표값 0 은 항상 있는 경계)
+const int W = 32;
+struct XFast {                                                             // 대표값 집합용 X-빠른 트라이 (위 항목의 최소 구현: pred/succ/삽입/삭제)
+    struct Leaf { uint32_t key; Leaf *prev = nullptr, *next = nullptr; }; struct Info { Leaf *mn, *mx; };
+    std::unordered_map<uint64_t, Info> lvl[W + 1]; long n = 0;
+    static uint64_t pre(uint32_t x, int l) { return l == 0 ? 0 : (uint64_t)x >> (W - l); }
+    Leaf* leafOf(uint32_t x) { auto it = lvl[W].find(x); return it == lvl[W].end() ? nullptr : it->second.mn; }
+    int longest(uint32_t x) { int lo = 0, hi = W; while (lo < hi) { int mid = (lo + hi + 1) / 2; if (lvl[mid].count(pre(x, mid))) lo = mid; else hi = mid - 1; } return lo; }
+    Leaf* predLeaf(uint32_t x) { if (!n) return nullptr; int l = longest(x); if (l == W) return leafOf(x); const Info& in = lvl[l][pre(x, l)]; return ((x >> (W - l - 1)) & 1) ? in.mx : in.mn->prev; }
+    Leaf* succLeaf(uint32_t x) { if (!n) return nullptr; int l = longest(x); if (l == W) return leafOf(x); const Info& in = lvl[l][pre(x, l)]; return ((x >> (W - l - 1)) & 1) ? in.mx->next : in.mn; }
+    void insert(uint32_t x) { if (leafOf(x)) return; Leaf* p = predLeaf(x); Leaf* s = p ? p->next : (n ? lvl[0][0].mn : nullptr); Leaf* L = new Leaf; L->key = x; L->prev = p; L->next = s; if (p) p->next = L; if (s) s->prev = L;
+        for (int l = 0; l <= W; l++) { auto it = lvl[l].find(pre(x, l)); if (it == lvl[l].end()) lvl[l][pre(x, l)] = {L, L}; else { if (x < it->second.mn->key) it->second.mn = L; if (x > it->second.mx->key) it->second.mx = L; } } n++; }
+    void erase(uint32_t x) { Leaf* L = leafOf(x); if (!L) return; if (L->prev) L->prev->next = L->next; if (L->next) L->next->prev = L->prev;
+        for (int l = W; l >= 0; l--) { auto it = lvl[l].find(pre(x, l)); Info& in = it->second; if (in.mn == L && in.mx == L) lvl[l].erase(it); else { if (in.mn == L) in.mn = L->next; if (in.mx == L) in.mx = L->prev; } } delete L; n--; }
+};
+struct YFast {
+    XFast xf; std::unordered_map<uint32_t, std::set<uint32_t>> bucket; long splits = 0, merges = 0;
+    YFast() { xf.insert(0); bucket[0]; }
+    uint32_t repOf(uint32_t x) { return xf.predLeaf(x)->key; }             // x 를 담당하는 버킷 = x 이하 최대 대표값
+    void split(uint32_t r) { auto& b = bucket[r]; auto mid = std::next(b.begin(), b.size() / 2); uint32_t nr = *mid; std::set<uint32_t> up(mid, b.end()); b.erase(mid, b.end()); xf.insert(nr); bucket[nr] = up; splits++; }
+    bool insert(uint32_t x) { uint32_t r = repOf(x); if (!bucket[r].insert(x).second) return false; if ((int)bucket[r].size() > 2 * W) split(r); return true; }
+    bool erase(uint32_t x) {
+        uint32_t r = repOf(x); auto& b = bucket[r]; if (!b.erase(x)) return false;
+        if (r != 0 && (int)b.size() < W / 2) { uint32_t p = xf.predLeaf(r - 1)->key; bucket[p].insert(b.begin(), b.end()); xf.erase(r); bucket.erase(r); merges++; if ((int)bucket[p].size() > 2 * W) split(p); }      // 작은 버킷은 이전 버킷에 합친다
+        return true;
+    }
+    bool pred(uint32_t x, uint32_t& out) {                                 // x 이하 최대
+        uint32_t r = repOf(x); auto& b = bucket[r]; auto it = b.upper_bound(x); if (it != b.begin()) { out = *std::prev(it); return true; }
+        if (r == 0) return false; uint32_t p = xf.predLeaf(r - 1)->key; auto& pb = bucket[p]; if (pb.empty()) return false; out = *pb.rbegin(); return true;
+    }
+    bool succ(uint32_t x, uint32_t& out) {                                 // x 이상 최소
+        uint32_t r = repOf(x); auto& b = bucket[r]; auto it = b.lower_bound(x); if (it != b.end()) { out = *it; return true; }
+        XFast::Leaf* nx = xf.succLeaf(r + 1 == 0 ? r : r + 1); if (!nx || nx->key <= r) return false; out = *bucket[nx->key].begin(); return true;
+    }
+};
 int main() {
-    std::cout << "Y-Fast Trie reduces memory overhead of X-Fast Trie using indirection." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    YFast t; std::set<uint32_t> ref; std::mt19937 g(6);
+    for (int step = 0; step < 80000; step++) {
+        uint32_t x = g() % 2 ? g() % 50000 : g(); int op = g() % 8; uint32_t out;
+        if (op < 3) assert(t.insert(x) == ref.insert(x).second); else if (op < 5) assert(t.erase(x) == (ref.erase(x) > 0));
+        else if (op < 7) { bool f = t.pred(x, out); auto it = ref.upper_bound(x); assert(f == (it != ref.begin()) && (!f || out == *std::prev(it))); }
+        else { bool f = t.succ(x, out); auto it = ref.lower_bound(x); assert(f == (it != ref.end()) && (!f || out == *it)); }
+    }
+    std::vector<uint32_t> all(ref.begin(), ref.end());                     // 대량 삭제: 버킷이 w/2 아래로 줄어 이웃과 합쳐지는 경로를 지난다
+    for (uint32_t x : all) if (g() % 10 != 0) { assert(t.erase(x)); ref.erase(x); uint32_t out; if (g() % 8 == 0) { bool f = t.pred(x, out); auto it = ref.upper_bound(x); assert(f == (it != ref.begin()) && (!f || out == *std::prev(it))); } }
+    assert(t.merges > 0);
+    size_t total = 0, minB = 1 << 30, maxB = 0; for (auto& kv : t.bucket) { if (kv.first == 0) { total += kv.second.size(); continue; } total += kv.second.size(); minB = std::min(minB, kv.second.size()); maxB = std::max(maxB, kv.second.size());
+        for (uint32_t k : kv.second) assert(k >= kv.first); }
+    assert(total == ref.size() && minB >= (size_t)W / 2 - 1 && maxB <= 2 * W);          // 버킷 크기 불변식: [w/2, 2w] (직전 연산이 경계에서 일어났을 수 있어 -1 허용)
+    long entries = 0; for (auto& m : t.xf.lvl) entries += m.size();
+    assert(entries <= (long)t.xf.n * (W + 1) && t.xf.n * (W / 2) <= (long)ref.size() + W * 4);                    // 대표값은 n/(w/2) 개 이하 -> X-빠른 트라이 공간 O(n)
+    std::cout << "YFastTrie: " << ref.size() << " keys in " << t.bucket.size() << " buckets (sizes " << minB << ".." << maxB << "), X-fast table entries " << entries << " vs X-fast alone ~" << ref.size() * (W + 1)
+              << "; splits " << t.splits << ", merges " << t.merges << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: pred/succ/삽입/삭제 O(log w) (삽입·삭제는 분할상환)
+// Space Complexity: O(n)
 ```
 ## EliasFano()
 ### 대표코드
 ```cpp
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <algorithm>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 엘리아스–파노(Elias–Fano) 부호: 우주 [0, u) 에서 뽑은 n 개의 단조 증가 정수열을 n(2 + log2(u/n)) 비트로 압축하면서 임의 접근과 "x 이상 첫 원소" 탐색을 지원한다 (정보이론 하한 log2 C(u,n) ≈ n(1.44 + log2(u/n)) 에서 약 0.56n 비트 차이).
+// 각 값을 L = ⌊log2(u/n)⌋ 인 하위 L 비트와 상위 부분 h = v >> L 로 나눈다. 하위 비트는 n·L 비트 배열에 그대로, 상위 부분은 단항 부호(unary)의 비트열에 둔다 —
+// "원소 i 의 상위가 h 이면 비트 i + h 를 1 로" (그 앞에는 정확히 h 개의 0 이 있다).  비트열 길이는 n + (u >> L) + 1 <= 3n.  access(i) = (select1(i) - i) << L | low[i],
+// nextGEQ(x) 는 상위 h = x >> L 의 시작 위치 = select0(h-1)+1 에서 시작해 같은 버킷 안의 몇 원소만 훑는다. select 는 64 번째마다 위치를 표본으로 저장해 비트 단위 스캔을 짧게 한다
+struct BitArr { std::vector<uint64_t> w; long n = 0; void resize(long bits) { n = bits; w.assign((bits + 63) / 64 + 1, 0); } void set(long i) { w[i >> 6] |= 1ULL << (i & 63); } bool get(long i) const { return (w[i >> 6] >> (i & 63)) & 1; }
+    uint64_t read(long pos, int len) const { if (!len) return 0; uint64_t v = 0; for (int i = 0; i < len; i++) v |= (uint64_t)get(pos + i) << i; return v; } void put(long pos, uint64_t v, int len) { for (int i = 0; i < len; i++) if ((v >> i) & 1) set(pos + i); } };
+struct EF {
+    long n, u; int L; BitArr low, hi; std::vector<uint32_t> sel1, sel0; long zeros;
+    EF(const std::vector<uint64_t>& a, uint64_t universe) : n(a.size()), u(universe) {
+        L = n ? std::max(0, (int)std::floor(std::log2((double)u / n))) : 0; low.resize(n * L); zeros = (u >> L) + 1; hi.resize(n + zeros);
+        for (long i = 0; i < n; i++) { low.put(i * L, a[i] & ((1ULL << L) - 1), L); hi.set((a[i] >> L) + i); }
+        long ones = 0, zs = 0; for (long p = 0; p < hi.n; p++) { if (hi.get(p)) { if (ones % 64 == 0) sel1.push_back(p); ones++; } else { if (zs % 64 == 0) sel0.push_back(p); zs++; } }
+    }
+    long selectAt(long startPos, long remaining, bool one) const {         // startPos 에서 시작해 remaining 번째 뒤의 같은 값 비트 위치
+        if (!remaining) return startPos; long w = startPos >> 6; uint64_t raw = one ? hi.w[w] : ~hi.w[w]; int off = startPos & 63; uint64_t word = off == 63 ? 0 : raw & (~0ULL << (off + 1));
+        for (;;) { int c = __builtin_popcountll(word); if (remaining <= c) { for (long r = remaining; r > 1; r--) word &= word - 1; return w * 64 + __builtin_ctzll(word); } remaining -= c; w++; word = one ? hi.w[w] : ~hi.w[w]; }
+    }
+    long select1(long i) const { return selectAt(sel1[i / 64], i % 64, true); }
+    long select0(long k) const { return selectAt(sel0[k / 64], k % 64, false); }
+    uint64_t access(long i) const { return (uint64_t)(select1(i) - i) << L | low.read(i * L, L); }
+    long nextGEQ(uint64_t x) const {                                       // x 이상인 첫 원소의 인덱스 (없으면 n)
+        uint64_t h = x >> L; if (h >= (uint64_t)zeros) return n; long start = h == 0 ? 0 : select0(h - 1) + 1; long i = start - h;
+        while (i < n && access(i) < x) i++; return i;
+    }
+    double bits() const { return (double)low.n + hi.n + 32.0 * (sel1.size() + sel0.size()); }
+};
 int main() {
-    std::cout << "Elias-Fano compresses monotone sequences splitting high/low bits." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937_64 g(8);
+    for (auto cfg : std::vector<std::pair<long, uint64_t>>{{100000, 1000000000ULL}, {50000, 100000ULL}, {20000, 1000000000000ULL}, {1, 1000}, {7, 7}}) {
+        long n = cfg.first; uint64_t u = cfg.second; std::vector<uint64_t> a; { std::set<uint64_t> s; while ((long)s.size() < n && (long)s.size() < (long)u) s.insert(g() % u); a.assign(s.begin(), s.end()); n = a.size(); }
+        EF ef(a, u);
+        for (long i = 0; i < n; i++) assert(ef.access(i) == a[i]);          // 모든 원소 복원
+        for (int t = 0; t < 20000; t++) { uint64_t x = t % 3 == 0 ? g() % (u + 5) : t % 3 == 1 ? a[g() % n] : a[g() % n] + 1; long want = std::lower_bound(a.begin(), a.end(), x) - a.begin(); assert(ef.nextGEQ(x) == want); }
+        double info = (std::lgamma((double)u + 1) - std::lgamma((double)n + 1) - std::lgamma((double)(u - n) + 1)) / std::log(2.0); double main = (double)ef.low.n + ef.hi.n;
+        if (n > 1000) assert(main <= info + 2.0 * n);                       // 정보이론 하한 + 2n 비트 이내
+        std::cout << "n=" << n << ", u=" << u << ", L=" << ef.L << ": " << main / n << " bits/element (+" << (ef.bits() - main) / n << " for select samples), info-theoretic " << info / n << ", plain 64-bit array " << 64 << std::endl;
+    }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: access O(1) (select 표본 간격 상수), nextGEQ 기대 O(1 + 버킷 크기)
+// Space Complexity: n(2 + ⌈log2(u/n)⌉) 비트
 ```
 ## CompressedSuffixArray()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 압축 접미사 배열(CSA, Grossi–Vitter / Sadakane): 접미사 배열 SA 를 32n 비트 대신 Θ(n) 비트로 두고도 패턴 검색을 한다. 핵심은 Ψ 함수: Ψ[i] = ISA[SA[i] + 1] — "SA 의 i 번째 접미사의 다음 접미사가 SA 의 몇 번째인가".
+// 성질: 같은 첫 글자 구간 안에서 Ψ 는 증가 수열이라 간격(gap)을 짧은 부호(여기서는 Elias gamma)로 저장할 수 있다. 첫 글자 F[i] 는 글자별 경계 C[c] 만으로 알고, 한 글자씩 Ψ 를 따라가면(i -> Ψ[i] -> ...) 접미사 SA[i] 를 SA 없이 글자로 펼칠 수 있다.
+// 그래서 (1) 검색: 패턴과 "Ψ 를 따라 펼친 접미사" 를 비교하며 이분 탐색 — O(m log n) 번 Ψ 계산  (2) 위치 구하기(locate): SA 값을 s 칸마다 표본 저장, 표본 행을 만날 때까지 Ψ 를 따라가며 걸음 수 t 를 빼면 SA[i] = SA[표본] - t
+struct BitW { std::vector<uint64_t> w; long n = 0; void bit(int b) { if (n / 64 >= (long)w.size()) w.push_back(0); if (b) w[n / 64] |= 1ULL << (n % 64); n++; } int get(long p) const { return (w[p / 64] >> (p % 64)) & 1; }
+    void gamma(uint32_t g) { int len = 31 - __builtin_clz(g); for (int i = 0; i < len; i++) bit(0); for (int i = len; i >= 0; i--) bit((g >> i) & 1); }          // g >= 1: 0 이 len 개, 이어서 g 의 이진수 (len+1 비트)
+    uint32_t readGamma(long& p) const { int len = 0; while (!get(p)) { len++; p++; } uint32_t v = 0; for (int i = 0; i <= len; i++) v = v << 1 | get(p++); return v; } };
+struct CSA {
+    std::string T; int n; std::vector<int> C = std::vector<int>(257, 0); static const int BL = 16, S = 8;      // Ψ 블록 크기, SA 표본 간격
+    BitW psiBits; std::vector<uint32_t> blkVal; std::vector<long> blkOff; std::vector<long> bucketBlk = std::vector<long>(257, 0);            // 글자별 Ψ 블록 표본
+    std::vector<uint64_t> mark; std::vector<uint32_t> markRank, saSample; std::vector<int> plainPsi;                                       // SA 표본 (표시 비트 + 순위 + 값)
+    explicit CSA(const std::string& text) : T(text) {
+        n = T.size(); std::vector<int> sa(n); std::iota(sa.begin(), sa.end(), 0); std::sort(sa.begin(), sa.end(), [&](int a, int b) { return T.compare(a, n, T, b, n) < 0; });
+        std::vector<int> isa(n); for (int i = 0; i < n; i++) isa[sa[i]] = i; for (unsigned char c : T) C[c + 1]++; for (int c = 0; c < 256; c++) C[c + 1] += C[c];
+        plainPsi.resize(n); for (int i = 0; i < n; i++) plainPsi[i] = isa[(sa[i] + 1) % n];
+        for (int c = 0; c < 256; c++) {                                    // 글자 c 의 구간 [C[c], C[c+1]) 의 Ψ 를 gap 부호로
+            bucketBlk[c] = blkVal.size();
+            for (int j = 0, i = C[c]; i < C[c + 1]; i++, j++) { if (j % BL == 0) { blkVal.push_back(plainPsi[i]); blkOff.push_back(psiBits.n); } else psiBits.gamma(plainPsi[i] - plainPsi[i - 1]); }
+        }
+        bucketBlk[256] = blkVal.size(); mark.assign((n + 63) / 64 + 1, 0); markRank.assign(mark.size() + 1, 0);
+        for (int i = 0; i < n; i++) if (sa[i] % S == 0) { mark[i / 64] |= 1ULL << (i % 64); saSample.push_back(sa[i]); }
+        for (size_t w = 0; w < mark.size(); w++) markRank[w + 1] = markRank[w] + __builtin_popcountll(mark[w]);
+    }
+    int charAt(int i) const { return std::upper_bound(C.begin(), C.end(), i) - C.begin() - 1; }                               // F[i]
+    int psi(int i) const {
+        int c = charAt(i), j = i - C[c], b = j / BL; long blk = bucketBlk[c] + b; uint32_t v = blkVal[blk]; long p = blkOff[blk];
+        for (int k = 0; k < j % BL; k++) v += psiBits.readGamma(p); return v;
+    }
+    bool marked(int i) const { return (mark[i / 64] >> (i % 64)) & 1; }
+    int locate(int i) const { int t = 0; while (!marked(i)) { i = psi(i); t++; }
+        int r = markRank[i / 64] + __builtin_popcountll(mark[i / 64] & ((1ULL << (i % 64)) - 1)); return ((int)saSample[r] - t % n + n) % n; }
+    int cmp(int row, const std::string& P) const {                         // 행 row 의 접미사 앞쪽 |P| 글자 vs P (Ψ 를 따라 펼침). <0, 0, >0
+        for (size_t k = 0; k < P.size(); k++) { int c = charAt(row); if (c != (unsigned char)P[k]) return c < (unsigned char)P[k] ? -1 : 1; row = psi(row); } return 0;
+    }
+    std::pair<int, int> range(const std::string& P) const {
+        int lo = 0, hi = n; while (lo < hi) { int mid = (lo + hi) / 2; if (cmp(mid, P) < 0) lo = mid + 1; else hi = mid; } int a = lo;
+        hi = n; while (lo < hi) { int mid = (lo + hi) / 2; if (cmp(mid, P) <= 0) lo = mid + 1; else hi = mid; } return {a, lo};
+    }
+    double bits() const { return psiBits.n + 32.0 * blkVal.size() + 32.0 * blkOff.size() / 2 + n + 32.0 * saSample.size(); }
+};
 int main() {
-    std::cout << "Compressed SA uses BWT to squeeze massive DNA texts into RAM." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(2); int n = 20000; std::string T; for (int i = 0; i < n - 1; i++) T += "ACGT"[g() % 4]; T += '$';
+    CSA csa(T);
+    for (int i = 0; i < csa.n; i += 7) assert(csa.psi(i) == csa.plainPsi[i]);        // 압축된 Ψ 를 복호하면 원래 Ψ
+    for (int c = 0; c < 256; c++) for (int i = csa.C[c] + 1; i < csa.C[c + 1]; i++) assert(csa.plainPsi[i] > csa.plainPsi[i - 1]);       // 같은 첫 글자 구간에서 Ψ 증가
+    for (int t = 0; t < 400; t++) {
+        std::string P; if (t % 2) { int len = 1 + g() % 9, st = g() % (n - len - 1); P = T.substr(st, len); } else { int len = 1 + g() % 8; for (int i = 0; i < len; i++) P += "ACGT"[g() % 4]; }
+        auto r = csa.range(P); std::vector<int> got; for (int i = r.first; i < r.second; i++) got.push_back(csa.locate(i)); std::sort(got.begin(), got.end());
+        std::vector<int> want; for (size_t p = T.find(P); p != std::string::npos; p = T.find(P, p + 1)) want.push_back(p); assert(got == want);          // 모든 출현 위치 일치
+    }
+    double bitsPer = csa.bits() / csa.n;
+    assert(bitsPer < 16);                                                  // 평범한 SA 는 글자당 32 비트
+    std::cout << "CompressedSuffixArray: count/locate verified on " << csa.n << " chars; " << bitsPer << " bits per char (plain SA: 32, plain Psi: 32)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 검색 O(m log n) 번 Ψ 계산, locate O(S) 번 Ψ 계산 (S = 표본 간격)
+// Space Complexity: 글자당 약 H0 + O(1) 비트 + SA 표본 n/S 개
 ```
 ## DynamicWaveletTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 동적 웨이블릿 트리: 웨이블릿 트리(Part 2)는 한 번 만들면 고정이지만, 이 구조는 수열 중간에 원소를 끼우고(insert) 지우고(erase)도 access / rank 를 O(log n log σ) 에 한다.
+// 정적 구조의 각 노드가 가진 비트열을 "동적 비트벡터"로 바꾸면 된다 — 비트 삽입·삭제·rank 를 지원하는 균형 트리(여기서는 암묵 키 트립: 각 노드가 부분 트리 크기와 1 의 개수를 저장).
+// 원소 c 를 위치 pos 에 삽입: 루트 비트열의 pos 에 (c 가 알파벳 상위 절반이면 1, 아니면 0) 비트를 끼우고, 그 비트가 속한 자식 쪽 위치 = (1 이면 pos 앞의 1 의 수, 0 이면 pos 앞의 0 의 수) 로 옮겨 재귀. 텍스트 편집기·동적 FM-인덱스(동적 BWT)에 쓰인다
+struct DBV {
+    struct N { int bit, sz, ones; unsigned pri; N *l = nullptr, *r = nullptr; }; N* root = nullptr; std::mt19937 rng{1};
+    static int sz(N* t) { return t ? t->sz : 0; } static int on(N* t) { return t ? t->ones : 0; }
+    static void upd(N* t) { t->sz = 1 + sz(t->l) + sz(t->r); t->ones = t->bit + on(t->l) + on(t->r); }
+    static void split(N* t, int k, N*& a, N*& b) { if (!t) { a = b = nullptr; return; } if (sz(t->l) < k) { a = t; split(t->r, k - sz(t->l) - 1, t->r, b); } else { b = t; split(t->l, k, a, t->l); } upd(t); }
+    static N* merge(N* a, N* b) { if (!a || !b) return a ? a : b; if (a->pri > b->pri) { a->r = merge(a->r, b); upd(a); return a; } b->l = merge(a, b->l); upd(b); return b; }
+    int size() const { return sz(root); }
+    void insert(int pos, int bit) { N *a, *b; split(root, pos, a, b); N* n = new N{bit, 1, bit, (unsigned)rng()}; root = merge(merge(a, n), b); }
+    int erase(int pos) { N *a, *b, *m, *c; split(root, pos, a, b); split(b, 1, m, c); int bit = m->bit; delete m; root = merge(a, c); return bit; }
+    int access(int pos) const { N* t = root; for (;;) { int ls = sz(t->l); if (pos < ls) t = t->l; else if (pos == ls) return t->bit; else { pos -= ls + 1; t = t->r; } } }
+    int rank1(int pos) const { int r = 0; N* t = root; while (t && pos > 0) { int ls = sz(t->l); if (pos <= ls) t = t->l; else { r += on(t->l) + t->bit; pos -= ls + 1; t = t->r; } } return r; }       // [0, pos) 의 1 의 수
+    ~DBV() { std::vector<N*> st; if (root) st.push_back(root); while (!st.empty()) { N* t = st.back(); st.pop_back(); if (t->l) st.push_back(t->l); if (t->r) st.push_back(t->r); delete t; } }
+};
+struct DWT {
+    int lo, hi; DBV bv; DWT *L = nullptr, *R = nullptr; DWT(int lo, int hi) : lo(lo), hi(hi) {} ~DWT() { delete L; delete R; }
+    bool leaf() const { return hi - lo == 1; } int mid() const { return (lo + hi) / 2; }
+    DWT*& child(int bit) { DWT*& c = bit ? R : L; if (!c) c = bit ? new DWT(mid(), hi) : new DWT(lo, mid()); return c; }
+    void insert(int pos, int c) { if (leaf()) return; int bit = c >= mid(), r1 = bv.rank1(pos); bv.insert(pos, bit); child(bit)->insert(bit ? r1 : pos - r1, c); }
+    int access(int pos) { if (leaf()) return lo; int bit = bv.access(pos), r1 = bv.rank1(pos); return child(bit)->access(bit ? r1 : pos - r1); }
+    int erase(int pos) { if (leaf()) return lo; int bit = bv.access(pos), r1 = bv.rank1(pos); bv.erase(pos); return child(bit)->erase(bit ? r1 : pos - r1); }
+    int rank(int c, int pos) { if (leaf()) return pos; int bit = c >= mid(), r1 = bv.rank1(pos); DWT*& ch = bit ? R : L; if (!ch) return 0; return ch->rank(c, bit ? r1 : pos - r1); }       // [0, pos) 안의 c 의 개수
+};
 int main() {
-    std::cout << "Dynamic Wavelet Tree handles inserts/deletes over strings." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    const int SIGMA = 16; DWT t(0, SIGMA); std::vector<int> ref; std::mt19937 g(3);
+    for (int step = 0; step < 30000; step++) {
+        int op = g() % 10;
+        if (op < 5 || ref.empty()) { int pos = g() % (ref.size() + 1), c = g() % SIGMA; t.insert(pos, c); ref.insert(ref.begin() + pos, c); }
+        else if (op < 7) { int pos = g() % ref.size(); assert(t.erase(pos) == ref[pos]); ref.erase(ref.begin() + pos); }
+        else if (op < 9) { int pos = g() % ref.size(); assert(t.access(pos) == ref[pos]); }
+        else { int c = g() % SIGMA, pos = g() % (ref.size() + 1); assert(t.rank(c, pos) == (int)std::count(ref.begin(), ref.begin() + pos, c)); }
+        assert(t.bv.size() == (int)ref.size());
+    }
+    for (size_t i = 0; i < ref.size(); i++) assert(t.access(i) == ref[i]);
+    std::cout << "DynamicWaveletTree: 30000 insert/erase/access/rank ops match std::vector (final length " << ref.size() << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산당 O(log n · log σ)
+// Space Complexity: O(n log σ) 노드 (비트 하나가 트립 노드 하나)
 ```
 ## PackedMemoryArray()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 패킹된 메모리 배열(PMA, Itai–Konheim–Rodeh 1981): 정렬된 원소를 배열에 순서대로 두되 곳곳에 의도적으로 "빈칸(gap)" 을 남겨 삽입 때 이동량을 줄인다. 순차 메모리라 스캔이 캐시 친화적이고
+// (연결 리스트·트리와 달리 포인터 추적이 없다) 삽입은 분할상환 O(log² n) 번의 원소 이동이다.  동적 그래프 시스템(PCSR, Terrace)과 캐시 무관 B-트리의 바닥층으로 쓰인다.
+// 배열을 길이 Θ(log n) 의 구간(segment)들로 나누고 그 위에 암묵적 이진 트리를 올린다. 레벨 l 의 창(window)은 밀도 상한 τ_l 을 갖는다: 잎 구간 1.0 -> 전체 0.5 로 선형 감소.
+// 삽입으로 구간이 넘치면 "상한을 만족하는 가장 작은 상위 창"을 찾아 그 창의 원소를 모두 모아 새 원소와 함께 고르게 펴 준다(rebalance). 루트가 상한을 넘으면 배열을 두 배로 키운다. 삭제는 하한 ρ_l (0.1 -> 0.2)로 대칭 처리하고 배열을 절반으로 줄인다
+const long EMPTY = -1;
+struct PMA {
+    std::vector<long> a; int seg = 4; long count = 0, moves = 0;
+    PMA() { init(16); }
+    void init(size_t cap) { a.assign(cap, EMPTY); int lg = 0; while ((1u << lg) < cap) lg++; seg = 1; while (seg < lg) seg <<= 1; seg = std::min<size_t>(std::max(seg, 4), cap); }
+    int H() const { int h = 0; for (size_t s = a.size() / seg; s > 1; s >>= 1) h++; return h; }
+    double tau(int l) const { int h = H(); return h == 0 ? 1.0 : 1.0 - 0.5 * l / h; }
+    double rho(int l) const { int h = H(); return h == 0 ? 0.0 : 0.1 + 0.1 * l / h; }
+    long countIn(size_t s, size_t len) const { long c = 0; for (size_t i = s; i < s + len; i++) c += a[i] != EMPTY; return c; }
+    size_t lowerIdx(long key) const {                                      // key 이상인 첫 원소의 배열 인덱스 (없으면 size)
+        size_t lo = 0, hi = a.size();
+        while (lo < hi) { size_t mid = (lo + hi) / 2, j = mid; while (j < hi && a[j] == EMPTY) j++; if (j == hi) { hi = mid; continue; } if (a[j] < key) lo = j + 1; else hi = mid; }
+        size_t j = lo; while (j < a.size() && a[j] == EMPTY) j++; return j;
+    }
+    std::vector<long> gather(size_t s, size_t len) const { std::vector<long> v; for (size_t i = s; i < s + len; i++) if (a[i] != EMPTY) v.push_back(a[i]); return v; }
+    void spread(size_t s, size_t len, const std::vector<long>& v) { std::fill(a.begin() + s, a.begin() + s + len, EMPTY); for (size_t i = 0; i < v.size(); i++) a[s + i * len / v.size()] = v[i]; moves += v.size(); }
+    void rebuild(size_t newCap) { std::vector<long> v = gather(0, a.size()); init(newCap); spread(0, a.size(), v); }
+    bool contains(long key) const { size_t j = lowerIdx(key); return j < a.size() && a[j] == key; }
+    bool insert(long key) {
+        if (contains(key)) return false; size_t idx = lowerIdx(key), s = std::min(idx / seg, a.size() / seg - 1), wsz = seg, ws = s * seg; int lvl = 0;
+        for (;;) { long c = countIn(ws, wsz); if ((double)(c + 1) <= tau(lvl) * wsz) break; if (wsz == a.size()) { rebuild(a.size() * 2); return insert(key); } lvl++; wsz *= 2; ws = ws / wsz * wsz; }     // 상한을 만족하는 가장 작은 창
+        std::vector<long> v = gather(ws, wsz); v.insert(std::lower_bound(v.begin(), v.end(), key), key); spread(ws, wsz, v); count++; return true;
+    }
+    bool erase(long key) {
+        if (!contains(key)) return false; size_t j = lowerIdx(key); a[j] = EMPTY; count--; size_t s = j / seg, wsz = seg, ws = s * seg; int lvl = 0;
+        while (wsz < a.size() && (double)countIn(ws, wsz) < rho(lvl) * wsz) { lvl++; wsz *= 2; ws = ws / wsz * wsz; }
+        if (wsz == a.size() && a.size() > 16 && (double)count < rho(H()) * a.size()) { rebuild(a.size() / 2); return true; }
+        if (lvl > 0) { std::vector<long> v = gather(ws, wsz); spread(ws, wsz, v); }
+        return true;
+    }
+};
 int main() {
-    std::cout << "Packed Memory Array maintains sorted elements with controlled gaps." << std::endl;
-    assert(1 == 1); // Solved
+    for (int mode = 0; mode < 3; mode++) {                                 // 0 무작위 삽입, 1 오름차순 삽입(최악), 2 삽입과 삭제 혼합
+        PMA p; std::set<long> ref; std::mt19937 g(5 + mode); long inserts = 0; p.moves = 0;
+        for (int step = 0; step < 20000; step++) {
+            long k = mode == 1 ? step : (long)(g() % 1000000); bool del = mode == 2 && g() % 3 == 0 && !ref.empty();
+            if (del) { long d = *std::next(ref.begin(), g() % ref.size()); assert(p.erase(d)); ref.erase(d); } else { bool added = p.insert(k); assert(added == ref.insert(k).second); inserts += added; }
+            assert(p.count == (long)ref.size());
+            if (step % 2000 == 0) { auto v = p.gather(0, p.a.size()); assert(v == std::vector<long>(ref.begin(), ref.end())); assert(p.count <= (long)p.a.size()); for (size_t sI = 0; sI < p.a.size(); sI += p.seg) assert(p.countIn(sI, p.seg) <= p.seg); }       // 정렬 순서, 구간 용량
+        }
+        auto v = p.gather(0, p.a.size()); assert((v == std::vector<long>(ref.begin(), ref.end())));
+        double lg = std::log2((double)p.a.size()); double perOp = (double)p.moves / inserts;
+        assert(perOp < lg * lg);                                           // 삽입당 이동 횟수 < log² N
+        std::cout << (mode == 0 ? "random" : mode == 1 ? "sorted" : "mixed") << ": " << ref.size() << " keys in capacity " << p.a.size() << " (density " << (double)ref.size() / p.a.size() << "), moves per insert " << perOp << " (log^2 N = " << lg * lg << ")" << std::endl;
+    }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·삭제 분할상환 O(log² n) 이동, 범위 스캔 O(k) (순차 메모리)
+// Space Complexity: O(n) (밀도 0.1 ~ 0.5 유지)
 ```
 ## CacheAwareBTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 캐시 인지(cache-aware) B-트리: 캐시 라인 크기를 코드에 "알고" 노드 크기를 거기에 맞춘다. 64 바이트 라인에 4 바이트 키 16 개 = 노드 하나가 정확히 한 라인이 되게 분기 수 F=16 으로 정적 트리를 만든다.
+// 구성: 정렬 배열을 레벨 0 으로 두고, 레벨 h+1 은 레벨 h 의 F 개마다 첫 키를 모은 배열(표본). 탐색은 맨 위(크기 <= F)에서 시작해 한 레벨에서 F 개 연속 키만 읽고 다음 레벨의 해당 블록으로 내려간다.
+// 이분 탐색은 깊은 곳에서 프로브마다 다른 캐시 라인을 건드려 약 log2 N - 4 라인을 읽지만, 이 트리는 log_F N 라인이면 된다. F 가 라인보다 작으면 레벨이 늘고, 크면 노드 한 개가 여러 라인이다 -> F = 라인 크기가 최적
+// (반대로 캐시 무관 B-트리(앞 항목)는 B 를 모르고도 거의 같은 성능을 낸다는 점이 대비된다)
+struct StaticBTree {
+    int F; std::vector<std::vector<int>> lv;
+    StaticBTree(const std::vector<int>& keys, int F) : F(F) { lv.push_back(keys); while (lv.back().size() > (size_t)F) { std::vector<int> up; for (size_t i = 0; i < lv.back().size(); i += F) up.push_back(lv.back()[i]); lv.push_back(up); } }
+    // 반환: 레벨 0 에서 q 이상인 첫 위치. lines 에는 읽은 캐시 라인 (레벨, 라인 번호) 을 기록 (라인 = 16 키)
+    long lowerBound(int q, std::set<std::pair<int, long>>& lines) const {
+        size_t block = 0;
+        for (int h = (int)lv.size() - 1; h >= 1; h--) {
+            const auto& a = lv[h]; size_t s = block * F, e = std::min(a.size(), s + F); for (long ln = s / 16; ln <= (long)(e - 1) / 16; ln++) lines.insert({h, ln});     // 노드의 F 개 키를 읽음
+            size_t j = s; while (j < e && a[j] <= q) j++; size_t child = j > s ? j - 1 : s; block = child;           // q 이하인 마지막 표본의 자식 블록
+        }
+        const auto& a = lv[0]; size_t s = block * F, e = std::min(a.size(), s + F); for (long ln = s / 16; ln <= (long)(e - 1) / 16; ln++) lines.insert({0, ln});
+        size_t j = s; while (j < e && a[j] < q) j++; return j;             // 블록 안에서 q 이상 첫 키 (블록 끝이면 다음 블록의 첫 키가 정답)
+    }
+};
 int main() {
-    std::cout << "Cache-Aware B-Tree pads nodes perfectly to hardware L1/page sizes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(5); const long n = 1 << 20; std::vector<int> keys(n); for (long i = 0; i < n; i++) keys[i] = i * 3;     // 이미 정렬된 정수 키
+    double lines[3] = {0, 0, 0}; int Fs[3] = {4, 16, 64}; double bin = 0; int Q = 3000;
+    StaticBTree t4(keys, 4), t16(keys, 16), t64(keys, 64); const StaticBTree* trees[3] = {&t4, &t16, &t64};
+    for (int t = 0; t < Q; t++) {
+        int q = g() % (n * 3); long want = std::lower_bound(keys.begin(), keys.end(), q) - keys.begin();
+        for (int k = 0; k < 3; k++) { std::set<std::pair<int, long>> ln; long r = trees[k]->lowerBound(q, ln); assert(r == want); lines[k] += ln.size(); }          // 결과는 std::lower_bound 와 같고 읽은 라인 수를 센다
+        long lo = 0, hi = n; std::set<long> bl; while (lo < hi) { long mid = (lo + hi) / 2; bl.insert(mid / 16); if (keys[mid] < q) lo = mid + 1; else hi = mid; } bin += bl.size();
+    }
+    for (int k = 0; k < 3; k++) lines[k] /= Q; bin /= Q;
+    assert(lines[1] <= lines[0] && lines[1] <= lines[2] && lines[1] * 2 < bin);        // F = 16(라인 크기)이 최소, 이분 탐색의 절반 미만
+    std::cout << "CacheAwareBTree: cache lines per search  F=4: " << lines[0] << ", F=16: " << lines[1] << ", F=64: " << lines[2] << ", binary search: " << bin << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 탐색 O(log_F N) 캐시 라인 (F = 라인 크기 / 키 크기)
+// Space Complexity: 정렬 배열 + N/(F-1) 개 표본
 ```
 ## LearnedBloomFilter()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Learned Bloom Filter acts as a classifier, backed by a small classical filter." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 학습된 블룸 필터(Kraska et al.): 키 집합 S 와 "S 가 아닌 것" 을 구별하는 작은 모델 f(x) ∈ [0,1] 을 학습해 앞단에 두고, f(x) >= τ 이면 "있다", 아니면 "모델이 놓친 키만 담은 작은 백업 블룸 필터" 에 묻는다.
+// 모델이 S 의 키에 낮은 점수를 준(거짓 음성) 경우는 백업 필터에 모두 넣어 두므로 전체로는 거짓 음성이 절대 없다. 모델이 잘 구별하는 데이터(악성 URL 처럼 패턴이 있는 키)에서는 백업 필터가 작아져
+// 모델 크기를 더해도 일반 블룸 필터보다 공간이 적다.  임계값 τ 는 검증용 비키 집합에서 모델의 거짓 양성률이 목표가 되게 정한다.  아래 모델은 문자 3-gram 을 해시한 특징의 로지스틱 회귀(SGD)이다
+const int FEAT = 1024;
+struct Model {
+    std::vector<float> w = std::vector<float>(FEAT, 0); float b = 0;
+    static void feats(const std::string& s, std::vector<int>& f) { f.clear(); for (size_t i = 0; i + 3 <= s.size(); i++) { uint32_t h = 2166136261u; for (int j = 0; j < 3; j++) { h ^= (unsigned char)s[i + j]; h *= 16777619u; } f.push_back(h % FEAT); } std::sort(f.begin(), f.end()); f.erase(std::unique(f.begin(), f.end()), f.end()); }
+    float score(const std::string& s) const { std::vector<int> f; feats(s, f); float z = b; for (int j : f) z += w[j]; return 1.0f / (1.0f + std::exp(-z)); }
+    void train(const std::vector<std::string>& pos, const std::vector<std::string>& neg, int epochs, float lr, std::mt19937& g) {
+        std::vector<std::pair<const std::string*, int>> data; for (auto& s : pos) data.push_back({&s, 1}); for (auto& s : neg) data.push_back({&s, 0}); std::vector<int> f;
+        for (int e = 0; e < epochs; e++) { std::shuffle(data.begin(), data.end(), g); for (auto& d : data) { feats(*d.first, f); float z = b; for (int j : f) z += w[j]; float p = 1.0f / (1.0f + std::exp(-z)), grad = p - d.second; for (int j : f) w[j] -= lr * grad; b -= lr * grad; } }
+    }
+};
+struct Bloom {
+    size_t m; int k; std::vector<uint64_t> bits;
+    Bloom(size_t n, double p) { n = std::max<size_t>(n, 1); m = (size_t)std::ceil(-(double)n * std::log(p) / (std::log(2.0) * std::log(2.0))); k = std::max(1, (int)std::round((double)m / n * std::log(2.0))); bits.assign((m + 63) / 64, 0); }
+    static uint64_t h(const std::string& s, uint64_t seed) { uint64_t x = 1469598103934665603ULL ^ seed; for (unsigned char c : s) { x ^= c; x *= 1099511628211ULL; } x ^= x >> 31; x *= 0x9e3779b97f4a7c15ULL; return x ^ (x >> 29); }
+    void add(const std::string& s) { for (int i = 0; i < k; i++) { size_t p = (h(s, 1) + (uint64_t)i * (h(s, 2) | 1)) % m; bits[p >> 6] |= 1ULL << (p & 63); } }
+    bool maybe(const std::string& s) const { for (int i = 0; i < k; i++) { size_t p = (h(s, 1) + (uint64_t)i * (h(s, 2) | 1)) % m; if (!((bits[p >> 6] >> (p & 63)) & 1)) return false; } return true; }
+};
+const char* BAD[] = {"login", "secure", "verify", "update", "account", "bank", "paypal", "confirm", "signin", "wallet"};
+const char* GOOD[] = {"news", "blog", "shop", "wiki", "photo", "music", "game", "recipe", "travel", "sports"};
+std::string gen(bool bad, std::mt19937& g) {
+    std::string s; int t = 2 + g() % 2; for (int i = 0; i < t; i++) { bool useBad = bad ? (g() % 10 != 0) : (g() % 10 == 0); s += (useBad ? BAD : GOOD)[g() % 10]; s += g() % 2 ? "-" : "."; }
+    int r = 3 + g() % 4; for (int i = 0; i < r; i++) s += 'a' + g() % 26; return s;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int main() {
+    std::mt19937 g(11); std::set<std::string> keySet, trainNeg, valNeg, testNeg;
+    while (keySet.size() < 30000) keySet.insert(gen(true, g)); while (trainNeg.size() < 30000) trainNeg.insert(gen(false, g));
+    while (valNeg.size() < 20000) { auto s = gen(false, g); if (!trainNeg.count(s)) valNeg.insert(s); } while (testNeg.size() < 50000) { auto s = gen(false, g); if (!trainNeg.count(s) && !valNeg.count(s) && !keySet.count(s)) testNeg.insert(s); }
+    std::vector<std::string> keys(keySet.begin(), keySet.end()), tn(trainNeg.begin(), trainNeg.end());
+    Model m; m.train(keys, tn, 6, 0.05f, g);
+    std::vector<float> vs; for (auto& s : valNeg) vs.push_back(m.score(s)); std::sort(vs.begin(), vs.end()); float tau = vs[(size_t)(vs.size() * 0.995)];        // 검증 비키의 99.5% 가 τ 아래 -> 모델 FPR ≈ 0.5%
+    std::vector<std::string> missed; for (auto& k : keys) if (m.score(k) < tau) missed.push_back(k);          // 모델이 놓친 키 -> 백업 필터에
+    double p2 = 0.005; Bloom backup(missed.size(), p2); for (auto& k : missed) backup.add(k);
+    auto query = [&](const std::string& s) { return m.score(s) >= tau || backup.maybe(s); };
+    for (auto& k : keys) assert(query(k));                                 // 거짓 음성 0
+    long fp = 0; for (auto& s : testNeg) fp += query(s); double fpr = (double)fp / testNeg.size();
+    Bloom plain(keys.size(), fpr > 0.002 ? fpr : 0.002); double learnedBits = FEAT * 32.0 + 32 + backup.m, plainBits = plain.m;
+    assert(fpr < 0.03 && learnedBits < plainBits);                         // 같은 거짓 양성률에서 공간이 더 적다
+    std::cout << "LearnedBloomFilter: " << keys.size() << " keys, model missed " << missed.size() << " (backup filter " << backup.m << " bits); measured FPR " << fpr * 100 << "%, total " << learnedBits / keys.size()
+              << " bits/key vs plain Bloom (same FPR) " << plainBits / keys.size() << " bits/key, no false negatives" << std::endl; return 0;
+}
+// Time Complexity: 조회 O(특징 수 + k) (모델 한 번 + 필요 시 백업 필터)
+// Space Complexity: 모델 + 놓친 키 수 × O(log 1/p) 비트
 ```
 
 # 부록
