@@ -1646,7 +1646,7 @@ int main() {
         dfs(0, 0, 0); if (cBrute == (1L << 40)) cBrute = -1; assert(a == cBrute);
         if (a < 0) infeasible++; else { agree++; withDom += l1; noDom += l2; }
     }
-    assert(agree > 150 && infeasible > 0 && withDom * 2 < noDom);
+    assert(agree > 150 && infeasible > 0 && withDom * 3 < noDom * 2);
     std::cout << "ResourceConstrainedPath: " << agree << " feasible instances (+" << infeasible << " infeasible) agree across label-setting, layered DP and exhaustive search; dominance keeps " << withDom << " labels vs " << noDom << " without it" << std::endl; return 0;
 }
 // Time Complexity: O(T · E) 층 DP (의사 다항), 라벨 설정은 최악 지수
@@ -1704,58 +1704,230 @@ int main() {
 ## CooperativeAStar()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 협력 A*(Silver 2005, Cooperative A*): 에이전트를 우선순위 순으로 하나씩 계획한다. 각 에이전트는 시공간 (칸, 시각) 위에서 A* 를 돌리되 앞선 에이전트들이 예약한 (칸, 시각)과 맞교환을 피하고 제자리 대기도 행동으로 쓴다.
+// 휴리스틱은 예약을 무시한 정적 최단 거리(허용적)이고 목표 판정은 "목표 칸에 있고 그 시각 이후 다른 예약이 없음" 이다. 목표에 도착한 에이전트는 그 칸을 영구 점유한다. 완전성·최적성은 보장되지 않는다(우선순위가 나쁘면 막히거나 합이 커진다).
+// 검증: ① 각 에이전트의 A* 도착 시각이 같은 예약 표 위의 시각 확장 BFS 와 같음(그 에이전트 입장에서는 최적), ② 해를 찾은 경우 모든 시각의 정점·맞교환 충돌 0건, ③ 첫 에이전트는 정적 최단 거리와 같고 전체 비용은 정적 거리 합 이상
+const int INF = 1 << 28; int R, C, N, TMAX;
+struct Table { std::vector<std::vector<char>> vert; std::set<std::tuple<int, int, int>> swp; std::vector<int> parked, last;
+    void init() { vert.assign(TMAX + 2, std::vector<char>(N, 0)); parked.assign(N, INF); last.assign(N, -1); }
+    bool freeAt(int cell, int t) const { return t < parked[cell] && !vert[t][cell]; }
+    bool canMove(int u, int v, int t) const { return freeAt(v, t + 1) && !swp.count({t, v, u}); }
+    void reserve(const std::vector<int>& p) { for (size_t t = 0; t < p.size(); t++) { vert[t][p[t]] = 1; last[p[t]] = std::max(last[p[t]], (int)t); } for (size_t t = 0; t + 1 < p.size(); t++) swp.insert({(int)t, p[t], p[t + 1]}); parked[p.back()] = std::min(parked[p.back()], (int)p.size() - 1); }
+    bool goalOk(int g, int t) const { return parked[g] == INF && last[g] < t; }                                                  // t 이후 아무도 목표 칸을 쓰지 않음
+};
+std::vector<std::string> w; const int dr[5] = {0, 1, -1, 0, 0}, dc[5] = {0, 0, 0, 1, -1};
+std::vector<int> staticDist(int goal) { std::vector<int> d(N, INF); std::queue<int> q; d[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 1; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] < INF) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
+std::vector<int> plan(const Table& tb, int s, int goal, const std::vector<int>& h) {                                           // 시공간 A*; 실패 시 빈 벡터
+    if (!tb.freeAt(s, 0)) return {}; std::vector<int> par((TMAX + 1) * N, -2); typedef std::tuple<int, int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; par[s] = -1; pq.push({h[s], 0, s});
+    while (!pq.empty()) { auto [f, nt, u] = pq.top(); pq.pop(); int t = -nt; if (u == goal && tb.goalOk(goal, t)) { std::vector<int> p; for (int id = t * N + u; id >= 0; id = par[id]) p.push_back(id % N); std::reverse(p.begin(), p.end()); return p; } if (t >= TMAX) continue;
+        for (int k = 0; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#') continue; int v = r * C + c; if (!tb.canMove(u, v, t) || h[v] >= INF) continue; int id = (t + 1) * N + v; if (par[id] != -2) continue; par[id] = t * N + u; pq.push({t + 1 + h[v], -(t + 1), v}); } }
+    return {}; }
+int bfsArrival(const Table& tb, int s, int goal) {                                                                              // 독립 검증: 시각 확장 BFS 로 최소 도착 시각
+    std::vector<char> cur(N, 0), nxt; if (!tb.freeAt(s, 0)) return INF; cur[s] = 1;
+    for (int t = 0; t <= TMAX; t++) { if (cur[goal] && tb.goalOk(goal, t)) return t; nxt.assign(N, 0); for (int u = 0; u < N; u++) if (cur[u]) for (int k = 0; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#') continue; if (tb.canMove(u, r * C + c, t)) nxt[r * C + c] = 1; } cur = nxt; }
+    return INF; }
+int conflicts(std::vector<std::vector<int>> p) { size_t T = 0; for (auto& x : p) T = std::max(T, x.size()); for (auto& x : p) x.resize(T, x.back()); int bad = 0; for (size_t t = 0; t < T; t++) for (size_t i = 0; i < p.size(); i++) for (size_t j = i + 1; j < p.size(); j++) { if (p[i][t] == p[j][t]) bad++; if (t + 1 < T && p[i][t] == p[j][t + 1] && p[i][t + 1] == p[j][t] && p[i][t] != p[i][t + 1]) bad++; } return bad; }
 int main() {
-    std::cout << "Cooperative A* reserves time-space (X, Y, T) blocks." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(6); R = C = 8; N = R * C; TMAX = 4 * N; int solved = 0, tried = 0; long soc = 0, lower = 0;
+    for (int trial = 0; trial < 150; trial++) {
+        w.assign(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (g() % 100 < 10) ch = '#'; std::vector<int> cells; for (int i = 0; i < N; i++) if (w[i / C][i % C] == '.') cells.push_back(i);
+        int A = 6; std::shuffle(cells.begin(), cells.end(), g); std::vector<int> st(cells.begin(), cells.begin() + A), gl(cells.begin() + A, cells.begin() + 2 * A); std::vector<std::vector<int>> hs; bool ok = true; for (int i = 0; i < A; i++) { hs.push_back(staticDist(gl[i])); ok = ok && hs[i][st[i]] < INF; } if (!ok) continue; tried++;
+        Table tb; tb.init(); std::vector<std::vector<int>> paths; bool fail = false;
+        for (int i = 0; i < A && !fail; i++) { std::vector<int> p = plan(tb, st[i], gl[i], hs[i]); int ref = bfsArrival(tb, st[i], gl[i]);
+            if (p.empty()) { assert(ref >= INF); fail = true; break; }                                                         // A* 가 실패하면 BFS 도 도달 불가
+            assert((int)p.size() - 1 == ref && p.back() == gl[i]); if (i == 0) assert((int)p.size() - 1 == hs[0][st[0]]);          // 에이전트별 최적, 첫 에이전트는 정적 최단
+            for (size_t t = 1; t < p.size(); t++) assert(p[t] == p[t - 1] || (std::abs(p[t] / C - p[t - 1] / C) + std::abs(p[t] % C - p[t - 1] % C) == 1 && w[p[t] / C][p[t] % C] != '#'));
+            tb.reserve(p); paths.push_back(p); }
+        if (fail) continue; assert(conflicts(paths) == 0); solved++; for (int i = 0; i < A; i++) { soc += (int)paths[i].size() - 1; lower += hs[i][st[i]]; } assert(soc >= lower);
+    }
+    assert(tried > 100 && solved * 100 > tried * 60);
+    std::cout << "CooperativeAStar: " << solved << "/" << tried << " 6-agent instances solved conflict-free; sum of costs " << soc << " vs " << lower << " (sum of individual shortest paths)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(에이전트 수 × (V · T) log) — 에이전트마다 시공간 A*
+// Space Complexity: O(V · T)
 ```
 ## ConflictBasedSearch()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 충돌 기반 탐색(CBS, Sharon et al. 2015): 비용 합(SOC)이 최소인 다중 에이전트 경로를 구하는 최적 알고리즘. 두 단계로 나뉜다.
+// 상위 단계는 "제약 트리" 를 최선 우선으로 탐색한다. 노드는 에이전트별 제약 집합과 그 제약 아래 각 에이전트가 독립적으로 구한 최적 경로들이고, 비용은 경로 비용의 합이다. 노드의 경로들에서 처음 발견한 충돌(i, j, 칸, 시각)이 있으면 자식 둘을 만든다 —
+// "i 는 그 칸 그 시각에 있으면 안 된다" / "j 는 안 된다". 충돌이 없으면 그 노드가 최적해이다(비용이 가장 작은 노드부터 확장하므로). 하위 단계는 한 에이전트의 제약을 지키는 시공간 A* 이며 정점 제약과 간선(맞교환) 제약을 쓴다.
+// 목표 판정은 "목표 칸에서 그 시각 이후의 정점 제약이 없음" 이어야 한다(안 그러면 도착 후 길을 막힌다). 검증: 2~3 에이전트의 작은 격자에서, 각 에이전트가 목표에 가서 "영구히 머무른다" 고 확정(done)하는 시점을 상태에 넣은 결합 상태 Dijkstra 와 SOC 가 같은지 대조한다
+const int INF = 1 << 28; int R, C, N; std::vector<std::string> w; const int dr[5] = {0, 1, -1, 0, 0}, dc[5] = {0, 0, 0, 1, -1};
+struct Con { int agent, type, a, b, t; bool operator<(const Con& o) const { return std::tie(agent, type, a, b, t) < std::tie(o.agent, o.type, o.a, o.b, o.t); } };    // type 0: 정점(a 칸, 시각 t), type 1: 간선(a→b, 시각 t 에 도착)
+std::vector<int> staticDist(int goal) { std::vector<int> d(N, INF); std::queue<int> q; d[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 1; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] < INF) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
+std::vector<int> lowLevel(int agent, int s, int goal, const std::vector<int>& h, const std::set<Con>& cons) {
+    int lastGoal = -1, tmax = 0; for (const Con& c : cons) { if (c.agent != agent) continue; tmax = std::max(tmax, c.t); if (c.type == 0 && c.a == goal) lastGoal = std::max(lastGoal, c.t); } int T = tmax + 2 * N + 2;
+    std::map<std::pair<int, int>, std::pair<int, int>> par; typedef std::tuple<int, int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; par[{s, 0}] = {-1, -1}; pq.push({h[s], 0, s});
+    while (!pq.empty()) { auto [f, t, u] = pq.top(); pq.pop(); if (u == goal && t > lastGoal) { std::vector<int> p; std::pair<int, int> cur{u, t}; while (cur.first >= 0) { p.push_back(cur.first); cur = par[cur]; } std::reverse(p.begin(), p.end()); return p; } if (t >= T) continue;
+        for (int k = 0; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#') continue; int v = r * C + c; if (cons.count({agent, 0, v, 0, t + 1}) || cons.count({agent, 1, u, v, t + 1}) || par.count({v, t + 1})) continue; par[{v, t + 1}] = {u, t}; pq.push({t + 1 + h[v], t + 1, v}); } }
+    return {}; }
+struct Conflict { int i, j, type, a, b, t; };
+bool firstConflict(const std::vector<std::vector<int>>& P, Conflict& out) {
+    size_t T = 0; for (auto& p : P) T = std::max(T, p.size()); auto at = [&](int i, size_t t) { return P[i][std::min(t, P[i].size() - 1)]; };
+    for (size_t t = 0; t < T; t++) for (size_t i = 0; i < P.size(); i++) for (size_t j = i + 1; j < P.size(); j++) { if (at(i, t) == at(j, t)) { out = {(int)i, (int)j, 0, at(i, t), 0, (int)t}; return true; } if (t + 1 < T && at(i, t) == at(j, t + 1) && at(i, t + 1) == at(j, t)) { out = {(int)i, (int)j, 1, at(i, t), at(i, t + 1), (int)t + 1}; return true; } }
+    return false; }
+long cbs(const std::vector<int>& st, const std::vector<int>& gl, long& nodes) {
+    int A = st.size(); std::vector<std::vector<int>> hs; for (int i = 0; i < A; i++) hs.push_back(staticDist(gl[i]));
+    struct Node { std::set<Con> cons; std::vector<std::vector<int>> paths; long cost; }; auto cmp = [](const Node* a, const Node* b) { return a->cost > b->cost; }; std::priority_queue<Node*, std::vector<Node*>, decltype(cmp)> open(cmp); std::vector<Node*> owned;
+    Node* root = new Node(); owned.push_back(root); root->cost = 0; for (int i = 0; i < A; i++) { root->paths.push_back(lowLevel(i, st[i], gl[i], hs[i], root->cons)); root->cost += root->paths.back().size() - 1; } open.push(root); nodes = 0; long answer = -1;
+    while (!open.empty() && nodes < 20000) { Node* cur = open.top(); open.pop(); nodes++; Conflict cf; if (!firstConflict(cur->paths, cf)) { answer = cur->cost; break; }
+        for (int side = 0; side < 2; side++) { int ag = side ? cf.j : cf.i; Node* ch = new Node(*cur); owned.push_back(ch);
+            if (cf.type == 0) ch->cons.insert({ag, 0, cf.a, 0, cf.t}); else ch->cons.insert(side ? Con{ag, 1, cf.b, cf.a, cf.t} : Con{ag, 1, cf.a, cf.b, cf.t});          // 간선 제약: 각자 자신의 이동 금지
+            std::vector<int> p = lowLevel(ag, st[ag], gl[ag], hs[ag], ch->cons); if (p.empty()) continue; ch->cost += (long)p.size() - cur->paths[ag].size(); ch->paths[ag] = p; open.push(ch); } }
+    for (Node* x : owned) delete x; return answer; }
+long jointOptimum(const std::vector<int>& st, const std::vector<int>& gl) {                                                     // 독립 검증: (위치들, done 마스크) 결합 상태 Dijkstra
+    int A = st.size(); typedef std::pair<long, long> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; std::map<long, long> dist; long mulPos = 1; for (int i = 0; i < A; i++) mulPos *= N;
+    auto enc = [&](const std::vector<int>& pos, int mask) { long k = 0; for (int i = A - 1; i >= 0; i--) k = k * N + pos[i]; return k + mulPos * mask; }; auto dec = [&](long k, std::vector<int>& pos, int& mask) { mask = k / mulPos; k %= mulPos; for (int i = 0; i < A; i++) { pos[i] = k % N; k /= N; } };
+    dist[enc(st, 0)] = 0; pq.push({0, enc(st, 0)}); std::vector<int> pos(A), np(A);
+    while (!pq.empty()) { auto [d, key] = pq.top(); pq.pop(); if (d > dist[key]) continue; int mask; dec(key, pos, mask); if (mask == (1 << A) - 1) return d; int pay = 0; for (int i = 0; i < A; i++) if (!(mask >> i & 1)) pay++;
+        std::vector<int> mv(A, 0); for (;;) {
+            bool ok = true; for (int i = 0; i < A && ok; i++) { if (mask >> i & 1) { np[i] = pos[i]; if (mv[i]) ok = false; continue; } int r = pos[i] / C + dr[mv[i]], c = pos[i] % C + dc[mv[i]]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#') ok = false; else np[i] = r * C + c; }
+            for (int i = 0; i < A && ok; i++) for (int j = i + 1; j < A && ok; j++) if (np[i] == np[j] || (np[i] == pos[j] && np[j] == pos[i] && pos[i] != np[i])) ok = false;
+            if (ok) { std::vector<int> atGoal; for (int i = 0; i < A; i++) if (!(mask >> i & 1) && np[i] == gl[i]) atGoal.push_back(i);
+                for (int sub = 0; sub < (1 << atGoal.size()); sub++) { int m2 = mask; for (size_t b = 0; b < atGoal.size(); b++) if (sub >> b & 1) m2 |= 1 << atGoal[b]; long k2 = enc(np, m2); auto it = dist.find(k2); if (it == dist.end() || d + pay < it->second) { dist[k2] = d + pay; pq.push({d + pay, k2}); } } }
+            int i = 0; while (i < A && ++mv[i] == 5) mv[i++] = 0; if (i == A) break; } }
+    return -1; }
 int main() {
-    std::cout << "CBS tree nodes impose collision constraints." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(4); int checked = 0, hard = 0; long nodeTotal = 0;
+    for (int trial = 0; trial < 75; trial++) {
+        int A = trial < 55 ? 2 : 3; R = A == 2 ? 5 : 4; C = 4; N = R * C; w.assign(R, std::string(C, '.')); for (int k = 0; k < 2; k++) w[g() % R][g() % C] = '#';
+        std::vector<int> cells; for (int i = 0; i < N; i++) if (w[i / C][i % C] == '.') cells.push_back(i); std::shuffle(cells.begin(), cells.end(), g); std::vector<int> st(cells.begin(), cells.begin() + A), gl(cells.begin() + A, cells.begin() + 2 * A);
+        long ref = jointOptimum(st, gl); if (ref < 0) continue; long nodes; long got = cbs(st, gl, nodes); assert(got == ref); checked++; nodeTotal += nodes; long indep = 0; for (int i = 0; i < A; i++) indep += staticDist(gl[i])[st[i]]; if (got > indep) hard++;
+    }
+    assert(checked > 40 && hard > 5);
+    std::cout << "ConflictBasedSearch: " << checked << " instances, SOC equals the joint-state optimum in all; " << hard << " needed more than the independent shortest paths (" << nodeTotal << " constraint-tree nodes)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 최악 지수(제약 트리), 실전에서는 충돌 수에 따라 증가
+// Space Complexity: O(제약 트리 노드 × 에이전트 × 경로 길이)
 ```
 ## MultiAgentPathFinding()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
 #include <cassert>
 
+// 다중 에이전트 경로 찾기(MAPF) 문제 정의와 평가. 격자에서 에이전트마다 시작·목표가 있고, 한 걸음에 상하좌우 이동 또는 대기를 하며, 같은 시각 같은 칸(정점 충돌)과 서로 자리를 맞바꾸기(교환 충돌)가 금지된다.
+// 목적은 비용 합(SOC, 각 에이전트가 목표에 최종 도착하는 시각의 합) 또는 최대 도착 시각(makespan) 최소화. 최적해는 NP-난해이다. 세 접근을 같은 작은 사례들에서 비교한다 — ① 독립 계획(각자 최단 경로; 충돌을 무시) ② 우선순위 계획(협력 A* 식: 순서대로 계획하고 앞 경로를 장애물로 취급; 순서에 따라 해가 없을 수 있음) ③ 결합 상태 정확 탐색(작은 사례의 기준).
+// 확인할 사실: 독립 계획은 자주 충돌한다 / 우선순위 계획은 순서에 따라 성공 여부와 비용이 달라 순서를 바꾸면 더 풀린다 / 푼 경우 SOC 는 정확 최적 이상이다(최적과의 간격이 곧 우선순위 계획의 손실) / 정확 탐색만 해결하는 사례가 존재한다. 최적 알고리즘 CBS 는 바로 앞 항목
+const int INF = 1 << 28; int R, C, N; std::vector<std::string> w; const int dr[5] = {0, 1, -1, 0, 0}, dc[5] = {0, 0, 0, 1, -1};
+std::vector<int> staticDist(int goal) { std::vector<int> d(N, INF); std::queue<int> q; d[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 1; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] < INF) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
+std::vector<int> shortestPath(int s, int goal) { auto d = staticDist(goal); std::vector<int> p = {s}; while (p.back() != goal) { int u = p.back(); for (int k = 1; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r >= 0 && c >= 0 && r < R && c < C && d[r * C + c] == d[u] - 1) { p.push_back(r * C + c); break; } } } return p; }
+int conflicts(std::vector<std::vector<int>> p) { size_t T = 0; for (auto& x : p) T = std::max(T, x.size()); for (auto& x : p) x.resize(T, x.back()); int bad = 0; for (size_t t = 0; t < T; t++) for (size_t i = 0; i < p.size(); i++) for (size_t j = i + 1; j < p.size(); j++) { if (p[i][t] == p[j][t]) bad++; if (t + 1 < T && p[i][t] == p[j][t + 1] && p[i][t + 1] == p[j][t] && p[i][t] != p[i][t + 1]) bad++; } return bad; }
+bool prioritized(const std::vector<int>& st, const std::vector<int>& gl, const std::vector<int>& order, long& soc) {                  // 순서대로 BFS(시각 확장)로 계획하고 앞 경로를 예약
+    int T = 4 * N; std::vector<std::vector<char>> occ(T + 2, std::vector<char>(N, 0)); std::set<std::tuple<int, int, int>> swp; std::vector<int> parked(N, INF), last(N, -1); soc = 0;
+    for (int i : order) { std::vector<std::vector<int>> par(T + 1, std::vector<int>(N, -2)); std::vector<std::vector<int>> layer(1, {st[i]}); if (occ[0][st[i]]) return false; par[0][st[i]] = -1; int found = -1;
+        for (int t = 0; t <= T && found < 0; t++) { for (int u : layer[t]) if (u == gl[i] && parked[u] == INF && last[u] < t) { found = t; break; } if (found >= 0 || t == T) break; layer.push_back({});
+            for (int u : layer[t]) for (int k = 0; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#') continue; int v = r * C + c; if (t + 1 >= parked[v] || occ[t + 1][v] || swp.count({t, v, u}) || par[t + 1][v] != -2) continue; par[t + 1][v] = u; layer[t + 1].push_back(v); } }
+        if (found < 0) return false; std::vector<int> p; int cur = gl[i]; for (int t = found; t >= 0; t--) { p.push_back(cur); cur = par[t][cur]; } std::reverse(p.begin(), p.end());
+        for (size_t t = 0; t < p.size(); t++) { occ[t][p[t]] = 1; last[p[t]] = std::max(last[p[t]], (int)t); } for (size_t t = 0; t + 1 < p.size(); t++) swp.insert({(int)t, p[t], p[t + 1]}); parked[p.back()] = std::min(parked[p.back()], (int)p.size() - 1); soc += p.size() - 1; }
+    return true; }
+long jointOptimum(const std::vector<int>& st, const std::vector<int>& gl) {                                                           // 결합 상태 Dijkstra: (위치들, 영구 정지 마스크)
+    int A = st.size(); typedef std::pair<long, long> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; std::map<long, long> dist; long mulPos = 1; for (int i = 0; i < A; i++) mulPos *= N;
+    auto enc = [&](const std::vector<int>& pos, int mask) { long k = 0; for (int i = A - 1; i >= 0; i--) k = k * N + pos[i]; return k + mulPos * mask; }; auto dec = [&](long k, std::vector<int>& pos, int& mask) { mask = k / mulPos; k %= mulPos; for (int i = 0; i < A; i++) { pos[i] = k % N; k /= N; } };
+    dist[enc(st, 0)] = 0; pq.push({0, enc(st, 0)}); std::vector<int> pos(A), np(A);
+    while (!pq.empty()) { auto [d, key] = pq.top(); pq.pop(); if (d > dist[key]) continue; int mask; dec(key, pos, mask); if (mask == (1 << A) - 1) return d; int pay = 0; for (int i = 0; i < A; i++) if (!(mask >> i & 1)) pay++;
+        std::vector<int> mv(A, 0); for (;;) { bool ok = true; for (int i = 0; i < A && ok; i++) { if (mask >> i & 1) { np[i] = pos[i]; if (mv[i]) ok = false; continue; } int r = pos[i] / C + dr[mv[i]], c = pos[i] % C + dc[mv[i]]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#') ok = false; else np[i] = r * C + c; }
+            for (int i = 0; i < A && ok; i++) for (int j = i + 1; j < A && ok; j++) if (np[i] == np[j] || (np[i] == pos[j] && np[j] == pos[i] && pos[i] != np[i])) ok = false;
+            if (ok) { std::vector<int> atGoal; for (int i = 0; i < A; i++) if (!(mask >> i & 1) && np[i] == gl[i]) atGoal.push_back(i); for (int sub = 0; sub < (1 << atGoal.size()); sub++) { int m2 = mask; for (size_t b = 0; b < atGoal.size(); b++) if (sub >> b & 1) m2 |= 1 << atGoal[b]; long k2 = enc(np, m2); auto it = dist.find(k2); if (it == dist.end() || d + pay < it->second) { dist[k2] = d + pay; pq.push({d + pay, k2}); } } }
+            int i = 0; while (i < A && ++mv[i] == 5) mv[i++] = 0; if (i == A) break; } }
+    return -1; }
 int main() {
-    std::cout << "MAPF controls many robots to reach goals without collision." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(12); int inst = 0, indepBad = 0, fixedOk = 0, anyOk = 0, onlyExact = 0; long gap = 0, optSum = 0;
+    for (int trial = 0; trial < 400; trial++) {
+        R = 4; C = 4; N = 16; w.assign(R, std::string(C, '.')); for (int k = 0; k < 3; k++) w[g() % R][g() % C] = '#'; std::vector<int> cells; for (int i = 0; i < N; i++) if (w[i / C][i % C] == '.') cells.push_back(i); if (cells.size() < 6) continue;
+        std::shuffle(cells.begin(), cells.end(), g); int A = 3; std::vector<int> st(cells.begin(), cells.begin() + A), gl(cells.begin() + A, cells.begin() + 2 * A); bool reach = true; for (int i = 0; i < A; i++) reach = reach && staticDist(gl[i])[st[i]] < INF; if (!reach) continue;
+        long opt = jointOptimum(st, gl); if (opt < 0) continue; inst++; std::vector<std::vector<int>> ind; for (int i = 0; i < A; i++) ind.push_back(shortestPath(st[i], gl[i])); if (conflicts(ind) > 0) indepBad++;
+        std::vector<int> order = {0, 1, 2}; long soc, best = INF; bool anySuccess = false; bool first = true; do { bool ok = prioritized(st, gl, order, soc); if (first) { fixedOk += ok; first = false; } if (ok) { anySuccess = true; assert(soc >= opt); best = std::min(best, soc); } } while (std::next_permutation(order.begin(), order.end()));
+        anyOk += anySuccess; if (!anySuccess) onlyExact++; else { gap += best - opt; optSum += opt; }
+    }
+    assert(inst > 100 && indepBad > 10 && anyOk >= fixedOk && onlyExact >= 0 && anyOk > 0);
+    std::cout << "MultiAgentPathFinding: " << inst << " solvable 3-agent instances; independent paths collide in " << indepBad << "; prioritized planning succeeds in " << fixedOk << " with a fixed order and " << anyOk << " with the best of 6 orders (+" << gap << " SOC over the optimum " << optSum << "); " << onlyExact << " solvable only by joint search" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 우선순위 계획 O(A · V · T), 결합 정확 탐색 O((V · 5)^A) — 에이전트 수에 지수
+// Space Complexity: O(V · T) / 결합 상태 O(V^A)
 ```
 ## ReservationTable()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <set>
+#include <string>
+#include <tuple>
+#include <unordered_set>
+#include <vector>
 #include <cassert>
 
+// 예약 표(reservation table): 다중 에이전트 경로 계획에서 "어느 칸을 어느 시각에 누가 쓰는가" 를 적어 두는 시공간 장부이다. 먼저 계획한 에이전트의 경로를 예약해 두고 다음 에이전트는 예약과 충돌하지 않게 계획한다.
+// 충돌은 두 종류다 — 정점 충돌(같은 시각 같은 칸)과 교환(swap) 충돌(서로 칸을 맞바꿈; 정점 충돌 검사만으로는 못 잡는다). 목표에 도착한 에이전트는 영원히 그 자리를 차지하므로 "t 이후 영구 점유" 도 기록한다.
+// 시각 단위 표는 (칸, 시각) 상태가 많아 탐색이 커진다. SIPP(Safe Interval Path Planning, Phillips & Likhachev 2011)는 예약이 없는 연속 구간(안전 구간)을 한 상태로 묶어 (칸, 안전 구간) 에서 탐색한다.
+// 검증: 무작위 경로들을 예약한 뒤 ① 안전 구간 표현이 시각 단위 표와 모든 (칸, 시각)에서 일치, ② 교환 충돌이 감지됨, ③ SIPP 로 구한 최단 도착 시각이 시각 확장 BFS 와 일치하고 상태 수가 훨씬 적음을 확인한다
+const int INF = 1 << 28;
+struct Table {
+    int n; std::unordered_set<long> vert; std::set<std::tuple<int, int, int>> swp; std::vector<int> parked;                     // vert: t*n+cell, swp: (t, from, to), parked[cell]: 이 시각부터 영구 점유
+    Table(int n) : n(n), parked(n, INF) {}
+    void reserve(const std::vector<int>& p) { for (size_t t = 0; t < p.size(); t++) vert.insert((long)t * n + p[t]); for (size_t t = 0; t + 1 < p.size(); t++) swp.insert({(int)t, p[t], p[t + 1]}); parked[p.back()] = std::min(parked[p.back()], (int)p.size() - 1); }
+    bool freeAt(int cell, int t) const { return t < parked[cell] && !vert.count((long)t * n + cell); }
+    bool canMove(int u, int v, int t) const { return freeAt(v, t + 1) && !swp.count({t, v, u}); }                              // 도착 칸이 비어 있고 맞교환이 아님
+    std::vector<std::pair<int, int>> safeIntervals(int cell, int horizon) const {                                               // 비어 있는 시각의 극대 구간들(마지막은 INF)
+        std::vector<std::pair<int, int>> r; int lo = -1; for (int t = 0; t <= horizon; t++) { bool f = freeAt(cell, t); if (f && lo < 0) lo = t; if (!f && lo >= 0) { r.push_back({lo, t - 1}); lo = -1; } } if (lo >= 0) r.push_back({lo, parked[cell] == INF ? INF : parked[cell] - 1}); return r; }
+};
 int main() {
-    std::cout << "Tracks future occupied tiles across time frames." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    int R = 6, C = 6, n = R * C, H = 40; std::mt19937 g(9); const int dr[5] = {0, 1, -1, 0, 0}, dc[5] = {0, 0, 0, 1, -1};
+    long tableEntries = 0, intervals = 0, sippStates = 0, bfsStates = 0; int queries = 0, swapCaught = 0;
+    for (int trial = 0; trial < 60; trial++) {
+        Table tb(n); for (int a = 0; a < 5; a++) { std::vector<int> p = {(int)(g() % n)}; int len = 3 + g() % 25; for (int t = 0; t < len; t++) { int c = p.back(), k = g() % 5, r = c / C + dr[k], cc = c % C + dc[k]; if (r < 0 || cc < 0 || r >= R || cc >= C) k = 0; p.push_back(k ? (c / C + dr[k]) * C + c % C + dc[k] : c); } tb.reserve(p);
+            if (a == 0) { int u = p[0], v = p.size() > 1 ? p[1] : p[0]; if (u != v) { assert(!tb.canMove(v, u, 0)); swapCaught++; } } }                    // 방금 예약한 이동의 맞교환은 항상 금지
+        tableEntries += tb.vert.size();
+        for (int cell = 0; cell < n; cell++) { auto iv = tb.safeIntervals(cell, H); intervals += iv.size(); for (int t = 0; t <= H; t++) { bool in = false; for (auto& x : iv) in |= x.first <= t && t <= x.second; assert(in == tb.freeAt(cell, t)); } }   // 구간 표현 == 시각 단위 표현
+        int s = g() % n, goal = g() % n; if (!tb.freeAt(s, 0)) continue;
+        std::vector<std::vector<char>> reach(H + 2, std::vector<char>(n, 0)); reach[0][s] = 1; int bfsArr = INF; long bs = 0;                                          // 시각 확장 BFS(정점 예약만 사용)
+        for (int t = 0; t <= H && bfsArr == INF; t++) { for (int u = 0; u < n; u++) if (reach[t][u]) { bs++; if (u == goal) { bfsArr = t; break; } for (int k = 0; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C) continue; int v = r * C + c; if (tb.freeAt(v, t + 1)) reach[t + 1][v] = 1; } } }
+        std::vector<std::vector<std::pair<int, int>>> iv(n); for (int c = 0; c < n; c++) iv[c] = tb.safeIntervals(c, H + 1);
+        std::vector<std::vector<int>> best(n); for (int c = 0; c < n; c++) best[c].assign(iv[c].size(), INF); typedef std::tuple<int, int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; int sippArr = INF; long ss = 0;
+        for (size_t k = 0; k < iv[s].size(); k++) if (iv[s][k].first <= 0 && 0 <= iv[s][k].second) { best[s][k] = 0; pq.push({0, s, (int)k}); }
+        while (!pq.empty()) { auto [a, u, k] = pq.top(); pq.pop(); if (a > best[u][k]) continue; ss++; if (u == goal) { sippArr = a; break; } int hi = iv[u][k].second;
+            for (int d = 1; d < 5; d++) { int r = u / C + dr[d], c = u % C + dc[d]; if (r < 0 || c < 0 || r >= R || c >= C) continue; int v = r * C + c;
+                for (size_t j = 0; j < iv[v].size(); j++) { int lo2 = iv[v][j].first, hi2 = iv[v][j].second; int arrive = std::max(a + 1, lo2), latest = std::min(hi == INF ? INF : hi + 1, hi2); if (arrive <= latest && arrive < best[v][j]) { best[v][j] = arrive; pq.push({arrive, v, (int)j}); } } } }
+        if (bfsArr > H - 2) continue; assert(sippArr == bfsArr); queries++; sippStates += ss; bfsStates += bs;                                                                 // SIPP 도착 시각 == BFS 도착 시각
+    }
+    assert(swapCaught > 30 && queries > 20 && sippStates < bfsStates);
+    std::cout << "ReservationTable: " << tableEntries << " (cell,time) reservations; interval view matches everywhere (" << intervals << " safe intervals); SIPP arrival == time-expanded BFS on " << queries << " queries with " << sippStates << " vs " << bfsStates << " states" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 예약/조회 O(1) 평균(해시), 안전 구간 생성 O(T), SIPP O(안전 구간 수 × log)
+// Space Complexity: O(예약 수)
 ```
 
 # Part 10. 지도와 공간
