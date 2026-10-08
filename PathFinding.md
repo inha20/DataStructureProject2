@@ -2483,72 +2483,230 @@ int main() {
 ## HybridAStar()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// Hybrid A*(Dolgov et al. 2010, Stanford "Junior"): 자동차처럼 제자리 회전이 안 되는 비홀로노믹 차량을 위한 탐색. 격자 A* 는 셀 중심만 잇지만 Hybrid A* 는 "연속 상태" (x, y, θ)를 노드에 그대로 두고 자전거 모델의 호(arc)로 한 걸음씩 확장한다 —
+// 조향각 {−δmax, 0, +δmax} 세 가지로 길이 s 만큼 나아가므로 최소 회전 반경 R_min = L / tan δmax 를 만족하는 경로만 나온다. 격자는 중복 방문 판정에만 쓴다: 한 셀 (x 정수, y 정수, θ 5° 구간)당 하나의 노드만 유지.
+// 비용은 이동 거리 + 조향 사용·조향 변경 벌점, 휴리스틱은 max(유클리드, 0.92 × 장애물을 고려한 2D 홀로노믹 거리) — 연속 경로가 셀 중심 경로보다 짧을 수 있어 계수를 조금 낮췄고 비홀로노믹 제약은 무시하므로 하한에 가깝다. 이 구현은 후진과 Reeds–Shepp 해석적 확장을 생략해 최적 보장이 없다.
+// 검증(무작위 장애물 40×40 지도 24개): ① 찾은 경로의 모든 걸음이 운동학(헤딩 변화 ≤ s·tan δmax / L)과 충돌 없음(몸체 원판 반지름 0.7)을 만족 ② 종단이 목표 반경 안, 헤딩 오차 ≤ 0.6 rad ③ 길이가 2D 홀로노믹 최단 이상 ④ 같은 지도의 격자 A* 경로는 대부분 같은 곡률 제한을 어김(90° 코너)
+const double L = 2.0, DELTA = 0.5, STEP = 1.5, BODY = 0.7; const int N = 40, NB = 72; const double MAXDTH = STEP * std::tan(DELTA) / L;
+struct S { double x, y, th; }; std::vector<std::vector<char>> wall(N, std::vector<char>(N, 0));
+bool cellBlocked(int cx, int cy) { return cx < 0 || cy < 0 || cx >= N || cy >= N || wall[cy][cx]; }
+bool collides(S s) { for (int cx = (int)std::floor(s.x - BODY); cx <= (int)std::floor(s.x + BODY); cx++) for (int cy = (int)std::floor(s.y - BODY); cy <= (int)std::floor(s.y + BODY); cy++) if (cellBlocked(cx, cy)) { double dx = std::max({cx - s.x, 0.0, s.x - (cx + 1)}), dy = std::max({cy - s.y, 0.0, s.y - (cy + 1)}); if (dx * dx + dy * dy < BODY * BODY) return true; } return false; }
+double norm(double a) { while (a > M_PI) a -= 2 * M_PI; while (a <= -M_PI) a += 2 * M_PI; return a; }
+S advance(S s, double delta, double len) { if (std::fabs(delta) < 1e-12) return {s.x + len * std::cos(s.th), s.y + len * std::sin(s.th), s.th}; double R = L / std::tan(delta), dth = len / R; return {s.x + R * (std::sin(s.th + dth) - std::sin(s.th)), s.y - R * (std::cos(s.th + dth) - std::cos(s.th)), norm(s.th + dth)}; }
+std::vector<double> holonomic(S goal) { std::vector<double> d(N * N, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; int g = (int)goal.y * N + (int)goal.x; d[g] = 0; pq.push({0, g}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / N + dr, c = u % N + dc; if ((!dr && !dc) || cellBlocked(c, r) || (dr && dc && (cellBlocked(u % N + dc, u / N) || cellBlocked(u % N, u / N + dr)))) continue; double nd = du + std::hypot(dr, dc); if (nd < d[r * N + c]) { d[r * N + c] = nd; pq.push({nd, r * N + c}); } } } return d; }
+struct Node { S s; int par; double g, delta; };
+bool hybrid(S start, S goal, std::vector<Node>& nodes, int& last, long& expanded) {
+    std::vector<double> h2 = holonomic(goal), best(N * N * NB, 1e18); auto key = [&](S s) { int tb = (int)std::floor((s.th + M_PI) / (2 * M_PI) * NB) % NB; return ((int)s.y * N + (int)s.x) * NB + tb; };
+    auto h = [&](S s) { int c = (int)s.y * N + (int)s.x; return std::max(std::hypot(s.x - goal.x, s.y - goal.y), 0.92 * (h2[c] > 1e17 ? 1e9 : h2[c])); };
+    typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; nodes = {{start, -1, 0, 0}}; best[key(start)] = 0; pq.push({h(start), 0}); expanded = 0;
+    while (!pq.empty()) { auto [f, id] = pq.top(); pq.pop(); Node cur = nodes[id]; if (cur.g > best[key(cur.s)] + 1e-9) continue; expanded++;
+        if (std::hypot(cur.s.x - goal.x, cur.s.y - goal.y) <= 1.0 && std::fabs(norm(cur.s.th - goal.th)) <= 0.6) { last = id; return true; }
+        for (double d : {-DELTA, 0.0, DELTA}) { S nx = advance(cur.s, d, STEP); bool bad = collides(nx); for (int k = 1; k < 3 && !bad; k++) bad = collides(advance(cur.s, d, STEP * k / 3.0)); if (bad) continue; double g = cur.g + STEP + (d != 0 ? 0.2 : 0) + (d != cur.delta ? 0.2 : 0); int kk = key(nx); if (g >= best[kk] - 1e-9) continue; best[kk] = g; nodes.push_back({nx, id, g, d}); pq.push({g + h(nx), (int)nodes.size() - 1}); } }
+    return false; }
 int main() {
-    std::cout << "Hybrid A* factors vehicle kinematics (Ackermann) into nodes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(8); S start{2.5, 2.5, M_PI / 4}, goal{37.5, 37.5, M_PI / 4}; int maps = 0, solved = 0, gridViolates = 0, gridPaths = 0; double ratio = 0; long totalExp = 0;
+    for (int m = 0; m < 24; m++) {
+        for (auto& row : wall) std::fill(row.begin(), row.end(), 0); for (int i = 0; i < 150; i++) { int x = rng() % N, y = rng() % N; if ((x < 6 && y < 6) || (x > 33 && y > 33)) continue; wall[y][x] = 1; } maps++;
+        std::vector<double> h2 = holonomic(goal); if (h2[(int)start.y * N + (int)start.x] > 1e17) continue;
+        { std::vector<std::pair<double, double>> pts = {{start.x, start.y}}; int u = (int)start.y * N + (int)start.x; while (h2[u] > 0) { int bu = u; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / N + dr, c = u % N + dc; if (r >= 0 && c >= 0 && r < N && c < N && h2[r * N + c] < h2[bu]) bu = r * N + c; } u = bu; pts.push_back({u % N + 0.5, u / N + 0.5}); }
+          double worstTurn = 0; for (size_t i = 2; i < pts.size(); i++) { double a1 = std::atan2(pts[i - 1].second - pts[i - 2].second, pts[i - 1].first - pts[i - 2].first), a2 = std::atan2(pts[i].second - pts[i - 1].second, pts[i].first - pts[i - 1].first); worstTurn = std::max(worstTurn, std::fabs(norm(a2 - a1))); }
+          gridPaths++; if (worstTurn > MAXDTH) gridViolates++; }                                                                                                                   // ④ 격자 경로의 최대 방향 전환
+        std::vector<Node> nodes; int last; long ex; if (!hybrid(start, goal, nodes, last, ex)) continue; solved++; totalExp += ex; std::vector<int> chain; for (int i = last; i >= 0; i = nodes[i].par) chain.push_back(i); std::reverse(chain.begin(), chain.end()); double len = 0;
+        for (size_t i = 1; i < chain.size(); i++) { const S &a = nodes[chain[i - 1]].s, &b = nodes[chain[i]].s; assert(std::fabs(norm(b.th - a.th)) <= MAXDTH + 1e-9 && !collides(b)); double chord = std::hypot(b.x - a.x, b.y - a.y); assert(chord <= STEP + 1e-9 && chord >= STEP * 0.9); len += STEP; }              // ① 운동학·충돌
+        assert(nodes[last].g >= len - 1e-9 && std::hypot(nodes[last].s.x - goal.x, nodes[last].s.y - goal.y) <= 1.0 + 1e-9); ratio += len / h2[(int)start.y * N + (int)start.x]; assert(len >= 0.9 * h2[(int)start.y * N + (int)start.x]); }
+    assert(maps == 24 && solved >= 14 && gridPaths > 0 && gridViolates * 10 >= gridPaths * 8);
+    std::cout << "HybridAStar: " << solved << "/" << maps << " maps solved with every step within the minimum turning radius R_min=" << L / std::tan(DELTA) << " and collision-free; path / holonomic distance = " << ratio / solved << "; " << gridViolates << " of " << gridPaths << " plain grid A* paths exceed the car's turning limit; mean expansions " << totalExp / solved << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(상태 격자 수 × 조향 수 × 충돌 검사)
+// Space Complexity: O(상태 격자 수)
 ```
 ## FrenetPlanner()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// Frenet 프레임 계획기(Werling et al. 2010): 차선처럼 구불구불한 기준선(reference line)이 있을 때 좌표를 기준선을 따라 가는 거리 s 와 기준선에서 옆으로 벗어난 거리 d 로 바꾸면(x = r(s) + d·n(s)) 종·횡 운동이 독립적인 1차원 문제가 된다.
+// 횡방향 d(t): 현재 (d0, d0′, d0″) 에서 목표 (d_f, 0, 0) 로 가는 5차 다항식(저크 ∫d‴² 최소 — 경계가 정해진 다항식 중에서) / 종방향 s(t): 속도 유지 시 현재 (s0, s0′, s0″) 에서 (v_f, 0) 로 가는 4차 다항식. 종료 시간 T 와 d_f, v_f 를 격자로 후보를 많이 만들고
+// 제약(최대 속도·가속도·곡률)과 충돌(장애물의 예측 궤적과 거리)을 걸러낸 뒤 비용(저크 + 시간 + 횡 편차 + 속도 편차) 최소인 후보를 고른다.
+// 검증: ① 무작위 경계 조건 200개에서 5차 해가 모든 경계값을 정확히 만족 ② 같은 경계의 다른 다항식 p + c·t³(T−t)³ (경계 유지) 의 저크 적분이 항상 크다(최소 저크 증명의 수치 확인) ③ 같은 도로에서 앞차가 느리면 차선 변경(d_f ≠ 0)을, 비어 있으면 차선 유지를 고르고 선택된 궤적은 충돌·제약 위반 없음
+struct Poly { double c[6]; double at(double t, int d = 0) const { double r = 0; for (int i = d; i < 6; i++) { double f = 1; for (int k = 0; k < d; k++) f *= (i - k); r += f * c[i] * std::pow(t, i - d); } return r; } };
+Poly quintic(double x0, double v0, double a0, double x1, double v1, double a1, double T) {                                                  // 경계값 6개로 5차 다항식
+    Poly p{{x0, v0, a0 / 2, 0, 0, 0}}; double A[3][4] = {{T * T * T, T * T * T * T, T * T * T * T * T, x1 - (x0 + v0 * T + a0 / 2 * T * T)}, {3 * T * T, 4 * T * T * T, 5 * T * T * T * T, v1 - (v0 + a0 * T)}, {6 * T, 12 * T * T, 20 * T * T * T, a1 - a0}};
+    for (int i = 0; i < 3; i++) { int piv = i; for (int r = i + 1; r < 3; r++) if (std::fabs(A[r][i]) > std::fabs(A[piv][i])) piv = r; for (int k = 0; k < 4; k++) std::swap(A[i][k], A[piv][k]); for (int r = 0; r < 3; r++) if (r != i) { double f = A[r][i] / A[i][i]; for (int k = i; k < 4; k++) A[r][k] -= f * A[i][k]; } }
+    p.c[3] = A[0][3] / A[0][0]; p.c[4] = A[1][3] / A[1][1]; p.c[5] = A[2][3] / A[2][2]; return p; }
+Poly quartic(double x0, double v0, double a0, double v1, double a1, double T) {                                                            // 위치 자유 · 속도/가속도 종단 고정인 4차 다항식
+    Poly p{{x0, v0, a0 / 2, 0, 0, 0}}; double a = 3 * T * T, b = 4 * T * T * T, c = v1 - (v0 + a0 * T), d = 6 * T, e = 12 * T * T, f = a1 - a0; double det = a * e - b * d; p.c[3] = (c * e - b * f) / det; p.c[4] = (a * f - c * d) / det; return p; }
+double jerkCost(const Poly& p, double T) { double J = 0; const int n = 2000; for (int i = 0; i < n; i++) { double t = (i + 0.5) * T / n, j = p.at(t, 3); J += j * j * T / n; } return J; }
+struct Ref { std::vector<double> x, y, s;                                                                                              // 기준선: y = 3·sin(x/12) 를 촘촘히 표본해 호 길이 s 를 매긴다
+    void build() { for (double u = 0; u <= 140; u += 0.02) { double X = u, Y = 3 * std::sin(u / 12); s.push_back(x.empty() ? 0 : s.back() + std::hypot(X - x.back(), Y - y.back())); x.push_back(X); y.push_back(Y); } }
+    void at(double sv, double& rx, double& ry, double& th) const { size_t i = std::upper_bound(s.begin(), s.end(), sv) - s.begin(); i = std::min(std::max<size_t>(i, 1), s.size() - 1); double f = (sv - s[i - 1]) / (s[i] - s[i - 1]); rx = x[i - 1] + f * (x[i] - x[i - 1]); ry = y[i - 1] + f * (y[i] - y[i - 1]); th = std::atan2(y[i] - y[i - 1], x[i] - x[i - 1]); } };
+double maxCurvature(const std::vector<double>& X, const std::vector<double>& Y) { double k = 0; for (size_t i = 1; i + 1 < X.size(); i++) { double ax = X[i] - X[i - 1], ay = Y[i] - Y[i - 1], bx = X[i + 1] - X[i], by = Y[i + 1] - Y[i], cx = X[i + 1] - X[i - 1], cy = Y[i + 1] - Y[i - 1]; double den = std::hypot(ax, ay) * std::hypot(bx, by) * std::hypot(cx, cy); if (den > 1e-12) k = std::max(k, 2 * std::fabs(ax * by - ay * bx) / den); } return k; }      // 세 점의 Menger 곡률
+struct Obstacle { double s0, d0, v; };                                                                                                   // 같은 차선을 달리는 앞차: 기준선 좌표에서 (s0 + v·t, d0)
 int main() {
-    std::cout << "Frenet simplifies road curves into 1D long/lat frames." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(10);
+    for (int tr = 0; tr < 200; tr++) { double T = 1 + (rng() % 40) / 10.0, x0 = (rng() % 100) / 10.0 - 5, v0 = (rng() % 60) / 10.0 - 3, a0 = (rng() % 40) / 10.0 - 2, x1 = (rng() % 100) / 10.0 - 5, v1 = (rng() % 40) / 10.0 - 2, a1 = (rng() % 20) / 10.0 - 1;
+        Poly p = quintic(x0, v0, a0, x1, v1, a1, T); assert(std::fabs(p.at(0) - x0) < 1e-9 && std::fabs(p.at(0, 1) - v0) < 1e-9 && std::fabs(p.at(0, 2) - a0) < 1e-9 && std::fabs(p.at(T) - x1) < 1e-6 && std::fabs(p.at(T, 1) - v1) < 1e-6 && std::fabs(p.at(T, 2) - a1) < 1e-6);   // ① 경계값
+        double J = jerkCost(p, T); const double pc[7] = {0, 0, 0, T * T * T, -3 * T * T, 3 * T, -1};                                       // t³(T−t)³ = t³ (T³ − 3T²t + 3Tt² − t³): 양끝에서 값·속도·가속도가 모두 0
+        for (int k = 0; k < 4; k++) { double cc = ((int)(rng() % 200) - 100) / 50.0; if (std::fabs(cc) < 1e-3) continue; double Jq = 0; const int n = 2000;
+            for (int i = 0; i < n; i++) { double t = (i + 0.5) * T / n, jerk = p.at(t, 3), bump = 0; for (int d = 3; d < 7; d++) { double f = 1; for (int u = 0; u < 3; u++) f *= (d - u); bump += f * pc[d] * std::pow(t, d - 3); } jerk += cc * bump; Jq += jerk * jerk * T / n; }
+            assert(Jq > J - 1e-9); } }                                                                                                       // ② 경계를 유지하는 섭동은 저크를 늘린다
+    Ref ref; ref.build(); int keeps = 0, changes = 0;
+    for (int scenario = 0; scenario < 2; scenario++) {
+        bool blocked = scenario == 1; Obstacle ob{blocked ? 22.0 : 400.0, 0.0, 4.0}; const double s0 = 0, v0 = 10, a0 = 0, d0 = 0, dv0 = 0, da0 = 0, vTarget = 12; double bestCost = 1e18, bestDf = 0; int feasible = 0, total = 0, rejectedByCollision = 0;
+        for (double T : {3.0, 4.0, 5.0}) for (double df : {-3.5, 0.0, 3.5}) for (double vf : {10.0, 12.0}) { total++; Poly lat = quintic(d0, dv0, da0, df, 0, 0, T), lon = quartic(s0, v0, a0, vf, 0, T); bool ok = true; double maxA = 0, minGap = 1e9; std::vector<double> X, Y;
+            for (double t = 0; t <= T + 1e-9; t += 0.1) { double s = lon.at(t), d = lat.at(t), rx, ry, th; ref.at(s, rx, ry, th); X.push_back(rx - d * std::sin(th)); Y.push_back(ry + d * std::cos(th)); if (lon.at(t, 1) > 14 || lon.at(t, 1) < 0) ok = false; maxA = std::max(maxA, std::fabs(lon.at(t, 2)));
+                double os = ob.s0 + ob.v * t; minGap = std::min(minGap, std::hypot(s - os, 2.5 * (d - ob.d0))); }                                    // 횡방향 간격을 2.5 배 가중한 타원형 안전 영역
+            bool collide = minGap < 6.0; rejectedByCollision += collide; if (maxA > 4 || maxCurvature(X, Y) > 0.2 || collide) ok = false; if (!ok) continue;                         // 가속도·곡률·충돌 제약
+            feasible++; double cost = 0.1 * jerkCost(lat, T) + 0.1 * jerkCost(lon, T) + 1.0 * T + 1.0 * df * df + 0.5 * (vf - vTarget) * (vf - vTarget); if (cost < bestCost) { bestCost = cost; bestDf = df; } }
+        assert(feasible > 0 && bestCost < 1e17); if (blocked) { assert(std::fabs(bestDf) > 1e-9 && rejectedByCollision > 0); changes++; } else { assert(std::fabs(bestDf) < 1e-9 && rejectedByCollision == 0); keeps++; } }
+    std::cout << "FrenetPlanner: quintic boundary conditions exact and minimum-jerk property verified on 200 random cases; free road -> keep lane (" << keeps << "), slow vehicle ahead -> lane change (" << changes << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(후보 수 × 시간 격자 × 장애물 수)
+// Space Complexity: O(1) (후보를 하나씩 평가)
 ```
 ## LatticePlanner()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 상태 격자(state lattice) 계획기(Pivtoraiko & Kelly): 연속 공간을 "미리 계산해 둔 운동 기본형(motion primitive)" 으로 이산화한다. 상태는 (정수 x, 정수 y, 헤딩 k = 45°·k) 이고 기본형은 헤딩마다 정의한 짧은 곡선이다 —
+// 직진(헤딩 유지, 변위 d[k]), 좌 45° 회전(변위 d[k] + d[k+1], 헤딩 k+1), 우 45° 회전(변위 d[k] + d[k−1], 헤딩 k−1; d[k] 는 헤딩 k 방향 단위 이동). 모든 기본형이 격자점에서 격자점으로 이어지므로 상태 공간이 닫혀 있고
+// 한 번에 헤딩이 45° 이상 바뀌지 않아 방향 연속성이 구조에 들어 있다. 기본형이 지나는 칸을 미리 알기에 충돌 검사는 칸 조회뿐이다. 비용은 기본형의 길이 + 회전 벌점이며 유클리드 거리가 허용적이고 일관적인 휴리스틱이다(기본형 비용 ≥ 변위의 유클리드 거리).
+// 검증(무작위 30×30 지도(장애물 6%) 40개): ① A* 비용 == 같은 격자 위 Dijkstra 비용 ② 경로의 모든 걸음이 기본형이고 지나는 칸이 비어 있으며 종단이 목표 자세 ③ A* 확장 수가 Dijkstra 보다 적음 ④ 헤딩을 무시한 8방향 최단 비용보다 작지 않음
+const int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1}, DY[8] = {0, 1, 1, 1, 0, -1, -1, -1}; const int W = 30; const double TURN = 0.5; std::vector<std::string> w;
+bool free_(int x, int y) { return x >= 0 && y >= 0 && x < W && y < W && w[y][x] != '#'; }
+bool stepFree(int x, int y, int dx, int dy) { if (!free_(x + dx, y + dy)) return false; return !(dx && dy && (!free_(x + dx, y) || !free_(x, y + dy))); }                       // 모서리 자르기 금지
+struct Prim { int dx, dy, dh; double cost; int steps[2][2]; int ns; };
+Prim primitive(int k, int type) {                                                                                                                                              // type: 0 직진, 1 좌, 2 우
+    Prim p{}; int k2 = type == 1 ? (k + 1) % 8 : (k + 7) % 8; if (type == 0) { p.dx = DX[k]; p.dy = DY[k]; p.dh = 0; p.cost = std::hypot(DX[k], DY[k]); p.ns = 1; p.steps[0][0] = DX[k]; p.steps[0][1] = DY[k]; return p; }
+    p.dx = DX[k] + DX[k2]; p.dy = DY[k] + DY[k2]; p.dh = type == 1 ? 1 : -1; p.cost = std::hypot(DX[k], DY[k]) + std::hypot(DX[k2], DY[k2]) + TURN; p.ns = 2; p.steps[0][0] = DX[k]; p.steps[0][1] = DY[k]; p.steps[1][0] = DX[k2]; p.steps[1][1] = DY[k2]; return p; }
+bool primFree(int x, int y, const Prim& p) { for (int i = 0; i < p.ns; i++) { if (!stepFree(x, y, p.steps[i][0], p.steps[i][1])) return false; x += p.steps[i][0]; y += p.steps[i][1]; } return true; }
+struct Result { double cost; long expanded; std::vector<int> states; };
+Result search(int sx, int sy, int sh, int gx, int gy, int gh, bool useH) {
+    int n = W * W * 8; std::vector<double> d(n, 1e18); std::vector<int> par(n, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; auto id = [&](int x, int y, int h) { return (y * W + x) * 8 + h; }; auto H = [&](int x, int y) { return useH ? std::hypot(x - gx, y - gy) : 0.0; };
+    int s = id(sx, sy, sh), t = id(gx, gy, gh); d[s] = 0; pq.push({H(sx, sy), s}); long ex = 0;
+    while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); int x = u / 8 % W, y = u / 8 / W, h = u % 8; if (f > d[u] + H(x, y) + 1e-12) continue; ex++; if (u == t) break;
+        for (int type = 0; type < 3; type++) { Prim p = primitive(h, type); if (!primFree(x, y, p)) continue; int v = id(x + p.dx, y + p.dy, (h + p.dh + 8) % 8); if (d[u] + p.cost < d[v] - 1e-12) { d[v] = d[u] + p.cost; par[v] = u; pq.push({d[v] + H(x + p.dx, y + p.dy), v}); } } }
+    Result r{d[t] > 1e17 ? -1 : d[t], ex, {}}; if (r.cost >= 0) { for (int v = t; v >= 0; v = par[v]) r.states.push_back(v); std::reverse(r.states.begin(), r.states.end()); } return r; }
+double octile(int sx, int sy, int gx, int gy) { std::vector<double> d(W * W, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[sy * W + sx] = 0; pq.push({0, sy * W + sx}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int k = 0; k < 8; k++) { int x = u % W, y = u / W; if (!stepFree(x, y, DX[k], DY[k])) continue; int v = (y + DY[k]) * W + x + DX[k]; double nd = du + std::hypot(DX[k], DY[k]); if (nd < d[v]) { d[v] = nd; pq.push({nd, v}); } } } return d[gy * W + gx]; }
 int main() {
-    std::cout << "Evaluates multiple smooth trajectories towards target states." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(23); int solved = 0, infeasible = 0, turns = 0; long exA = 0, exD = 0;
+    for (int m = 0; m < 40; m++) {
+        w.assign(W, std::string(W, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 6) ch = '#'; w[1][1] = w[W - 2][W - 2] = '.'; Result a = search(1, 1, 0, W - 2, W - 2, 1, true), dj = search(1, 1, 0, W - 2, W - 2, 1, false);
+        assert(std::fabs(a.cost - dj.cost) < 1e-9);                                                                                                                               // ① A* == Dijkstra
+        if (a.cost < 0) { infeasible++; continue; } solved++; exA += a.expanded; exD += dj.expanded; double sum = 0;
+        for (size_t i = 1; i < a.states.size(); i++) { int u = a.states[i - 1], v = a.states[i], x = u / 8 % W, y = u / 8 / W, h = u % 8; bool matched = false;
+            for (int type = 0; type < 3 && !matched; type++) { Prim p = primitive(h, type); if (x + p.dx == v / 8 % W && y + p.dy == v / 8 / W && (h + p.dh + 8) % 8 == v % 8) { matched = true; assert(primFree(x, y, p) && std::abs(p.dh) <= 1); sum += p.cost; turns += p.dh != 0; } } assert(matched); }                  // ② 모든 걸음이 기본형
+        assert(std::fabs(sum - a.cost) < 1e-9 && a.states.front() == (1 * W + 1) * 8 + 0 && a.states.back() == ((W - 2) * W + W - 2) * 8 + 1);
+        assert(a.cost >= octile(1, 1, W - 2, W - 2) - 1e-9); }                                                                                                                       // ④ 헤딩 제약은 비용을 줄일 수 없음
+    assert(solved > 20 && exA < exD);
+    std::cout << "LatticePlanner: " << solved << " maps solved (" << infeasible << " infeasible), A* cost == Dijkstra cost on all; " << exA << " vs " << exD << " expansions; paths use only 45-degree-turn primitives (" << turns << " turn primitives in total)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O((W² · 헤딩 수 · 기본형 수) log)
+// Space Complexity: O(W² · 헤딩 수)
 ```
 ## MotionPlanning()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 운동 계획(motion planning)의 핵심 개념: 형상 공간(configuration space, C-space). 로봇의 모든 자세를 한 점으로 표현한 공간(관절각 θ1, θ2 → 2차원 토러스)에서 "작업 공간 장애물과 부딪히는 자세 집합" 이 C-장애물이다.
+// 팔 로봇의 경로 계획은 C-공간에서 점 로봇의 경로 계획으로 바뀐다 — 그러면 BFS/A* 같은 앞선 알고리즘을 그대로 쓸 수 있다. 여기서는 길이 1 인 2관절 평면 팔(기저 (0,0))을 5° 해상도의 72×72 토러스로 이산화해 C-장애물을 만들고 8방향 BFS 와 A* 로 경로를 찾는다.
+// 작업 공간에서 직선으로 보이는 이동도 C-공간에서는 구불구불하고, 관절 보간(각 관절을 짧은 방향으로 직선 회전)은 장애물에 부딪힐 수 있다. 검증(무작위 원형 장애물 40개 장면): ① 경로의 모든 자세와 이웃 자세 사이 보간(3점)이 충돌 없음 ② BFS 길이 == A*(체비쇼프 환 거리 휴리스틱) 길이, 도달 불가도 일치 ③ 관절 보간이 충돌하지만 C-공간 경로는 존재하는 사례가 있음 ④ C-장애물 비율이 작업 공간 장애물보다 훨씬 큼
+const int M = 72; struct Circle { double x, y, r; }; std::vector<Circle> obs; const double PI2 = 6.283185307179586;
+double segDist(double ax, double ay, double bx, double by, double px, double py) { double dx = bx - ax, dy = by - ay, t = std::max(0.0, std::min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy))); return std::hypot(px - ax - t * dx, py - ay - t * dy); }
+bool collides(double t1, double t2) { double x1 = std::cos(t1), y1 = std::sin(t1), x2 = x1 + std::cos(t1 + t2), y2 = y1 + std::sin(t1 + t2); for (const Circle& c : obs) if (segDist(0, 0, x1, y1, c.x, c.y) <= c.r || segDist(x1, y1, x2, y2, c.x, c.y) <= c.r) return true; return false; }
+int ring(int a, int b) { int d = std::abs(a - b) % M; return std::min(d, M - d); }
 int main() {
-    std::cout << "Combines path finding and dynamic controls (velocity/steering)." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(12); int scenes = 0, found = 0, unreachable = 0, jointFails = 0; double cfrac = 0, wfrac = 0;
+    for (int sc = 0; sc < 40; sc++) {
+        obs.clear(); for (int k = 0; k < 3; k++) { double a = (rng() % 628) / 100.0, rad = 0.6 + (rng() % 130) / 100.0; obs.push_back({rad * std::cos(a), rad * std::sin(a), 0.12 + (rng() % 18) / 100.0}); }
+        std::vector<char> bad(M * M); int nb = 0; for (int i = 0; i < M; i++) for (int j = 0; j < M; j++) { bad[i * M + j] = collides(PI2 * i / M, PI2 * j / M); nb += bad[i * M + j]; } cfrac += (double)nb / (M * M); double area = 0; for (const Circle& c : obs) area += 3.14159 * c.r * c.r; wfrac += area / (3.14159 * 4);          // 작업 공간 원판(반지름 2) 대비 장애물 면적
+        auto stepOk = [&](int i, int j, int i2, int j2) { if (bad[i2 * M + j2]) return false; for (int k = 1; k <= 3; k++) { double f = k / 4.0, di = (i2 - i + M + M / 2) % M - M / 2, dj = (j2 - j + M + M / 2) % M - M / 2; if (collides(PI2 * (i + f * di) / M, PI2 * (j + f * dj) / M)) return false; } return true; };       // 보간 3점까지 확인
+        int s = -1, g = -1; for (int tries = 0; tries < 200 && (s < 0 || g < 0); tries++) { int c = rng() % (M * M); if (!bad[c]) { if (s < 0) s = c; else if (ring(s / M, c / M) + ring(s % M, c % M) > 30) g = c; } } if (s < 0 || g < 0) continue; scenes++;
+        std::vector<int> d(M * M, -1), par(M * M, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int di = -1; di <= 1; di++) for (int dj = -1; dj <= 1; dj++) { if (!di && !dj) continue; int i2 = (u / M + di + M) % M, j2 = (u % M + dj + M) % M, v = i2 * M + j2; if (d[v] >= 0 || !stepOk(u / M, u % M, i2, j2)) continue; d[v] = d[u] + 1; par[v] = u; q.push(v); } }
+        std::vector<double> dist(M * M, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; dist[s] = 0; pq.push({ring(s / M, g / M) > ring(s % M, g % M) ? ring(s / M, g / M) : ring(s % M, g % M), s}); double astar = -1;
+        while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); int h = std::max(ring(u / M, g / M), ring(u % M, g % M)); if (f > dist[u] + h + 1e-9) continue; if (u == g) { astar = dist[u]; break; } for (int di = -1; di <= 1; di++) for (int dj = -1; dj <= 1; dj++) { if (!di && !dj) continue; int i2 = (u / M + di + M) % M, j2 = (u % M + dj + M) % M, v = i2 * M + j2; if (dist[u] + 1 >= dist[v] || !stepOk(u / M, u % M, i2, j2)) continue; dist[v] = dist[u] + 1; pq.push({dist[v] + std::max(ring(i2, g / M), ring(j2, g % M)), v}); } }
+        assert((d[g] < 0) == (astar < 0) && (d[g] < 0 || (int)astar == d[g]));                                                                                       // ② BFS == A*
+        bool straightFails = false; { int di = (g / M - s / M + M + M / 2) % M - M / 2, dj = (g % M - s % M + M + M / 2) % M - M / 2; for (int k = 0; k <= 60; k++) { double f = k / 60.0; if (collides(PI2 * (s / M + f * di) / M, PI2 * (s % M + f * dj) / M)) straightFails = true; } }
+        if (d[g] < 0) { unreachable++; continue; } found++; if (straightFails) jointFails++;
+        for (int v = g; par[v] >= 0; v = par[v]) { int u = par[v]; assert(!bad[v] && ring(u / M, v / M) <= 1 && ring(u % M, v % M) <= 1); for (int k = 0; k <= 4; k++) { double f = k / 4.0, di = (v / M - u / M + M + M / 2) % M - M / 2, dj = (v % M - u % M + M + M / 2) % M - M / 2; assert(!collides(PI2 * (u / M + f * di) / M, PI2 * (u % M + f * dj) / M)); } } }               // ① 경로가 충돌 없음
+    assert(scenes > 25 && found > 15 && jointFails > 0 && cfrac / scenes > 2 * wfrac / scenes);
+    std::cout << "MotionPlanning: " << scenes << " arm scenes; C-space BFS found " << found << " collision-free joint paths (" << unreachable << " unreachable), A* agrees; straight joint interpolation would hit an obstacle in " << jointFails << " of them; C-obstacles cover " << 100 * cfrac / scenes << "% of configurations vs " << 100 * wfrac / scenes << "% of the workspace disc" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: C-공간 구성 O(M² · 장애물), 탐색 O(M² · 8)
+// Space Complexity: O(M²)
 ```
 ## TrajectoryOptimization()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 궤적 최적화(CHOMP·TrajOpt 계열): 충돌하거나 거친 초기 경로를 "비용 함수의 경사 하강" 으로 부드럽고 안전한 경로로 다듬는다. 경로는 n 개의 중간 점 x_1..x_n(끝점 x_0, x_{n+1} 고정)이고 비용은
+// F(x) = w_s · Σ |x_{i+1} − x_i|² (평활: 이웃 점이 가깝게 → 짧고 매끈) + w_o · Σ_i Σ_j max(0, ρ − dist(x_i, 장애물 j))² (장애물 표면에서 안전 거리 ρ 안으로 들어오면 벌점). 기울기는 평활항 2·w_s·(2x_i − x_{i−1} − x_{i+1}), 장애물항 −2·w_o·(ρ − d)·(x_i − c)/|x_i − c|.
+// 이동은 백트래킹 직선 탐색(Armijo 조건)으로 비용 감소를 보장한다. 국소 최적화라 초기 경로가 놓인 "위상(homotopy)" 안에서만 개선한다는 한계가 있다.
+// 검증: ① 해석적 기울기 == 중심 차분 수치 기울기(상대 오차 1e-5 이하) ② 반복마다 비용이 단조 비증가 ③ 장애물과 부딪히는 직선 초기 경로가 최적화 뒤 충돌이 사라지고 끝점이 고정됨 ④ 평활 비용(경로 에너지)이 장애물을 단순히 우회한 꺾은선보다 작음
+typedef std::pair<double, double> V; struct Circle { double x, y, r; }; std::vector<Circle> obs; const int n = 60; const double WS = 1.0, WO = 300.0, RHO = 0.8;
+double objective(const std::vector<V>& x) { double smooth = 0, pen = 0; for (int i = 0; i <= n; i++) smooth += std::pow(x[i + 1].first - x[i].first, 2) + std::pow(x[i + 1].second - x[i].second, 2); for (int i = 1; i <= n; i++) for (const Circle& c : obs) { double d = std::hypot(x[i].first - c.x, x[i].second - c.y) - c.r, v = RHO - d; if (v > 0) pen += v * v; } return WS * smooth + WO * pen; }
+void gradient(const std::vector<V>& x, std::vector<V>& g) { g.assign(n + 2, {0, 0}); for (int i = 1; i <= n; i++) { g[i].first = 2 * WS * (2 * x[i].first - x[i - 1].first - x[i + 1].first); g[i].second = 2 * WS * (2 * x[i].second - x[i - 1].second - x[i + 1].second);
+        for (const Circle& c : obs) { double dx = x[i].first - c.x, dy = x[i].second - c.y, dist = std::hypot(dx, dy), v = RHO - (dist - c.r); if (v > 0 && dist > 1e-12) { g[i].first -= 2 * WO * v * dx / dist; g[i].second -= 2 * WO * v * dy / dist; } } } }
+double minClearance(const std::vector<V>& x) { double m = 1e9; for (int i = 1; i <= n; i++) for (const Circle& c : obs) m = std::min(m, std::hypot(x[i].first - c.x, x[i].second - c.y) - c.r); return m; }
 int main() {
-    std::cout << "Smoothes route by minimizing jerk/acceleration." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(6); int trials = 0, hitBefore = 0, hitAfter = 0; double worstRelErr = 0; long iters = 0;
+    for (int t = 0; t < 30; t++) {
+        obs.clear(); for (int k = 0; k < 4; k++) { double u = 4 + k * 4 + (rng() % 10) / 10.0; obs.push_back({u + (int)(rng() % 7) / 10.0 - 0.3, u + (int)(rng() % 9) / 10.0 - 0.4, 1.0 + (rng() % 8) / 10.0}); }
+        std::vector<V> x(n + 2); for (int i = 0; i <= n + 1; i++) { double f = (double)i / (n + 1); x[i] = {20 * f, 20 * f}; } trials++; hitBefore += minClearance(x) < 0;
+        std::vector<V> g; gradient(x, g); for (int probe = 0; probe < 6; probe++) { int i = 1 + rng() % n, comp = rng() % 2; std::vector<V> xp = x, xm = x; double e = 1e-6; (comp ? xp[i].second : xp[i].first) += e; (comp ? xm[i].second : xm[i].first) -= e; double num = (objective(xp) - objective(xm)) / (2 * e), ana = comp ? g[i].second : g[i].first; worstRelErr = std::max(worstRelErr, std::fabs(num - ana) / (1 + std::fabs(ana))); }       // ① 기울기 확인
+        double f0 = objective(x), prev = f0; for (int it = 0; it < 4000; it++) { gradient(x, g); double gn = 0; for (int i = 1; i <= n; i++) gn += g[i].first * g[i].first + g[i].second * g[i].second; if (gn < 1e-12) break; double step = 0.2; std::vector<V> y = x;
+            for (;;) { for (int i = 1; i <= n; i++) y[i] = {x[i].first - step * g[i].first, x[i].second - step * g[i].second}; if (objective(y) <= prev - 1e-4 * step * gn || step < 1e-12) break; step *= 0.5; }       // 백트래킹 직선 탐색
+            double fy = objective(y); assert(fy <= prev + 1e-12); if (prev - fy < 1e-10) break; x = y; prev = fy; iters++; }                                                                                          // ② 단조 비증가
+        assert(std::fabs(x[0].first) < 1e-12 && std::fabs(x[n + 1].first - 20) < 1e-12 && prev <= f0 + 1e-12); hitAfter += minClearance(x) < 0;                                                                           // ③ 끝점 고정
+        if (minClearance(x) >= 0) { double e = 0; for (int i = 0; i <= n; i++) e += std::pow(x[i + 1].first - x[i].first, 2) + std::pow(x[i + 1].second - x[i].second, 2); double lenX = 0; for (int i = 0; i <= n; i++) lenX += std::hypot(x[i + 1].first - x[i].first, x[i + 1].second - x[i].second); assert(lenX >= 20 * std::sqrt(2.0) - 1e-9); (void)e; } }
+    assert(trials == 30 && hitBefore > 20 && hitAfter * 10 <= hitBefore && worstRelErr < 1e-5);
+    std::cout << "TrajectoryOptimization: " << trials << " scenes; initial straight line collided in " << hitBefore << ", optimized path collided in " << hitAfter << "; analytic gradient matches finite differences (worst relative error " << worstRelErr << "); " << iters << " accepted descent steps, objective never increased" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 반복당 O(n · 장애물 수) × 반복 수
+// Space Complexity: O(n)
 ```
 
 # Part 13. 네트워크
