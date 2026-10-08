@@ -1,3 +1,9 @@
+# [보관용 - 실행 금지]
+# 한 번만 쓰는 변환 스크립트입니다. 모든 줄을 '##' 헤딩 + 빈 코드 블록으로 감싸고
+# 파일을 제자리에서 덮어쓰므로, 현재 .md 파일에 실행하면 구조가 망가집니다.
+# (경로도 작성자 PC에 하드코딩되어 있습니다. 자세한 내용은 NextPhasePlan.md 참조)
+raise SystemExit("archive/process.py는 보관용입니다. 실행하지 마세요.")
+
 import os
 
 workspace = r'C:\Users\cjh3c\OneDrive\바탕 화면\DataStructureProject2-main'
