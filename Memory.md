@@ -656,7 +656,7 @@ int main() {
 //  ④ 서로 다른 함수 두 개가 번갈아 호출해도(상호 재귀) 프레임 주소가 계속 감소한다.  꼬리 호출 제거를 막으려고 호출 뒤에 컴파일러 장벽을 둔다.
 #pragma GCC diagnostic ignored "-Wframe-address"          // __builtin_frame_address(1) 은 호출자 프레임을 보려는 일부러의 사용
 template <int N> __attribute__((noinline)) uintptr_t dive(int d, std::vector<uintptr_t>& addrs, std::vector<uintptr_t>& callerAddrs) {
-    volatile char buf[N]; asm volatile("" : : "r"(buf) : "memory"); buf[0] = (char)d;                   // 주소를 내보내 컴파일러가 쓰는 두 칸만 남기고 배열을 줄이지 못하게 한다 addrs.push_back((uintptr_t)__builtin_frame_address(0)); if (d < 59) callerAddrs.push_back((uintptr_t)__builtin_frame_address(1));
+    volatile char buf[N]; asm volatile("" : : "r"(buf) : "memory"); /* 주소를 내보내 컴파일러가 배열을 줄이지 못하게 한다 */ buf[0] = (char)d; addrs.push_back((uintptr_t)__builtin_frame_address(0)); if (d < 59) callerAddrs.push_back((uintptr_t)__builtin_frame_address(1));
     uintptr_t r = d == 0 ? 0 : dive<N>(d - 1, addrs, callerAddrs); asm volatile("" ::: "memory"); buf[N - 1] = (char)r; return r + buf[0]; }
 __attribute__((noinline)) uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs);
 __attribute__((noinline)) uintptr_t pong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[48]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pingpong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
@@ -864,7 +864,7 @@ int main() {
     volatile size_t huge = (size_t)-1 / 2;                             // 컴파일러가 상수로 판단하지 못하게 volatile
     try { char* volatile sink = new char[huge]; (void)sink; } catch (const std::bad_alloc&) { threw = true; }       // 결과를 volatile 에 담아 컴파일러가 안 쓰는 할당을 지우지 못하게 한다
     assert(threw);                                                      // 실패 -> 예외
-    assert(new (std::nothrow) char[huge] == nullptr);                  // 실패 -> nullptr
+    char* volatile probe = new (std::nothrow) char[huge]; assert(probe == nullptr);                  // 실패 -> nullptr
     std::cout << "new/delete: allocs=" << allocs << " frees=" << frees << std::endl;
     return 0;
 }
