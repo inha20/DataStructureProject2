@@ -1978,100 +1978,300 @@ int main() {
 ## AVLTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
 #include <cassert>
 
-int main() {
-    std::cout << "AVL Tree enforces height difference <= 1 via rotations." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// AVL 트리(트리 관점의 요약, 정본은 Tree.md Part 6): 모든 노드에서 왼쪽·오른쪽 높이 차이(균형 인수)가 -1, 0, 1 이 되도록 삽입 뒤 회전으로 고친다 -> 높이 <= 1.44 log2(N+2)
+struct N { int k, h = 1; N *l = nullptr, *r = nullptr; };
+int H(N* n) { return n ? n->h : 0; }
+void up(N* n) { n->h = 1 + std::max(H(n->l), H(n->r)); }
+N* rotR(N* y) { N* x = y->l; y->l = x->r; x->r = y; up(y); up(x); return x; }
+N* rotL(N* x) { N* y = x->r; x->r = y->l; y->l = x; up(x); up(y); return y; }
+N* ins(N* n, int k) {
+    if (!n) return new N{k}; if (k < n->k) n->l = ins(n->l, k); else if (k > n->k) n->r = ins(n->r, k); up(n);
+    int b = H(n->l) - H(n->r);
+    if (b > 1)  { if (H(n->l->l) < H(n->l->r)) n->l = rotL(n->l); return rotR(n); }     // LL 또는 LR
+    if (b < -1) { if (H(n->r->r) < H(n->r->l)) n->r = rotR(n->r); return rotL(n); }     // RR 또는 RL
+    return n;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int main() {
+    N* root = nullptr; for (int i = 1; i <= 1023; i++) root = ins(root, i);              // 정렬 입력에도
+    assert(H(root) == 10); std::cout << "AVLTree: height " << H(root) << " for 1023 sorted inserts" << std::endl; return 0;
+}
+// Time Complexity: 삽입·탐색 O(log N)
+// Space Complexity: O(N)
 ```
 ## RedBlackTree()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <algorithm>
+#include <cmath>
 #include <cassert>
 
-int main() {
-    std::cout << "Red-Black Tree enforces color constraints, used in std::map." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 레드-블랙 트리(트리 관점의 요약, 정본은 Tree.md Part 7): 색 규칙(빨간 노드의 자식은 검정, 모든 경로의 검은 노드 수 동일)으로 높이를 2 log2(N+1) 이하로 묶는다.
+// 여기서는 구현이 가장 짧은 좌편향(LLRB) 삽입만 보인다 (삭제·일반형은 Tree.md)
+struct N { int k; bool red = true; N *l = nullptr, *r = nullptr; };
+bool R(N* n) { return n && n->red; }
+N* rotL(N* h) { N* x = h->r; h->r = x->l; x->l = h; x->red = h->red; h->red = true; return x; }
+N* rotR(N* h) { N* x = h->l; h->l = x->r; x->r = h; x->red = h->red; h->red = true; return x; }
+N* ins(N* h, int k) {
+    if (!h) return new N{k}; if (k < h->k) h->l = ins(h->l, k); else if (k > h->k) h->r = ins(h->r, k);
+    if (R(h->r) && !R(h->l)) h = rotL(h); if (R(h->l) && R(h->l->l)) h = rotR(h);
+    if (R(h->l) && R(h->r)) { h->red = true; h->l->red = h->r->red = false; } return h;
 }
-// Time Complexity: O(1)
+int ht(N* n) { return n ? 1 + std::max(ht(n->l), ht(n->r)) : 0; }
+int main() {
+    N* root = nullptr; for (int i = 1; i <= 4095; i++) { root = ins(root, i); root->red = false; }
+    assert(ht(root) <= 2 * std::log2(4096.0)); std::cout << "RedBlackTree: height " << ht(root) << " for 4095 sorted inserts" << std::endl; return 0;
+}
+// Time Complexity: 삽입·탐색 O(log N)
 // Space Complexity: O(N)
 ```
 ## AA Tree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <random>
+#include <set>
 #include <cassert>
 
-int main() {
-    std::cout << "AA Tree simplifies RB-Tree by allowing red nodes only as right children." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// AA 트리(Arne Andersson): 레드-블랙 트리를 "빨간 간선은 오른쪽으로만" 제한한 2-3 트리 변형. 색 대신 레벨(level) 숫자를 쓰고 규칙이 5개뿐이라 삭제까지 코드가 짧다.
+//   ① 잎의 레벨 = 1  ② 왼쪽 자식의 레벨 = 부모 - 1  ③ 오른쪽 자식의 레벨 = 부모 또는 부모 - 1  ④ 오른쪽 손자의 레벨 < 조부모  ⑤ 레벨 > 1 인 노드는 자식이 둘
+// 두 연산만 있다: skew(왼쪽 수평 간선 -> 오른쪽으로 회전), split(오른쪽 수평 간선 두 개 연속 -> 가운데를 올림, 레벨 +1)
+struct Node { int key, level = 1; Node *l = nullptr, *r = nullptr; explicit Node(int k) : key(k) {} };
+int lv(const Node* t) { return t ? t->level : 0; }
+Node* skew(Node* t) { if (t && t->l && t->l->level == t->level) { Node* L = t->l; t->l = L->r; L->r = t; return L; } return t; }
+Node* split(Node* t) { if (t && t->r && t->r->r && t->r->r->level == t->level) { Node* R = t->r; t->r = R->l; R->l = t; R->level++; return R; } return t; }
+Node* insert(Node* t, int k) {
+    if (!t) return new Node(k);
+    if (k < t->key) t->l = insert(t->l, k); else if (k > t->key) t->r = insert(t->r, k);
+    return split(skew(t));
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+Node* erase(Node* t, int k) {
+    if (!t) return t;
+    if (k > t->key) t->r = erase(t->r, k);
+    else if (k < t->key) t->l = erase(t->l, k);
+    else {
+        if (!t->l && !t->r) { delete t; return nullptr; }
+        if (!t->l) { Node* s = t->r; while (s->l) s = s->l; t->key = s->key; t->r = erase(t->r, s->key); }       // 후속자로 대체
+        else       { Node* p = t->l; while (p->r) p = p->r; t->key = p->key; t->l = erase(t->l, p->key); }       // 선행자로 대체
+    }
+    int should = std::min(lv(t->l), lv(t->r)) + 1;                         // 자식이 줄었으면 레벨을 낮춘다
+    if (should < t->level) { t->level = should; if (t->r && should < t->r->level) t->r->level = should; }
+    t = skew(t); t->r = skew(t->r); if (t->r) t->r->r = skew(t->r->r);
+    t = split(t); t->r = split(t->r);
+    return t;
+}
+bool check(const Node* t, long lo, long hi) {
+    if (!t) return true;
+    if (t->key <= lo || t->key >= hi) return false;
+    if (!t->l && !t->r && t->level != 1) return false;                     // ①
+    if (lv(t->l) != t->level - 1) return false;                            // ②
+    if (lv(t->r) != t->level && lv(t->r) != t->level - 1) return false;   // ③
+    if (t->r && t->r->r && t->r->r->level >= t->level) return false;      // ④
+    if (t->level > 1 && (!t->l || !t->r)) return false;                   // ⑤
+    return check(t->l, lo, t->key) && check(t->r, t->key, hi);
+}
+int height(const Node* t) { return t ? 1 + std::max(height(t->l), height(t->r)) : 0; }
+bool has(const Node* t, int k) { while (t) { if (k == t->key) return true; t = k < t->key ? t->l : t->r; } return false; }
+void destroy(Node* t) { if (t) { destroy(t->l); destroy(t->r); delete t; } }
+
+int main() {
+    Node* root = nullptr; for (int i = 1; i <= 4095; i++) root = insert(root, i);
+    assert(check(root, 0, 1L << 40) && height(root) <= 2 * std::log2(4096.0)); destroy(root); root = nullptr;
+    std::mt19937 rng(10); std::set<int> ref;
+    for (int step = 0; step < 30000; step++) {
+        int x = rng() % 800;
+        if (rng() % 3) { root = insert(root, x); ref.insert(x); } else { root = erase(root, x); ref.erase(x); }
+        if (step % 50 == 0) { assert(check(root, -1, 1L << 40)); for (int q = 0; q < 800; q += 41) assert(has(root, q) == (ref.count(q) > 0)); }
+    }
+    for (int x : std::set<int>(ref)) { root = erase(root, x); ref.erase(x); assert(check(root, -1, 1L << 40)); }
+    assert(!root);
+    std::cout << "AATree: 5 level rules hold after 30000 random insert/erase steps" << std::endl; return 0;
+}
+// Time Complexity: 삽입·삭제·탐색 O(log N)
+// Space Complexity: O(N)
 ```
 ## Treap()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
+#include <algorithm>
 #include <cassert>
 
+// 트립(트리 관점의 요약, 정본은 Tree.md Part 13): 키로는 BST, 무작위 우선순위로는 힙인 트리. 삽입 = 분할(split) + 병합(merge), 정렬된 입력에도 기대 높이 O(log N)
+struct T { int k, p; T *l = nullptr, *r = nullptr; };
+void split(T* t, int k, T*& a, T*& b) { if (!t) { a = b = nullptr; return; } if (t->k < k) { a = t; split(t->r, k, t->r, b); } else { b = t; split(t->l, k, a, t->l); } }
+T* merge(T* a, T* b) { if (!a || !b) return a ? a : b; if (a->p > b->p) { a->r = merge(a->r, b); return a; } b->l = merge(a, b->l); return b; }
+int ht(T* t) { return t ? 1 + std::max(ht(t->l), ht(t->r)) : 0; }
 int main() {
-    std::cout << "Treap combines BST ordering for keys and Max-Heap for random priorities." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(1); T* root = nullptr;
+    for (int i = 1; i <= 4095; i++) { T* a; T* b; split(root, i, a, b); root = merge(merge(a, new T{i, (int)g()}), b); }
+    assert(ht(root) < 40); std::cout << "Treap: height " << ht(root) << " for 4095 sorted inserts" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·삭제·탐색 기대 O(log N)
+// Space Complexity: O(N)
 ```
 ## SplayTree()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <algorithm>
 #include <cassert>
 
-int main() {
-    std::cout << "Splay Tree moves accessed elements to the root via splaying operations." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 스플레이 트리(트리 관점의 요약, 정본은 Tree.md Part 13): 접근한 노드를 회전으로 루트까지 끌어올린다(zig-zig / zig-zag). 균형 정보를 저장하지 않고도 분할상환 O(log N),
+// 최근에 쓴 키가 다시 빨리 나오는 접근 패턴에 강하다 (정적 최적성, 순차 접근 O(N) 등)
+struct S { int k; S *l = nullptr, *r = nullptr; };
+S* rotR(S* t) { S* x = t->l; t->l = x->r; x->r = t; return x; }
+S* rotL(S* t) { S* x = t->r; t->r = x->l; x->l = t; return x; }
+S* splay(S* t, int k) {
+    if (!t || t->k == k) return t;
+    if (k < t->k) { if (!t->l) return t;
+        if (k < t->l->k) { t->l->l = splay(t->l->l, k); t = rotR(t); } else if (k > t->l->k) { t->l->r = splay(t->l->r, k); if (t->l->r) t->l = rotL(t->l); }
+        return t->l ? rotR(t) : t; }
+    if (!t->r) return t;
+    if (k > t->r->k) { t->r->r = splay(t->r->r, k); t = rotL(t); } else if (k < t->r->k) { t->r->l = splay(t->r->l, k); if (t->r->l) t->r = rotR(t->r); }
+    return t->r ? rotL(t) : t;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+S* insert(S* t, int k) { if (!t) return new S{k}; t = splay(t, k); if (t->k == k) return t; S* n = new S{k}; if (k < t->k) { n->r = t; n->l = t->l; t->l = nullptr; } else { n->l = t; n->r = t->r; t->r = nullptr; } return n; }
+int main() {
+    S* root = nullptr; for (int i = 1; i <= 1000; i++) root = insert(root, i);
+    root = splay(root, 500); assert(root->k == 500);                       // 접근한 키가 루트로
+    root = splay(root, 1); assert(root->k == 1);
+    std::cout << "SplayTree: accessed keys move to the root" << std::endl; return 0;
+}
+// Time Complexity: 분할상환 O(log N)
+// Space Complexity: O(N)
 ```
 ## ScapegoatTree()
 ### 대표코드
 ```cpp
+#include <cmath>
 #include <iostream>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Scapegoat Tree rebuilds unbalanced subtrees instead of small rotations." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 스케이프고트 트리(트리 관점의 요약, 정본은 Tree.md Part 13): 회전 없이, 어떤 노드의 한쪽 부분 트리가 α(여기서는 0.7) 비율을 넘으면 그 노드(희생양)를 통째로 완전 균형으로 다시 짓는다.
+// 높이 <= log_{1/α} N 이 유지되고 삭제 후 전체 재구성이 분할상환 O(log N) 을 만든다
+struct G { int k, sz = 1; G *l = nullptr, *r = nullptr; };
+int S(G* n) { return n ? n->sz : 0; }
+void flat(G* n, std::vector<G*>& v) { if (!n) return; flat(n->l, v); v.push_back(n); flat(n->r, v); }
+G* build(std::vector<G*>& v, int lo, int hi) { if (lo >= hi) return nullptr; int m = (lo + hi) / 2; G* n = v[m]; n->l = build(v, lo, m); n->r = build(v, m + 1, hi); n->sz = hi - lo; return n; }
+G* ins(G* n, int k) {
+    if (!n) return new G{k}; if (k < n->k) n->l = ins(n->l, k); else n->r = ins(n->r, k); n->sz++;
+    if (S(n->l) > 0.7 * n->sz || S(n->r) > 0.7 * n->sz) { std::vector<G*> v; flat(n, v); return build(v, 0, v.size()); }
+    return n;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int ht(G* n) { return n ? 1 + std::max(ht(n->l), ht(n->r)) : 0; }
+int main() {
+    G* root = nullptr; for (int i = 1; i <= 4096; i++) root = ins(root, i);
+    assert(ht(root) <= std::log(4096.0) / std::log(1 / 0.7) + 2); std::cout << "ScapegoatTree: height " << ht(root) << " for 4096 sorted inserts" << std::endl; return 0;
+}
+// Time Complexity: 삽입 분할상환 O(log N), 탐색 최악 O(log N)
+// Space Complexity: O(N)
 ```
 ## TangoTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <unordered_map>
+#include <vector>
 #include <cassert>
 
+// 탱고 트리(Demaine–Harmon–Iacono–Pătraşcu): "O(log log n)-경쟁적" 이진 탐색 트리 — 임의의 접근열 X 에 대해 어떤 BST 도 OPT(X) 에 쓰는 시간의 O(log log n) 배 안에 처리한다 (현재 알려진 가장 좋은 보장).
+// 구조: 키 1..N(N=2^H-1)에 대한 완전 이진 "참조 트리" P 를 두고(실제로 저장하지 않고 산술로 계산), 각 노드에 "선호 자식"(마지막으로 접근한 쪽)을 둔다.
+// 선호 자식을 따라 이어진 사슬이 "선호 경로" 이고, 경로마다 크기가 <= H 인 보조 BST(여기서는 깊이 정보를 덧붙인 트립)를 만든다 -> 보조 트리 탐색은 O(log log N).
+// 접근 x 는 "경로 안 탐색" 과 "선호 자식이 바뀌는 지점에서의 cut(깊이로 아래쪽 자르기) / join(다른 경로 이어 붙이기)" 의 반복이고, 선호 자식이 바뀐 횟수 k 에 대해 시간이 O(k (1 + log log N)).
+// 이 k 는 Wilber 의 interleave 하한과 정확히 같다 — 아래 main 이 독립적으로 계산한 interleave 값과 대조해 확인한다
+int H, N;
+int ctz(int k) { return __builtin_ctz(k); }
+int depthOf(int k) { return H - 1 - ctz(k); }                              // 키 k 의 참조 트리 깊이 (루트 0)
+int rootKey() { return 1 << (H - 1); }
+int child(int k, int dir) { int t = ctz(k); if (!t) return 0; return dir == 0 ? k - (1 << (t - 1)) : k + (1 << (t - 1)); }     // 0 = 없음
+
+struct T { int key, depth, mn, mx; unsigned pri; T *l = nullptr, *r = nullptr; };       // 보조 트립: 키 순서 BST, mn/mx = 부분 트리의 최소/최대 깊이
+void upd(T* t) { t->mn = t->mx = t->depth; for (T* c : {t->l, t->r}) if (c) { t->mn = std::min(t->mn, c->mn); t->mx = std::max(t->mx, c->mx); } }
+void split(T* t, int k, T*& a, T*& b) { if (!t) { a = b = nullptr; return; } if (t->key < k) { a = t; split(t->r, k, t->r, b); } else { b = t; split(t->l, k, a, t->l); } upd(t); }
+T* merge(T* a, T* b) { if (!a || !b) return a ? a : b; if (a->pri > b->pri) { a->r = merge(a->r, b); upd(a); return a; } b->l = merge(a, b->l); upd(b); return b; }
+int topKey(T* t) { while (t->depth != t->mn) t = (t->l && t->l->mn == t->mn) ? t->l : t->r; return t->key; }            // 경로의 맨 위(깊이 최소) 노드
+T* leftmostDeeper(T* t, int d) { while (t) { if (t->l && t->l->mx > d) t = t->l; else if (t->depth > d) return t; else t = t->r; } return nullptr; }
+T* rightmostDeeper(T* t, int d) { while (t) { if (t->r && t->r->mx > d) t = t->r; else if (t->depth > d) return t; else t = t->l; } return nullptr; }
+void cutBelow(T* t, int d, T*& top, T*& bottom) {                          // 깊이 > d 인 노드들(키 순서로 연속 구간)을 떼어 낸다
+    if (t->mx <= d) { top = t; bottom = nullptr; return; }
+    T *a = leftmostDeeper(t, d), *b = rightmostDeeper(t, d), *A, *rest, *mid, *C;
+    split(t, a->key, A, rest); split(rest, b->key + 1, mid, C);
+    top = merge(A, C); bottom = mid;
+}
+T* join(T* top, T* bottom) {                                               // bottom 의 키 구간은 top 의 키들 사이 한 틈에 정확히 들어간다
+    T* m = bottom; while (m->l) m = m->l; T *A, *B; split(top, m->key, A, B); return merge(merge(A, bottom), B);
+}
+struct Tango {
+    std::vector<T> node; std::vector<signed char> pref, last; std::unordered_map<int, T*> pathAtTop; long flips = 0, cuts = 0, joins = 0;
+    Tango() : node(N + 1), pref(N + 1, -1), last(N + 1, -1) {
+        std::mt19937 g(1);
+        for (int k = 1; k <= N; k++) { node[k] = T{k, depthOf(k), depthOf(k), depthOf(k), (unsigned)g()}; pathAtTop[k] = &node[k]; }      // 처음엔 모든 노드가 홀로 선 경로
+    }
+    void access(int x) {
+        int tk = rootKey(); T* t = pathAtTop[tk];
+        for (;;) {
+            T *a = nullptr, *b = nullptr, *c = t;                          // 경로 안에서 x 의 선행자(<=)와 후속자(>=)
+            while (c) { if (c->key == x) { a = b = c; break; } if (c->key < x) { a = c; c = c->r; } else { b = c; c = c->l; } }
+            T* w = (a && a == b) ? a : !a ? b : !b ? a : (a->depth > b->depth ? a : b);          // x 의 조상 중 이 경로에서 가장 깊은 노드는 둘 중 더 깊은 쪽
+            T *top, *bot; cutBelow(t, w->depth, top, bot);
+            if (bot) { pathAtTop[topKey(bot)] = bot; cuts++; }
+            if (w->key == x) { pathAtTop[tk] = top; pref[x] = -1; return; }
+            int dir = x < w->key ? 0 : 1, ch = child(w->key, dir); assert(ch && pref[w->key] != dir);
+            T* p2 = pathAtTop[ch]; pathAtTop.erase(ch);
+            t = join(top, p2); joins++; pathAtTop[tk] = t;
+            if (last[w->key] != -1 && last[w->key] != dir) flips++;       // 선호 자식이 왼쪽<->오른쪽으로 바뀜
+            last[w->key] = dir; pref[w->key] = dir;
+        }
+    }
+    bool verify() {                                                        // 경로 분해가 선호 자식 포인터와 정확히 일치하는가
+        size_t total = 0;
+        for (auto& kv : pathAtTop) {
+            std::vector<int> keys; std::vector<T*> st; T* c = kv.second;
+            while (c || !st.empty()) { while (c) { st.push_back(c); c = c->l; } c = st.back(); st.pop_back(); keys.push_back(c->key); c = c->r; }
+            for (size_t i = 1; i < keys.size(); i++) if (keys[i - 1] >= keys[i]) return false;
+            std::vector<int> chain; for (int k = kv.first; k; k = pref[k] < 0 ? 0 : child(k, pref[k])) chain.push_back(k);
+            std::sort(chain.begin(), chain.end()); if (chain != keys) return false;
+            if (topKey(kv.second) != kv.first) return false; total += keys.size();
+        }
+        return total == (size_t)N;
+    }
+};
+long interleave(const std::vector<int>& seq) {                             // Wilber 의 첫 하한: 참조 트리 위를 직접 걸으며 센 좌우 교대 횟수
+    std::vector<signed char> lastSide(N + 1, -1); long f = 0;
+    for (int x : seq) for (int k = rootKey(); k != x;) { int dir = x < k ? 0 : 1; if (lastSide[k] != -1 && lastSide[k] != dir) f++; lastSide[k] = dir; k = child(k, dir); }
+    return f;
+}
+
 int main() {
-    std::cout << "Tango Tree maintains O(log log N) competitiveness for online accesses." << std::endl;
-    assert(1 == 1); // Solved
+    H = 10; N = (1 << H) - 1; std::mt19937 g(5);
+    std::vector<std::vector<int>> seqs(3);
+    for (int i = 0; i < 4000; i++) seqs[0].push_back(g() % N + 1);        // 무작위
+    for (int r = 0; r < 3; r++) for (int i = 1; i <= N; i++) seqs[1].push_back(i);          // 순차 3 바퀴
+    for (int i = 0; i < N; i++) { int v = 0; for (int b = 0; b < H; b++) if (i >> b & 1) v |= 1 << (H - 1 - b); if (v >= 1 && v <= N) seqs[2].push_back(v); }   // 비트 역순
+    for (auto& s : seqs) {
+        Tango t; int cnt = 0; for (int x : s) { t.access(x); if (++cnt % 250 == 0) assert(t.verify()); }
+        assert(t.verify() && t.flips == interleave(s));                    // 선호 자식 변경 횟수 == interleave 하한
+        std::cout << "sequence of " << s.size() << " accesses: preferred-child flips " << t.flips << ", cuts " << t.cuts << ", joins " << t.joins << std::endl;
+    }
+    Tango seq; for (int r = 0; r < 1; r++) for (int i = 1; i <= N; i++) seq.access(i);
+    assert(seq.flips <= N);                                                // 순차 접근: 한 바퀴에 노드당 교대 한 번 이하 -> 총 O(N)
+    std::cout << "TangoTree: flips == interleave bound on 3 access patterns; sequential pass flips " << seq.flips << " for N=" << N << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 접근열 X 에 대해 O((k + 1)(1 + log log N)) (k = 선호 자식 변경 횟수 = interleave 하한)
+// Space Complexity: O(N)
 ```
 
 # Part 8. 외부 메모리
@@ -2081,83 +2281,401 @@ int main() {
 #include <iostream>
 #include <cassert>
 
-int main() {
-    std::cout << "B-Tree stores multiple keys per node to match disk block sizes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// B-트리(트리 관점의 요약, 정본은 Tree.md Part 13): 한 노드에 키 여러 개를 담아 디스크 블록 한 개 = 노드 한 개가 되게 한 균형 탐색 트리. 모든 잎이 같은 깊이이고, 가득 찬 노드는
+// 내려가는 길에 미리 쪼갠다(분할 시 가운데 키가 부모로). 여기서는 t=2 (키 1~3개, 2-3-4 트리)의 삽입과 높이 확인
+struct B { int n = 0, k[3]; B* c[4] = {}; bool leaf = true; };
+void splitChild(B* x, int i) {
+    B *y = x->c[i], *z = new B; z->leaf = y->leaf; z->n = 1; z->k[0] = y->k[2];
+    if (!y->leaf) { z->c[0] = y->c[2]; z->c[1] = y->c[3]; }
+    for (int j = x->n; j > i; j--) { x->k[j] = x->k[j - 1]; x->c[j + 1] = x->c[j]; }
+    x->k[i] = y->k[1]; x->c[i + 1] = z; x->n++; y->n = 1;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+void insertNonFull(B* x, int v) {
+    int i = x->n; if (x->leaf) { while (i && v < x->k[i - 1]) { x->k[i] = x->k[i - 1]; i--; } x->k[i] = v; x->n++; return; }
+    while (i && v < x->k[i - 1]) i--; if (x->c[i]->n == 3) { splitChild(x, i); if (v > x->k[i]) i++; } insertNonFull(x->c[i], v);
+}
+void insert(B*& r, int v) { if (!r) r = new B; if (r->n == 3) { B* s = new B; s->leaf = false; s->c[0] = r; splitChild(s, 0); r = s; } insertNonFull(r, v); }
+int height(B* r) { int h = 0; for (; r; r = r->leaf ? nullptr : r->c[0]) h++; return h; }
+int main() { B* r = nullptr; for (int i = 1; i <= 1000; i++) insert(r, i); assert(height(r) <= 10); std::cout << "BTree: height " << height(r) << " for 1000 sorted keys" << std::endl; return 0; }
+// Time Complexity: 탐색·삽입 O(log_t N) 노드 접근
+// Space Complexity: O(N)
 ```
 ## BPlusTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <vector>
 #include <cassert>
 
+// B+트리(트리 관점의 요약, 정본은 Tree.md Part 13): 모든 값을 잎에만 두고 잎들을 연결 리스트로 이어 범위 질의를 "한 번 찾고 옆으로 훑기" 로 만든다. 내부 노드는 길 안내용 분리 키만 가진다 (DB 인덱스의 표준).
+// 아래는 정렬된 키로 잎을 채운 정적 판: 분리 키 배열을 이분 탐색해 잎을 찾고 그 잎부터 연결을 따라 읽는다
 int main() {
-    std::cout << "B+Tree stores data only in leaves and links them for fast range scans." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::vector<int> keys; for (int i = 0; i < 100; i++) keys.push_back(i * 3);                // 0, 3, 6, ...
+    std::vector<std::vector<int>> leaf; std::vector<int> sep;                                   // 잎(최대 8 키)과 각 잎의 첫 키
+    for (size_t i = 0; i < keys.size(); i += 8) { leaf.emplace_back(keys.begin() + i, keys.begin() + std::min(keys.size(), i + 8)); sep.push_back(keys[i]); }
+    auto range = [&](int lo, int hi) { std::vector<int> out; size_t j = std::upper_bound(sep.begin(), sep.end(), lo) - sep.begin(); j = j ? j - 1 : 0;
+        for (; j < leaf.size() && leaf[j].front() <= hi; j++) for (int k : leaf[j]) if (k >= lo && k <= hi) out.push_back(k); return out; };
+    assert((range(10, 25) == std::vector<int>{12, 15, 18, 21, 24}) && range(1000, 2000).empty());
+    std::cout << "BPlusTree: range scan via leaf chain, " << leaf.size() << " leaves" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 범위 질의 O(log N + k)
+// Space Complexity: O(N)
 ```
 ## BStarTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// B*-트리(Knuth): 비루트 노드를 최소 2/3 까지 채우는 B-트리 변형. 노드가 넘치면 곧바로 쪼개지 않고 먼저 이웃 형제에게 키를 나눠 준다(재분배).
+// 형제도 가득 찼을 때만 "넘친 노드 + 가득 찬 형제 + 부모의 분리 키" 를 모아 세 노드로 쪼갠다(2->3 분할). 노드가 가득 차 있을 때 쪼개는 B-트리의 평균 이용률이 약 69% 인 데 비해
+// B* 는 약 80% 이상이라 같은 데이터에 노드(=디스크 블록)가 적게 든다.  루트는 더 크게(2·⌊2M/3⌋+1 키) 허용해 루트가 쪼개질 때도 두 자식이 2/3 이상 차게 한다
+// 이 코드는 star=false 로 두면 같은 구조가 일반 B-트리(넘치면 반으로 분할)가 되어 이용률을 직접 비교할 수 있다
+const int M = 6, ROOTMAX = 2 * (2 * M / 3) + 1, MINK = 2 * M / 3;
+struct Node { std::vector<int> k; std::vector<Node*> c; bool leaf() const { return c.empty(); } };
+struct Seq { std::vector<int> k; std::vector<Node*> c; };
+Seq gather(Node* a, int sep, Node* b) { Seq s; s.k = a->k; s.k.push_back(sep); s.k.insert(s.k.end(), b->k.begin(), b->k.end()); s.c = a->c; s.c.insert(s.c.end(), b->c.begin(), b->c.end()); return s; }
+struct Tree {
+    bool star; Node* root = nullptr; std::vector<Node*> all; long redistributions = 0, twoToThrees = 0, splits = 0;
+    explicit Tree(bool star) : star(star) { root = mk(); }
+    Node* mk() { all.push_back(new Node); return all.back(); }
+    void splitNode(Node* p, int i) {                                       // 일반 분할: 가운데 키를 부모로
+        Node* n = p->c[i]; Node* r = mk(); int mid = n->k.size() / 2; int up = n->k[mid];
+        r->k.assign(n->k.begin() + mid + 1, n->k.end()); if (!n->leaf()) { r->c.assign(n->c.begin() + mid + 1, n->c.end()); n->c.resize(mid + 1); }
+        n->k.resize(mid); p->k.insert(p->k.begin() + i, up); p->c.insert(p->c.begin() + i + 1, r); splits++;
+    }
+    void redistribute(Node* p, int j) {                                    // c[j], 분리 키, c[j+1] 을 합쳐 반반
+        Seq s = gather(p->c[j], p->k[j], p->c[j + 1]); int T = s.k.size(), L = (T - 1) / 2;
+        Node *a = p->c[j], *b = p->c[j + 1]; a->k.assign(s.k.begin(), s.k.begin() + L); b->k.assign(s.k.begin() + L + 1, s.k.end()); p->k[j] = s.k[L];
+        if (!s.c.empty()) { a->c.assign(s.c.begin(), s.c.begin() + L + 1); b->c.assign(s.c.begin() + L + 1, s.c.end()); } redistributions++;
+    }
+    void twoToThree(Node* p, int j) {                                      // c[j], c[j+1] (한쪽은 넘침, 한쪽은 가득) + 분리 키 -> 세 노드 + 분리 키 둘
+        Seq s = gather(p->c[j], p->k[j], p->c[j + 1]); int T = s.k.size(), base = (T - 2) / 3, rem = (T - 2) % 3;
+        int n1 = base + (rem > 0), n2 = base + (rem > 1), n3 = base; Node *a = p->c[j], *b = p->c[j + 1], *c = mk();
+        int sep1 = s.k[n1], sep2 = s.k[n1 + 1 + n2];
+        a->k.assign(s.k.begin(), s.k.begin() + n1); b->k.assign(s.k.begin() + n1 + 1, s.k.begin() + n1 + 1 + n2); c->k.assign(s.k.begin() + n1 + n2 + 2, s.k.end());
+        if (!s.c.empty()) { a->c.assign(s.c.begin(), s.c.begin() + n1 + 1); b->c.assign(s.c.begin() + n1 + 1, s.c.begin() + n1 + n2 + 2); c->c.assign(s.c.begin() + n1 + n2 + 2, s.c.end()); }
+        p->k[j] = sep1; p->k.insert(p->k.begin() + j + 1, sep2); p->c.insert(p->c.begin() + j + 2, c); twoToThrees++; (void)n3;
+    }
+    void fix(Node* p, int i) {                                             // p->c[i] 가 M+1 개로 넘쳤다
+        if (star && i > 0 && (int)p->c[i - 1]->k.size() < M) { redistribute(p, i - 1); return; }
+        if (star && i + 1 < (int)p->c.size() && (int)p->c[i + 1]->k.size() < M) { redistribute(p, i); return; }
+        if (star && i > 0) { twoToThree(p, i - 1); return; }
+        if (star && i + 1 < (int)p->c.size()) { twoToThree(p, i); return; }
+        splitNode(p, i);
+    }
+    void insertRec(Node* n, int x) {
+        int i = 0; while (i < (int)n->k.size() && x > n->k[i]) i++;
+        if (i < (int)n->k.size() && n->k[i] == x) return;
+        if (n->leaf()) { n->k.insert(n->k.begin() + i, x); return; }
+        insertRec(n->c[i], x); if ((int)n->c[i]->k.size() > M) fix(n, i);
+    }
+    void insert(int x) {
+        insertRec(root, x);
+        int cap = star ? ROOTMAX : M;
+        if ((int)root->k.size() > cap) { Node* nr = mk(); nr->c.push_back(root); root = nr; splitNode(nr, 0); }
+    }
+    bool contains(int x) const { Node* n = root; for (;;) { int i = 0; while (i < (int)n->k.size() && x > n->k[i]) i++; if (i < (int)n->k.size() && n->k[i] == x) return true; if (n->leaf()) return false; n = n->c[i]; } }
+    int check(Node* n, long lo, long hi, bool isRoot, std::vector<int>& out) const {          // 높이 또는 -1
+        int cap = isRoot ? (star ? ROOTMAX : M) : M;
+        if ((int)n->k.size() > cap || (!isRoot && star && (int)n->k.size() < MINK) || (!isRoot && n->k.empty())) return -1;
+        for (size_t i = 0; i < n->k.size(); i++) if (n->k[i] <= (i ? n->k[i - 1] : lo) || n->k[i] >= hi) return -1;
+        if (n->leaf()) { out.insert(out.end(), n->k.begin(), n->k.end()); return 1; }
+        if (n->c.size() != n->k.size() + 1) return -1; int h = -2;
+        for (size_t i = 0; i < n->c.size(); i++) {
+            int ch = check(n->c[i], i ? n->k[i - 1] : lo, i < n->k.size() ? n->k[i] : hi, false, out); if (ch < 0 || (h != -2 && ch != h)) return -1; h = ch;
+            if (i < n->k.size()) out.push_back(n->k[i]);
+        }
+        return h + 1;
+    }
+    size_t nodes() const { size_t cnt = 0; std::vector<Node*> st = {root}; while (!st.empty()) { Node* n = st.back(); st.pop_back(); cnt++; for (Node* c : n->c) st.push_back(c); } return cnt; }
+    size_t keys() const { size_t cnt = 0; std::vector<Node*> st = {root}; while (!st.empty()) { Node* n = st.back(); st.pop_back(); cnt += n->k.size(); for (Node* c : n->c) st.push_back(c); } return cnt; }
+    ~Tree() { for (Node* n : all) delete n; }
+};
+
 int main() {
-    std::cout << "B*Tree redistributes keys to siblings to enforce 2/3 fullness." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 rng(9);
+    for (int mode = 0; mode < 2; mode++) {                                 // 0: 무작위 삽입, 1: 정렬 삽입
+        Tree b(false), s(true); std::set<int> ref; std::vector<int> in;
+        for (int i = 0; i < 20000; i++) in.push_back(mode ? i : (int)(rng() % 1000000));
+        for (size_t i = 0; i < in.size(); i++) {
+            b.insert(in[i]); s.insert(in[i]); ref.insert(in[i]);
+            if (i % 997 == 0) { std::vector<int> v1, v2; assert(s.check(s.root, -1, 1L << 40, true, v1) > 0 && b.check(b.root, -1, 1L << 40, true, v2) > 0); }
+        }
+        std::vector<int> v; int h = s.check(s.root, -1, 1L << 40, true, v);
+        assert(h > 0 && v == std::vector<int>(ref.begin(), ref.end()));    // 구조 불변식과 중위 순회
+        for (int x : in) assert(s.contains(x));
+        double uB = (double)b.keys() / (b.nodes() * M), uS = (double)s.keys() / (s.nodes() * M);
+        assert(s.nodes() < b.nodes() && uS > uB);                          // B* 가 노드를 덜 쓴다
+        std::cout << (mode ? "sorted" : "random") << " inserts: B-tree nodes " << b.nodes() << " (fill " << uB * 100 << "%) vs B*-tree nodes " << s.nodes() << " (fill " << uS * 100
+                  << "%), redistributions " << s.redistributions << ", 2->3 splits " << s.twoToThrees << std::endl;
+    }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입·탐색 O(log N) 노드 접근
+// Space Complexity: O(N), 노드 이용률 >= 2/3
 ```
 ## FractalTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 프랙탈 트리(Fractal Tree, TokuDB·PerconaFT) = B^ε 트리: 내부 노드 공간의 일부를 "메시지 버퍼"로 쓴다. 삽입·삭제는 곧장 잎까지 내려가는 대신 루트 버퍼에 메시지로 쌓이고,
+// 버퍼가 차면 가장 메시지가 많은 자식 하나에게 한꺼번에 내려보낸다(flush). 메시지 B^(1-ε) 개를 한 번의 노드 접근으로 옮기므로 삽입당 접근 수가 B-트리의 O(log_B N) 보다 크게 줄고
+// (O(log_B N / B^(1-ε))), 조회는 루트부터 내려가며 각 버퍼에서 "가장 새 메시지" 를 먼저 보고 잎에 도달하면 값을 읽는다 (위쪽 버퍼가 항상 더 새롭다)
+// 쓰기 많은 작업(로그, 시계열)에 유리하고 이 아이디어가 LSM 과 B-트리의 중간 지대다.  삭제는 툼스톤 메시지로 처리
+struct Msg { int key, val; bool del; };
+const int LEAF = 8, FAN = 4, BUF = 16;
+long touches = 0;
+struct Node {
+    bool leaf = true; std::vector<std::pair<int, int>> kv; std::vector<int> piv; std::vector<Node*> kid; std::vector<Msg> buf;
+};
+std::vector<Node*> pool; Node* mk() { pool.push_back(new Node); return pool.back(); }
+int childIdx(const Node* n, int key) { return std::upper_bound(n->piv.begin(), n->piv.end(), key) - n->piv.begin(); }
+void applyToLeaf(Node* n, const Msg& m) {
+    auto it = std::lower_bound(n->kv.begin(), n->kv.end(), std::make_pair(m.key, INT32_MIN));
+    bool found = it != n->kv.end() && it->first == m.key;
+    if (m.del) { if (found) n->kv.erase(it); } else if (found) it->second = m.val; else n->kv.insert(it, {m.key, m.val});
+}
+bool addMsgs(Node* n, std::vector<Msg>& msgs, Node*& sib, int& sep) {      // n 이 쪼개지면 true (sib: 오른쪽 형제, sep: 분리 키)
+    touches++;
+    if (n->leaf) {
+        for (auto& m : msgs) applyToLeaf(n, m);
+        if ((int)n->kv.size() <= LEAF) return false;
+        sib = mk(); int mid = n->kv.size() / 2; sib->kv.assign(n->kv.begin() + mid, n->kv.end()); n->kv.resize(mid); sep = sib->kv.front().first; return true;
+    }
+    n->buf.insert(n->buf.end(), msgs.begin(), msgs.end());
+    while ((int)n->buf.size() > BUF) {
+        std::vector<int> cnt(n->kid.size(), 0); for (auto& m : n->buf) cnt[childIdx(n, m.key)]++;
+        int best = std::max_element(cnt.begin(), cnt.end()) - cnt.begin();                      // 메시지가 가장 많은 자식
+        std::vector<Msg> moved, keep; for (auto& m : n->buf) (childIdx(n, m.key) == best ? moved : keep).push_back(m);       // 시간 순서 유지
+        n->buf = keep; Node* s; int sp;
+        if (addMsgs(n->kid[best], moved, s, sp)) { n->piv.insert(n->piv.begin() + best, sp); n->kid.insert(n->kid.begin() + best + 1, s); }
+    }
+    if ((int)n->kid.size() <= FAN) return false;
+    sib = mk(); sib->leaf = false; int mid = n->kid.size() / 2; sep = n->piv[mid - 1];       // 자식 5 -> 앞 2, 뒤 3
+    sib->kid.assign(n->kid.begin() + mid, n->kid.end()); sib->piv.assign(n->piv.begin() + mid, n->piv.end());
+    n->kid.resize(mid); n->piv.resize(mid - 1);
+    std::vector<Msg> l, r; for (auto& m : n->buf) (m.key < sep ? l : r).push_back(m); n->buf = l; sib->buf = r; return true;
+}
+struct FractalTree {
+    Node* root = mk();
+    void send(Msg m) { std::vector<Msg> v = {m}; Node* s; int sp; if (addMsgs(root, v, s, sp)) { Node* nr = mk(); nr->leaf = false; nr->kid = {root, s}; nr->piv = {sp}; root = nr; } }
+    void put(int k, int v) { send({k, v, false}); }
+    void erase(int k) { send({k, 0, true}); }
+    bool get(int key, int& val) const {
+        Node* n = root;
+        while (!n->leaf) {
+            touches++;
+            for (int i = (int)n->buf.size() - 1; i >= 0; i--) if (n->buf[i].key == key) { if (n->buf[i].del) return false; val = n->buf[i].val; return true; }    // 가장 새 메시지
+            n = n->kid[childIdx(n, key)];
+        }
+        touches++; auto it = std::lower_bound(n->kv.begin(), n->kv.end(), std::make_pair(key, INT32_MIN));
+        if (it != n->kv.end() && it->first == key) { val = it->second; return true; } return false;
+    }
+    static void toMap(const Node* n, std::map<int, int>& out) {            // 아래 -> 위 순서로 메시지를 덮어씌워 전체 내용을 복원
+        if (n->leaf) { for (auto& p : n->kv) out[p.first] = p.second; return; }
+        for (Node* c : n->kid) toMap(c, out);
+        for (auto& m : n->buf) { if (m.del) out.erase(m.key); else out[m.key] = m.val; }
+    }
+    int height() const { int h = 1; for (Node* n = root; !n->leaf; n = n->kid[0]) h++; return h; }
+};
+
 int main() {
-    std::cout << "Fractal Tree uses message buffers to batch writes down the tree." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 rng(8); FractalTree t; std::map<int, int> ref;
+    for (int step = 0; step < 40000; step++) {
+        int k = rng() % 3000, op = rng() % 10;
+        if (op < 6) { int v = rng(); t.put(k, v); ref[k] = v; } else if (op < 8) { t.erase(k); ref.erase(k); }
+        else { int v = 0; bool f = t.get(k, v); auto it = ref.find(k); assert(f == (it != ref.end()) && (!f || v == it->second)); }
+        if (step % 5000 == 0) { std::map<int, int> m; FractalTree::toMap(t.root, m); assert(m == ref); }
+    }
+    std::map<int, int> m; FractalTree::toMap(t.root, m); assert(m == ref);
+    for (int k = 0; k < 3000; k++) { int v = 0; bool f = t.get(k, v); auto it = ref.find(k); assert(f == (it != ref.end()) && (!f || v == it->second)); }
+    // 삽입당 노드 접근 수: 같은 트리 높이의 B-트리는 삽입마다 높이만큼 접근한다
+    FractalTree big; touches = 0; int N = 100000; std::vector<int> keys(N); for (int i = 0; i < N; i++) keys[i] = i; std::shuffle(keys.begin(), keys.end(), rng);
+    for (int k : keys) big.put(k, k);
+    double perInsert = (double)touches / N; int h = big.height();
+    assert(perInsert < h * 0.6);                                           // 버퍼 덕분에 높이 h 보다 훨씬 적은 접근
+    std::cout << "FractalTree: " << N << " random inserts -> height " << h << ", node touches per insert " << perInsert << " (B-tree: " << h << ")" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입 분할상환 O(log_B N / B^(1-ε)) 노드 접근, 조회 O(log_B N)
+// Space Complexity: O(N)
 ```
 ## LSMTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <map>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// LSM 트리(Log-Structured Merge tree; LevelDB, RocksDB, Cassandra, HBase): 쓰기를 "메모리 표(memtable) -> 불변 정렬 파일(SSTable)" 순으로 쌓고, 파일들을 백그라운드에서 병합(compaction)한다.
+// 모든 디스크 쓰기가 순차 쓰기라 쓰기 처리량이 높다.  읽기는 memtable 부터 최신 -> 오래된 순으로 파일을 훑되, 파일마다 블룸 필터를 달아 "없는 파일" 을 거의 건너뛴다.  삭제는 툼스톤을 쓰고, 병합이 가장 아래 레벨에 닿을 때 버린다.
+// 두 병합 정책의 균형: 티어드(tiered; 레벨마다 T 개 파일이 모이면 합쳐 다음 레벨로) = 쓰기 증폭 작음/읽을 파일 많음,  레벨드(leveled; 레벨마다 파일 1 개, 용량 T 배씩) = 쓰기 증폭 큼/읽을 파일 적음
+static inline uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+struct Rec { int key, val; bool del; };
+struct Run {
+    std::vector<Rec> r; std::vector<uint64_t> bits; size_t m = 0;
+    void seal() {                                                          // 블룸 필터 (키당 10 비트, 해시 4 개)
+        m = std::max<size_t>(64, r.size() * 10); bits.assign((m + 63) / 64, 0);
+        for (auto& x : r) for (int i = 0; i < 4; i++) { size_t p = (mix(x.key) + i * mix(~(uint64_t)x.key)) % m; bits[p >> 6] |= 1ULL << (p & 63); }
+    }
+    bool maybe(int key) const { for (int i = 0; i < 4; i++) { size_t p = (mix(key) + i * mix(~(uint64_t)key)) % m; if (!((bits[p >> 6] >> (p & 63)) & 1)) return false; } return true; }
+};
+struct LSM {
+    bool leveled, useBloom; size_t memLimit; int T; std::map<int, Rec> mem; std::vector<std::vector<Run>> lv; long userWrites = 0, written = 0, probes = 0;
+    LSM(bool leveled, bool useBloom, size_t memLimit = 64, int T = 4) : leveled(leveled), useBloom(useBloom), memLimit(memLimit), T(T) {}
+    static Run mergeRuns(const std::vector<const Run*>& oldestFirst, bool dropTomb) {   // 뒤쪽(새) 실행이 같은 키를 덮는다
+        std::map<int, Rec> m; for (auto* r : oldestFirst) for (auto& x : r->r) m[x.key] = x;
+        Run out; for (auto& kv : m) if (!(dropTomb && kv.second.del)) out.r.push_back(kv.second); out.seal(); return out;
+    }
+    bool deeperEmpty(size_t i) const { for (size_t j = i + 1; j < lv.size(); j++) if (!lv[j].empty()) return false; return true; }
+    void put(int k, int v) { userWrites++; mem[k] = {k, v, false}; if (mem.size() >= memLimit) flush(); }
+    void del(int k) { userWrites++; mem[k] = {k, 0, true}; if (mem.size() >= memLimit) flush(); }
+    void flush() {
+        Run run; for (auto& kv : mem) run.r.push_back(kv.second); run.seal(); mem.clear(); written += run.r.size();
+        if (lv.empty()) lv.emplace_back();
+        if (!leveled) { lv[0].push_back(std::move(run)); for (size_t i = 0; i < lv.size() && (int)lv[i].size() >= T; i++) {
+                std::vector<const Run*> rs; for (auto& r : lv[i]) rs.push_back(&r);
+                if (i + 1 == lv.size()) lv.emplace_back();
+                Run merged = mergeRuns(rs, deeperEmpty(i + 1) && lv[i + 1].empty()); written += merged.r.size(); lv[i].clear(); lv[i + 1].push_back(std::move(merged)); }
+            return; }
+        for (size_t i = 0; ; i++) {                                        // 레벨드: 레벨 i 는 파일 1 개, 용량 memLimit * T^(i+1)
+            if (i == lv.size()) lv.emplace_back();
+            std::vector<const Run*> rs; if (!lv[i].empty()) rs.push_back(&lv[i][0]); rs.push_back(&run);
+            Run merged = mergeRuns(rs, deeperEmpty(i)); written += merged.r.size(); lv[i].clear();
+            size_t cap = memLimit; for (size_t j = 0; j <= i; j++) cap *= T;
+            if (merged.r.size() <= cap) { lv[i].push_back(std::move(merged)); return; }
+            run = std::move(merged);                                       // 넘치면 통째로 다음 레벨과 병합
+        }
+    }
+    bool get(int k, int& v) {
+        auto it = mem.find(k); if (it != mem.end()) { if (it->second.del) return false; v = it->second.val; return true; }
+        for (auto& level : lv) for (int j = (int)level.size() - 1; j >= 0; j--) {          // 최신 레벨, 최신 파일 우선
+            const Run& r = level[j];
+            if (useBloom && !r.maybe(k)) continue;
+            probes++; auto p = std::lower_bound(r.r.begin(), r.r.end(), k, [](const Rec& a, int key) { return a.key < key; });
+            if (p != r.r.end() && p->key == k) { if (p->del) return false; v = p->val; return true; }
+        }
+        return false;
+    }
+    size_t runs() const { size_t c = 0; for (auto& l : lv) c += l.size(); return c; }
+};
+
 int main() {
-    std::cout << "LSM Tree buffers writes in MemTable and flushes to SSTables for sequential I/O." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 rng(2); long wa[2]; size_t maxRuns[2]; long probeBloom = 0, probeNoBloom = 0;
+    for (int pol = 0; pol < 2; pol++) {
+        for (int bloom = 0; bloom < 2; bloom++) {
+            LSM t(pol == 1, bloom == 1); std::map<int, int> ref; std::mt19937 g(77); maxRuns[pol] = 0;
+            for (int step = 0; step < 60000; step++) {
+                int k = g() % 5000, op = g() % 10;
+                if (op < 5) { int v = g(); t.put(k, v); ref[k] = v; } else if (op < 7) { t.del(k); ref.erase(k); }
+                else { int v = 0; bool f = t.get(k, v); auto it = ref.find(k); assert(f == (it != ref.end()) && (!f || v == it->second)); }
+                maxRuns[pol] = std::max(maxRuns[pol], t.runs());
+            }
+            for (int k = 0; k < 5000; k++) { int v = 0; bool f = t.get(k, v); auto it = ref.find(k); assert(f == (it != ref.end()) && (!f || v == it->second)); }
+            if (bloom == 1) wa[pol] = t.written * 100 / t.userWrites;
+            t.probes = 0; for (int k = 10000; k < 14000; k++) { int v; t.get(k, v); }                      // 없는 키만 조회: 블룸이 파일 접근을 거르는 효과
+            (bloom ? probeBloom : probeNoBloom) += t.probes;
+        }
+    }
+    assert(probeBloom * 10 < probeNoBloom);                                // 블룸 필터가 존재하지 않는 키의 파일 탐색을 거의 없앤다
+    assert(wa[0] < wa[1] && maxRuns[1] <= maxRuns[0]);                     // 티어드: 쓰기 증폭 작음, 레벨드: 파일 수 작음
+    std::cout << "LSMTree: write amplification tiered " << wa[0] / 100.0 << " vs leveled " << wa[1] / 100.0 << "; max files tiered " << maxRuns[0] << " vs leveled " << maxRuns[1]
+              << "; missing-key probes with bloom " << probeBloom << " vs without " << probeNoBloom << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 쓰기 분할상환 O(쓰기 증폭), 읽기 O(레벨 수 × 파일당 이분 탐색) (블룸 필터로 대부분 생략)
+// Space Complexity: O(N) + 공간 증폭 (툼스톤·중복)
 ```
 ## BufferTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 버퍼 트리(Arge): 외부 메모리(디스크) 모델에서 "많은 연산을 모아 한꺼번에" 처리하는 트리. 블록 크기 B, 메모리 M. 팬아웃 ~M/B 인 트리의 모든 내부 노드에 크기 ~M/2 의 버퍼를 달고,
+// 연산(여기서는 삽입)은 메모리 안에서 모았다가 루트 버퍼로 넘기고, 버퍼가 차면 정렬해 자식들에게 "한 번에 쭉" 나눠 준다(buffer-emptying). 각 원소가 블록 하나를 독점하지 않고 B 개씩 묶여 움직이므로
+// 연산당 분할상환 I/O 가 O((1/B) log_{M/B}(N/B)) — 정렬의 하한과 같다.  그래서 트리에 N 개를 넣고 잎을 순서대로 읽으면 곧 "외부 정렬" 이며, 같은 원리가 외부 우선순위 큐·그래프 알고리즘에 쓰인다.
+// 아래는 I/O(블록 읽기·쓰기 횟수)를 세는 시뮬레이션으로, 원소를 하나씩 B-트리에 넣는 방식(원소당 높이만큼의 I/O)과 비교한다
+const int B = 16, CAPLEAF = 64, BUFCAP = 1024, FAN = 32;
+long io = 0;
+long blocks(size_t n) { return (n + B - 1) / B; }
+struct Node { bool leaf = true; std::vector<int> items, piv, buf; std::vector<Node*> kid; };
+std::vector<Node*> pool; Node* mk() { pool.push_back(new Node); return pool.back(); }
+struct Piece { int sep; Node* node; };
+std::vector<Piece> absorb(Node* n, std::vector<int>& batch, bool force) {  // n 에 정렬/미정렬 묶음을 넣고, n 이 쪼개지면 뒤에 붙을 조각들을 돌려준다
+    std::vector<Piece> out;
+    if (n->leaf) {
+        std::sort(batch.begin(), batch.end()); io += blocks(n->items.size());      // 잎 읽기 (묶음은 부모 버퍼를 비우며 이미 메모리로 읽었다)
+        std::vector<int> merged(n->items.size() + batch.size()); std::merge(n->items.begin(), n->items.end(), batch.begin(), batch.end(), merged.begin());
+        n->items = merged; io += blocks(n->items.size());                                                   // 잎 쓰기
+        if ((int)n->items.size() > CAPLEAF) {
+            std::vector<int> all = n->items; n->items.assign(all.begin(), all.begin() + CAPLEAF / 2);
+            for (size_t i = CAPLEAF / 2; i < all.size(); i += CAPLEAF / 2) { Node* l = mk(); l->items.assign(all.begin() + i, all.begin() + std::min(all.size(), i + CAPLEAF / 2)); out.push_back({l->items.front(), l}); }
+        }
+        return out;
+    }
+    n->buf.insert(n->buf.end(), batch.begin(), batch.end()); io += blocks(batch.size());                    // 버퍼에 덧붙이기
+    if ((int)n->buf.size() <= BUFCAP && !force) return out;
+    io += blocks(n->buf.size()); std::sort(n->buf.begin(), n->buf.end());                                   // 버퍼를 읽어 정렬(메모리 안)
+    std::vector<std::vector<int>> part(n->kid.size());
+    for (int x : n->buf) part[std::upper_bound(n->piv.begin(), n->piv.end(), x) - n->piv.begin()].push_back(x);
+    n->buf.clear();
+    std::vector<Node*> nk; std::vector<int> np;
+    for (size_t i = 0; i < n->kid.size(); i++) {
+        std::vector<Piece> ps; if (!part[i].empty() || force) ps = absorb(n->kid[i], part[i], force);        // 재귀적 buffer-emptying
+        nk.push_back(n->kid[i]); for (auto& p : ps) { np.push_back(p.sep); nk.push_back(p.node); }
+        if (i + 1 < n->kid.size()) np.push_back(n->piv[i]);
+    }
+    if ((int)nk.size() <= FAN) { n->kid = nk; n->piv = np; return out; }
+    size_t g = FAN / 2; n->kid.assign(nk.begin(), nk.begin() + g); n->piv.assign(np.begin(), np.begin() + g - 1);          // 팬아웃 초과 -> 묶음 단위로 쪼갬
+    for (size_t s = g; s < nk.size(); s += g) {
+        Node* r = mk(); r->leaf = false; size_t e = std::min(nk.size(), s + g); r->kid.assign(nk.begin() + s, nk.begin() + e); r->piv.assign(np.begin() + s, np.begin() + e - 1); out.push_back({np[s - 1], r});
+    }
+    return out;
+}
+void readLeaves(Node* n, std::vector<int>& out) { if (n->leaf) { io += blocks(n->items.size()); out.insert(out.end(), n->items.begin(), n->items.end()); return; } for (Node* c : n->kid) readLeaves(c, out); }
+
 int main() {
-    std::cout << "Buffer Tree attaches buffers to multi-dimensional trees for batch updates." << std::endl;
-    assert(1 == 1); // Solved
+    std::mt19937 rng(5); int N = 200000; std::vector<int> in(N); for (auto& x : in) x = rng() % 100000000;
+    Node* root = mk(); io = 0;
+    for (int i = 0; i < N; i += BUFCAP) {                                  // 입력을 메모리에 모아 한 번에 루트 버퍼로
+        std::vector<int> batch(in.begin() + i, in.begin() + std::min(N, i + BUFCAP)); io += blocks(batch.size());
+        std::vector<Piece> ps = absorb(root, batch, false);
+        if (!ps.empty()) { Node* nr = mk(); nr->leaf = false; nr->kid.push_back(root); for (auto& p : ps) { nr->piv.push_back(p.sep); nr->kid.push_back(p.node); } root = nr;
+            while ((int)root->kid.size() > FAN) { std::vector<int> e; std::vector<Piece> more = absorb(root, e, false); (void)more; break; } }
+    }
+    std::vector<int> e; std::vector<Piece> ps = absorb(root, e, true);     // 남은 버퍼를 모두 비운다
+    if (!ps.empty()) { Node* nr = mk(); nr->leaf = false; nr->kid.push_back(root); for (auto& p : ps) { nr->piv.push_back(p.sep); nr->kid.push_back(p.node); } root = nr; }
+    std::vector<int> sorted; readLeaves(root, sorted);
+    std::vector<int> ref = in; std::sort(ref.begin(), ref.end());
+    assert(sorted == ref);                                                 // 잎을 순서대로 읽으면 정렬 결과
+    double perBlock = (double)io / ((double)N / B);                        // 입력 블록 하나당 평균 I/O (정렬 하한 Θ((N/B) log_{M/B}(N/B)) 에 상수배)
+    long bTreeIO = (long)N * 4;                                            // 원소당 높이 ~log_B N = 4 블록 (보수적으로 읽기만 셈)
+    assert(io < bTreeIO / 4);
+    std::cout << "BufferTree: sorted " << N << " keys with " << io << " block I/Os (" << perBlock << " per input block; one-by-one B-tree insertion >= " << bTreeIO << " = " << (double)bTreeIO / ((double)N / B) << " per input block)" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산당 분할상환 I/O O((1/B) log_{M/B} (N/B))
+// Space Complexity: O(N)
 ```
 
 # Part 9. 동시성
