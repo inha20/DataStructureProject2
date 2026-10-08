@@ -18,6 +18,8 @@ Usage: python3 -I tools/audit.py [modes] [--only REGEX] [--jobs N] [--repeat N] 
   --list-thin    print STL-wrapper / concept-only / trivial-assert entries (`// audit: stl-demo` exempts)
   --list-shallow print entries with <= 4 asserts, <= 40 lines and no randomized check
                  (`// audit: exhaustive` exempts programs that enumerate their whole input space)
+  --list-weak    print entries with <= 8 asserts and no randomized or oracle-based check at all
+                 (exempt with `// audit: exhaustive` or, for published test vectors, `// audit: known-answer`)
 """
 import concurrent.futures as cf
 import hashlib
@@ -214,12 +216,24 @@ def shallow_reason(code):
     return None
 
 
+def weak_reason(code):
+    """stricter second-level depth check: few assertions and nothing that compares against an independent oracle."""
+    if code is None or re.search(r"//\s*audit:\s*(stl-demo|exhaustive|known-answer)", code):
+        return None
+    nocomm = re.sub(r"//.*", "", code)
+    asserts = len(re.findall(r"\bassert\s*\(", nocomm))
+    if asserts <= 8 and not re.search(r"mt19937|rand\s*\(|default_random|next_permutation|[Nn]aive|[Oo]racle|[Bb]rute|[Rr]eference", nocomm):
+        return f"{asserts} asserts, no randomized or oracle check"
+    return None
+
+
 def main():
     args = sys.argv[1:]
     do_compile = "--compile" in args
     show_list = "--list" in args
     list_thin = "--list-thin" in args
     list_shallow = "--list-shallow" in args
+    list_weak = "--list-weak" in args
     modes = ["std"] if do_compile else []
     if "--strict" in args: modes = ["strict"] + [m for m in modes if m != "strict"]; do_compile = True
     if "--san" in args: modes.append("san"); do_compile = True
@@ -251,7 +265,7 @@ def main():
             cache = json.loads(CACHE.read_text())
         except Exception:
             cache = {}
-    total = {"blocks": 0, "ph": 0, "thin": 0, "shallow": 0}
+    total = {"blocks": 0, "ph": 0, "thin": 0, "shallow": 0, "weak": 0}
     todo = []
     print(f"{'book':26} {'parts':>5} {'entries':>7} {'blocks':>6} {'placeholder':>11} {'thin':>5}  structure")
     for b in books:
@@ -262,7 +276,8 @@ def main():
         ph = [e for e in blocks if is_placeholder(e["code"])]
         thin = [e for e in blocks if thin_reason(e["code"])]
         shallow = [e for e in blocks if shallow_reason(e["code"])]
-        total["blocks"] += len(blocks); total["ph"] += len(ph); total["thin"] += len(thin); total["shallow"] += len(shallow)
+        weak = [e for e in blocks if weak_reason(e["code"])]
+        total["blocks"] += len(blocks); total["ph"] += len(ph); total["thin"] += len(thin); total["shallow"] += len(shallow); total["weak"] += len(weak)
         print(f"{b:26} {nparts:5} {len(entries):7} {len(blocks):6} {len(ph):6} ({100*len(ph)//max(1,len(blocks)):3}%) {len(thin):5}  "
               + ("OK" if not probs else "; ".join(probs)))
         if show_list and ph:
@@ -271,12 +286,14 @@ def main():
             print("    thin:", ", ".join(f"{e['name']}[{thin_reason(e['code'])}]" for e in thin))
         if list_shallow and shallow:
             print("    shallow:", ", ".join(e["name"] for e in shallow))
+        if list_weak and weak:
+            print("    weak:", ", ".join(e["name"] for e in weak))
         if do_compile:
             for e in blocks:
                 if only and not only.search(e["name"]):
                     continue
                 todo.append((b, e["name"], e["code"]))
-    print(f"TOTAL blocks={total['blocks']} placeholders={total['ph']} thin={total['thin']} shallow={total['shallow']}")
+    print(f"TOTAL blocks={total['blocks']} placeholders={total['ph']} thin={total['thin']} shallow={total['shallow']} weak={total['weak']}")
     if do_compile:
         bad = False
         for mode in modes:
