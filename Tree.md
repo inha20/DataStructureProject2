@@ -1552,6 +1552,267 @@ int main() {
 // Time Complexity: 삭제당 O(log N), 회전은 최대 3번
 // Space Complexity: O(1) 추가 공간
 ```
+## TwoThreeTree()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <random>
+#include <set>
+#include <vector>
+#include <cassert>
+
+// 2-3 트리: 모든 내부 노드가 자식 2개(키 1개) 또는 3개(키 2개)이고, 모든 잎이 같은 깊이에 있는 완전 균형 탐색 트리.
+// 삽입은 잎까지 내려가 키를 넣고, 키가 3개가 되면 가운데 키를 위로 올리며 노드를 둘로 쪼갠다(분할이 루트까지 번지면 그때만 높이가 1 늘어난다).
+// 균형이 "회전"이 아니라 "분할"로 유지되므로 모든 잎의 깊이가 항상 같다 -> 레드-블랙 트리(특히 LLRB)가 이 구조를 이진 트리로 흉내 낸 것이다
+struct Node { std::vector<int> k; std::vector<Node*> c; bool leaf() const { return c.empty(); } };
+
+bool contains(Node* n, int x) {
+    while (n) {
+        int i = 0; while (i < (int)n->k.size() && x > n->k[i]) i++;
+        if (i < (int)n->k.size() && n->k[i] == x) return true;
+        if (n->leaf()) return false;
+        n = n->c[i];
+    }
+    return false;
+}
+bool insertRec(Node* n, int x, int& up, Node*& right) {                    // 분할이 일어나면 true, up 은 올릴 키, right 는 새로 생긴 오른쪽 노드
+    int i = 0; while (i < (int)n->k.size() && x > n->k[i]) i++;
+    if (i < (int)n->k.size() && n->k[i] == x) return false;                // 중복 키
+    if (n->leaf()) n->k.insert(n->k.begin() + i, x);
+    else {
+        int u; Node* r;
+        if (!insertRec(n->c[i], x, u, r)) return false;                    // 아래에서 분할이 없었으면 여기서 끝
+        n->k.insert(n->k.begin() + i, u); n->c.insert(n->c.begin() + i + 1, r);
+    }
+    if (n->k.size() < 3) return false;
+    up = n->k[1]; right = new Node; right->k = {n->k[2]};                  // [a b c] -> [a] ↑b [c]
+    if (!n->leaf()) { right->c = {n->c[2], n->c[3]}; n->c.resize(2); }
+    n->k.resize(1); return true;
+}
+void insert(Node*& root, int x) {
+    if (!root) { root = new Node; root->k = {x}; return; }
+    int u; Node* r;
+    if (insertRec(root, x, u, r)) { Node* nr = new Node; nr->k = {u}; nr->c = {root, r}; root = nr; }
+}
+// 불변식 검사: 키 1~2개, 자식 수 = 키 수 + 1, 키 순서, 모든 잎의 깊이가 같음. 높이(잎=1)를 돌려주고 위반이면 -1
+int check(Node* n, long lo, long hi, std::vector<int>& inorder) {
+    if (n->k.empty() || n->k.size() > 2) return -1;
+    for (size_t i = 0; i < n->k.size(); i++) if (n->k[i] <= (i ? n->k[i - 1] : lo) || n->k[i] >= hi) return -1;
+    if (n->leaf()) { for (int x : n->k) inorder.push_back(x); return 1; }
+    if (n->c.size() != n->k.size() + 1) return -1;
+    int h = -2;
+    for (size_t i = 0; i < n->c.size(); i++) {
+        long l = i ? n->k[i - 1] : lo, r = i < n->k.size() ? n->k[i] : hi;
+        int ch = check(n->c[i], l, r, inorder); if (ch < 0 || (h != -2 && ch != h)) return -1;
+        h = ch; if (i < n->k.size()) inorder.push_back(n->k[i]);
+    }
+    return h + 1;
+}
+void destroy(Node* n) { if (!n) return; for (Node* c : n->c) destroy(c); delete n; }
+
+int main() {
+    std::mt19937 rng(23);
+    Node* root = nullptr; std::set<int> ref;
+    for (int i = 0; i < 5000; i++) {
+        int x = rng() % 20000; insert(root, x); ref.insert(x);
+        if (i % 500 == 0) { std::vector<int> v; assert(check(root, -1, 1L << 40, v) > 0); }
+    }
+    std::vector<int> v; int h = check(root, -1, 1L << 40, v);
+    assert(h > 0 && v == std::vector<int>(ref.begin(), ref.end()));        // 구조가 올바르고 중위 순회가 정렬된 집합과 같다
+    for (int x = 0; x < 20000; x += 7) assert(contains(root, x) == (ref.count(x) > 0));
+    int n = ref.size();
+    assert(h <= std::log2(n + 1) + 1e-9 && h >= std::log(n + 1.0) / std::log(3.0) - 1e-9);   // 3^h >= n+1 >= 2^h
+    destroy(root); root = nullptr;
+    for (int x = 1; x <= 4095; x++) insert(root, x);                       // 정렬 입력에도 균형이 유지된다
+    v.clear(); int hs = check(root, 0, 1L << 40, v);
+    assert(hs > 0 && hs <= 12 && v.size() == 4095);
+    std::cout << "2-3 tree: " << n << " random keys -> height " << h << ", 4095 sorted keys -> height " << hs << std::endl;
+    destroy(root);
+    return 0;
+}
+// Time Complexity: 탐색·삽입 O(log N) (높이 log3 N ~ log2 N)
+// Space Complexity: O(N)
+```
+## TwoThreeFourTree()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <random>
+#include <set>
+#include <vector>
+#include <cassert>
+
+// 2-3-4 트리: 노드가 키 1~3개(자식 2~4개)를 가지는 균형 탐색 트리. 삽입을 "내려가는 길에" 처리하는 것이 핵심이다.
+// 루트에서 잎으로 내려가며 만나는 가득 찬 노드(키 3개, 4-노드)를 미리 쪼개 두면, 잎에 도착했을 때 부모에 자리가 있다는 것이 보장되어
+// 위로 되돌아갈 필요가 없다(한 번의 하향 패스). 레드-블랙 트리는 2-3-4 트리를 이진 트리로 옮긴 것: 4-노드 = 검은 노드 + 빨간 자식 둘
+struct Node { int n = 0; int k[3]; Node* c[4] = {}; bool leaf = true; };
+
+void splitChild(Node* p, int i) {                                          // p->c[i] 는 가득 찬 노드, p 는 가득 차 있지 않다
+    Node* y = p->c[i]; Node* z = new Node; z->leaf = y->leaf; z->n = 1; z->k[0] = y->k[2];
+    if (!y->leaf) { z->c[0] = y->c[2]; z->c[1] = y->c[3]; }
+    for (int j = p->n; j > i; j--) { p->k[j] = p->k[j - 1]; p->c[j + 1] = p->c[j]; }
+    p->k[i] = y->k[1]; p->c[i + 1] = z; p->n++; y->n = 1;                  // 가운데 키가 부모로 올라간다
+}
+int splits = 0;
+bool insert(Node*& root, int x) {
+    if (!root) { root = new Node; root->n = 1; root->k[0] = x; return true; }
+    if (root->n == 3) { Node* s = new Node; s->leaf = false; s->c[0] = root; splitChild(s, 0); root = s; splits++; }
+    Node* t = root;
+    for (;;) {
+        int i = 0; while (i < t->n && x > t->k[i]) i++;
+        if (i < t->n && t->k[i] == x) return false;
+        if (t->leaf) { for (int j = t->n; j > i; j--) t->k[j] = t->k[j - 1]; t->k[i] = x; t->n++; return true; }
+        if (t->c[i]->n == 3) {
+            splitChild(t, i); splits++;
+            if (x == t->k[i]) return false;
+            if (x > t->k[i]) i++;
+        }
+        t = t->c[i];
+    }
+}
+bool contains(Node* t, int x) {
+    while (t) {
+        int i = 0; while (i < t->n && x > t->k[i]) i++;
+        if (i < t->n && t->k[i] == x) return true;
+        if (t->leaf) return false;
+        t = t->c[i];
+    }
+    return false;
+}
+int check(Node* t, long lo, long hi, std::vector<int>& out) {              // 높이(잎=1), 위반이면 -1
+    if (t->n < 1 || t->n > 3) return -1;
+    for (int i = 0; i < t->n; i++) if (t->k[i] <= (i ? t->k[i - 1] : lo) || t->k[i] >= hi) return -1;
+    if (t->leaf) { for (int i = 0; i < t->n; i++) out.push_back(t->k[i]); return 1; }
+    int h = -2;
+    for (int i = 0; i <= t->n; i++) {
+        if (!t->c[i]) return -1;
+        int ch = check(t->c[i], i ? t->k[i - 1] : lo, i < t->n ? t->k[i] : hi, out);
+        if (ch < 0 || (h != -2 && ch != h)) return -1;
+        h = ch; if (i < t->n) out.push_back(t->k[i]);
+    }
+    return h + 1;
+}
+void destroy(Node* t) { if (!t) return; if (!t->leaf) for (int i = 0; i <= t->n; i++) destroy(t->c[i]); delete t; }
+
+int main() {
+    std::mt19937 rng(5);
+    Node* root = nullptr; std::set<int> ref;
+    for (int i = 0; i < 6000; i++) {
+        int x = rng() % 30000; bool added = insert(root, x); assert(added == ref.insert(x).second);   // 중복이면 false
+        if (i % 600 == 0) { std::vector<int> v; assert(check(root, -1, 1L << 40, v) > 0); }
+    }
+    std::vector<int> v; int h = check(root, -1, 1L << 40, v);
+    assert(h > 0 && v == std::vector<int>(ref.begin(), ref.end()));
+    for (int x = 0; x < 30000; x += 11) assert(contains(root, x) == (ref.count(x) > 0));
+    int n = ref.size();
+    assert(h <= std::log2(n + 1) + 1e-9 && h >= std::log(n + 1.0) / std::log(4.0) - 1e-9);   // 4^h >= n+1 >= 2^h
+    std::cout << "2-3-4 tree: " << n << " keys -> height " << h << " (log4=" << std::log(n + 1.0) / std::log(4.0) << ", log2=" << std::log2(n + 1) << "), splits " << splits << std::endl;
+    destroy(root); root = nullptr;
+    for (int x = 1; x <= 3000; x++) insert(root, x);
+    v.clear(); assert(check(root, 0, 1L << 40, v) > 0 && v.size() == 3000);
+    destroy(root);
+    return 0;
+}
+// Time Complexity: 탐색·삽입 O(log N), 삽입은 하향 한 번
+// Space Complexity: O(N)
+```
+## LeftLeaningRedBlackTree()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <random>
+#include <set>
+#include <cassert>
+
+// 좌편향 레드-블랙 트리(LLRB, Sedgewick): 빨간 링크는 반드시 왼쪽 자식으로만 허용한다. 빨간 왼쪽 링크로 묶인 두 노드 = 2-3 트리의 3-노드.
+// 그 규칙 덕에 삽입은 "회전 2종 + 색 뒤집기" 세 줄(fix)만으로 끝나고, 삭제도 "빨간 링크를 아래로 밀어 내리는" moveRedLeft/moveRedRight 로 정리된다
+struct Node { int key; Node *l = nullptr, *r = nullptr; bool red = true; explicit Node(int k) : key(k) {} };
+bool isRed(Node* h) { return h && h->red; }
+Node* rotL(Node* h) { Node* x = h->r; h->r = x->l; x->l = h; x->red = h->red; h->red = true; return x; }
+Node* rotR(Node* h) { Node* x = h->l; h->l = x->r; x->r = h; x->red = h->red; h->red = true; return x; }
+void flip(Node* h) { h->red = !h->red; h->l->red = !h->l->red; h->r->red = !h->r->red; }
+Node* fix(Node* h) {
+    if (isRed(h->r) && !isRed(h->l)) h = rotL(h);                          // 오른쪽 빨간 링크는 왼쪽으로 눕힌다
+    if (isRed(h->l) && isRed(h->l->l)) h = rotR(h);                        // 빨간 링크 두 개가 연속 -> 4-노드로 만든다
+    if (isRed(h->l) && isRed(h->r)) flip(h);                               // 4-노드를 쪼개 빨간 링크를 부모로 올린다
+    return h;
+}
+Node* insert(Node* h, int k) {
+    if (!h) return new Node(k);
+    if (k < h->key) h->l = insert(h->l, k); else if (k > h->key) h->r = insert(h->r, k);
+    return fix(h);
+}
+Node* moveRedLeft(Node* h) { flip(h); if (isRed(h->r->l)) { h->r = rotR(h->r); h = rotL(h); flip(h); } return h; }
+Node* moveRedRight(Node* h) { flip(h); if (isRed(h->l->l)) { h = rotR(h); flip(h); } return h; }
+Node* minNode(Node* h) { while (h->l) h = h->l; return h; }
+Node* deleteMin(Node* h) {
+    if (!h->l) { delete h; return nullptr; }
+    if (!isRed(h->l) && !isRed(h->l->l)) h = moveRedLeft(h);
+    h->l = deleteMin(h->l); return fix(h);
+}
+bool contains(Node* h, int k) { while (h) { if (k == h->key) return true; h = k < h->key ? h->l : h->r; } return false; }
+Node* erase(Node* h, int k) {                                              // k 가 반드시 존재한다고 가정
+    if (k < h->key) {
+        if (!isRed(h->l) && !isRed(h->l->l)) h = moveRedLeft(h);
+        h->l = erase(h->l, k);
+    } else {
+        if (isRed(h->l)) h = rotR(h);
+        if (k == h->key && !h->r) { delete h; return nullptr; }
+        if (!isRed(h->r) && !isRed(h->r->l)) h = moveRedRight(h);
+        if (k == h->key) { h->key = minNode(h->r)->key; h->r = deleteMin(h->r); }
+        else h->r = erase(h->r, k);
+    }
+    return fix(h);
+}
+Node* insertRoot(Node* root, int k) { root = insert(root, k); root->red = false; return root; }
+Node* eraseRoot(Node* root, int k) {
+    if (!contains(root, k)) return root;
+    if (!isRed(root->l) && !isRed(root->r)) root->red = true;
+    root = erase(root, k); if (root) root->red = false; return root;
+}
+// 불변식: BST 순서, 오른쪽 빨간 링크 없음, 빨간 노드의 빨간 자식 없음, 모든 경로의 검은 노드 수가 같음
+int blackHeight(Node* h, long lo, long hi) {
+    if (!h) return 1;
+    if (h->key <= lo || h->key >= hi || isRed(h->r) || (h->red && isRed(h->l))) return -1;
+    int a = blackHeight(h->l, lo, h->key), b = blackHeight(h->r, h->key, hi);
+    if (a < 0 || b < 0 || a != b) return -1;
+    return a + (h->red ? 0 : 1);
+}
+int height(Node* h) { return h ? 1 + std::max(height(h->l), height(h->r)) : 0; }
+void destroy(Node* h) { if (!h) return; destroy(h->l); destroy(h->r); delete h; }
+
+int main() {
+    Node* root = nullptr;
+    for (int i = 1; i <= 4095; i++) root = insertRoot(root, i);              // 정렬 입력(BST 라면 최악)
+    assert(blackHeight(root, 0, 1L << 40) > 0);
+    assert(height(root) <= 2 * std::log2(4096.0));                          // 높이 <= 2 log2(N+1)
+    destroy(root); root = nullptr;
+
+    std::mt19937 rng(77); std::set<int> ref;
+    for (int step = 0; step < 20000; step++) {
+        int x = rng() % 600;
+        if (rng() % 3) { root = insertRoot(root, x); ref.insert(x); }
+        else           { root = eraseRoot(root, x); ref.erase(x); }
+        if (step % 25 == 0) {
+            assert(!isRed(root) && blackHeight(root, -1, 1L << 40) > 0);
+            for (int q = 0; q < 600; q += 37) assert(contains(root, q) == (ref.count(q) > 0));
+        }
+    }
+    assert(blackHeight(root, -1, 1L << 40) > 0);
+    for (int x : std::set<int>(ref)) { root = eraseRoot(root, x); ref.erase(x); assert(!root || blackHeight(root, -1, 1L << 40) > 0); }
+    assert(!root);
+    std::cout << "LLRB: 4095 sorted inserts OK, 20000 random insert/delete steps OK" << std::endl;
+    return 0;
+}
+// Time Complexity: 삽입·삭제·탐색 O(log N)
+// Space Complexity: O(N)
+```
 # Part 8. 힙
 ## BinaryHeap()
 ### 대표코드
@@ -1775,6 +2036,484 @@ int main() {
 }
 // Time Complexity: O(N log N) 최악도 동일
 // Space Complexity: O(1)
+```
+## FibonacciHeap()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <climits>
+#include <cmath>
+#include <memory>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <vector>
+#include <cassert>
+
+// 피보나치 힙: push·meld·findMin·decreaseKey 가 분할상환 O(1), extractMin 이 분할상환 O(log n).  Dijkstra/Prim 을 O(E + V log V) 로 만든다.
+// 루트들을 원형 이중 연결 리스트로 느슨하게 두었다가, extractMin 때만 "차수가 같은 두 트리를 합치는" consolidate 를 한다.
+// decreaseKey 는 부모보다 작아지면 그 노드를 루트 리스트로 잘라내고(cut), 자식을 하나 잃은 부모에 표시(mark)를 하다가 두 번째로 잃으면 연쇄 절단한다
+struct FNode {
+    int key, degree = 0; bool mark = false; FNode *p = nullptr, *child = nullptr, *l, *r;
+    explicit FNode(int k) : key(k) { l = r = this; }
+};
+struct FibHeap {
+    FNode* min = nullptr; size_t n = 0; std::vector<std::unique_ptr<FNode>> pool;
+    void addRoot(FNode* x) {
+        x->p = nullptr;
+        if (!min) { x->l = x->r = x; min = x; return; }
+        x->r = min->r; x->l = min; min->r->l = x; min->r = x;
+        if (x->key < min->key) min = x;
+    }
+    FNode* push(int k) { pool.emplace_back(new FNode(k)); FNode* x = pool.back().get(); addRoot(x); n++; return x; }
+    void meld(FibHeap& o) {                                                // 두 루트 리스트를 이어 붙인다: O(1)
+        if (!o.min) return;
+        for (auto& p : o.pool) pool.push_back(std::move(p));
+        o.pool.clear();
+        if (!min) min = o.min;
+        else {
+            FNode *a2 = min->r, *b2 = o.min->l;
+            min->r = o.min; o.min->l = min; b2->r = a2; a2->l = b2;
+            if (o.min->key < min->key) min = o.min;
+        }
+        n += o.n; o.min = nullptr; o.n = 0;
+    }
+    void link(FNode* y, FNode* x) {                                        // y 를 x 의 자식으로
+        y->p = x; y->mark = false;
+        if (!x->child) { x->child = y; y->l = y->r = y; }
+        else { y->r = x->child->r; y->l = x->child; x->child->r->l = y; x->child->r = y; }
+        x->degree++;
+    }
+    int maxDegree = 0;
+    void consolidate() {
+        std::vector<FNode*> roots; FNode* w = min; do { roots.push_back(w); w = w->r; } while (w != min);
+        std::vector<FNode*> A(64, nullptr);
+        for (FNode* x : roots) {
+            int d = x->degree;
+            while (A[d]) { FNode* y = A[d]; if (x->key > y->key) std::swap(x, y); link(y, x); A[d++] = nullptr; }
+            A[d] = x;
+        }
+        min = nullptr; maxDegree = 0;
+        for (FNode* x : A) if (x) { x->l = x->r = x; addRoot(x); maxDegree = std::max(maxDegree, x->degree); }
+    }
+    FNode* extractMin() {
+        FNode* z = min; if (!z) return nullptr;
+        if (z->child) {
+            FNode* c = z->child; do { c->p = nullptr; c = c->r; } while (c != z->child);
+            FNode *a2 = z->r, *b1 = z->child, *b2 = z->child->l;           // 자식 리스트를 z 바로 뒤에 끼운다
+            z->r = b1; b1->l = z; b2->r = a2; a2->l = b2; z->child = nullptr;
+        }
+        if (z == z->r) min = nullptr;
+        else { z->l->r = z->r; z->r->l = z->l; min = z->r; consolidate(); }
+        n--; return z;
+    }
+    void cut(FNode* x, FNode* y) {
+        if (x->r == x) y->child = nullptr;
+        else { if (y->child == x) y->child = x->r; x->l->r = x->r; x->r->l = x->l; }
+        y->degree--; x->mark = false; addRoot(x);
+    }
+    void decreaseKey(FNode* x, int k) {
+        assert(k <= x->key); x->key = k; FNode* y = x->p;
+        if (y && x->key < y->key) {
+            cut(x, y);
+            for (FNode* z = y; z->p; ) { FNode* up = z->p; if (!z->mark) { z->mark = true; break; } cut(z, up); z = up; }   // 연쇄 절단
+        }
+        if (x->key < min->key) min = x;
+    }
+    void erase(FNode* x) { decreaseKey(x, INT_MIN); extractMin(); }
+};
+
+int main() {
+    std::mt19937 rng(7);
+    FibHeap h; std::multiset<int> ms; std::vector<FNode*> hs; std::vector<char> alive; std::unordered_map<FNode*, int> idx;
+    for (int step = 0; step < 20000; step++) {
+        int op = rng() % 10;
+        if (op < 5 || ms.empty()) { int k = rng() % 100000 + 1000; FNode* x = h.push(k); idx[x] = hs.size(); hs.push_back(x); alive.push_back(1); ms.insert(k); }
+        else if (op < 7) { FNode* z = h.extractMin(); assert(z->key == *ms.begin()); ms.erase(ms.begin()); alive[idx[z]] = 0; }
+        else if (op < 9) {
+            int i; do { i = rng() % hs.size(); } while (!alive[i]);
+            int old = hs[i]->key, nk = old - (int)(rng() % 1000) - 1; h.decreaseKey(hs[i], nk);
+            ms.erase(ms.find(old)); ms.insert(nk);
+        } else { int i; do { i = rng() % hs.size(); } while (!alive[i]); ms.erase(ms.find(hs[i]->key)); h.erase(hs[i]); alive[i] = 0; }
+        assert(h.n == ms.size()); if (!ms.empty()) assert(h.min->key == *ms.begin());
+    }
+    FibHeap a, b; std::multiset<int> all;                                  // meld 검사
+    for (int i = 0; i < 500; i++) { int x = rng() % 1000; a.push(x); all.insert(x); int y = rng() % 1000; b.push(y); all.insert(y); }
+    a.meld(b); assert(b.n == 0 && a.n == 1000);
+    while (a.n) { FNode* z = a.extractMin(); assert(z->key == *all.begin()); all.erase(all.begin()); }
+    FibHeap big; for (int i = 0; i < 100000; i++) big.push((int)(rng() % 1000000));
+    big.extractMin();                                                      // consolidate: 차수가 모두 달라지고 최대 차수는 log_phi(n) 이하
+    assert(big.maxDegree <= (int)(std::log((double)big.n) / std::log(1.6180339887)) + 1);
+    std::cout << "FibonacciHeap: 20000 mixed ops match multiset; max root degree after consolidate of 1e5 keys = " << big.maxDegree << std::endl;
+    return 0;
+}
+// Time Complexity: push/meld/decreaseKey 분할상환 O(1), extractMin 분할상환 O(log N)
+// Space Complexity: O(N)
+```
+## BinomialHeap()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <memory>
+#include <random>
+#include <set>
+#include <vector>
+#include <cassert>
+
+// 이항 힙: 이항 트리 B0, B1, B2, ... (Bk 는 노드 2^k 개, 루트 차수 k) 들의 모음. n 의 이진 표현이 곧 구성이다 (n = 13 = 1101 -> B3, B2, B0).
+// 두 힙의 합치기(unite)는 이진수 덧셈과 똑같다: 차수가 같은 두 트리를 합치면 올림이 생긴다.  push = 크기 1 짜리 힙과 unite, extractMin = 루트의 자식들을 힙으로 보고 unite
+struct BNode { int key, id, degree = 0; BNode *p = nullptr, *child = nullptr, *sibling = nullptr; };
+struct BinomialHeap {
+    BNode* head = nullptr; size_t n = 0; std::vector<std::unique_ptr<BNode>> pool; std::vector<BNode*> loc;
+    static void link(BNode* y, BNode* z) { y->p = z; y->sibling = z->child; z->child = y; z->degree++; }   // y 를 z 의 첫 자식으로
+    static BNode* mergeLists(BNode* a, BNode* b) {                         // 차수 오름차순 두 리스트를 병합
+        BNode dummy; BNode* t = &dummy;
+        while (a && b) { if (a->degree <= b->degree) { t->sibling = a; a = a->sibling; } else { t->sibling = b; b = b->sibling; } t = t->sibling; }
+        t->sibling = a ? a : b; return dummy.sibling;
+    }
+    static BNode* unite(BNode* a, BNode* b) {
+        BNode* h = mergeLists(a, b); if (!h) return nullptr;
+        BNode *prev = nullptr, *x = h, *next = x->sibling;
+        while (next) {
+            if (x->degree != next->degree || (next->sibling && next->sibling->degree == x->degree)) { prev = x; x = next; }
+            else if (x->key <= next->key) { x->sibling = next->sibling; link(next, x); }
+            else { if (!prev) h = next; else prev->sibling = next; link(x, next); x = next; }
+            next = x->sibling;
+        }
+        return h;
+    }
+    int push(int key) {
+        int id = loc.size(); pool.emplace_back(new BNode{key, id}); loc.push_back(pool.back().get());
+        head = unite(head, loc.back()); n++; return id;
+    }
+    int findMin() const { int m = INT32_MAX; for (BNode* x = head; x; x = x->sibling) m = std::min(m, x->key); return m; }
+    int extractMin(int& id) {
+        BNode *best = head, *bestPrev = nullptr;
+        for (BNode *p = nullptr, *x = head; x; p = x, x = x->sibling) if (x->key < best->key) { best = x; bestPrev = p; }
+        if (bestPrev) bestPrev->sibling = best->sibling; else head = best->sibling;
+        BNode* rev = nullptr;                                              // 자식 리스트를 뒤집어 차수 오름차순으로
+        for (BNode* c = best->child; c; ) { BNode* nx = c->sibling; c->sibling = rev; c->p = nullptr; rev = c; c = nx; }
+        head = unite(head, rev); n--; id = best->id; loc[id] = nullptr; return best->key;
+    }
+    void decreaseKey(int id, int k) {                                      // 부모와 키·id 를 맞바꾸며 올라간다
+        BNode* x = loc[id]; assert(k <= x->key); x->key = k;
+        while (x->p && x->key < x->p->key) { BNode* p = x->p; std::swap(x->key, p->key); std::swap(x->id, p->id); loc[x->id] = x; loc[p->id] = p; x = p; }
+    }
+};
+
+int main() {
+    BinomialHeap h;
+    for (int i = 1; i <= 1000; i++) { h.push(1000 - i); int trees = 0; for (BNode* x = h.head; x; x = x->sibling) trees++; assert(trees == __builtin_popcount(i)); }
+    // 트리 개수 = n 의 이진 표현에서 1 의 개수, 각 루트의 차수는 켜진 비트의 위치와 같다
+    int expectDeg = 0; for (BNode* x = h.head; x; x = x->sibling) { while (!((1000 >> expectDeg) & 1)) expectDeg++; assert(x->degree == expectDeg++); }
+
+    std::mt19937 rng(3); BinomialHeap q; std::multiset<int> ms; std::vector<char> alive;
+    for (int step = 0; step < 15000; step++) {
+        int op = rng() % 10;
+        if (op < 5 || ms.empty()) { int k = rng() % 100000 + 1000; int id = q.push(k); alive.push_back(1); assert(id == (int)alive.size() - 1); ms.insert(k); }
+        else if (op < 8) { int id; int k = q.extractMin(id); assert(k == *ms.begin()); ms.erase(ms.begin()); alive[id] = 0; }
+        else {
+            int i; do { i = rng() % alive.size(); } while (!alive[i]);
+            int old = q.loc[i]->key, nk = old - (int)(rng() % 500) - 1; q.decreaseKey(i, nk); ms.erase(ms.find(old)); ms.insert(nk);
+        }
+        assert(q.n == ms.size()); if (!ms.empty()) assert(q.findMin() == *ms.begin());
+    }
+    std::cout << "BinomialHeap: " << h.n << " keys -> trees = popcount, 15000 mixed ops match multiset" << std::endl;
+    return 0;
+}
+// Time Complexity: push·unite·extractMin·decreaseKey 모두 O(log N) (push 는 분할상환 O(1))
+// Space Complexity: O(N)
+```
+## PairingHeap()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <memory>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <vector>
+#include <cassert>
+
+// 페어링 힙: "힙 순서 트리"를 자식 리스트(첫 자식-다음 형제)로 표현한 가장 단순한 meld 가능 힙. 구현이 짧고 실전에서 피보나치 힙보다 빠른 경우가 많다.
+// meld(a,b) 는 루트가 큰 쪽을 작은 쪽의 첫 자식으로 붙이면 끝(O(1)).  deleteMin 은 루트의 자식들을 "왼쪽→오른쪽으로 둘씩 짝 짓고(meld), 오른쪽→왼쪽으로 하나로 합치는" 2-pass 로 처리한다
+struct PNode { int key; PNode *child = nullptr, *sibling = nullptr, *prev = nullptr; };   // prev: 첫 자식이면 부모, 아니면 왼쪽 형제
+struct PairingHeap {
+    PNode* root = nullptr; size_t n = 0; std::vector<std::unique_ptr<PNode>> pool;
+    static PNode* meld(PNode* a, PNode* b) {
+        if (!a) return b; if (!b) return a;
+        if (b->key < a->key) std::swap(a, b);
+        b->prev = a; b->sibling = a->child; if (a->child) a->child->prev = b; a->child = b;
+        a->prev = a->sibling = nullptr; return a;
+    }
+    PNode* push(int k) { pool.emplace_back(new PNode{k}); PNode* x = pool.back().get(); root = meld(root, x); n++; return x; }
+    void meld(PairingHeap& o) { for (auto& p : o.pool) pool.push_back(std::move(p)); o.pool.clear(); root = meld(root, o.root); n += o.n; o.root = nullptr; o.n = 0; }
+    static PNode* twoPass(PNode* first) {
+        if (!first) return nullptr;
+        std::vector<PNode*> v;
+        for (PNode* c = first; c; ) {
+            PNode *a = c, *b = a->sibling, *nx = b ? b->sibling : nullptr;
+            a->sibling = a->prev = nullptr; if (b) b->sibling = b->prev = nullptr;
+            v.push_back(b ? meld(a, b) : a); c = nx;
+        }
+        PNode* r = v.back(); for (int i = (int)v.size() - 2; i >= 0; i--) r = meld(v[i], r);
+        return r;
+    }
+    PNode* popMin() {
+        PNode* z = root; root = twoPass(z->child); if (root) root->prev = nullptr; n--; z->child = nullptr; return z;
+    }
+    void decreaseKey(PNode* x, int k) {
+        assert(k <= x->key); x->key = k; if (x == root) return;
+        if (x->prev->child == x) x->prev->child = x->sibling; else x->prev->sibling = x->sibling;   // 부모(또는 형제)에서 떼어낸다
+        if (x->sibling) x->sibling->prev = x->prev;
+        x->prev = x->sibling = nullptr; root = meld(root, x);
+    }
+};
+
+int main() {
+    std::mt19937 rng(11);
+    PairingHeap h; std::multiset<int> ms; std::vector<PNode*> hs; std::vector<char> alive; std::unordered_map<PNode*, int> idx;
+    for (int step = 0; step < 20000; step++) {
+        int op = rng() % 10;
+        if (op < 5 || ms.empty()) { int k = rng() % 100000 + 1000; PNode* x = h.push(k); idx[x] = hs.size(); hs.push_back(x); alive.push_back(1); ms.insert(k); }
+        else if (op < 7) { PNode* z = h.popMin(); assert(z->key == *ms.begin()); ms.erase(ms.begin()); alive[idx[z]] = 0; }
+        else {
+            int i; do { i = rng() % hs.size(); } while (!alive[i]);
+            int old = hs[i]->key, nk = old - (int)(rng() % 700) - 1; h.decreaseKey(hs[i], nk); ms.erase(ms.find(old)); ms.insert(nk);
+        }
+        assert(h.n == ms.size()); if (!ms.empty()) assert(h.root->key == *ms.begin());
+    }
+    PairingHeap a, b; std::multiset<int> all;
+    for (int i = 0; i < 400; i++) { int x = rng() % 1000, y = rng() % 1000; a.push(x); b.push(y); all.insert(x); all.insert(y); }
+    a.meld(b); while (a.n) { PNode* z = a.popMin(); assert(z->key == *all.begin()); all.erase(all.begin()); }
+    PairingHeap sorted; std::vector<int> v(5000); for (auto& x : v) x = rng() % 100000;
+    for (int x : v) sorted.push(x);
+    std::sort(v.begin(), v.end()); for (int x : v) assert(sorted.popMin()->key == x);                // 힙 정렬
+    std::cout << "PairingHeap: 20000 mixed ops match multiset, meld and heap-sort OK" << std::endl;
+    return 0;
+}
+// Time Complexity: push/meld O(1), deleteMin 분할상환 O(log N), decreaseKey 분할상환 o(log N) (정확한 한계는 미해결 문제)
+// Space Complexity: O(N)
+```
+## LeftistHeap()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <queue>
+#include <random>
+#include <vector>
+#include <cassert>
+
+// 좌편향 힙(leftist heap): 각 노드의 npl(null path length, 가장 가까운 빈 자리까지의 거리)을 두고 "왼쪽 자식의 npl >= 오른쪽 자식의 npl" 을 유지한다.
+// 그러면 오른쪽 가지(right spine)의 길이가 O(log n) 이므로, 병합을 오른쪽 가지만 따라 내려가며 재귀로 처리할 수 있다.  insert/pop 은 모두 merge 한 번
+struct LNode { int key, npl = 1; LNode *l = nullptr, *r = nullptr; };
+int npl(LNode* x) { return x ? x->npl : 0; }
+LNode* merge(LNode* a, LNode* b) {
+    if (!a) return b; if (!b) return a;
+    if (b->key < a->key) std::swap(a, b);
+    a->r = merge(a->r, b);
+    if (npl(a->l) < npl(a->r)) std::swap(a->l, a->r);                     // 왼쪽이 더 "무겁게"
+    a->npl = npl(a->r) + 1; return a;
+}
+struct LeftistHeap {
+    LNode* root = nullptr; size_t n = 0; std::vector<std::unique_ptr<LNode>> pool;
+    void push(int k) { pool.emplace_back(new LNode{k}); root = merge(root, pool.back().get()); n++; }
+    int top() const { return root->key; }
+    int pop() { int k = root->key; root = merge(root->l, root->r); n--; return k; }
+    void meld(LeftistHeap& o) { for (auto& p : o.pool) pool.push_back(std::move(p)); o.pool.clear(); root = merge(root, o.root); n += o.n; o.root = nullptr; o.n = 0; }
+};
+bool valid(LNode* x) {                                                     // 힙 순서 + 좌편향 성질 + npl 값
+    if (!x) return true;
+    if (x->l && x->l->key < x->key) return false;
+    if (x->r && x->r->key < x->key) return false;
+    if (npl(x->l) < npl(x->r) || x->npl != npl(x->r) + 1) return false;
+    return valid(x->l) && valid(x->r);
+}
+
+int main() {
+    std::mt19937 rng(19);
+    LeftistHeap h; std::priority_queue<int, std::vector<int>, std::greater<int>> pq;
+    for (int step = 0; step < 20000; step++) {
+        if (rng() % 3 < 2 || pq.empty()) { int k = rng() % 100000; h.push(k); pq.push(k); }
+        else { assert(h.top() == pq.top()); assert(h.pop() == pq.top()); pq.pop(); }
+        assert(h.n == pq.size());
+        if (step % 1000 == 0) assert(valid(h.root));
+    }
+    assert(npl(h.root) <= std::log2(h.n + 1) + 1);                         // 오른쪽 가지의 길이 <= log2(n+1)
+    LeftistHeap a, b; std::vector<int> all;
+    for (int i = 0; i < 700; i++) { int x = rng() % 5000, y = rng() % 5000; a.push(x); b.push(y); all.push_back(x); all.push_back(y); }
+    a.meld(b); assert(valid(a.root) && b.n == 0);
+    std::sort(all.begin(), all.end()); for (int x : all) assert(a.pop() == x);
+    LeftistHeap lopsided; for (int i = 0; i < 4096; i++) lopsided.push(i);   // 정렬된 입력에도 오른쪽 가지는 짧다
+    assert(npl(lopsided.root) <= 13);
+    std::cout << "LeftistHeap: merge-only heap OK, right spine <= log2(n+1)" << std::endl;
+    return 0;
+}
+// Time Complexity: merge·push·pop O(log N)
+// Space Complexity: O(N)
+```
+## DAryHeap()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
+#include <cassert>
+
+// d-ary 힙: 자식이 d 개인 완전 d-분 트리를 배열에 담는다. 부모 (i-1)/d, 자식 d*i+1 .. d*i+d.
+// 높이가 log_d n 으로 낮아져서 push / decreaseKey (위로 올리기) 가 빨라지고, pop (아래로 내리기) 은 레벨마다 d 개를 비교하므로 느려진다.
+// decreaseKey 가 많은 Dijkstra 에서는 d = 2 + E/V 정도가 좋다.  아래는 id(0..N-1) 로 원소를 가리키는 "인덱스 우선순위 큐"
+template <int D> struct IndexedDHeap {
+    std::vector<int> heap, pos, key; long compares = 0;
+    explicit IndexedDHeap(int n) : pos(n, -1), key(n) {}
+    bool empty() const { return heap.empty(); }
+    void up(int i) {
+        int id = heap[i];
+        while (i > 0) { int p = (i - 1) / D; compares++; if (key[heap[p]] <= key[id]) break; heap[i] = heap[p]; pos[heap[i]] = i; i = p; }
+        heap[i] = id; pos[id] = i;
+    }
+    void down(int i) {
+        int id = heap[i], n = heap.size();
+        for (;;) {
+            int c = D * i + 1; if (c >= n) break;
+            int best = c; for (int j = c + 1; j < std::min(n, c + D); j++) { compares++; if (key[heap[j]] < key[heap[best]]) best = j; }
+            compares++; if (key[heap[best]] >= key[id]) break;
+            heap[i] = heap[best]; pos[heap[i]] = i; i = best;
+        }
+        heap[i] = id; pos[id] = i;
+    }
+    void push(int id, int k) { key[id] = k; heap.push_back(id); up(heap.size() - 1); }
+    int pop() { int top = heap[0], last = heap.back(); pos[top] = -1; heap.pop_back(); if (!heap.empty()) { heap[0] = last; pos[last] = 0; down(0); } return top; }
+    void decrease(int id, int k) { key[id] = k; up(pos[id]); }
+    bool contains(int id) const { return pos[id] >= 0; }
+};
+template <int D> std::vector<long> dijkstra(const std::vector<std::vector<std::pair<int, int>>>& g, int s, long& cmp) {
+    std::vector<long> dist(g.size(), 1L << 60); IndexedDHeap<D> pq(g.size()); dist[s] = 0; pq.push(s, 0);
+    while (!pq.empty()) {
+        int u = pq.pop();
+        for (auto [v, w] : g[u]) if (dist[u] + w < dist[v]) {
+            bool had = pq.contains(v); dist[v] = dist[u] + w;
+            if (had) pq.decrease(v, dist[v]); else pq.push(v, dist[v]);   // 키가 int 라 이 데모에서는 거리가 int 범위
+        }
+    }
+    cmp = pq.compares; return dist;
+}
+template <int D> void fuzz() {
+    std::mt19937 rng(D); IndexedDHeap<D> h(3000); std::set<std::pair<int, int>> ref; std::vector<int> cur(3000, -1);
+    for (int step = 0; step < 30000; step++) {
+        int id = rng() % 3000;
+        if (cur[id] < 0 && rng() % 2) { int k = rng() % 100000 + 500; h.push(id, k); ref.insert({k, id}); cur[id] = k; }
+        else if (cur[id] >= 0 && rng() % 2) { int nk = cur[id] - (int)(rng() % 400); h.decrease(id, nk); ref.erase({cur[id], id}); ref.insert({nk, id}); cur[id] = nk; }
+        else if (!ref.empty() && rng() % 3 == 0) {
+            int top = h.pop(); assert(h.key[top] == ref.begin()->first);       // 같은 키면 id 는 다를 수 있으므로 키만 비교
+            auto it = ref.find({h.key[top], top}); assert(it != ref.end()); ref.erase(it); cur[top] = -1;
+        }
+        assert(h.heap.size() == ref.size());
+    }
+}
+int main() {
+    fuzz<2>(); fuzz<3>(); fuzz<4>(); fuzz<8>();
+    std::mt19937 rng(42); int N = 2000, M = 20000;
+    std::vector<std::vector<std::pair<int, int>>> g(N);
+    for (int i = 0; i < M; i++) { int u = rng() % N, v = rng() % N, w = rng() % 100 + 1; g[u].push_back({v, w}); g[v].push_back({u, w}); }
+    // 기준: 표준 priority_queue 로 구현한 lazy Dijkstra
+    std::vector<long> ref(N, 1L << 60); std::priority_queue<std::pair<long, int>, std::vector<std::pair<long, int>>, std::greater<>> q; ref[0] = 0; q.push({0, 0});
+    while (!q.empty()) { auto [d, u] = q.top(); q.pop(); if (d > ref[u]) continue; for (auto [v, w] : g[u]) if (d + w < ref[v]) { ref[v] = d + w; q.push({ref[v], v}); } }
+    long c2, c4, c8; assert(dijkstra<2>(g, 0, c2) == ref); assert(dijkstra<4>(g, 0, c4) == ref); assert(dijkstra<8>(g, 0, c8) == ref);
+    auto levels = [](long n, int d) { int h = 0; for (long i = n - 1; i > 0; i = (i - 1) / d) h++; return h; };
+    assert(levels(1000000, 4) * 2 <= levels(1000000, 2) + 1 && levels(1000000, 8) < levels(1000000, 4));
+    std::cout << "d-ary heap: Dijkstra compares  d=2: " << c2 << ", d=4: " << c4 << ", d=8: " << c8
+              << " | depth for 1e6 keys  d=2: " << levels(1000000, 2) << ", d=4: " << levels(1000000, 4) << ", d=8: " << levels(1000000, 8) << std::endl;
+    return 0;
+}
+// Time Complexity: push·decreaseKey O(log_d N), pop O(d log_d N)
+// Space Complexity: O(N)
+```
+## MinMaxHeap()
+### 대표코드
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <random>
+#include <set>
+#include <vector>
+#include <cassert>
+
+// 최소-최대 힙: 하나의 배열 힙으로 최솟값과 최댓값을 모두 O(1) 로 보고 O(log n) 에 뺄 수 있다 (양방향 우선순위 큐).
+// 깊이가 짝수인 레벨은 "자기 아래 모든 원소보다 작다"(min 레벨), 홀수 레벨은 "모든 후손보다 크다"(max 레벨).  최솟값은 a[0], 최댓값은 a[1], a[2] 중 큰 쪽.
+// 삽입은 부모와 비교해 레벨 종류를 바꾼 뒤 같은 종류의 조부모 사슬로 올라가고, 삭제는 자식·손자 중 극값과 교환하며 내려간다
+struct MinMaxHeap {
+    std::vector<int> a;
+    static bool minLevel(size_t i) { return (63 - __builtin_clzll(i + 1)) % 2 == 0; }
+    void bubbleUpMin(size_t i) { while (i >= 3) { size_t g = ((i - 1) / 2 - 1) / 2; if (a[i] < a[g]) { std::swap(a[i], a[g]); i = g; } else break; } }
+    void bubbleUpMax(size_t i) { while (i >= 3) { size_t g = ((i - 1) / 2 - 1) / 2; if (a[i] > a[g]) { std::swap(a[i], a[g]); i = g; } else break; } }
+    void push(int x) {
+        a.push_back(x); size_t i = a.size() - 1; if (!i) return;
+        size_t p = (i - 1) / 2;
+        if (minLevel(i)) { if (a[i] > a[p]) { std::swap(a[i], a[p]); bubbleUpMax(p); } else bubbleUpMin(i); }
+        else             { if (a[i] < a[p]) { std::swap(a[i], a[p]); bubbleUpMin(p); } else bubbleUpMax(i); }
+    }
+    template <class Less> void trickleDown(size_t i, Less less) {          // less 가 < 이면 min 레벨, > 이면 max 레벨
+        size_t n = a.size();
+        while (2 * i + 1 < n) {
+            size_t m = 2 * i + 1;                                          // 자식과 손자 중 "가장 극단적인" 것
+            for (size_t c : {2 * i + 2, 4 * i + 3, 4 * i + 4, 4 * i + 5, 4 * i + 6}) if (c < n && less(a[c], a[m])) m = c;
+            if (m > 2 * i + 2) {                                           // 손자인 경우
+                if (!less(a[m], a[i])) break;
+                std::swap(a[m], a[i]);
+                size_t p = (m - 1) / 2; if (less(a[p], a[m])) std::swap(a[m], a[p]);   // 새 값이 부모(반대 레벨)와 충돌하면 교환
+                i = m;
+            } else { if (less(a[m], a[i])) std::swap(a[m], a[i]); break; }  // 자식인 경우는 잎 직전이라 끝
+        }
+    }
+    int min() const { return a[0]; }
+    int max() const { return a.size() == 1 ? a[0] : a.size() == 2 ? a[1] : std::max(a[1], a[2]); }
+    int popMin() { int x = a[0]; a[0] = a.back(); a.pop_back(); if (!a.empty()) trickleDown(0, std::less<int>()); return x; }
+    int popMax() {
+        size_t i = a.size() == 1 ? 0 : a.size() == 2 ? 1 : (a[1] >= a[2] ? 1 : 2);
+        int x = a[i]; a[i] = a.back(); a.pop_back(); if (i < a.size()) trickleDown(i, std::greater<int>()); return x;
+    }
+    bool valid() const {                                                   // 모든 노드가 자기 레벨의 규칙을 후손 전체에 대해 만족하는가 (O(n^2), 테스트용)
+        for (size_t i = 0; i < a.size(); i++) {
+            std::vector<size_t> st = {2 * i + 1, 2 * i + 2};
+            while (!st.empty()) { size_t j = st.back(); st.pop_back(); if (j >= a.size()) continue;
+                if (minLevel(i) ? a[j] < a[i] : a[j] > a[i]) return false; st.push_back(2 * j + 1); st.push_back(2 * j + 2); }
+        }
+        return true;
+    }
+};
+
+int main() {
+    std::mt19937 rng(31);
+    MinMaxHeap h; std::multiset<int> ms;
+    for (int step = 0; step < 6000; step++) {
+        int op = rng() % 6;
+        if (op < 3 || ms.empty()) { int x = rng() % 1000; h.push(x); ms.insert(x); }
+        else if (op < 5) { assert(h.popMin() == *ms.begin()); ms.erase(ms.begin()); }
+        else { assert(h.popMax() == *ms.rbegin()); ms.erase(std::prev(ms.end())); }
+        if (!ms.empty()) { assert(h.min() == *ms.begin() && h.max() == *ms.rbegin()); }
+        if (step % 100 == 0) assert(h.valid());
+    }
+    std::vector<int> v; while (!h.a.empty()) { v.push_back(h.popMin()); if (!h.a.empty()) v.push_back(h.popMax()); }   // 양 끝을 번갈아 꺼내기
+    std::vector<int> ref(ms.begin(), ms.end()); std::vector<int> expect;
+    for (size_t lo = 0, hi = ref.size(); lo < hi; ) { expect.push_back(ref[lo++]); if (lo < hi) expect.push_back(ref[--hi]); }
+    assert(v == expect);
+    std::cout << "MinMaxHeap: min/max both O(1), 6000 mixed ops match multiset" << std::endl;
+    return 0;
+}
+// Time Complexity: min/max O(1), push·popMin·popMax O(log N)
+// Space Complexity: O(N)
 ```
 # Part 9. 다중 트리
 ## TrieInsert() & TrieSearch()
@@ -3917,109 +4656,1026 @@ int main() {
 ## ExpressionTree()
 ### 대표코드
 ```cpp
+#include <cctype>
+#include <cmath>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <random>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "Expression Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 수식 트리: 잎 = 피연산자(숫자·변수), 내부 노드 = 연산자.  중위 표기 -> (shunting-yard) -> 후위 표기 -> (스택) -> 트리.
+// 후위 순회가 후위 표기, 전위 순회가 전위 표기, 중위 순회에 "필요한 괄호만" 붙이면 원래 식이 된다.  계산은 후위 순회 한 번, 미분은 트리를 재귀적으로 다시 쓰면 된다
+struct Node; typedef std::shared_ptr<Node> P;
+struct Node { std::string v; P l, r; };
+P mk(const std::string& v, P l = nullptr, P r = nullptr) { return std::make_shared<Node>(Node{v, l, r}); }
+bool isOp(const std::string& s) { return s.size() == 1 && std::string("+-*/^").find(s[0]) != std::string::npos; }
+int prec(char c) { return c == '^' ? 3 : (c == '*' || c == '/') ? 2 : 1; }
+bool rightAssoc(char c) { return c == '^'; }
+
+std::vector<std::string> tokenize(const std::string& s) {
+    std::vector<std::string> t;
+    for (size_t i = 0; i < s.size();) {
+        if (isspace((unsigned char)s[i])) { i++; continue; }
+        if (isalnum((unsigned char)s[i]) || s[i] == '.') { size_t j = i; while (j < s.size() && (isalnum((unsigned char)s[j]) || s[j] == '.')) j++; t.push_back(s.substr(i, j - i)); i = j; }
+        else t.push_back(std::string(1, s[i++]));
+    }
+    return t;
+}
+std::vector<std::string> toPostfix(const std::vector<std::string>& tok) {          // shunting-yard (단항 마이너스는 다루지 않는다)
+    std::vector<std::string> out, st;
+    for (auto& t : tok) {
+        if (isOp(t)) {
+            while (!st.empty() && isOp(st.back()) && (prec(st.back()[0]) > prec(t[0]) || (prec(st.back()[0]) == prec(t[0]) && !rightAssoc(t[0])))) { out.push_back(st.back()); st.pop_back(); }
+            st.push_back(t);
+        } else if (t == "(") st.push_back(t);
+        else if (t == ")") { while (st.back() != "(") { out.push_back(st.back()); st.pop_back(); } st.pop_back(); }
+        else out.push_back(t);
+    }
+    while (!st.empty()) { out.push_back(st.back()); st.pop_back(); }
+    return out;
+}
+P fromPostfix(const std::vector<std::string>& pf) {
+    std::vector<P> st;
+    for (auto& t : pf) {
+        if (isOp(t)) { P r = st.back(); st.pop_back(); P l = st.back(); st.pop_back(); st.push_back(mk(t, l, r)); }
+        else st.push_back(mk(t));
+    }
+    return st.back();
+}
+P parse(const std::string& s) { return fromPostfix(toPostfix(tokenize(s))); }
+typedef std::map<std::string, double> Env;
+double eval(const P& n, const Env& env) {
+    if (!n->l) { auto it = env.find(n->v); return it != env.end() ? it->second : std::stod(n->v); }
+    double a = eval(n->l, env), b = eval(n->r, env);
+    switch (n->v[0]) { case '+': return a + b; case '-': return a - b; case '*': return a * b; case '/': return a / b; default: return std::pow(a, b); }
+}
+std::string infix(const P& n, int parentPrec = 0, bool right = false, char parentOp = 0) {      // 필요한 괄호만 붙인다
+    if (!n->l) return n->v;
+    char op = n->v[0]; int p = prec(op);
+    std::string s = infix(n->l, p, false, op) + op + infix(n->r, p, true, op);
+    bool paren = p < parentPrec || (p == parentPrec && right != rightAssoc(parentOp));       // 같은 우선순위면 결합 방향의 반대쪽 자식만 괄호
+    return paren ? "(" + s + ")" : s;
+}
+std::string prefix(const P& n)  { return !n->l ? n->v : n->v + " " + prefix(n->l) + " " + prefix(n->r); }
+std::string postfix(const P& n) { return !n->l ? n->v : postfix(n->l) + " " + postfix(n->r) + " " + n->v; }
+bool same(const P& a, const P& b) { return a->v == b->v && (!a->l) == (!b->l) && (!a->l || (same(a->l, b->l) && same(a->r, b->r))); }
+
+// 기호 미분: d/dx.  수식 트리를 재귀적으로 새 트리로 다시 쓰고, simp 로 0·1 과 상수를 정리한다 (지수는 상수만 지원)
+std::string fmt(double d) { std::ostringstream o; o << d; return o.str(); }
+P num(double d) { return mk(fmt(d)); }
+bool isNum(const P& n, double& v) { if (n->l || !(isdigit((unsigned char)n->v[0]) || n->v[0] == '.')) return false; v = std::stod(n->v); return true; }
+P simp(const P& n) {
+    if (!n->l) return n;
+    P l = simp(n->l), r = simp(n->r); double a, b; char op = n->v[0];
+    bool la = isNum(l, a), rb = isNum(r, b);
+    if (la && rb) { switch (op) { case '+': return num(a + b); case '-': return num(a - b); case '*': return num(a * b); case '/': return num(a / b); default: return num(std::pow(a, b)); } }
+    if (op == '+') { if (la && a == 0) return r; if (rb && b == 0) return l; }
+    if (op == '-' && rb && b == 0) return l;
+    if (op == '*') { if ((la && a == 0) || (rb && b == 0)) return num(0); if (la && a == 1) return r; if (rb && b == 1) return l; }
+    if (op == '/') { if (la && a == 0) return num(0); if (rb && b == 1) return l; }
+    if (op == '^') { if (rb && b == 1) return l; if (rb && b == 0) return num(1); }
+    return mk(n->v, l, r);
+}
+P diff(const P& n, const std::string& x) {
+    if (!n->l) return num(n->v == x ? 1 : 0);
+    const P &a = n->l, &b = n->r;
+    switch (n->v[0]) {
+        case '+': case '-': return simp(mk(n->v, diff(a, x), diff(b, x)));
+        case '*': return simp(mk("+", mk("*", diff(a, x), b), mk("*", a, diff(b, x))));
+        case '/': return simp(mk("/", mk("-", mk("*", diff(a, x), b), mk("*", a, diff(b, x))), mk("^", b, num(2))));
+        default: { double c; bool ok = isNum(b, c); assert(ok); (void)ok; return simp(mk("*", mk("*", b, mk("^", a, num(c - 1))), diff(a, x))); }
+    }
+}
+P randomTree(std::mt19937& rng, int depth) {                               // 정수 잎, + - * 만 사용 (정확한 정수 계산)
+    if (depth == 0 || rng() % 4 == 0) return mk(std::to_string(rng() % 10));
+    return mk(std::string(1, "+-*"[rng() % 3]), randomTree(rng, depth - 1), randomTree(rng, depth - 1));
+}
+
+int main() {
+    P t = parse("3+4*2");
+    assert(postfix(t) == "3 4 2 * +" && prefix(t) == "+ 3 * 4 2" && infix(t) == "3+4*2" && eval(t, {}) == 11);
+    assert(infix(parse("(3+4)*2")) == "(3+4)*2" && eval(parse("(3+4)*2"), {}) == 14);
+    assert(eval(parse("2^3^2"), {}) == 512 && infix(parse("2^3^2")) == "2^3^2");         // ^ 는 오른쪽 결합
+    assert(eval(parse("10-4-3"), {}) == 3 && infix(parse("10-(4-3)")) == "10-(4-3)");  // - 는 왼쪽 결합이라 오른쪽 괄호는 필수
+    assert(eval(parse("x*x+y"), {{"x", 4}, {"y", 1}}) == 17);
+
+    std::mt19937 rng(8);
+    for (int i = 0; i < 2000; i++) {                                       // 트리 -> 중위 문자열 -> 트리 왕복이 구조까지 같다
+        P a = randomTree(rng, 5); std::string s = infix(a); P b = parse(s);
+        assert(same(a, b) && eval(a, {}) == eval(b, {}));
+    }
+    P f = parse("x^3+2*x*y-5");
+    P d = diff(f, "x");
+    assert(infix(d) == "3*x^2+2*y");                                       // d/dx (x^3 + 2xy - 5) = 3x^2 + 2y
+    assert(eval(d, {{"x", 2}, {"y", 3}}) == 18);
+    P g = parse("(x+1)/(x-1)"); P dg = diff(g, "x");                       // 몫의 미분은 수치 미분과 비교
+    double h = 1e-6, num_ = (eval(g, {{"x", 3 + h}}) - eval(g, {{"x", 3 - h}})) / (2 * h);
+    assert(std::fabs(eval(dg, {{"x", 3}}) - num_) < 1e-6 && std::fabs(eval(dg, {{"x", 3}}) + 0.5) < 1e-12);
+    std::cout << "ExpressionTree: d/dx(x^3+2*x*y-5) = " << infix(d) << std::endl;
+    return 0;
+}
+// Time Complexity: 구성·계산·출력 O(N), 미분 O(N) (정리 포함)
+// Space Complexity: O(N)
 ```
 ## SyntaxTree()
 ### 대표코드
 ```cpp
+#include <cctype>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "Syntax Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 추상 구문 트리(AST): 소스 코드의 "의미 구조"만 남긴 트리. 괄호·세미콜론·중간 문법 규칙(Term, Factor ...)은 사라지고 연산자 우선순위가 트리 모양으로 굳는다.
+// 아래는 변수·산술·비교·if·while 만 있는 작은 언어의 토큰화 -> 우선순위 상승 파서 -> AST -> 상수 접기(최적화) -> 인터프리터.  컴파일러의 프런트엔드 전체를 축소한 모양이다
+enum Kind { NUM, VAR, BIN, NEG, ASSIGN, WHILE, IF, BLOCK };
+struct Node; typedef std::unique_ptr<Node> P;
+struct Node { Kind k; long num = 0; std::string s; std::vector<P> c; };
+P mk(Kind k, const std::string& s = "", long num = 0) { P n(new Node); n->k = k; n->s = s; n->num = num; return n; }
+
+std::vector<std::string> lex(const std::string& src) {
+    std::vector<std::string> t;
+    for (size_t i = 0; i < src.size();) {
+        char ch = src[i];
+        if (isspace((unsigned char)ch)) { i++; continue; }
+        if (isalnum((unsigned char)ch) || ch == '_') { size_t j = i; while (j < src.size() && (isalnum((unsigned char)src[j]) || src[j] == '_')) j++; t.push_back(src.substr(i, j - i)); i = j; continue; }
+        bool two = false;
+        for (const char* op : {"<=", ">=", "==", "!="}) if (src.compare(i, 2, op) == 0) { t.push_back(op); i += 2; two = true; break; }
+        if (!two) t.push_back(std::string(1, src[i++]));
+    }
+    return t;
+}
+struct Parser {
+    std::vector<std::string> t; size_t i = 0;
+    std::string peek() const { return i < t.size() ? t[i] : ""; }
+    std::string next() { return t[i++]; }
+    void expect(const std::string& s) { assert(peek() == s); i++; }
+    static int prec(const std::string& op) {
+        if (op == "==" || op == "!=") return 1;
+        if (op == "<" || op == ">" || op == "<=" || op == ">=") return 2;
+        if (op == "+" || op == "-") return 3;
+        if (op == "*" || op == "/" || op == "%") return 4;
+        return 0;
+    }
+    P primary() {
+        std::string s = next();
+        if (isdigit((unsigned char)s[0])) return mk(NUM, "", std::stol(s));
+        if (s == "(") { P e = expr(0); expect(")"); return e; }                        // 괄호는 여기서 사라진다
+        if (s == "-") { P n = mk(NEG); n->c.push_back(primary()); return n; }
+        return mk(VAR, s);
+    }
+    P expr(int minPrec) {                                                              // 우선순위 상승(precedence climbing)
+        P lhs = primary();
+        for (;;) {
+            std::string op = peek(); int p = prec(op);
+            if (p == 0 || p <= minPrec) break;
+            i++; P rhs = expr(p);
+            P b = mk(BIN, op); b->c.push_back(std::move(lhs)); b->c.push_back(std::move(rhs)); lhs = std::move(b);
+        }
+        return lhs;
+    }
+    P stmt() {
+        std::string s = peek();
+        if (s == "while") { i++; expect("("); P n = mk(WHILE); n->c.push_back(expr(0)); expect(")"); n->c.push_back(stmt()); return n; }
+        if (s == "if") {
+            i++; expect("("); P n = mk(IF); n->c.push_back(expr(0)); expect(")"); n->c.push_back(stmt());
+            if (peek() == "else") { i++; n->c.push_back(stmt()); } return n;
+        }
+        if (s == "{") { i++; P n = mk(BLOCK); while (peek() != "}") n->c.push_back(stmt()); i++; return n; }
+        P n = mk(ASSIGN, next()); expect("="); n->c.push_back(expr(0)); expect(";"); return n;
+    }
+    P program() { P n = mk(BLOCK); while (i < t.size()) n->c.push_back(stmt()); return n; }
+};
+P parse(const std::string& src) { Parser p; p.t = lex(src); return p.program(); }
+
+long apply(const std::string& op, long a, long b) {
+    if (op == "+") return a + b; if (op == "-") return a - b; if (op == "*") return a * b; if (op == "/") return a / b; if (op == "%") return a % b;
+    if (op == "<") return a < b; if (op == ">") return a > b; if (op == "<=") return a <= b; if (op == ">=") return a >= b; if (op == "==") return a == b; return a != b;
+}
+typedef std::map<std::string, long> Env;
+long evalExpr(const Node* n, Env& env) {
+    switch (n->k) {
+        case NUM: return n->num;
+        case VAR: return env[n->s];
+        case NEG: return -evalExpr(n->c[0].get(), env);
+        default:  { long a = evalExpr(n->c[0].get(), env), b = evalExpr(n->c[1].get(), env); return apply(n->s, a, b); }
+    }
+}
+void exec(const Node* n, Env& env) {
+    switch (n->k) {
+        case ASSIGN: env[n->s] = evalExpr(n->c[0].get(), env); break;
+        case WHILE:  while (evalExpr(n->c[0].get(), env)) exec(n->c[1].get(), env); break;
+        case IF:     if (evalExpr(n->c[0].get(), env)) exec(n->c[1].get(), env); else if (n->c.size() > 2) exec(n->c[2].get(), env); break;
+        case BLOCK:  for (auto& ch : n->c) exec(ch.get(), env); break;
+        default: break;
+    }
+}
+std::string sexpr(const Node* n) {
+    std::string r;
+    switch (n->k) {
+        case NUM: return std::to_string(n->num);
+        case VAR: return n->s;
+        case NEG: return "(- " + sexpr(n->c[0].get()) + ")";
+        case BIN: return "(" + n->s + " " + sexpr(n->c[0].get()) + " " + sexpr(n->c[1].get()) + ")";
+        case ASSIGN: return "(= " + n->s + " " + sexpr(n->c[0].get()) + ")";
+        case WHILE: return "(while " + sexpr(n->c[0].get()) + " " + sexpr(n->c[1].get()) + ")";
+        case IF: r = "(if"; break;
+        case BLOCK: r = "(block"; break;
+    }
+    for (auto& ch : n->c) r += " " + sexpr(ch.get());
+    return r + ")";
+}
+P fold(P n) {                                                              // 상수 접기: 컴파일 시점에 계산 가능한 부분 트리를 숫자 하나로
+    for (auto& ch : n->c) ch = fold(std::move(ch));
+    if (n->k == BIN && n->c[0]->k == NUM && n->c[1]->k == NUM && !((n->s == "/" || n->s == "%") && n->c[1]->num == 0))
+        return mk(NUM, "", apply(n->s, n->c[0]->num, n->c[1]->num));
+    if (n->k == NEG && n->c[0]->k == NUM) return mk(NUM, "", -n->c[0]->num);
+    return n;
+}
+int size(const Node* n) { int s = 1; for (auto& ch : n->c) s += size(ch.get()); return s; }
+long run(const std::string& src, const std::string& var) { Env env; P ast = parse(src); exec(ast.get(), env); return env[var]; }
+
+int main() {
+    assert(sexpr(parse("x = 1 + 2 * (3 + 4);").get()) == "(block (= x (+ 1 (* 2 (+ 3 4)))))");          // 괄호가 없어도 우선순위가 모양에 담겼다
+    assert(sexpr(parse("x = (((1)));").get()) == sexpr(parse("x = 1;").get()));                           // 겹괄호는 AST 에서 구분되지 않는다
+    assert(sexpr(parse("x = 10 - 4 - 3;").get()) == "(block (= x (- (- 10 4) 3)))");                       // 왼쪽 결합
+    assert(sexpr(parse("x = a < b == c;").get()) == "(block (= x (== (< a b) c)))");                       // 비교 연산자의 우선순위 단계
+    P ast = parse("x = 2 * 3 + 4 * 5; y = x - -1;"); int before = size(ast.get());
+    ast = fold(std::move(ast));
+    assert(sexpr(ast.get()) == "(block (= x 26) (= y (- x -1)))" && size(ast.get()) < before);            // 상수 부분식만 접힌다
+    assert(run("n = 10; a = 0; b = 1; i = 0; while (i < n) { t = a + b; a = b; b = t; i = i + 1; } result = a;", "result") == 55);   // fib(10)
+    assert(run("a = 48; b = 18; while (b != 0) { t = a % b; a = b; b = t; } result = a;", "result") == 6);                           // gcd
+    assert(run("n = 27; steps = 0; while (n != 1) { if (n % 2 == 0) { n = n / 2; } else { n = 3 * n + 1; } steps = steps + 1; } result = steps;", "result") == 111);   // 콜라츠
+    assert(run("x = 5; if (x > 3) y = 1; else y = 2; if (x > 9) z = 1; else z = 2; result = y * 10 + z;", "result") == 12);
+    std::cout << "SyntaxTree: AST nodes for x = 2*3+4*5: " << before << " -> " << size(ast.get()) << " after constant folding" << std::endl;
+    return 0;
+}
+// Time Complexity: 구문 분석 O(N), 실행은 프로그램에 따라 다름
+// Space Complexity: O(N)
 ```
 ## ParseTree()
 ### 대표코드
 ```cpp
+#include <cctype>
 #include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "Parse Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 파스 트리(구체 구문 트리, CST): 문법 규칙을 그대로 따라 만든, 입력의 모든 토큰이 잎으로 남는 트리. 내부 노드는 문법의 비단말 기호다.
+// 잎을 왼쪽에서 오른쪽으로 읽으면(yield) 원래 입력이 복원된다는 것이 정의다.  AST 와 달리 괄호와 중간 규칙(Term, Factor)이 그대로 있다.
+// 문법:  Expr -> Term (('+'|'-') Term)*   Term -> Factor (('*'|'/') Factor)*   Factor -> NUM | '(' Expr ')'   (재귀 하강 파서)
+struct Node; typedef std::unique_ptr<Node> P;
+struct Node { std::string label; std::vector<P> kids; };
+P nt(const std::string& l) { P n(new Node); n->label = l; return n; }
+struct Parser {
+    std::vector<std::string> t; size_t i = 0;
+    std::string peek() const { return i < t.size() ? t[i] : ""; }
+    P leaf() { P n(new Node); n->label = t[i++]; return n; }
+    P expr() { P n = nt("Expr"); n->kids.push_back(term()); while (peek() == "+" || peek() == "-") { n->kids.push_back(leaf()); n->kids.push_back(term()); } return n; }
+    P term() { P n = nt("Term"); n->kids.push_back(factor()); while (peek() == "*" || peek() == "/") { n->kids.push_back(leaf()); n->kids.push_back(factor()); } return n; }
+    P factor() {
+        P n = nt("Factor");
+        if (peek() == "(") { n->kids.push_back(leaf()); n->kids.push_back(expr()); assert(peek() == ")"); n->kids.push_back(leaf()); }
+        else n->kids.push_back(leaf());
+        return n;
+    }
+};
+std::vector<std::string> tokens(const std::string& s) {
+    std::vector<std::string> t;
+    for (size_t i = 0; i < s.size();) {
+        if (isspace((unsigned char)s[i])) { i++; continue; }
+        if (isdigit((unsigned char)s[i])) { size_t j = i; while (j < s.size() && isdigit((unsigned char)s[j])) j++; t.push_back(s.substr(i, j - i)); i = j; }
+        else t.push_back(std::string(1, s[i++]));
+    }
+    return t;
+}
+P parse(const std::string& s, std::vector<std::string>& tok) { Parser p; p.t = tok = tokens(s); P root = p.expr(); assert(p.i == p.t.size()); return root; }
+std::string show(const Node* n) {
+    if (n->kids.empty()) return n->label;
+    std::string r = "(" + n->label; for (auto& k : n->kids) r += " " + show(k.get()); return r + ")";
+}
+void yield(const Node* n, std::vector<std::string>& out) { if (n->kids.empty()) out.push_back(n->label); for (auto& k : n->kids) yield(k.get(), out); }
+int count(const Node* n) { int c = 1; for (auto& k : n->kids) c += count(k.get()); return c; }
+long evalCst(const Node* n) {                                              // 파스 트리를 아래에서 위로 계산 (규칙 구조가 곧 우선순위)
+    if (n->label == "Factor") return n->kids.size() == 1 ? std::stol(n->kids[0]->label) : evalCst(n->kids[1].get());
+    long v = evalCst(n->kids[0].get());
+    for (size_t j = 1; j < n->kids.size(); j += 2) {
+        long r = evalCst(n->kids[j + 1].get()); char op = n->kids[j]->label[0];
+        v = op == '+' ? v + r : op == '-' ? v - r : op == '*' ? v * r : v / r;
+    }
+    return v;
+}
+std::string toAst(const Node* n) {                                         // 파스 트리 -> AST 의 S-식: 괄호·중간 규칙을 걷어낸다
+    if (n->label == "Factor") return n->kids.size() == 1 ? n->kids[0]->label : toAst(n->kids[1].get());
+    std::string acc = toAst(n->kids[0].get());
+    for (size_t j = 1; j < n->kids.size(); j += 2) acc = "(" + n->kids[j]->label + " " + acc + " " + toAst(n->kids[j + 1].get()) + ")";
+    return acc;
+}
+// 모호한 문법 S -> S S | a : 같은 문자열에 파스 트리가 여러 개.  구간 DP(CYK 방식)로 트리 개수를 센다 -> 카탈란 수
+long countTrees(int n) {
+    std::vector<std::vector<long>> c(n + 1, std::vector<long>(n + 1, 0));
+    for (int i = 0; i < n; i++) c[i][i + 1] = 1;
+    for (int len = 2; len <= n; len++) for (int i = 0; i + len <= n; i++) for (int k = i + 1; k < i + len; k++) c[i][i + len] += c[i][k] * c[k][i + len];
+    return c[0][n];
+}
+
+int main() {
+    std::vector<std::string> tok;
+    P t = parse("1+2*3", tok);
+    assert(show(t.get()) == "(Expr (Term (Factor 1)) + (Term (Factor 2) * (Factor 3)))");
+    std::vector<std::string> y; yield(t.get(), y); assert(y == tok);                                 // yield == 입력 토큰열
+    for (std::string s : {"(1+2)*3", "10-4-3", "2*(3+(4-1))/3", "((7))"}) {
+        P p = parse(s, tok); y.clear(); yield(p.get(), y); assert(y == tok);                         // 괄호까지 모두 잎으로 남는다
+        assert(count(p.get()) > 2 * (int)tok.size() - 1 || s == "10-4-3");
+    }
+    assert(evalCst(parse("1+2*3", tok).get()) == 7 && evalCst(parse("(1+2)*3", tok).get()) == 9 && evalCst(parse("10-4-3", tok).get()) == 3);
+    assert(toAst(parse("1+2*3", tok).get()) == "(+ 1 (* 2 3))");
+    assert(toAst(parse("(1+2)*3", tok).get()) == "(* (+ 1 2) 3)");
+    assert(toAst(parse("10-4-3", tok).get()) == "(- (- 10 4) 3)");
+    P big = parse("1+2*3", tok);
+    assert(count(big.get()) == 11);                                                                    // 파스 트리 11 노드 vs AST (+ 1 (* 2 3)) 5 노드
+    long catalan[] = {1, 1, 2, 5, 14, 42, 132, 429, 1430, 4862};
+    for (int n = 1; n <= 10; n++) assert(countTrees(n) == catalan[n - 1]);
+    std::cout << "ParseTree: " << show(t.get()) << " ; trees for a^10 under S->SS|a = " << countTrees(10) << std::endl;
+    return 0;
+}
+// Time Complexity: 재귀 하강 파싱 O(N), 모호한 문법의 트리 수 세기 O(N^3)
+// Space Complexity: O(N)
 ```
 ## DecisionTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "Decision Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 의사결정 트리: 내부 노드 = 속성에 대한 질문, 간선 = 답, 잎 = 예측.  "가장 불순도를 많이 줄이는 질문"을 탐욕적으로 고르며 재귀 분할한다.
+// (1) ID3: 범주형 속성, 정보 이득 = H(S) - Σ |Sv|/|S| · H(Sv)   (2) CART: 수치형 속성, 임계값 분할과 지니 불순도 2p(1-p)
+typedef std::vector<std::string> Row;                                      // 마지막 열 = 레이블
+const char* attrName[] = {"Outlook", "Temperature", "Humidity", "Wind"};
+double entropy(const std::vector<Row>& rows) {
+    std::map<std::string, int> cnt; for (auto& r : rows) cnt[r.back()]++;
+    double h = 0; for (auto& kv : cnt) { double p = (double)kv.second / rows.size(); h -= p * std::log2(p); } return h;
+}
+double gain(const std::vector<Row>& rows, int a) {
+    std::map<std::string, std::vector<Row>> parts; for (auto& r : rows) parts[r[a]].push_back(r);
+    double g = entropy(rows); for (auto& kv : parts) g -= (double)kv.second.size() / rows.size() * entropy(kv.second); return g;
+}
+struct Node { int attr = -1; std::string label; std::map<std::string, std::unique_ptr<Node>> kids; };
+std::string majority(const std::vector<Row>& rows) {
+    std::map<std::string, int> cnt; for (auto& r : rows) cnt[r.back()]++;
+    return std::max_element(cnt.begin(), cnt.end(), [](auto& a, auto& b) { return a.second < b.second; })->first;
+}
+std::unique_ptr<Node> build(const std::vector<Row>& rows, std::set<int> attrs) {
+    std::unique_ptr<Node> n(new Node); n->label = majority(rows);
+    std::set<std::string> labels; for (auto& r : rows) labels.insert(r.back());
+    if (labels.size() == 1 || attrs.empty()) return n;                     // 순수하거나 쓸 속성이 없으면 잎
+    int best = -1; double bg = -1; for (int a : attrs) { double g = gain(rows, a); if (g > bg) { bg = g; best = a; } }
+    n->attr = best; attrs.erase(best);
+    std::map<std::string, std::vector<Row>> parts; for (auto& r : rows) parts[r[best]].push_back(r);
+    for (auto& kv : parts) n->kids[kv.first] = build(kv.second, attrs);
+    return n;
+}
+std::string predict(const Node* n, const Row& x) {
+    while (n->attr >= 0) { auto it = n->kids.find(x[n->attr]); if (it == n->kids.end()) return n->label; n = it->second.get(); }
+    return n->label;
+}
+std::string show(const Node* n) {
+    if (n->attr < 0) return n->label;
+    std::string s = std::string(attrName[n->attr]) + "("; bool first = true;
+    for (auto& kv : n->kids) { if (!first) s += ","; first = false; s += kv.first + ":" + show(kv.second.get()); }
+    return s + ")";
+}
+// ---- CART: 수치형 속성 2개, 이진 분할 ----
+struct Pt { double x[2]; int y; };
+struct CNode { int f = -1; double thr = 0; int label = 0; std::unique_ptr<CNode> l, r; };
+double gini(int n0, int n1) { int n = n0 + n1; if (!n) return 0; double p = (double)n1 / n; return 2 * p * (1 - p); }
+std::unique_ptr<CNode> buildCart(std::vector<Pt>& p, int lo, int hi, int depth, int maxDepth) {
+    std::unique_ptr<CNode> n(new CNode); int c1 = 0; for (int i = lo; i < hi; i++) c1 += p[i].y;
+    int c0 = (hi - lo) - c1; n->label = c1 > c0;
+    if (c0 == 0 || c1 == 0 || depth == maxDepth) return n;
+    double parent = gini(c0, c1), best = parent; int bf = -1; double bt = 0;
+    for (int f = 0; f < 2; f++) {
+        std::sort(p.begin() + lo, p.begin() + hi, [f](const Pt& a, const Pt& b) { return a.x[f] < b.x[f]; });
+        int l0 = 0, l1 = 0;
+        for (int i = lo; i + 1 < hi; i++) {
+            (p[i].y ? l1 : l0)++;
+            if (p[i].x[f] == p[i + 1].x[f]) continue;
+            int m = i + 1 - lo; double g = (m * gini(l0, l1) + (hi - lo - m) * gini(c0 - l0, c1 - l1)) / (hi - lo);
+            if (g < best - 1e-12) { best = g; bf = f; bt = (p[i].x[f] + p[i + 1].x[f]) / 2; }
+        }
+    }
+    if (bf < 0) return n;                                                  // 불순도를 줄이는 분할이 없다
+    n->f = bf; n->thr = bt;
+    std::sort(p.begin() + lo, p.begin() + hi, [bf](const Pt& a, const Pt& b) { return a.x[bf] < b.x[bf]; });
+    int mid = lo; while (mid < hi && p[mid].x[bf] <= bt) mid++;
+    n->l = buildCart(p, lo, mid, depth + 1, maxDepth); n->r = buildCart(p, mid, hi, depth + 1, maxDepth);
+    return n;
+}
+int predictCart(const CNode* n, const Pt& q) { while (n->f >= 0) n = q.x[n->f] <= n->thr ? n->l.get() : n->r.get(); return n->label; }
+int depthOf(const CNode* n) { return n->f < 0 ? 0 : 1 + std::max(depthOf(n->l.get()), depthOf(n->r.get())); }
+
+int main() {
+    std::vector<Row> d = {
+        {"Sunny","Hot","High","Weak","No"},       {"Sunny","Hot","High","Strong","No"},    {"Overcast","Hot","High","Weak","Yes"},
+        {"Rain","Mild","High","Weak","Yes"},      {"Rain","Cool","Normal","Weak","Yes"},   {"Rain","Cool","Normal","Strong","No"},
+        {"Overcast","Cool","Normal","Strong","Yes"}, {"Sunny","Mild","High","Weak","No"},  {"Sunny","Cool","Normal","Weak","Yes"},
+        {"Rain","Mild","Normal","Weak","Yes"},    {"Sunny","Mild","Normal","Strong","Yes"}, {"Overcast","Mild","High","Strong","Yes"},
+        {"Overcast","Hot","Normal","Weak","Yes"}, {"Rain","Mild","High","Strong","No"}};
+    assert(std::fabs(entropy(d) - 0.9403) < 5e-4);                         // 9 Yes / 5 No
+    assert(std::fabs(gain(d, 0) - 0.2467) < 5e-4 && std::fabs(gain(d, 1) - 0.0292) < 5e-4);      // 교과서의 정보 이득 값
+    assert(std::fabs(gain(d, 2) - 0.1518) < 5e-4 && std::fabs(gain(d, 3) - 0.0481) < 5e-4);
+    auto tree = build(d, {0, 1, 2, 3});
+    assert(show(tree.get()) == "Outlook(Overcast:Yes,Rain:Wind(Strong:No,Weak:Yes),Sunny:Humidity(High:No,Normal:Yes))");
+    for (auto& r : d) assert(predict(tree.get(), r) == r.back());          // 학습 데이터 14/14
+    assert(predict(tree.get(), {"Sunny", "Cool", "Normal", "Strong", ""}) == "Yes");
+    assert(predict(tree.get(), {"Rain", "Mild", "High", "Strong", ""}) == "No");
+
+    std::mt19937 rng(2024); std::uniform_real_distribution<double> U(0, 10);
+    auto make = [&](int n) { std::vector<Pt> v(n); for (auto& p : v) { p.x[0] = U(rng); p.x[1] = U(rng); p.y = (p.x[0] > 5 && p.x[1] < 3); } return v; };
+    std::vector<Pt> train = make(2000), test = make(5000);
+    auto cart = buildCart(train, 0, train.size(), 0, 5);
+    int ok = 0; for (auto& q : test) ok += predictCart(cart.get(), q) == q.y;
+    assert(depthOf(cart.get()) <= 3 && ok >= 0.98 * test.size());          // 두 임계값(x0>5, x1<3)을 찾아낸다
+    for (auto& q : train) assert(predictCart(cart.get(), q) == q.y);
+    std::cout << "DecisionTree: ID3 = " << show(tree.get()) << " ; CART depth " << depthOf(cart.get()) << ", test accuracy " << 100.0 * ok / test.size() << "%" << std::endl;
+    return 0;
+}
+// Time Complexity: ID3 O(속성 수 × N × 깊이), CART 노드당 O(속성 수 × N log N)
+// Space Complexity: O(N)
 ```
 ## MerkleTree()
 ### 대표코드
 ```cpp
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <string>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "Merkle Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 머클 트리: 잎 = 데이터 블록의 해시, 내부 노드 = 두 자식 해시를 이은 것의 해시.  루트 해시 32바이트 하나가 전체 데이터의 지문이다.
+// 어느 한 블록이 진짜인지는 "루트까지 형제 해시 log2 n 개(감사 경로)"만 받으면 O(log n) 에 검증된다 (Git, 비트코인, 인증서 투명성 로그, 분산 DB 의 동기화).
+// 여기서는 RFC 6962(인증서 투명성)의 정의를 따른다: 잎 해시 = H(0x00 || 데이터), 내부 = H(0x01 || 왼쪽 || 오른쪽), n 개를 "n 보다 작은 가장 큰 2의 거듭제곱 k" 에서 둘로 나눈다.
+// 접두 바이트(도메인 분리)와 "마지막 노드 복제 없음" 이 비트코인식 단순 구성의 취약점(잎과 내부 노드 혼동, [a,b,c] == [a,b,c,c])을 막는다
+static inline uint32_t rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+std::string sha256raw(const std::string& msg) {                            // SHA-256: 32바이트 원시 다이제스트
+    static uint32_t K[64], H0[8]; static bool init = false;
+    if (!init) {
+        std::vector<uint32_t> pr; for (uint32_t p = 2; pr.size() < 64; p++) { bool ok = true; for (uint32_t q : pr) if (p % q == 0) { ok = false; break; } if (ok) pr.push_back(p); }
+        for (int i = 0; i < 64; i++) { long double c = cbrtl((long double)pr[i]); K[i] = (uint32_t)((c - floorl(c)) * 4294967296.0L); }
+        for (int i = 0; i < 8; i++)  { long double s = sqrtl((long double)pr[i]); H0[i] = (uint32_t)((s - floorl(s)) * 4294967296.0L); }
+        init = true;
+    }
+    uint32_t H[8]; for (int i = 0; i < 8; i++) H[i] = H0[i];
+    std::vector<uint8_t> m(msg.begin(), msg.end()); uint64_t bits = (uint64_t)msg.size() * 8;
+    m.push_back(0x80); while (m.size() % 64 != 56) m.push_back(0);
+    for (int i = 7; i >= 0; i--) m.push_back((bits >> (8 * i)) & 0xff);
+    for (size_t off = 0; off < m.size(); off += 64) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; i++) w[i] = m[off + 4*i] << 24 | m[off + 4*i + 1] << 16 | m[off + 4*i + 2] << 8 | m[off + 4*i + 3];
+        for (int i = 16; i < 64; i++) {
+            uint32_t s0 = rotr(w[i-15], 7) ^ rotr(w[i-15], 18) ^ (w[i-15] >> 3), s1 = rotr(w[i-2], 17) ^ rotr(w[i-2], 19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16] + s0 + w[i-7] + s1;
+        }
+        uint32_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+        for (int i = 0; i < 64; i++) {
+            uint32_t t1 = h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
+            uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+            h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+        }
+        H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    }
+    std::string out(32, 0); for (int i = 0; i < 8; i++) for (int j = 0; j < 4; j++) out[4 * i + j] = (char)((H[i] >> (24 - 8 * j)) & 0xff);
+    return out;
+}
+std::string hex(const std::string& s) { static const char* d = "0123456789abcdef"; std::string r; for (unsigned char c : s) { r += d[c >> 4]; r += d[c & 15]; } return r; }
+
+typedef std::string Hash; typedef std::vector<std::string> Data;
+Hash leafHash(const std::string& d) { return sha256raw(std::string(1, '\x00') + d); }
+Hash nodeHash(const Hash& l, const Hash& r) { return sha256raw(std::string(1, '\x01') + l + r); }
+size_t lpow2(size_t n) { size_t k = 1; while (k * 2 < n) k *= 2; return k; }            // n 보다 작은 가장 큰 2의 거듭제곱 (n >= 2)
+Hash mth(const Data& D, size_t lo, size_t hi) {                             // Merkle Tree Hash (루트)
+    size_t n = hi - lo; if (n == 0) return sha256raw(""); if (n == 1) return leafHash(D[lo]);
+    size_t k = lpow2(n); return nodeHash(mth(D, lo, lo + k), mth(D, lo + k, hi));
+}
+void auditPath(const Data& D, size_t m, size_t lo, size_t hi, std::vector<Hash>& out) {   // 잎 m 에서 루트까지의 형제 해시들 (아래 -> 위)
+    size_t n = hi - lo; if (n == 1) return; size_t k = lpow2(n);
+    if (m < k) { auditPath(D, m, lo, lo + k, out); out.push_back(mth(D, lo + k, hi)); }
+    else       { auditPath(D, m - k, lo + k, hi, out); out.push_back(mth(D, lo, lo + k)); }
+}
+bool rootFromPath(size_t m, size_t n, const Hash& leaf, const std::vector<Hash>& p, size_t& end, Hash& out) {
+    if (n == 1) { out = leaf; return true; }
+    if (end == 0) return false;
+    const Hash& sib = p[--end]; size_t k = lpow2(n); Hash sub;
+    if (m < k) { if (!rootFromPath(m, k, leaf, p, end, sub)) return false; out = nodeHash(sub, sib); }
+    else       { if (!rootFromPath(m - k, n - k, leaf, p, end, sub)) return false; out = nodeHash(sib, sub); }
+    return true;
+}
+bool verify(const Hash& root, size_t n, size_t m, const std::string& data, const std::vector<Hash>& path) {
+    size_t end = path.size(); Hash r; return m < n && rootFromPath(m, n, leafHash(data), path, end, r) && end == 0 && r == root;
+}
+Hash naiveRoot(std::vector<Hash> level) {                                   // 비트코인식: 접두 없음, 홀수면 마지막 복제
+    while (level.size() > 1) { if (level.size() % 2) level.push_back(level.back()); std::vector<Hash> nx; for (size_t i = 0; i < level.size(); i += 2) nx.push_back(sha256raw(level[i] + level[i + 1])); level = nx; }
+    return level[0];
+}
+
+int main() {
+    assert(hex(sha256raw("abc")) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    const char* expect[] = {                                                // 독립 구현(Python hashlib)으로 구한 "leaf0".."leaf8" 의 n = 0..9 루트
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "e6c410a9745b0151d82d1a9f007b81f378a1588c3fb63dc634a2ab001379c3d2",
+        "82bbd1c5de08394573f035ab3871ffaa6d8aba80baf47c7b28fb2b167f18464e", "f1aed069e1b79c5f12193e715059c468eff1559a5c989c6d7c46bc29f4f84f6c",
+        "86f9ec25a8a2b32a4bd733e04c213de63c8b0655bcb887b75cfd8b02691be0e5", "2f4e0d79b7e066069be4d391a858023d0acd245505ab6913a8fd69726b65741d",
+        "2bec773a6ce6d83151210fdd24bea43e7c4c94902811ce6124a21c71951860bd", "4b6939132387c5bf27ebaf5ac122810ce866eb0c7bf44082364b35c06f713aa6",
+        "d12334b61aa2f244f11754c40896641551d64cd5c79fa0f9760d2ec3079d1834", "d6fe82371b0d1ef3c1a646efa98551e16d7c07bb83c0b9fe97136f471dd45f82"};
+    Data D; for (int i = 0; i < 40; i++) D.push_back("leaf" + std::to_string(i));
+    for (int n = 0; n <= 9; n++) assert(hex(mth(D, 0, n)) == expect[n]);
+    for (size_t n = 1; n <= 40; n++) {                                      // 모든 (크기, 잎) 쌍에서 감사 경로가 검증되고 길이는 ceil(log2 n) 이하
+        Hash root = mth(D, 0, n);
+        for (size_t m = 0; m < n; m++) {
+            std::vector<Hash> path; auditPath(D, m, 0, n, path);
+            assert(path.size() <= (size_t)std::ceil(std::log2((double)n)) && verify(root, n, m, D[m], path));
+            assert(!verify(root, n, m, D[m] + "x", path));                  // 데이터 변조
+            if (n > 1) { auto bad = path; bad[0][0] ^= 1; assert(!verify(root, n, m, D[m], bad)); }            // 경로 변조
+            if (n > 1) assert(!verify(root, n, (m + 1) % n, D[m], path));   // 엉뚱한 위치 주장
+        }
+    }
+    // 단순 구성의 약점: [a,b,c] 와 [a,b,c,c] 가 같은 루트 / 내부 노드가 잎으로 위장
+    std::vector<Hash> abc = {sha256raw("a"), sha256raw("b"), sha256raw("c")}, abcc = abc; abcc.push_back(abc[2]);
+    assert(naiveRoot(abc) == naiveRoot(abcc));
+    assert(mth({"a", "b", "c"}, 0, 3) != mth({"a", "b", "c", "c"}, 0, 4));
+    std::vector<Hash> ab = {sha256raw("a"), sha256raw("b")};
+    assert(sha256raw(ab[0] + ab[1]) == naiveRoot(ab));                    // 두 해시를 이은 "데이터" 한 개짜리 트리(잎 해시 = H(데이터))가 둘짜리 트리와 같은 루트
+    assert(mth({leafHash("a") + leafHash("b")}, 0, 1) != mth({"a", "b"}, 0, 2));       // 접두 바이트가 이를 막는다
+    std::cout << "MerkleTree: root(8 leaves) = " << hex(mth(D, 0, 8)).substr(0, 16) << "..., proof length for 40 leaves <= " << std::ceil(std::log2(40.0)) << std::endl;
+    return 0;
+}
+// Time Complexity: 루트 계산 O(N) 해시, 감사 경로 생성·검증 O(log N) (경로 생성은 부분 트리 해시 재계산 포함 O(N))
+// Space Complexity: 증명 O(log N)
 ```
 ## IntervalTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <tuple>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "Interval Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 구간 트리(증강 BST): 구간 [lo, hi] 들을 lo 순으로 BST 에 두고, 각 노드에 "부분 트리 안의 최대 hi(mx)" 를 덧붙인다 (CLRS 14장).
+// "질의 구간과 겹치는 구간이 있는가" 는 왼쪽 부분 트리의 mx >= 질의.lo 이면 왼쪽에 겹침 후보가 있다는 사실로 한 길을 따라 내려가며 O(log n) 에 답한다.
+// 모든 겹침을 찾는 연산은 mx 가 질의.lo 보다 작은 부분 트리를 통째로 건너뛰어 O(k + log n) 에 가깝다.  균형은 트레이프로 잡는다 (분할/병합이 mx 를 쉽게 유지)
+struct Node { int lo, hi, mx, id; unsigned pri; Node *l = nullptr, *r = nullptr; };
+typedef std::tuple<int, int, int> Key;
+Key key(const Node* n) { return Key(n->lo, n->hi, n->id); }
+void upd(Node* t) { t->mx = t->hi; if (t->l) t->mx = std::max(t->mx, t->l->mx); if (t->r) t->mx = std::max(t->mx, t->r->mx); }
+void split(Node* t, const Key& k, bool leq, Node*& a, Node*& b) {          // a: 키 < k (leq 이면 <= k), b: 나머지
+    if (!t) { a = b = nullptr; return; }
+    if (leq ? key(t) <= k : key(t) < k) { a = t; split(t->r, k, leq, t->r, b); } else { b = t; split(t->l, k, leq, a, t->l); }
+    upd(t);
+}
+Node* merge(Node* a, Node* b) {
+    if (!a) return b; if (!b) return a;
+    if (a->pri > b->pri) { a->r = merge(a->r, b); upd(a); return a; }
+    b->l = merge(a, b->l); upd(b); return b;
+}
+struct IntervalTree {
+    Node* root = nullptr; std::vector<std::unique_ptr<Node>> pool; std::mt19937 rng{12345};
+    void insert(int lo, int hi, int id) {
+        pool.emplace_back(new Node{lo, hi, hi, id, (unsigned)rng()}); Node* n = pool.back().get();
+        Node *a, *b; split(root, key(n), false, a, b); root = merge(merge(a, n), b);
+    }
+    void erase(int lo, int hi, int id) {
+        Key k(lo, hi, id); Node *a, *b, *m, *c; split(root, k, false, a, b); split(b, k, true, m, c); root = merge(a, c);   // m 은 정확히 그 구간 하나
+    }
+    Node* anyOverlap(int lo, int hi) const {                               // 겹치는 구간 하나 (없으면 null)
+        Node* t = root;
+        while (t) { if (t->lo <= hi && lo <= t->hi) return t; t = (t->l && t->l->mx >= lo) ? t->l : t->r; }
+        return nullptr;
+    }
+    void allOverlaps(const Node* t, int lo, int hi, std::vector<int>& out, long& visited) const {
+        if (!t || t->mx < lo) return;                                       // 이 부분 트리의 어떤 구간도 lo 에 닿지 못한다
+        visited++;
+        allOverlaps(t->l, lo, hi, out, visited);
+        if (t->lo <= hi && lo <= t->hi) out.push_back(t->id);
+        if (t->lo <= hi) allOverlaps(t->r, lo, hi, out, visited);           // 오른쪽은 모두 lo' >= t->lo 이므로 t->lo > hi 면 전부 제외
+    }
+};
+bool checkMx(const Node* t) { if (!t) return true; int m = t->hi; if (t->l) m = std::max(m, t->l->mx); if (t->r) m = std::max(m, t->r->mx); return m == t->mx && checkMx(t->l) && checkMx(t->r); }
+
+int main() {
+    std::mt19937 rng(99); IntervalTree T; struct Iv { int lo, hi; bool alive; }; std::vector<Iv> iv;
+    for (int i = 0; i < 5000; i++) { int lo = rng() % 100000, len = rng() % 60 + 1; iv.push_back({lo, lo + len, true}); T.insert(lo, lo + len, i); }
+    assert(checkMx(T.root));
+    auto brute = [&](int lo, int hi) { std::vector<int> r; for (size_t i = 0; i < iv.size(); i++) if (iv[i].alive && iv[i].lo <= hi && lo <= iv[i].hi) r.push_back(i); return r; };
+    long visitedTotal = 0; int queries = 1000;
+    for (int round = 0; round < 2; round++) {
+        for (int q = 0; q < queries; q++) {
+            int lo = rng() % 100000, hi = lo + rng() % 40; std::vector<int> got; long vis = 0;
+            T.allOverlaps(T.root, lo, hi, got, vis); visitedTotal += vis; std::sort(got.begin(), got.end());
+            auto want = brute(lo, hi); assert(got == want);
+            Node* any = T.anyOverlap(lo, hi); assert((any != nullptr) == !want.empty());
+            if (any) assert(any->lo <= hi && lo <= any->hi);
+            int x = rng() % 100000; assert((T.anyOverlap(x, x) != nullptr) == !brute(x, x).empty());      // 점 질의(stabbing)
+        }
+        if (round == 0) {                                                   // 절반을 삭제한 뒤 같은 검사를 반복
+            for (int i = 0; i < 5000; i += 2) { T.erase(iv[i].lo, iv[i].hi, i); iv[i].alive = false; }
+            assert(checkMx(T.root));
+        }
+    }
+    double avg = (double)visitedTotal / (2 * queries);
+    assert(avg < 200);                                                      // 5000 개를 모두 훑는 대신 평균 수십~수백 노드만 방문
+    std::cout << "IntervalTree: avg visited nodes per query = " << avg << " (brute force: 5000)" << std::endl;
+    return 0;
+}
+// Time Complexity: 삽입·삭제 O(log N) 기대, 겹침 하나 O(log N), 겹침 k 개 모두 O(k log N) 이내
+// Space Complexity: O(N)
 ```
 ## RopeTree()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <string>
 #include <cassert>
-int main() { std::cout << "Rope Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 로프 트리(트리 관점의 요약, 정본은 String.md Part 4): 긴 문자열을 이진 트리로 표현하고 내부 노드에 "왼쪽 부분 트리 전체 길이(weight)"를 기록한다.
+// 색인은 weight 로 좌우를 고르며 내려가는 O(깊이), 연결은 새 루트 하나를 만드는 O(1) 이라 거대한 문서 중간 편집에 복사가 필요 없다.
+// (분할·삽입·삭제·불변 공유는 String.md 의 Rope 항목)
+struct Rope { Rope *l = nullptr, *r = nullptr; size_t w = 0; std::string s; bool leaf() const { return !l && !r; } };
+Rope* leaf(const std::string& s) { Rope* n = new Rope; n->s = s; n->w = s.size(); return n; }
+size_t len(const Rope* n) { return !n ? 0 : n->leaf() ? n->s.size() : n->w + len(n->r); }
+Rope* cat(Rope* a, Rope* b) { Rope* n = new Rope; n->l = a; n->r = b; n->w = len(a); return n; }
+char at(const Rope* n, size_t i) { return n->leaf() ? n->s[i] : i < n->w ? at(n->l, i) : at(n->r, i - n->w); }
+void del(Rope* n) { if (n) { del(n->l); del(n->r); delete n; } }
+int main() {
+    Rope* doc = cat(cat(leaf("Hello, "), leaf("tree ")), leaf("world!"));
+    assert(len(doc) == 18 && at(doc, 0) == 'H' && at(doc, 7) == 't' && at(doc, 12) == 'w' && at(doc, 17) == '!');
+    std::cout << "RopeTree: char[12] = " << at(doc, 12) << std::endl; del(doc); return 0;
+}
+// Time Complexity: 색인 O(깊이), 연결 O(1)
+// Space Complexity: O(노드 수)
 ```
 ## RTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <climits>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "R-Tree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// R-트리: 2차원 이상 "사각형"(MBR, 최소 외접 사각형)을 B-트리처럼 균형 있게 모은 공간 색인 (PostGIS, SQLite R*Tree, 지도·게임 충돌 검사).
+// 내부 노드의 각 항목 = (자식 노드 전체를 덮는 사각형, 자식).  질의 사각형과 겹치지 않는 항목은 그 아래를 통째로 건너뛴다.
+// 삽입: 사각형이 "가장 적게 커지는" 자식으로 내려가고, 노드가 M+1 개가 되면 이차(quadratic) 분할 — 가장 낭비가 큰 한 쌍을 씨앗으로 삼아 나머지를 더 이득인 쪽에 배정 (각 쪽 최소 m 개 보장)
+struct Rect { int x1, y1, x2, y2; };
+long area(const Rect& r) { return (long)(r.x2 - r.x1) * (r.y2 - r.y1); }
+Rect unite(const Rect& a, const Rect& b) { return {std::min(a.x1, b.x1), std::min(a.y1, b.y1), std::max(a.x2, b.x2), std::max(a.y2, b.y2)}; }
+bool inter(const Rect& a, const Rect& b) { return a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2; }
+long enlarge(const Rect& r, const Rect& add) { return area(unite(r, add)) - area(r); }
+struct Node;
+struct Entry { Rect r; Node* child; int id; };
+struct Node { bool leaf; std::vector<Entry> e; };
+const int M = 4, m = 2;
+Rect mbr(const Node* n) { Rect r = n->e[0].r; for (auto& x : n->e) r = unite(r, x.r); return r; }
+Node* splitNode(Node* n) {                                                 // n 은 M+1 개를 가진다. 한 그룹은 n 에 남기고 다른 그룹을 새 노드로
+    auto E = n->e; int a = 0, b = 1; long worst = -1;
+    for (size_t i = 0; i < E.size(); i++) for (size_t j = i + 1; j < E.size(); j++) {
+        long waste = area(unite(E[i].r, E[j].r)) - area(E[i].r) - area(E[j].r);
+        if (waste > worst) { worst = waste; a = i; b = j; }
+    }
+    std::vector<Entry> g1 = {E[a]}, g2 = {E[b]}, rest; Rect r1 = E[a].r, r2 = E[b].r;
+    for (size_t i = 0; i < E.size(); i++) if ((int)i != a && (int)i != b) rest.push_back(E[i]);
+    while (!rest.empty()) {
+        if (g1.size() + rest.size() <= (size_t)m) { for (auto& x : rest) g1.push_back(x); break; }        // 최소 개수 보장
+        if (g2.size() + rest.size() <= (size_t)m) { for (auto& x : rest) g2.push_back(x); break; }
+        int pick = 0; long bestDiff = -1;                                   // 두 그룹에 대한 선호 차이가 가장 큰 항목부터
+        for (size_t i = 0; i < rest.size(); i++) { long d = std::labs(enlarge(r1, rest[i].r) - enlarge(r2, rest[i].r)); if (d > bestDiff) { bestDiff = d; pick = i; } }
+        Entry x = rest[pick]; rest.erase(rest.begin() + pick);
+        long d1 = enlarge(r1, x.r), d2 = enlarge(r2, x.r);
+        bool to1 = d1 < d2 || (d1 == d2 && (area(r1) < area(r2) || (area(r1) == area(r2) && g1.size() <= g2.size())));
+        if (to1) { g1.push_back(x); r1 = unite(r1, x.r); } else { g2.push_back(x); r2 = unite(r2, x.r); }
+    }
+    n->e = g1; return new Node{n->leaf, g2};
+}
+Node* insertRec(Node* n, const Entry& e) {                                 // 분할이 일어나면 새 형제를 돌려준다
+    if (n->leaf) n->e.push_back(e);
+    else {
+        int best = 0; long bd = LONG_MAX, ba = LONG_MAX;
+        for (size_t i = 0; i < n->e.size(); i++) {
+            long d = enlarge(n->e[i].r, e.r), a = area(n->e[i].r);
+            if (d < bd || (d == bd && a < ba)) { best = i; bd = d; ba = a; }
+        }
+        Node* s = insertRec(n->e[best].child, e);
+        n->e[best].r = mbr(n->e[best].child);
+        if (s) n->e.push_back(Entry{mbr(s), s, -1});
+    }
+    return (int)n->e.size() > M ? splitNode(n) : nullptr;
+}
+void insert(Node*& root, const Rect& r, int id) {
+    Node* s = insertRec(root, Entry{r, nullptr, id});
+    if (s) root = new Node{false, {Entry{mbr(root), root, -1}, Entry{mbr(s), s, -1}}};               // 루트 분할 -> 높이 +1
+}
+void search(const Node* n, const Rect& q, std::vector<int>& out, long& visited) {
+    visited++;
+    for (auto& x : n->e) if (inter(x.r, q)) { if (n->leaf) out.push_back(x.id); else search(x.child, q, out, visited); }
+}
+int check(const Node* n, bool isRoot, int& count) {                        // 높이(잎=1), 위반이면 -1: 항목 수, 같은 깊이, 부모의 사각형 == 자식의 MBR
+    if (n->e.empty() || (int)n->e.size() > M || (!isRoot && (int)n->e.size() < m)) return -1;
+    if (n->leaf) { count += n->e.size(); return 1; }
+    int h = -2;
+    for (auto& x : n->e) {
+        Rect t = mbr(x.child); if (t.x1 != x.r.x1 || t.y1 != x.r.y1 || t.x2 != x.r.x2 || t.y2 != x.r.y2) return -1;
+        int ch = check(x.child, false, count); if (ch < 0 || (h != -2 && ch != h)) return -1; h = ch;
+    }
+    return h + 1;
+}
+void destroy(Node* n) { if (!n->leaf) for (auto& x : n->e) destroy(x.child); delete n; }
+
+int main() {
+    std::mt19937 rng(17); Node* root = new Node{true, {}}; std::vector<Rect> rects; int N = 4000;
+    for (int i = 0; i < N; i++) {
+        int x = rng() % 10000, y = rng() % 10000, w = rng() % 100 + 1, h = rng() % 100 + 1;
+        rects.push_back({x, y, x + w, y + h}); insert(root, rects.back(), i);
+        if (i % 500 == 0) { int c = 0; assert(check(root, true, c) > 0 && c == i + 1); }
+    }
+    int cnt = 0; int height = check(root, true, cnt); assert(height > 0 && cnt == N);
+    assert(height <= std::log2((double)N));                                // 모든 노드가 m=2 개 이상이므로 높이 <= log2 N
+    long visitedTotal = 0;
+    for (int q = 0; q < 400; q++) {
+        int x = rng() % 10000, y = rng() % 10000; Rect w{x, y, x + (int)(rng() % 600), y + (int)(rng() % 600)};
+        std::vector<int> got; long vis = 0; search(root, w, got, vis); visitedTotal += vis; std::sort(got.begin(), got.end());
+        std::vector<int> want; for (int i = 0; i < N; i++) if (inter(rects[i], w)) want.push_back(i);
+        assert(got == want);                                               // 브루트 포스와 같은 결과
+    }
+    double avg = (double)visitedTotal / 400;
+    assert(avg < N / 8.0);                                                 // 전체 사각형 4000 개 대신 일부 노드만 방문
+    std::cout << "RTree: height " << height << ", avg nodes visited per window query " << avg << " (rects: " << N << ")" << std::endl;
+    destroy(root); return 0;
+}
+// Time Complexity: 삽입 O(M log_m N), 검색은 겹침 정도에 따라 O(log N) ~ O(N)
+// Space Complexity: O(N)
 ```
 ## VanEmdeBoasTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "VanEmdeBoasTree." << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 반 엠데 보아스(vEB) 트리: 정수 집합 U = 2^bits 를 지원하면서 insert/erase/member/min/max/successor/predecessor 가 모두 O(log log U).
+// U 를 √U 개씩 √U 칸으로 나눠 "상위 비트 = 클러스터 번호, 하위 비트 = 클러스터 안 위치"로 재귀하고, 비어 있지 않은 클러스터를 다른 vEB(summary)로 관리한다.
+// 두 가지 요령: (1) 최솟값은 클러스터에 넣지 않고 노드에 따로 두어 빈 클러스터 삽입을 O(1) 로, (2) min/max 를 O(1) 로 알고 있어 재귀 호출이 항상 하나뿐 -> T(U) = T(√U) + O(1).
+// 클러스터는 필요할 때만 만들어(lazy) U = 2^24 도 메모리를 적게 쓴다
+long calls = 0;                                                            // 재귀 호출 수 측정
+struct VEB {
+    int bits, lowBits, highBits; long mn = -1, mx = -1; VEB* summary = nullptr; std::vector<VEB*> cl;
+    explicit VEB(int b) : bits(b), lowBits(b / 2), highBits(b - b / 2) { if (b > 1) cl.assign(1L << highBits, nullptr); }
+    ~VEB() { delete summary; for (VEB* c : cl) delete c; }
+    long high(long x) const { return x >> lowBits; }
+    long low(long x) const { return x & ((1L << lowBits) - 1); }
+    long index(long h, long l) const { return (h << lowBits) | l; }
+    bool empty() const { return mn < 0; }
+    bool member(long x) const {
+        calls++; if (x == mn || x == mx) return true;
+        if (bits == 1) return false;
+        VEB* c = cl[high(x)]; return c && c->member(low(x));
+    }
+    void insert(long x) {
+        calls++;
+        if (mn < 0) { mn = mx = x; return; }
+        if (x == mn || x == mx) return;
+        if (x < mn) std::swap(x, mn);                                      // 새 최솟값은 이 노드에 두고, 밀려난 옛 최솟값을 아래로 내려보낸다
+        if (bits > 1) {
+            VEB*& c = cl[high(x)]; if (!c) c = new VEB(lowBits);
+            if (c->empty()) { if (!summary) summary = new VEB(highBits); summary->insert(high(x)); }   // 빈 클러스터에 넣을 때는 아래 insert 가 O(1)
+            c->insert(low(x));
+        }
+        if (x > mx) mx = x;
+    }
+    void erase(long x) {                                                   // x 가 집합에 있어야 한다
+        calls++;
+        if (mn == mx) { mn = mx = -1; return; }
+        if (bits == 1) { mn = mx = (x == 0 ? 1 : 0); return; }
+        if (x == mn) { long fc = summary->mn; x = index(fc, cl[fc]->mn); mn = x; }          // 최솟값을 지우려면 다음 최솟값을 끌어올린다
+        long h = high(x); cl[h]->erase(low(x));
+        if (cl[h]->empty()) {
+            delete cl[h]; cl[h] = nullptr; summary->erase(h);
+            if (x == mx) { long sm = summary->mx; mx = sm < 0 ? mn : index(sm, cl[sm]->mx); }
+        } else if (x == mx) mx = index(h, cl[h]->mx);
+    }
+    long succ(long x) const {                                              // x 보다 큰 최소 원소, 없으면 -1
+        calls++;
+        if (bits == 1) return (x == 0 && mx == 1) ? 1 : -1;
+        if (mn >= 0 && x < mn) return mn;
+        VEB* c = cl[high(x)];
+        if (c && !c->empty() && low(x) < c->mx) return index(high(x), c->succ(low(x)));
+        long sc = summary ? summary->succ(high(x)) : -1;
+        return sc < 0 ? -1 : index(sc, cl[sc]->mn);
+    }
+    long pred(long x) const {                                              // x 보다 작은 최대 원소, 없으면 -1
+        calls++;
+        if (bits == 1) return (x == 1 && mn == 0) ? 0 : -1;
+        if (mx >= 0 && x > mx) return mx;
+        VEB* c = cl[high(x)];
+        if (c && !c->empty() && low(x) > c->mn) return index(high(x), c->pred(low(x)));
+        long pc = summary ? summary->pred(high(x)) : -1;
+        if (pc < 0) return (mn >= 0 && x > mn) ? mn : -1;
+        return index(pc, cl[pc]->mx);
+    }
+};
+
+int main() {
+    const int BITS = 24; const long U = 1L << BITS;
+    VEB v(BITS); std::set<long> ref; std::vector<long> keys; std::mt19937_64 rng(5); long maxCalls = 0;
+    for (int step = 0; step < 80000; step++) {
+        long x = rng() % U; int op = rng() % 6; calls = 0;
+        if (op <= 1 || ref.empty()) { v.insert(x); if (ref.insert(x).second) keys.push_back(x); }          // 삽입 2/6 (중복 삽입도 포함)
+        else if (op == 2) { size_t k = rng() % keys.size(); long y = keys[k]; keys[k] = keys.back(); keys.pop_back(); v.erase(y); ref.erase(y); }
+        else if (op == 3) { auto it = ref.upper_bound(x); assert(v.succ(x) == (it == ref.end() ? -1 : *it)); }
+        else if (op == 4) { auto it = ref.lower_bound(x); assert(v.pred(x) == (it == ref.begin() ? -1 : *std::prev(it))); }
+        else              { assert(v.member(x) == (ref.count(x) > 0)); }
+        maxCalls = std::max(maxCalls, calls);
+        assert(v.member(x) == (ref.count(x) > 0));
+        if (!ref.empty()) assert(v.mn == *ref.begin() && v.mx == *ref.rbegin());
+    }
+    assert(maxCalls <= 16);                                                // 재귀 깊이는 log2(24) ~ 5 단계, 상수 번만 호출
+    VEB dense(16); for (long i = 0; i < 65536; i += 3) dense.insert(i);       // 작은 우주는 전부 채워 본다
+    for (long i = 0; i < 65535; i++) assert(dense.succ(i) == ((i / 3 + 1) * 3 < 65536 ? (i / 3 + 1) * 3 : -1));
+    for (long i = 0; i < 65536; i += 6) dense.erase(i);
+    for (long i = 0; i < 65536; i++) assert(dense.member(i) == (i % 3 == 0 && i % 6 != 0));
+    std::cout << "VanEmdeBoasTree: U=2^24, " << ref.size() << " keys, max recursive calls per op = " << maxCalls << std::endl;
+    return 0;
+}
+// Time Complexity: 모든 연산 O(log log U)
+// Space Complexity: O(N log log U) (lazy 할당; 즉시 할당하면 O(U))
 ```
 
 # 부록
 ## 트리 순회의 재귀와 반복 구현
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 같은 순회를 세 가지 방식으로: (1) 재귀 - 호출 스택이 곧 방문 상태, 깊이 h 면 스택 프레임 h 개 (한쪽으로 치우친 100만 노드 트리는 스택 오버플로)
+// (2) 반복 - 호출 스택을 명시적 스택(힙 메모리)으로 바꾼 것. 깊이에는 안전하지만 O(h) 공간은 그대로
+// (3) Morris - 잎의 빈 오른쪽 자식 포인터를 "후속 노드로 가는 임시 실(thread)"로 쓰고 지나간 뒤 복구해 O(1) 공간.  전위·중위는 가능, 후위는 번거롭다
+struct Node { int v; Node *l = nullptr, *r = nullptr; };
+std::vector<std::unique_ptr<Node>> pool;
+Node* mk(int v) { pool.emplace_back(new Node{v}); return pool.back().get(); }
+int depthSeen = 0;
+void inRec(const Node* t, std::vector<int>& o, int d = 1)   { if (!t) return; depthSeen = std::max(depthSeen, d); inRec(t->l, o, d + 1); o.push_back(t->v); inRec(t->r, o, d + 1); }
+void preRec(const Node* t, std::vector<int>& o)             { if (!t) return; o.push_back(t->v); preRec(t->l, o); preRec(t->r, o); }
+void postRec(const Node* t, std::vector<int>& o)            { if (!t) return; postRec(t->l, o); postRec(t->r, o); o.push_back(t->v); }
+std::vector<int> inIter(Node* t) {
+    std::vector<int> o; std::vector<Node*> st; Node* c = t;
+    while (c || !st.empty()) { while (c) { st.push_back(c); c = c->l; } c = st.back(); st.pop_back(); o.push_back(c->v); c = c->r; }
+    return o;
+}
+std::vector<int> preIter(Node* t) {
+    std::vector<int> o; std::vector<Node*> st; if (t) st.push_back(t);
+    while (!st.empty()) { Node* c = st.back(); st.pop_back(); o.push_back(c->v); if (c->r) st.push_back(c->r); if (c->l) st.push_back(c->l); }
+    return o;
+}
+std::vector<int> postIter(Node* t) {                                       // 스택 하나 + "방금 방문한 노드" 로 오른쪽 부분 트리를 끝냈는지 판단
+    std::vector<int> o; std::vector<Node*> st; Node *c = t, *last = nullptr;
+    while (c || !st.empty()) {
+        if (c) { st.push_back(c); c = c->l; }
+        else { Node* top = st.back(); if (top->r && last != top->r) c = top->r; else { o.push_back(top->v); last = top; st.pop_back(); } }
+    }
+    return o;
+}
+std::vector<int> inMorris(Node* t, bool preorder = false) {                // preorder=true 이면 처음 도착했을 때 방문 (전위)
+    std::vector<int> o; Node* c = t;
+    while (c) {
+        if (!c->l) { o.push_back(c->v); c = c->r; continue; }
+        Node* p = c->l; while (p->r && p->r != c) p = p->r;                // 왼쪽 부분 트리의 가장 오른쪽 = 중위 선행자
+        if (!p->r) { if (preorder) o.push_back(c->v); p->r = c; c = c->l; }          // 실을 걸고 내려간다
+        else       { p->r = nullptr; if (!preorder) o.push_back(c->v); c = c->r; }   // 실을 풀고 올라온다 (트리 원상 복구)
+    }
+    return o;
+}
+Node* randomTree(std::mt19937& rng, int n, int& counter) {
+    if (n == 0) return nullptr;
+    int k = rng() % n; Node* t = mk(0); t->l = randomTree(rng, k, counter); t->v = counter++; t->r = randomTree(rng, n - 1 - k, counter);
+    return t;                                                              // 중위 순서로 0..n-1 이 붙는다
+}
+
 int main() {
-    std::cout << "Recursive limits stack depth to max recursion limit. Iterative avoids it." << std::endl;
-    assert(true);
+    std::mt19937 rng(4);
+    for (int n = 0; n <= 300; n++) {
+        int counter = 0; Node* t = randomTree(rng, n, counter);
+        std::vector<int> in, pre, post; inRec(t, in); preRec(t, pre); postRec(t, post);
+        assert(inIter(t) == in && preIter(t) == pre && postIter(t) == post);
+        assert(inMorris(t) == in && inMorris(t, true) == pre);
+        std::vector<int> again; preRec(t, again); assert(again == pre);    // Morris 가 트리를 망가뜨리지 않았다
+        for (int i = 0; i < n; i++) assert(in[i] == i);
+    }
+    // 깊이 100만짜리 한쪽 치우친 트리: 반복·Morris 는 문제없고, 재귀는 같은 깊이를 흉내 낼 수 없다
+    Node* chain = mk(0); Node* cur = chain; int N = 1000000;
+    for (int i = 1; i < N; i++) { cur->l = mk(i); cur = cur->l; }
+    auto a = inIter(chain), b = inMorris(chain), c = preIter(chain), d = postIter(chain);
+    assert((int)a.size() == N && a == b && a.front() == N - 1 && a.back() == 0);      // 왼쪽 사슬: 중위 = 맨 아래부터
+    assert(c.front() == 0 && c.back() == N - 1 && d == a);
+    Node* small = mk(0); cur = small; for (int i = 1; i < 5000; i++) { cur->l = mk(i); cur = cur->l; }
+    std::vector<int> o; depthSeen = 0; inRec(small, o); assert(depthSeen == 5000);    // 재귀는 깊이만큼 스택 프레임을 쓴다
+    std::cout << "Traversal: recursive/iterative/Morris agree on 300 random trees; 1e6-deep chain handled without recursion (recursion depth 5000 here)" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 세 방식 모두 O(N) (Morris 는 간선을 최대 3번 지남)
+// Space Complexity: 재귀 O(h) 호출 스택, 반복 O(h) 명시적 스택, Morris O(1)
 ```
 
 ## Binary Tree vs BST
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <memory>
+#include <numeric>
+#include <random>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "Binary Tree vs BST" << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 이진 트리는 "모양"(노드마다 자식 최대 2개)만 정의하고, BST 는 거기에 "순서 불변식"(왼쪽 < 노드 < 오른쪽)을 더한 것이다.
+// 모양만 있는 이진 트리에서는 값을 찾으려면 전부 뒤져야 한다(O(N)).  불변식이 있으면 비교 한 번에 절반(이상)을 버려 O(높이) 로 찾는다.
+// 대신 BST 는 "어떤 모양이 되는가"가 입력 순서에 달려 있다 -> 정렬된 입력은 높이 N 의 연결 리스트가 되므로 AVL/레드-블랙 같은 균형 트리가 필요하다
+struct Node { int v; Node *l = nullptr, *r = nullptr; };
+std::vector<std::unique_ptr<Node>> pool;
+Node* mk(int v) { pool.emplace_back(new Node{v}); return pool.back().get(); }
+bool findAny(const Node* t, int x, long& visited) {                        // 순서 정보가 없는 이진 트리: 전위 탐색
+    if (!t) return false; visited++;
+    return t->v == x || findAny(t->l, x, visited) || findAny(t->r, x, visited);
+}
+bool findBst(const Node* t, int x, long& visited) {
+    while (t) { visited++; if (x == t->v) return true; t = x < t->v ? t->l : t->r; }
+    return false;
+}
+Node* insertBst(Node* root, int x) {
+    Node* n = mk(x); if (!root) return n;
+    Node* c = root; for (;;) { Node*& next = x < c->v ? c->l : c->r; if (!next) { next = n; return root; } c = next; }
+}
+bool isBst(const Node* t, long lo, long hi) { return !t || (t->v > lo && t->v < hi && isBst(t->l, lo, t->v) && isBst(t->r, t->v, hi)); }
+void inorder(const Node* t, std::vector<int>& o) { if (!t) return; inorder(t->l, o); o.push_back(t->v); inorder(t->r, o); }
+int height(const Node* t) { return t ? 1 + std::max(height(t->l), height(t->r)) : 0; }
+Node* fromSorted(const std::vector<int>& a, int lo, int hi) {              // 가운데를 루트로: 높이 ceil(log2(N+1))
+    if (lo >= hi) return nullptr; int mid = (lo + hi) / 2; Node* t = mk(a[mid]);
+    t->l = fromSorted(a, lo, mid); t->r = fromSorted(a, mid + 1, hi); return t;
+}
+
+int main() {
+    const int N = (1 << 14) - 1; std::mt19937 rng(10);
+    std::vector<int> vals(N); std::iota(vals.begin(), vals.end(), 0); std::shuffle(vals.begin(), vals.end(), rng);
+    std::vector<Node*> lvl; for (int x : vals) lvl.push_back(mk(x));       // 같은 값으로 (a) 완전 이진 트리(배열 순서 그대로) (b) 무작위 삽입 BST
+    for (int i = 0; i < N; i++) { if (2 * i + 1 < N) lvl[i]->l = lvl[2 * i + 1]; if (2 * i + 2 < N) lvl[i]->r = lvl[2 * i + 2]; }
+    Node* plain = lvl[0]; Node* bst = nullptr; for (int x : vals) bst = insertBst(bst, x);
+    assert(!isBst(plain, -1, N) && isBst(bst, -1, N));                     // 모양은 같은 "이진 트리"여도 BST 인 것은 불변식을 지킨 쪽뿐
+    std::vector<int> a, b; inorder(plain, a); inorder(bst, b);
+    assert(!std::is_sorted(a.begin(), a.end()) && std::is_sorted(b.begin(), b.end()));   // BST 의 중위 순회는 정렬 결과
+    long visPlain = 0, visBst = 0; int Q = 500;
+    for (int q = 0; q < Q; q++) { int x = N + q; bool f1 = findAny(plain, x, visPlain), f2 = findBst(bst, x, visBst); assert(!f1 && !f2); }   // 없는 값 찾기
+    for (int q = 0; q < Q; q++) { int x = rng() % N; long t1 = 0, t2 = 0; assert(findAny(plain, x, t1) && findBst(bst, x, t2)); visPlain += t1; visBst += t2; }
+    assert(visPlain / (2 * Q) > 2000 && visBst / (2 * Q) < 60);            // 평균 방문 노드: 수천 개 vs 수십 개
+    // 입력 순서에 따른 BST 모양
+    std::vector<int> sorted(2000); std::iota(sorted.begin(), sorted.end(), 0);
+    Node* degenerate = nullptr; for (int x : sorted) degenerate = insertBst(degenerate, x);
+    Node* balanced = fromSorted(sorted, 0, sorted.size());
+    assert(height(degenerate) == 2000 && height(balanced) == (int)std::ceil(std::log2(2001.0)));
+    assert(height(bst) <= 4 * std::log2((double)N));                       // 무작위 순서 삽입의 높이는 평균 ~ 2 ln N, 거의 확실히 4 log2 N 이하
+    std::cout << "Binary Tree vs BST: avg visited (plain/BST) = " << visPlain / (2 * Q) << " / " << visBst / (2 * Q)
+              << ", height sorted-insert = " << height(degenerate) << ", balanced = " << height(balanced) << ", random = " << height(bst) << std::endl;
+    return 0;
+}
+// Time Complexity: 이진 트리 탐색 O(N), BST 탐색 O(높이) (평균 O(log N), 최악 O(N))
+// Space Complexity: O(N)
 ```
 ## BST vs AVL vs Red-Black
 ### 대표코드
@@ -4090,9 +5746,71 @@ int main() {
 ## Segment Tree vs Fenwick Tree
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <climits>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
-int main() { std::cout << "SegTree vs BIT" << std::endl; assert(true); return 0; }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+
+// 둘 다 "점 갱신 + 구간 질의"를 O(log n) 에 처리하지만 성격이 다르다.
+// 펜윅(BIT): 배열 n+1 칸, 코드 10줄 안팎, 상수 작음.  그러나 "역연산이 있는 연산"(합, XOR)의 접두 질의가 본업이다. 구간 [l,r] = prefix(r) - prefix(l-1) 로 빼기가 필요하기 때문.
+// 세그먼트 트리: 2n 칸 이상, 연산이 결합법칙만 만족하면 된다(최소·최대·gcd·행렬곱 ...).  지연 전파를 붙이면 구간 갱신도 가능.
+// 아래에서 확인: (1) 합은 둘이 같은 답 (2) 최솟값은 세그먼트 트리만 임의 구간·임의 갱신을 지원 (3) 구간 덧셈+구간 합은 BIT 2개로도 가능
+struct Fenwick {                                                           // 1-기준 인덱스
+    int n; std::vector<long> t; explicit Fenwick(int n) : n(n), t(n + 1, 0) {}
+    void add(int i, long d) { for (; i <= n; i += i & -i) t[i] += d; }
+    long sum(int i) const { long s = 0; for (; i > 0; i -= i & -i) s += t[i]; return s; }
+    long range(int l, int r) const { return sum(r) - sum(l - 1); }
+};
+struct RangeBit {                                                          // 구간 덧셈 + 구간 합: B1·i - B2 (차분 배열 두 개)
+    Fenwick b1, b2; explicit RangeBit(int n) : b1(n), b2(n) {}
+    void rangeAdd(int l, int r, long x) { b1.add(l, x); b1.add(r + 1, -x); b2.add(l, x * (l - 1)); b2.add(r + 1, -x * r); }
+    long prefix(int i) const { return b1.sum(i) * i - b2.sum(i); }
+    long range(int l, int r) const { return prefix(r) - prefix(l - 1); }
+};
+template <class Op> struct SegTree {                                       // 반복(bottom-up) 세그먼트 트리, [l, r) 질의
+    int n; std::vector<long> t; long id; Op op;
+    SegTree(int n, long id, Op op) : n(n), t(2 * n, id), id(id), op(op) {}
+    void set(int p, long v) { for (t[p += n] = v; p > 1; p >>= 1) t[p >> 1] = op(t[p], t[p ^ 1]); }
+    long query(int l, int r) const { long a = id, b = id; for (l += n, r += n; l < r; l >>= 1, r >>= 1) { if (l & 1) a = op(a, t[l++]); if (r & 1) b = op(t[--r], b); } return op(a, b); }
+};
+struct MinBit {                                                            // 접두 최솟값 BIT: 값이 "작아지는" 갱신만 가능
+    int n; std::vector<long> t; explicit MinBit(int n) : n(n), t(n + 1, LONG_MAX) {}
+    void lower(int i, long v) { for (; i <= n; i += i & -i) t[i] = std::min(t[i], v); }
+    long prefixMin(int i) const { long m = LONG_MAX; for (; i > 0; i -= i & -i) m = std::min(m, t[i]); return m; }
+};
+
+int main() {
+    const int N = 1000; std::mt19937 rng(6);
+    Fenwick bit(N); SegTree<std::plus<long>> segSum(N, 0, std::plus<long>()); std::vector<long> a(N + 1, 0);
+    auto mn = [](long x, long y) { return std::min(x, y); };
+    SegTree<decltype(mn)> segMin(N, LONG_MAX, mn); for (int i = 1; i <= N; i++) { a[i] = rng() % 1000; bit.add(i, a[i]); segSum.set(i - 1, a[i]); segMin.set(i - 1, a[i]); }
+    for (int step = 0; step < 20000; step++) {
+        int p = rng() % N + 1; long v = rng() % 1000;
+        bit.add(p, v - a[p]); segSum.set(p - 1, v); segMin.set(p - 1, v); a[p] = v;                // 점 갱신: 펜윅은 "차이"를, 세그먼트 트리는 "새 값"을
+        int l = rng() % N + 1, r = rng() % N + 1; if (l > r) std::swap(l, r);
+        long s = 0, m = LONG_MAX; for (int i = l; i <= r; i++) { s += a[i]; m = std::min(m, a[i]); }
+        assert(bit.range(l, r) == s && segSum.query(l - 1, r) == s);       // 합: 둘 다 정확
+        assert(segMin.query(l - 1, r) == m);                               // 최솟값: 세그먼트 트리는 임의 갱신 후에도 정확
+    }
+    RangeBit rb(N); std::vector<long> b(N + 2, 0);                         // 구간 덧셈·구간 합도 펜윅 2개로 가능
+    for (int step = 0; step < 5000; step++) {
+        int l = rng() % N + 1, r = rng() % N + 1; if (l > r) std::swap(l, r); long x = (long)(rng() % 200) - 100;
+        rb.rangeAdd(l, r, x); for (int i = l; i <= r; i++) b[i] += x;
+        int ql = rng() % N + 1, qr = rng() % N + 1; if (ql > qr) std::swap(ql, qr);
+        long s = 0; for (int i = ql; i <= qr; i++) s += b[i]; assert(rb.range(ql, qr) == s);
+    }
+    // 최솟값 펜윅의 한계: 값이 작아지는 갱신만 가능하고, 접두 구간만 답한다
+    MinBit mb(5); long arr[6] = {0, 5, 3, 8, 6, 7}; for (int i = 1; i <= 5; i++) mb.lower(i, arr[i]);
+    assert(mb.prefixMin(5) == 3);
+    arr[2] = 10; mb.lower(2, 10);                                          // 값을 키우는 갱신 -> BIT 는 반영하지 못한다
+    long truth = *std::min_element(arr + 1, arr + 6);                      // 실제 최솟값은 5
+    assert(truth == 5 && mb.prefixMin(5) == 3 && mb.prefixMin(5) != truth);   // BIT 의 답 3 은 낡았다. 세그먼트 트리는 set 한 번으로 정확히 5
+    SegTree<decltype(mn)> st5(5, LONG_MAX, mn); for (int i = 1; i <= 5; i++) st5.set(i - 1, arr[i]); assert(st5.query(0, 5) == 5);
+    std::cout << "Segment vs Fenwick: sum agrees, min needs segment tree; memory BIT " << (N + 1) << " vs segment " << 2 * N << " words" << std::endl;
+    return 0;
+}
+// Time Complexity: 둘 다 점 갱신·질의 O(log N); 펜윅은 상수가 작고 세그먼트 트리는 연산 종류가 자유롭다
+// Space Complexity: 펜윅 N, 세그먼트 트리 2N (재귀 구현은 4N)
 ```
