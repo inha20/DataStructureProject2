@@ -2233,71 +2233,249 @@ int main() {
 ## RapidlyExploringRandomTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// RRT(Rapidly-exploring Random Tree, LaValle 1998): 연속 공간의 단일 질의 샘플링 계획기. 시작점에서 트리를 키우며 매번 공간에서 무작위 점 q 를 뽑고(5% 는 목표 점 — 목표 편향), 트리에서 q 에 가장 가까운 노드로부터 q 쪽으로 한 걸음(step)만큼 뻗어 충돌이 없으면 새 노드로 붙인다.
+// 가장 가까운 노드를 고르는 것이 보로노이 영역이 큰 노드(= 아직 탐색 안 된 빈 공간 쪽 노드)를 자주 확장하게 만들어 트리가 빠르게 공간을 덮는다. 확률적으로 완전(해가 있으면 반복할수록 찾을 확률 → 1)하지만 최적은 아니다 — 경로가 구불구불하다.
+// 환경: 100×100 평면의 직사각형 장애물 10개(겹칠 수 있음), 시작 (5,5), 목표 (95,95). 기준 최단 거리는 모서리 가시성 그래프(정확).
+// 검증: 무작위 세계 40개에서 ① 모든 트리 간선이 충돌 없음 ② 성공률 90% 이상 ③ 경로 길이가 정확한 최단 거리 이상이고 평균 비율을 보고 ④ 같은 세계에서 직선 경로가 막혀 있는 세계가 존재함
+typedef std::pair<double, double> V;
+struct Rect { double x0, y0, x1, y1; }; std::vector<Rect> obs;
+double dist(V a, V b) { return std::hypot(a.first - b.first, a.second - b.second); }
+bool hitsRect(V a, V b, const Rect& r) {                                                                                 // 선분이 열린 직사각형 내부와 길이 있는 구간으로 만나는가(경계 접촉은 허용)
+    double t0 = 0, t1 = 1, dx = b.first - a.first, dy = b.second - a.second, p[4] = {-dx, dx, -dy, dy}, q[4] = {a.first - r.x0, r.x1 - a.first, a.second - r.y0, r.y1 - a.second};
+    for (int i = 0; i < 4; i++) { if (p[i] == 0) { if (q[i] <= 0) return false; } else { double t = q[i] / p[i]; if (p[i] < 0) { if (t > t1) return false; t0 = std::max(t0, t); } else { if (t < t0) return false; t1 = std::min(t1, t); } } }
+    return t1 - t0 > 1e-9; }
+bool pointFree(V p) { if (p.first < 0 || p.second < 0 || p.first > 100 || p.second > 100) return false; for (const Rect& r : obs) if (p.first > r.x0 && p.first < r.x1 && p.second > r.y0 && p.second < r.y1) return false; return true; }
+bool segFree(V a, V b) { if (!pointFree(a) || !pointFree(b)) return false; for (const Rect& r : obs) if (hitsRect(a, b, r)) return false; return true; }
+void makeWorld(std::mt19937& g) { obs.clear(); while (obs.size() < 10) { double w = 8 + g() % 17, h = 8 + g() % 17, x0 = 12 + g() % (int)(76 - w), y0 = 12 + g() % (int)(76 - h); obs.push_back({x0, y0, x0 + w, y0 + h}); } }
+double optimum(V s, V t) {                                                                                                 // 기준: 직사각형 모서리 가시성 그래프의 정확한 최단 거리
+    std::vector<V> pts = {s, t}; for (const Rect& r : obs) for (V c : {V{r.x0, r.y0}, V{r.x1, r.y0}, V{r.x1, r.y1}, V{r.x0, r.y1}}) if (pointFree(c) || true) pts.push_back(c);
+    int n = pts.size(); std::vector<double> d(n, 1e18); std::vector<char> done(n, 0); d[0] = 0; for (int it = 0; it < n; it++) { int u = -1; for (int i = 0; i < n; i++) if (!done[i] && (u < 0 || d[i] < d[u])) u = i; if (u < 0 || d[u] > 1e17) break; done[u] = 1; for (int v = 0; v < n; v++) if (!done[v] && d[u] + dist(pts[u], pts[v]) < d[v] && segFree(pts[u], pts[v])) d[v] = d[u] + dist(pts[u], pts[v]); }
+    return d[1]; }
+struct Tree { std::vector<V> p; std::vector<int> par; };
+bool rrt(std::mt19937& rng, V s, V g, int iters, double step, Tree& T, long& samples) {
+    T.p = {s}; T.par = {-1};
+    for (int it = 0; it < iters; it++) {
+        samples++; V q = rng() % 100 < 5 ? g : V{(rng() % 10000) / 100.0, (rng() % 10000) / 100.0}; int nn = 0; for (size_t i = 1; i < T.p.size(); i++) if (dist(T.p[i], q) < dist(T.p[nn], q)) nn = i;
+        double d = dist(T.p[nn], q); if (d < 1e-9) continue; V nw = d <= step ? q : V{T.p[nn].first + (q.first - T.p[nn].first) * step / d, T.p[nn].second + (q.second - T.p[nn].second) * step / d};
+        if (!segFree(T.p[nn], nw)) continue; T.p.push_back(nw); T.par.push_back(nn);
+        if (dist(nw, g) <= step && segFree(nw, g)) { T.p.push_back(g); T.par.push_back(T.p.size() - 2); return true; }
+    }
+    return false; }
 int main() {
-    std::cout << "RRT samples space randomly to build a coverage tree." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(7); V s{5, 5}, g{95, 95}; int worlds = 0, solved = 0, blockedDirect = 0; double ratio = 0, worst = 1;
+    for (int w = 0; w < 40; w++) {
+        makeWorld(rng); double opt = optimum(s, g); if (opt > 1e17) continue; worlds++; blockedDirect += !segFree(s, g); Tree T; long samples = 0;
+        if (!rrt(rng, s, g, 6000, 4.0, T, samples)) continue; solved++;
+        for (size_t i = 1; i < T.p.size(); i++) assert(segFree(T.p[T.par[i]], T.p[i]));                                                // ① 모든 간선이 충돌 없음
+        double len = 0; int v = T.p.size() - 1; assert(T.p[v] == g); for (; T.par[v] >= 0; v = T.par[v]) len += dist(T.p[v], T.p[T.par[v]]); assert(T.p[v] == s && len >= opt - 1e-9);   // 루트까지 이어지고 최단 이상
+        ratio += len / opt; worst = std::max(worst, len / opt);
+    }
+    assert(worlds > 30 && solved * 10 >= worlds * 9 && blockedDirect > 20 && ratio / solved > 1.0);
+    std::cout << "RapidlyExploringRandomTree: " << solved << "/" << worlds << " worlds solved; every tree edge collision-free; path length / exact optimum: mean " << ratio / solved << ", worst " << worst << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 반복당 O(노드 수) 최근접 탐색(k-d 트리로 O(log n)) + 충돌 검사
+// Space Complexity: O(노드 수)
 ```
 ## RRTStar()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// RRT*(Karaman & Frazzoli 2011): RRT 에 두 가지를 더해 점근적 최적성을 얻는다. ① 부모 선택 — 새 노드 근방(반경 r_n = min(15, 30·√(ln n / n)))의 노드 중 "시작점에서의 비용 + 간선 길이" 가 가장 작은 것을 부모로 삼는다.
+// ② 재배선(rewire) — 새 노드를 거치면 근방 노드의 비용이 줄어들면 그 노드의 부모를 새 노드로 바꾸고 하위 트리의 비용을 갱신한다. 반복할수록 경로 비용이 단조롭게 줄어 최적 경로로 수렴한다(RRT 는 첫 해에 머무름).
+// 환경은 RapidlyExploringRandomTree 와 같다. 검증: ① 모든 노드에서 cost == cost(부모) + 간선 길이 불변식과 간선 충돌 없음 ② 반복 1500/4000/8000 회 시점의 최선 경로 비용이 단조 비증가 ③ 정확한 최적 대비 평균 비율이 점점 1 에 가까워지고 8000 회에서 1.12 이하, 같은 반복 수의 RRT 평균 비율보다 좋음
+typedef std::pair<double, double> V;
+struct Rect { double x0, y0, x1, y1; }; std::vector<Rect> obs;
+double dist(V a, V b) { return std::hypot(a.first - b.first, a.second - b.second); }
+double d2(V a, V b) { double dx = a.first - b.first, dy = a.second - b.second; return dx * dx + dy * dy; }                    // 최근접·반경 질의는 제곱 거리로(제곱근 생략)
+bool hitsRect(V a, V b, const Rect& r) {                                                                                 // 선분이 열린 직사각형 내부와 길이 있는 구간으로 만나는가(경계 접촉은 허용)
+    double t0 = 0, t1 = 1, dx = b.first - a.first, dy = b.second - a.second, p[4] = {-dx, dx, -dy, dy}, q[4] = {a.first - r.x0, r.x1 - a.first, a.second - r.y0, r.y1 - a.second};
+    for (int i = 0; i < 4; i++) { if (p[i] == 0) { if (q[i] <= 0) return false; } else { double t = q[i] / p[i]; if (p[i] < 0) { if (t > t1) return false; t0 = std::max(t0, t); } else { if (t < t0) return false; t1 = std::min(t1, t); } } }
+    return t1 - t0 > 1e-9; }
+bool pointFree(V p) { if (p.first < 0 || p.second < 0 || p.first > 100 || p.second > 100) return false; for (const Rect& r : obs) if (p.first > r.x0 && p.first < r.x1 && p.second > r.y0 && p.second < r.y1) return false; return true; }
+bool segFree(V a, V b) { if (!pointFree(a) || !pointFree(b)) return false; for (const Rect& r : obs) if (hitsRect(a, b, r)) return false; return true; }
+void makeWorld(std::mt19937& g) { obs.clear(); while (obs.size() < 10) { double w = 8 + g() % 17, h = 8 + g() % 17, x0 = 12 + g() % (int)(76 - w), y0 = 12 + g() % (int)(76 - h); obs.push_back({x0, y0, x0 + w, y0 + h}); } }
+double optimum(V s, V t) {                                                                                                 // 기준: 직사각형 모서리 가시성 그래프의 정확한 최단 거리
+    std::vector<V> pts = {s, t}; for (const Rect& r : obs) for (V c : {V{r.x0, r.y0}, V{r.x1, r.y0}, V{r.x1, r.y1}, V{r.x0, r.y1}}) if (pointFree(c) || true) pts.push_back(c);
+    int n = pts.size(); std::vector<double> d(n, 1e18); std::vector<char> done(n, 0); d[0] = 0; for (int it = 0; it < n; it++) { int u = -1; for (int i = 0; i < n; i++) if (!done[i] && (u < 0 || d[i] < d[u])) u = i; if (u < 0 || d[u] > 1e17) break; done[u] = 1; for (int v = 0; v < n; v++) if (!done[v] && d[u] + dist(pts[u], pts[v]) < d[v] && segFree(pts[u], pts[v])) d[v] = d[u] + dist(pts[u], pts[v]); }
+    return d[1]; }
+struct Node { V p; int par; double cost; std::vector<int> ch; };
+double bestToGoal(const std::vector<Node>& T, V g, double reach) { double best = 1e18; for (const Node& n : T) if (dist(n.p, g) <= reach && n.cost + dist(n.p, g) < best && segFree(n.p, g)) best = n.cost + dist(n.p, g); return best; }
+void shift(std::vector<Node>& T, int v, double delta) { T[v].cost += delta; for (int c : T[v].ch) shift(T, c, delta); }
 int main() {
-    std::cout << "RRT* rewires tree to find asymptotically optimal paths." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(11); V s{5, 5}, g{95, 95}; const double step = 4.0; const int cp[3] = {1500, 4000, 8000}; double ratioAt[3] = {0, 0, 0}; int solvedAt[3] = {0, 0, 0}, worlds = 0; double rrtRatio = 0; int rrtSolved = 0;
+    for (int w = 0; w < 10; w++) {
+        makeWorld(rng); double opt = optimum(s, g); if (opt > 1e17) continue; worlds++; std::vector<Node> T = {{s, -1, 0, {}}}; double prevBest = 1e18;
+        for (int it = 1; it <= cp[2]; it++) {
+            V q = rng() % 100 < 5 ? g : V{(rng() % 10000) / 100.0, (rng() % 10000) / 100.0}; int nn = 0; for (size_t i = 1; i < T.size(); i++) if (d2(T[i].p, q) < d2(T[nn].p, q)) nn = i;
+            double d = dist(T[nn].p, q); if (d < 1e-9) continue; V nw = d <= step ? q : V{T[nn].p.first + (q.first - T[nn].p.first) * step / d, T[nn].p.second + (q.second - T[nn].p.second) * step / d}; if (!segFree(T[nn].p, nw)) continue;
+            double r = std::min(15.0, 30 * std::sqrt(std::log(T.size() + 1.0) / (T.size() + 1.0))); r = std::max(r, step); std::vector<int> near; for (size_t i = 0; i < T.size(); i++) if (d2(T[i].p, nw) <= r * r) near.push_back(i);
+            int best = nn; double bc = T[nn].cost + dist(T[nn].p, nw); for (int j : near) { double c = T[j].cost + dist(T[j].p, nw); if (c < bc - 1e-12 && segFree(T[j].p, nw)) { bc = c; best = j; } }       // ① 부모 선택
+            int id = T.size(); T.push_back({nw, best, bc, {}}); T[best].ch.push_back(id);
+            for (int j : near) { if (j == best || j == 0) continue; double c = T[id].cost + dist(nw, T[j].p); if (c < T[j].cost - 1e-12 && segFree(nw, T[j].p)) { auto& oc = T[T[j].par].ch; oc.erase(std::find(oc.begin(), oc.end(), j)); double delta = c - T[j].cost; T[j].par = id; T[id].ch.push_back(j); shift(T, j, delta); } }  // ② 재배선
+            for (int k = 0; k < 3; k++) if (it == cp[k]) { double b = bestToGoal(T, g, 8.0); assert(b <= prevBest + 1e-9); prevBest = b; if (b < 1e17) { assert(b >= opt - 1e-9); ratioAt[k] += b / opt; solvedAt[k]++; } }                        // ② 단조 비증가
+        }
+        for (size_t i = 1; i < T.size(); i++) { assert(std::fabs(T[i].cost - (T[T[i].par].cost + dist(T[i].p, T[T[i].par].p))) < 1e-6 && segFree(T[T[i].par].p, T[i].p)); }                                             // ① 불변식
+        { std::vector<V> pt = {s}; std::vector<int> par = {-1}; bool done = false; for (int it = 0; it < cp[2] && !done; it++) { V q = rng() % 100 < 5 ? g : V{(rng() % 10000) / 100.0, (rng() % 10000) / 100.0}; int nn = 0; for (size_t i = 1; i < pt.size(); i++) if (d2(pt[i], q) < d2(pt[nn], q)) nn = i; double d = dist(pt[nn], q); if (d < 1e-9) continue; V nw = d <= step ? q : V{pt[nn].first + (q.first - pt[nn].first) * step / d, pt[nn].second + (q.second - pt[nn].second) * step / d}; if (!segFree(pt[nn], nw)) continue; pt.push_back(nw); par.push_back(nn);
+                if (dist(nw, g) <= step && segFree(nw, g)) { double len = dist(nw, g); for (int v = pt.size() - 1; par[v] >= 0; v = par[v]) len += dist(pt[v], pt[par[v]]); rrtRatio += len / opt; rrtSolved++; done = true; } } }                                                           // 비교: 첫 해에서 멈추는 RRT
+    }
+    double r0 = ratioAt[0] / solvedAt[0], r1 = ratioAt[1] / solvedAt[1], r2 = ratioAt[2] / solvedAt[2]; assert(worlds >= 8 && solvedAt[2] >= worlds - 1 && r2 <= r1 + 1e-9 && r1 <= r0 + 1e-9 && r2 < 1.12 && r2 < rrtRatio / rrtSolved);
+    std::cout << "RRTStar: " << worlds << " worlds; mean cost / optimum after 1500, 4000, 8000 iterations = " << r0 << ", " << r1 << ", " << r2 << " versus plain RRT " << rrtRatio / rrtSolved << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 반복당 O(n) (k-d 트리 + 반경 질의로 O(log n)), 총 O(n log n)
+// Space Complexity: O(n)
 ```
 ## ProbabilisticRoadMap()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// PRM(Probabilistic Roadmap, Kavraki et al. 1996): 다중 질의 샘플링 계획기. 전처리에서 자유 공간의 무작위 점 N 개(마디)를 뽑고 각 마디를 가까운 k 개와 충돌 없는 직선으로 이어 로드맵을 만든다.
+// 질의는 시작·목표를 로드맵에 임시로 붙이고 그래프 탐색(Dijkstra)을 하면 끝이라 같은 지도에서 질의를 여러 번 할 때 RRT 보다 유리하다. N 이 커질수록 성공률과 경로 품질이 좋아진다(확률적 완전, 점근적 근최적). 좁은 통로는 표본이 드물어 약하다.
+// 환경은 RapidlyExploringRandomTree 와 같다. 검증: ① 모든 로드맵 간선이 충돌 없음 ② N = 15, 50, 400 에서 성공률이 늘고(N=400 에서 90% 이상) 평균 비율이 1.2 이하 ③ 같은 로드맵에서 질의를 반복(시작·목표만 바꿔)해도 정확한 최단 이상
+typedef std::pair<double, double> V;
+struct Rect { double x0, y0, x1, y1; }; std::vector<Rect> obs;
+double dist(V a, V b) { return std::hypot(a.first - b.first, a.second - b.second); }
+bool hitsRect(V a, V b, const Rect& r) {                                                                                 // 선분이 열린 직사각형 내부와 길이 있는 구간으로 만나는가(경계 접촉은 허용)
+    double t0 = 0, t1 = 1, dx = b.first - a.first, dy = b.second - a.second, p[4] = {-dx, dx, -dy, dy}, q[4] = {a.first - r.x0, r.x1 - a.first, a.second - r.y0, r.y1 - a.second};
+    for (int i = 0; i < 4; i++) { if (p[i] == 0) { if (q[i] <= 0) return false; } else { double t = q[i] / p[i]; if (p[i] < 0) { if (t > t1) return false; t0 = std::max(t0, t); } else { if (t < t0) return false; t1 = std::min(t1, t); } } }
+    return t1 - t0 > 1e-9; }
+bool pointFree(V p) { if (p.first < 0 || p.second < 0 || p.first > 100 || p.second > 100) return false; for (const Rect& r : obs) if (p.first > r.x0 && p.first < r.x1 && p.second > r.y0 && p.second < r.y1) return false; return true; }
+bool segFree(V a, V b) { if (!pointFree(a) || !pointFree(b)) return false; for (const Rect& r : obs) if (hitsRect(a, b, r)) return false; return true; }
+void makeWorld(std::mt19937& g) { obs.clear(); while (obs.size() < 10) { double w = 8 + g() % 17, h = 8 + g() % 17, x0 = 12 + g() % (int)(76 - w), y0 = 12 + g() % (int)(76 - h); obs.push_back({x0, y0, x0 + w, y0 + h}); } }
+double optimum(V s, V t) {                                                                                                 // 기준: 직사각형 모서리 가시성 그래프의 정확한 최단 거리
+    std::vector<V> pts = {s, t}; for (const Rect& r : obs) for (V c : {V{r.x0, r.y0}, V{r.x1, r.y0}, V{r.x1, r.y1}, V{r.x0, r.y1}}) if (pointFree(c) || true) pts.push_back(c);
+    int n = pts.size(); std::vector<double> d(n, 1e18); std::vector<char> done(n, 0); d[0] = 0; for (int it = 0; it < n; it++) { int u = -1; for (int i = 0; i < n; i++) if (!done[i] && (u < 0 || d[i] < d[u])) u = i; if (u < 0 || d[u] > 1e17) break; done[u] = 1; for (int v = 0; v < n; v++) if (!done[v] && d[u] + dist(pts[u], pts[v]) < d[v] && segFree(pts[u], pts[v])) d[v] = d[u] + dist(pts[u], pts[v]); }
+    return d[1]; }
+struct Roadmap {
+    std::vector<V> p; std::vector<std::vector<std::pair<int, double>>> adj; long checks = 0;
+    void build(std::mt19937& rng, int N, int k) { p.clear(); while ((int)p.size() < N) { V x{(rng() % 10000) / 100.0, (rng() % 10000) / 100.0}; if (pointFree(x)) p.push_back(x); } adj.assign(N, {});
+        for (int i = 0; i < N; i++) { std::vector<std::pair<double, int>> nb; for (int j = 0; j < N; j++) if (j != i) nb.push_back({dist(p[i], p[j]), j}); std::partial_sort(nb.begin(), nb.begin() + k, nb.end()); for (int a = 0; a < k; a++) { int j = nb[a].second; bool dup = false; for (auto& e : adj[i]) dup |= e.first == j; if (dup) continue; checks++; if (segFree(p[i], p[j])) { adj[i].push_back({j, nb[a].first}); adj[j].push_back({i, nb[a].first}); } } } }
+    double query(V s, V t) { int n = p.size(); std::vector<V> pts = p; pts.push_back(s); pts.push_back(t); std::vector<std::vector<std::pair<int, double>>> a = adj; a.resize(n + 2);
+        for (int e : {n, n + 1}) { std::vector<std::pair<double, int>> nb; for (int j = 0; j < n; j++) nb.push_back({dist(pts[e], p[j]), j}); std::sort(nb.begin(), nb.end()); int linked = 0; for (auto& x : nb) { if (linked >= 8) break; if (segFree(pts[e], p[x.second])) { a[e].push_back({x.second, x.first}); a[x.second].push_back({e, x.first}); linked++; } } }
+        if (segFree(s, t)) { a[n].push_back({n + 1, dist(s, t)}); a[n + 1].push_back({n, dist(s, t)}); }
+        std::vector<double> d(n + 2, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[n] = 0; pq.push({0, n}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto [v, w] : a[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } } return d[n + 1]; }
+};
 int main() {
-    std::cout << "PRM builds an offline graph from random valid samples." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(5); V s{5, 5}, g{95, 95}; const int Ns[3] = {15, 50, 400}; int ok[3] = {0, 0, 0}; double ratio[3] = {0, 0, 0}; int worlds = 0; long checks[3] = {0, 0, 0}; int multiQueries = 0;
+    for (int w = 0; w < 20; w++) {
+        makeWorld(rng); double opt = optimum(s, g); if (opt > 1e17) continue; worlds++;
+        for (int k = 0; k < 3; k++) { Roadmap R; R.build(rng, Ns[k], 10); checks[k] += R.checks; for (int i = 0; i < Ns[k]; i++) for (auto [j, wgt] : R.adj[i]) { assert(segFree(R.p[i], R.p[j]) && std::fabs(wgt - dist(R.p[i], R.p[j])) < 1e-9); }                     // ① 모든 간선이 충돌 없음
+            double len = R.query(s, g); if (len < 1e17) { assert(len >= opt - 1e-9); ok[k]++; ratio[k] += len / opt; }
+            if (k == 2) for (int q = 0; q < 5; q++) { V a{(double)(rng() % 10000) / 100.0, (double)(rng() % 10000) / 100.0}, b{(double)(rng() % 10000) / 100.0, (double)(rng() % 10000) / 100.0}; if (!pointFree(a) || !pointFree(b)) continue; double dq = R.query(a, b); if (dq > 1e17) continue; assert(dq >= dist(a, b) - 1e-9); multiQueries++; } }                   // ③ 같은 로드맵 재사용
+    }
+    assert(worlds >= 15 && ok[0] <= ok[1] && ok[1] <= ok[2] && ok[2] * 10 >= worlds * 9 && ratio[2] / ok[2] < 1.2 && ratio[2] / ok[2] <= ratio[0] / std::max(1, ok[0]) + 1e-9 && multiQueries > 40);
+    std::cout << "ProbabilisticRoadMap: " << worlds << " worlds; success N=15/50/400: " << ok[0] << "/" << ok[1] << "/" << ok[2] << ", mean cost / optimum " << (ok[0] ? ratio[0] / ok[0] : 0) << " / " << ratio[1] / ok[1] << " / " << ratio[2] / ok[2] << "; " << multiQueries << " extra queries answered from one roadmap" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 전처리 O(N² + N·k·충돌 검사), 질의 O(N log N)
+// Space Complexity: O(N·k)
 ```
 ## PotentialField()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 인공 퍼텐셜 장(Khatib 1986): 목표는 끌어당기는 위치 에너지 U_att = ½·k_a·|q−g|², 장애물은 가까워질수록 밀어내는 U_rep = ½·k_r·(1/ρ − 1/ρ0)² (ρ: 장애물 표면까지 거리, ρ0 이내에서만)로 모델링하고 로봇은 합력(−∇U)을 따라 내려간다.
+// 구현이 간단하고 반응형이지만 치명적 약점이 있다 — 지역 최솟값: 오목한 장애물(U자 벽) 안에서는 끌림과 밀어냄이 균형을 이뤄 목표가 아닌 곳에서 멈춘다. 해법의 하나가 지역 최솟값이 없는 "항해 함수" 이며, 격자에서는 목표에서의 파면 전파(NF1: 장애물을 돌아가는 BFS 거리)가 그것이다.
+// 검증: ① 손으로 만든 U자 함정에서 APF 는 목표 아닌 곳에서 멈추고(힘 ≈ 0, 어느 방향으로 조금 움직여도 U 가 늘어남을 확인) NF1 은 도달 ② 무작위 장애물 장에서 APF 의 충돌·정체 횟수를 세고 NF1 은 도달 가능하면 항상 성공 ③ NF1 값은 목표가 아닌 모든 도달 가능한 칸에 더 작은 이웃이 있음(지역 최솟값 없음)
+typedef std::pair<double, double> V; struct Circle { double x, y, r; }; std::vector<Circle> obs;
+double dist(V a, V b) { return std::hypot(a.first - b.first, a.second - b.second); }
+const double KA = 1.0, KR = 4000.0, RHO0 = 10.0;
+double potential(V q, V g) { double u = 0.5 * KA * dist(q, g) * dist(q, g); for (const Circle& c : obs) { double rho = std::hypot(q.first - c.x, q.second - c.y) - c.r; if (rho < RHO0) { rho = std::max(rho, 1e-3); u += 0.5 * KR * (1 / rho - 1 / RHO0) * (1 / rho - 1 / RHO0); } } return u; }
+V force(V q, V g) { double fx = -KA * (q.first - g.first), fy = -KA * (q.second - g.second); for (const Circle& c : obs) { double dx = q.first - c.x, dy = q.second - c.y, d = std::hypot(dx, dy), rho = d - c.r; if (rho < RHO0 && d > 1e-9) { rho = std::max(rho, 1e-3); double m = KR * (1 / rho - 1 / RHO0) / (rho * rho); fx += m * dx / d; fy += m * dy / d; } } return {fx, fy}; }
+V polish(V q, V g) { double st = 0.3; for (int it = 0; it < 40000 && st > 1e-7; it++) { V f = force(q, g); double m = std::hypot(f.first, f.second); if (m < 1e-12) break; V n{q.first + st * f.first / m, q.second + st * f.second / m}; if (potential(n, g) < potential(q, g)) q = n; else st *= 0.5; } return q; }      // 정확한 극소점까지 다듬기
+enum Result { REACHED, STUCK, COLLIDED };
+Result apf(V q, V g, V& end) { for (int it = 0; it < 6000; it++) { if (dist(q, g) < 1.0) { end = q; return REACHED; } for (const Circle& c : obs) if (std::hypot(q.first - c.x, q.second - c.y) <= c.r) { end = q; return COLLIDED; } V f = force(q, g); double m = std::hypot(f.first, f.second); if (m < 1e-3) { end = q; return STUCK; } q.first += 0.3 * f.first / m; q.second += 0.3 * f.second / m; } end = q; return STUCK; }
+struct Wave { std::vector<int> d; int N; };
+Wave nf1(V g, int N) { Wave w{std::vector<int>(N * N, -1), N}; auto blocked = [&](int r, int c) { for (const Circle& o : obs) if (std::hypot(c + 0.5 - o.x, r + 0.5 - o.y) <= o.r) return true; return false; }; std::queue<int> q; int gr = (int)g.second, gc = (int)g.first; w.d[gr * N + gc] = 0; q.push(gr * N + gc);
+    while (!q.empty()) { int u = q.front(); q.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / N + dr, c = u % N + dc; if ((!dr && !dc) || r < 0 || c < 0 || r >= N || c >= N || w.d[r * N + c] >= 0 || blocked(r, c)) continue; if (dr && dc && (blocked(u / N + dr, u % N) || blocked(u / N, u % N + dc))) continue; w.d[r * N + c] = w.d[u] + 1; q.push(r * N + c); } } return w; }
+bool descend(const Wave& w, V s) { int N = w.N, u = (int)s.second * N + (int)s.first; if (w.d[u] < 0) return false; int guard = 0; while (w.d[u] > 0 && guard++ < N * N) { int best = u; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / N + dr, c = u % N + dc; if (r < 0 || c < 0 || r >= N || c >= N || w.d[r * N + c] < 0) continue; if (w.d[r * N + c] < w.d[best]) best = r * N + c; } if (best == u) return false; u = best; } return w.d[u] == 0; }
 int main() {
-    std::cout << "Attractive target, repulsive obstacles force vectors." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    obs.clear(); for (double y = 28; y <= 72; y += 5) obs.push_back({62, y, 3}); for (double x = 42; x <= 62; x += 5) { obs.push_back({x, 28, 3}); obs.push_back({x, 72, 3}); }          // U 자 함정(열린 쪽이 시작점 방향)
+    V s{30, 50}, g{90, 50}, end; Result r = apf(s, g, end); assert(r == STUCK && dist(end, g) > 10); end = polish(end, g); V trapEnd = end;
+    double u0 = potential(end, g); for (int k = 0; k < 32; k++) { double a = 6.283185307 * k / 32; V q{end.first + 0.05 * std::cos(a), end.second + 0.05 * std::sin(a)}; assert(potential(q, g) >= u0 - 1e-6); }                     // 지역 최솟값: 작은 이동은 전부 U 가 늘어남
+    Wave w = nf1(g, 100); assert(descend(w, s));                                                                                                                                     // NF1 은 U 자 둘레를 돌아 도착
+    std::mt19937 rng(3); int trials = 0, apfOk = 0, apfStuck = 1, apfHit = 0, nfOk = 0, reachable = 0;
+    for (int t = 0; t < 120; t++) {
+        obs.clear(); for (int k = 0; k < 9; k++) obs.push_back({(double)(25 + rng() % 55), (double)(15 + rng() % 70), (double)(4 + rng() % 7)}); V a{5, 5}, b{95, 95}; bool clear = true; for (const Circle& c : obs) clear = clear && std::hypot(c.x - a.first, c.y - a.second) > c.r + 6 && std::hypot(c.x - b.first, c.y - b.second) > c.r + 6; if (!clear) continue; trials++;
+        Wave ww = nf1(b, 100); bool reach = ww.d[(int)a.second * 100 + (int)a.first] >= 0; reachable += reach; if (reach) { assert(descend(ww, a)); nfOk++; }
+        for (int u = 0; u < 100 * 100; u++) if (ww.d[u] > 0) { bool lower = false; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int rr = u / 100 + dr, cc = u % 100 + dc; if ((dr || dc) && rr >= 0 && cc >= 0 && rr < 100 && cc < 100 && ww.d[rr * 100 + cc] >= 0 && ww.d[rr * 100 + cc] < ww.d[u]) lower = true; } assert(lower); }                  // ③ 지역 최솟값 없음
+        Result rr = apf(a, b, end); apfOk += rr == REACHED; apfStuck += rr == STUCK; apfHit += rr == COLLIDED;
+    }
+    assert(trials > 60 && nfOk == reachable && apfOk <= reachable && apfStuck > 1);
+    std::cout << "PotentialField: U-trap -> APF stuck at (" << trapEnd.first << "," << trapEnd.second << ") while NF1 wavefront reaches the goal; over " << trials << " random fields APF reached " << apfOk << ", got stuck " << apfStuck - 1 << ", collided " << apfHit << "; NF1 reached all " << nfOk << " reachable cases with no local minimum" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: APF 한 걸음 O(장애물 수), NF1 O(격자 칸 수)
+// Space Complexity: O(1) / O(격자 칸 수)
 ```
 ## DynamicWindowApproach()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 동적 창 접근(DWA, Fox·Burgard·Thrun 1997): 차동 구동 로봇의 지역 계획기. 매 제어 주기마다 ① 다음 dt 안에 가속 한계로 도달 가능한 (v, ω) 속도 쌍의 "동적 창"을 만들고 ② 각 쌍을 일정 속도로 T 초 앞서 시뮬레이션해 궤적을 얻은 뒤
+// ③ 그 궤적에서 정지 가능한 쌍(허용 속도: v ≤ √(2·충돌까지 거리·a_max), |ω| ≤ √(2·거리·α_max))만 남기고 ④ 궤적 끝에서 목표까지 남은 거리·장애물 여유·속도의 가중합이 가장 큰 쌍을 실행한다. 허용 속도 조건 덕에 충돌을 피할 수 있는 상태가 계속 유지된다.
+// 지역 계획기라 오목한 장애물에서 갇힐 수 있다(전역 경로를 따라가는 용도). 검증: 무작위 장애물 지도 30개에서 ① 한 번도 충돌하지 않음(로봇 반지름 포함) ② 속도·각속도·가속도 한계 위반 없음 ③ 성공률 보고 ④ 같은 지도에서 장애물을 보지 않고 목표로 직진하는 단순 제어는 충돌하는 사례가 있음
+struct Circle { double x, y, r; }; std::vector<Circle> obs;
+const double VMAX = 1.0, WMAX = 1.5, AMAX = 0.8, ALPHA = 2.5, DT = 0.1, TP = 2.0, RR = 0.4;
+struct State { double x, y, th, v, w; };
+double clearanceAt(double x, double y) { double m = 1e9; for (const Circle& c : obs) m = std::min(m, std::hypot(x - c.x, y - c.y) - c.r - RR); return m; }
+State stepState(State s, double v, double w) { s.th += w * DT; s.x += v * std::cos(s.th) * DT; s.y += v * std::sin(s.th) * DT; s.v = v; s.w = w; return s; }
+double angDiff(double a, double b) { double d = a - b; while (d > M_PI) d -= 2 * M_PI; while (d < -M_PI) d += 2 * M_PI; return std::fabs(d); }
+State dwa(const State& s, double gx, double gy, bool& found) {
+    double vlo = std::max(0.0, s.v - AMAX * DT), vhi = std::min(VMAX, s.v + AMAX * DT), wlo = std::max(-WMAX, s.w - ALPHA * DT), whi = std::min(WMAX, s.w + ALPHA * DT); double bestScore = -1e18; State best = s; found = false;
+    for (int i = 0; i <= 4; i++) for (int j = 0; j <= 10; j++) { double v = vlo + (vhi - vlo) * i / 4, w = wlo + (whi - wlo) * j / 10; State p = s; double minClear = 1e9, toHit = 1e9, traveled = 0;
+        for (double t = 0; t < TP; t += DT) { p = stepState(p, v, w); traveled += v * DT; double c = clearanceAt(p.x, p.y); minClear = std::min(minClear, c); if (c <= 0 && toHit > 1e8) toHit = traveled; }
+        double dStop = toHit < 1e8 ? toHit : std::max(minClear, 0.0); if (v > std::sqrt(2 * dStop * AMAX) + 1e-9 || std::fabs(w) > std::sqrt(2 * dStop * ALPHA) + 1e-9) continue;       // 허용 속도: 충돌하기 전에 멈출 수 있어야 한다
+        double progress = 1 - std::hypot(gx - p.x, gy - p.y) / 30.0, clear = std::min(std::max(minClear, 0.0), 2.0) / 2.0, score = 1.0 * progress + 0.4 * clear + 0.2 * v / VMAX;       // 목표까지 남은 거리·장애물 여유·속도의 가중합
+        if (score > bestScore) { bestScore = score; best = stepState(s, v, w); found = true; } }
+    return best; }
 int main() {
-    std::cout << "DWA selects safe trajectory within dynamic velocity window." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(9); int trials = 0, reached = 0, timeouts = 0, naiveHit = 0; double steps = 0;
+    for (int t = 0; t < 30; t++) {
+        obs.clear(); for (int k = 0; k < 9; k++) obs.push_back({(double)(4 + rng() % 13), (double)(4 + rng() % 13), 0.5 + (rng() % 10) / 10.0}); State s{1, 1, 0.7, 0, 0}; double gx = 19, gy = 19; bool ok = clearanceAt(s.x, s.y) > 0.3 && clearanceAt(gx, gy) > 0.3; if (!ok) continue; trials++;
+        { State n = s; n.v = 0.9; n.th = std::atan2(gy - n.y, gx - n.x); bool hit = false; for (int k = 0; k < 400 && std::hypot(gx - n.x, gy - n.y) > 1.0; k++) { n = stepState(n, 0.9, 0); if (clearanceAt(n.x, n.y) <= 0) { hit = true; break; } } naiveHit += hit; }                      // 비교: 직진
+        int k = 0; bool done = false; for (; k < 800; k++) { if (std::hypot(gx - s.x, gy - s.y) < 1.0) { done = true; break; } bool found; State nxt = dwa(s, gx, gy, found);
+            assert(nxt.v >= -1e-9 && nxt.v <= VMAX + 1e-9 && std::fabs(nxt.w) <= WMAX + 1e-9 && std::fabs(nxt.v - s.v) <= AMAX * DT + 1e-9 && std::fabs(nxt.w - s.w) <= ALPHA * DT + 1e-9);                     // ② 속도·가속도 한계
+            s = nxt; assert(clearanceAt(s.x, s.y) > 0); }                                                                                                                                           // ① 충돌 없음
+        if (done) { reached++; steps += k; } else timeouts++;
+    }
+    assert(trials > 15 && reached * 10 >= trials * 7 && naiveHit > 3);
+    std::cout << "DynamicWindowApproach: " << trials << " maps; reached the goal on " << reached << " (mean " << steps / reached * DT << " s), " << timeouts << " timeouts (local traps), 0 collisions or limit violations; straight-line control collided on " << naiveHit << " maps" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 제어 주기당 O(속도 샘플 수 × 예측 길이 × 장애물 수)
 // Space Complexity: O(1)
 ```
 
