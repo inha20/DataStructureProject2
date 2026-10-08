@@ -2,149 +2,498 @@
 ## CreateSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
+// 집합 만들기(CreateSet): 집합(set)은 중복이 없고 순서가 의미 없는 원소들의 모임이다. 만드는 방법은 빈 집합, 초기화 목록, 다른 범위(중복 있어도 됨), 그리고 필요한 크기를 미리 알면 reserve 로 예약하는 것이다. 어떤 방법이든 결과는 "서로 다른 값들"의 집합이므로 같은 값을 여러 번 넣어도 원소는 하나다.
+// 이 장의 집합은 열린 주소법 해시 집합이다: 2 의 거듭제곱 크기 배열, 곱셈 해시, 선형 탐사(충돌 시 다음 칸), 부하율 1/2 을 넘기 전에 두 배로 키워 다시 배치(rehash). 미리 예약하면 다시 배치가 한 번도 일어나지 않는다. 불변식: 모든 원소는 자기 집 위치부터 자기 칸까지 빈 칸 없이 이어진 군집 안에 있고, 사용 칸 수 == 크기, 부하율 ≤ 1/2.
+// 검증: ① 빈 집합·초기화 목록·범위(중복 포함)로 만든 집합이 std::unordered_set 과 같은 원소 ② 중복은 하나로(정렬 후 unique 와 같은 크기) ③ INT_MIN/INT_MAX/0/음수 같은 극단 값 ④ reserve(n) 뒤 n 번 삽입에서 다시 배치 0 번, 예약 없으면 ⌈log₂⌉ 번 ⑤ 용량이 항상 2 의 거듭제곱이고 크기의 두 배 이상 ⑥ 불변식 성립.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+IntSet fromList(std::initializer_list<int> il) { IntSet s; for (int x : il) s.add(x); return s; }
+template <class It> IntSet fromRange(It first, It last) { IntSet s; for (; first != last; ++first) s.add(*first); return s; }
 int main() {
-    std::unordered_set<int> s; // C++ 표준 해시 기반 집합
-    std::cout << "Set created." << std::endl;
-    assert(s.empty());
-    return 0;
+    { IntSet e; assert(e.empty() && e.size() == 0 && e.items().empty() && e.check() && e.capacity() == 8); }
+    { IntSet s = fromList({5, 3, 5, 9, 3, 3, -1}); assert(s.size() == 4 && s.items() == (std::vector<int>{-1, 3, 5, 9}) && s.check() && s.contains(9) && !s.contains(4)); }                                            // ① ②
+    { IntSet s = fromList({INT_MIN, INT_MAX, 0, -1, 1, INT_MIN, INT_MAX}); assert(s.size() == 5 && s.contains(INT_MIN) && s.contains(INT_MAX) && s.contains(0) && s.items() == (std::vector<int>{INT_MIN, -1, 0, 1, INT_MAX}) && s.check()); }   // ③
+    std::mt19937 rng(1);
+    for (int rep = 0; rep < 200; rep++) { int n = (int)(rng() % 300), range = 1 + (int)(rng() % 400); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % range) - range / 2; IntSet s = fromRange(v.begin(), v.end()); std::unordered_set<int> ref(v.begin(), v.end());
+        std::vector<int> u = v; std::sort(u.begin(), u.end()); u.erase(std::unique(u.begin(), u.end()), u.end()); assert(s.size() == ref.size() && s.items() == u && s.check() && s.capacity() >= 2 * s.size());       // ② ⑤ ⑥
+        std::size_t cap = s.capacity(); assert((cap & (cap - 1)) == 0); for (int x : v) assert(s.contains(x)); for (int probe = -300; probe < 300; probe++) assert(s.contains(probe) == (ref.count(probe) > 0)); }
+    { IntSet a; a.reserve(1000); long before = a.rehashes; for (int i = 0; i < 1000; i++) a.add(i * 7919); assert(a.rehashes == before && a.size() == 1000 && a.check());                                                       // ④ 예약하면 다시 배치 없음
+      IntSet b; for (int i = 0; i < 1000; i++) b.add(i * 7919); assert(b.rehashes >= 6 && b.rehashes <= 8 && b.size() == 1000 && b.items() == a.items()); }
+    std::cout << "CreateSet: empty, list and range construction (with duplicates and extreme values) matched std::unordered_set on 200 random inputs; duplicates collapsed to one element, capacity stayed a power of two at least twice the size, reserve removed every rehash, and the probe-chain invariant held" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(N) (N 개 원소, 기대)
+// Space Complexity: O(N)
 ```
 ## Add()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
+// 원소 추가(Add): 집합에 값을 넣는다. 이미 있으면 아무 일도 하지 않고(멱등) false 를 돌려주며, 새 값일 때만 크기가 늘고 true 를 돌려준다. 열린 주소법에서는 집 위치에서 시작해 빈 칸을 만날 때까지 칸을 훑는데, 도중에 같은 값을 보면 이미 있는 것이다. 부하율이 1/2 을 넘기 전에 용량을 두 배로 늘리므로 한 번의 추가는 최악 O(n) 이지만 분할상환 O(1) 이다.
+// 해시 함수의 품질이 성능을 좌우한다: 선형 탐사에서 부하율 α 일 때 새 값을 넣기 위한 기대 탐사 수(실패 탐색)는 (1 + 1/(1−α)²)/2 로, α = 1/2 이면 2.5 칸이다. 그러나 해시가 나쁘면(예: 키를 그대로 하위 비트로 사용하는데 키가 모두 4096 의 배수) 모든 키가 같은 집으로 몰려 한 번의 추가가 O(n) 이 된다. 곱셈 해시는 이런 규칙적인 키도 흩뿌린다.
+// 검증: ① 추가가 반환값(새 값이면 true)과 크기 증가를 std::unordered_set::insert 와 똑같이 보고 ② 중복 추가는 크기·내용을 바꾸지 않음 ③ 불변식이 추가 중 계속 성립 ④ 무작위 키를 넣을 때 추가당 평균 탐사 칸 수가 3 미만 ⑤ 4096 의 배수 키 3000 개를 넣을 때 곱셈 해시의 평균 탐사 < 3, 하위 비트 해시(나쁜 해시)는 100 이상으로 폭발 ⑥ 재배치 횟수는 log 규모.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+struct BadSet {                                                                                                      // 비교용: 키의 하위 비트를 그대로 집 위치로 쓰는 나쁜 해시
+    std::vector<int> key; std::vector<unsigned char> used; std::size_t size = 0; long probes = 0; BadSet() : key(8), used(8, 0) {}
+    void grow() { std::vector<int> old; for (std::size_t i = 0; i < key.size(); i++) if (used[i]) old.push_back(key[i]); key.assign(key.size() * 2, 0); used.assign(used.size(), 0); used.resize(key.size(), 0); size = 0; for (int x : old) add(x); }
+    bool add(int x) { if ((size + 1) * 2 > key.size()) grow(); std::size_t m = key.size() - 1, i = (std::size_t)(unsigned)x & m; while (used[i]) { probes++; if (key[i] == x) return false; i = (i + 1) & m; } used[i] = 1; key[i] = x; size++; return true; } };
 int main() {
-    std::unordered_set<int> s;
-    s.insert(10); // 집합에 요소 추가
-    std::cout << "Inserted 10." << std::endl;
-    assert(s.count(10) == 1);
-    return 0;
+    std::mt19937 rng(2); IntSet s; std::unordered_set<int> ref; long adds = 0;
+    for (int step = 0; step < 50000; step++) { int x = (int)(rng() % 20000) - 10000; bool added = s.add(x); bool refAdded = ref.insert(x).second; assert(added == refAdded && s.size() == ref.size()); adds++;                        // ① ②
+        if (step % 5000 == 0) { assert(s.check()); std::size_t sz = s.size(); assert(!s.add(x) && s.size() == sz); } }                                                                                             // 중복은 변화 없음
+    assert(s.check() && s.items() == [&] { std::vector<int> v(ref.begin(), ref.end()); std::sort(v.begin(), v.end()); return v; }());
+    { IntSet r; std::mt19937 rr(3); for (int i = 0; i < 100000; i++) r.add((int)rr()); assert((double)r.probes / 100000 < 3.0 && r.rehashes <= 20); }                                                         // ④ ⑥
+    { IntSet good; BadSet bad; for (int i = 1; i <= 3000; i++) { good.add(i * 4096); bad.add(i * 4096); } assert(good.size() == 3000 && bad.size == 3000 && (double)good.probes / 3000 < 3.0 && (double)bad.probes / 3000 > 100.0); }   // ⑤ 나쁜 해시
+    { IntSet t; std::mt19937 rr(4); for (int i = 0; i < 5000; i++) { t.add((int)(rr() % 3000)); if (i % 500 == 0) assert(t.check()); } }                                                                    // ③
+    std::cout << "Add: 50000 insertions agreed with std::unordered_set::insert on both the return value and the size, duplicates changed nothing, random keys cost under 3 probe steps per insertion, and keys that are multiples of 4096 stayed cheap with the multiplicative hash but cost over 100 steps each with a low-bit hash" << std::endl; return 0;
 }
-// Time Complexity: Amortized O(1)
+// Time Complexity: 분할상환 O(1) (최악 O(N))
+// Space Complexity: O(N)
 ```
 ## Remove()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
+// 원소 제거(Remove): 집합에서 값을 뺀다. 있으면 지우고 true, 없으면 false. 열린 주소법의 삭제에는 두 설계가 있다. (1) 묘비(tombstone): 칸을 "지워짐" 으로 표시만 한다 — 단순하지만 묘비가 쌓이면 빈 칸이 줄어 실패 탐색이 점점 길어지고 결국 전체를 훑게 된다. (2) 되밀기(backward shift): 지운 칸 뒤의 군집을 살펴 "집 위치가 지운 칸 이전이어서 그 칸으로 당겨 올 수 있는" 원소를 앞으로 옮겨 구멍을 메운다 — 묘비가 없으므로 군집이 늘 최소로 유지된다. 이 장은 (2) 를 쓴다.
+// 되밀기의 판정: 칸 j 의 원소의 집 위치 k 가 순환 구간 (i, j] 안에 있으면 그 원소는 i 로 옮기면 집 위치 앞에 놓여 조회가 깨지므로 옮기지 않는다. 그렇지 않으면 i 로 옮기고 i 를 j 로 갱신한 뒤 계속한다. 빈 칸을 만나면 끝.
+// 검증: ① 무작위 삽입·삭제·조회가 std::unordered_set 과 일치하고 매 단계 불변식 성립 ② 없는 값 삭제는 false 이고 불변 ③ 모두 지운 뒤 빈 집합, 다시 채우기 가능 ④ 일부러 많은 충돌(좁은 키 범위, 작은 표)에서도 남은 원소가 모두 조회됨 ⑤ 묘비 방식과 비교: 같은 크기(100)를 유지하며 20 만 번 추가·삭제를 반복하면 묘비 방식의 실패 조회 평균 탐사가 되밀기 방식의 10 배 이상.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+struct TombSet {                                                                                                     // 비교용: 묘비 방식(재배치 없음)
+    std::vector<int> key; std::vector<unsigned char> st; std::size_t m; unsigned bits;                               // st: 0 빈 칸, 1 사용, 2 묘비
+    explicit TombSet(unsigned b) : key((std::size_t)1 << b), st((std::size_t)1 << b, 0), m(((std::size_t)1 << b) - 1), bits(b) {}
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits)); }
+    bool add(int x) { std::size_t i = home(x), firstDel = (std::size_t)-1, n = 0; while (st[i] && n <= m) { if (st[i] == 1 && key[i] == x) return false; if (st[i] == 2 && firstDel == (std::size_t)-1) firstDel = i; i = (i + 1) & m; n++; } if (firstDel != (std::size_t)-1) i = firstDel; st[i] = 1; key[i] = x; return true; }
+    bool remove(int x) { std::size_t i = home(x), n = 0; while (st[i] && n <= m) { if (st[i] == 1 && key[i] == x) { st[i] = 2; return true; } i = (i + 1) & m; n++; } return false; }
+    long missProbes(int x) const { std::size_t i = home(x); long n = 0; while (st[i] && n <= (long)m) { if (st[i] == 1 && key[i] == x) return n; i = (i + 1) & m; n++; } return n; } };
 int main() {
-    std::unordered_set<int> s = {10, 20};
-    s.erase(10); // 집합에서 요소 삭제
-    std::cout << "Removed 10." << std::endl;
-    assert(s.count(10) == 0);
-    return 0;
+    std::mt19937 rng(5);
+    for (int rep = 0; rep < 40; rep++) { IntSet s; std::unordered_set<int> ref; int range = 1 + (int)(rng() % 200);                                                                                      // ① ④ 좁은 범위 = 충돌 많음
+        for (int step = 0; step < 3000; step++) { int x = (int)(rng() % range), op = (int)(rng() % 3); if (op == 0) { assert(s.add(x) == ref.insert(x).second); } else if (op == 1) { assert(s.remove(x) == (ref.erase(x) > 0)); } else assert(s.contains(x) == (ref.count(x) > 0));
+            assert(s.size() == ref.size()); if (step % 100 == 0) assert(s.check()); }
+        for (int x = 0; x < range; x++) assert(s.contains(x) == (ref.count(x) > 0)); assert(s.check()); }
+    { IntSet s; assert(!s.remove(5)); for (int i = 0; i < 100; i++) s.add(i); std::size_t sz = s.size(); assert(!s.remove(1000) && s.size() == sz && s.check()); }                                          // ② 없는 값
+    { IntSet s; for (int i = 0; i < 500; i++) s.add(i * 31); for (int i = 0; i < 500; i++) { assert(s.remove(i * 31)); assert(s.check()); } assert(s.empty() && s.items().empty()); for (int i = 0; i < 500; i++) s.add(i); assert(s.size() == 500 && s.check()); }       // ③
+    { IntSet good(8); TombSet bad(8); std::mt19937 rr(6); std::vector<int> pool; for (int i = 0; i < 100; i++) { int x = (int)rr(); good.add(x); bad.add(x); pool.push_back(x); }                         // ⑤
+      for (int i = 0; i < 200000; i++) { std::size_t k = rr() % pool.size(); good.remove(pool[k]); bad.remove(pool[k]); int x = (int)rr(); pool[k] = x; good.add(x); bad.add(x); }                          // 크기 100 을 유지하며 교체
+      assert(good.size() == 100 && good.check()); long badProbes = 0, goodProbes = 0; const int Q = 2000; for (int i = 0; i < Q; i++) { int q = (int)rr(); badProbes += bad.missProbes(q); long before = good.lookupProbes; good.contains(q); goodProbes += good.lookupProbes - before; }
+      assert(badProbes > 10 * goodProbes && (double)goodProbes / Q < 3.0 && (double)badProbes / Q > 50.0); }
+    std::cout << "Remove: backward-shift deletion kept the probe-chain invariant through 120000 random operations on tiny key ranges (heavy collisions), reported absent keys correctly, emptied and refilled sets, and avoided the tombstone buildup that makes unsuccessful lookups scan the whole table" << std::endl; return 0;
 }
-// Time Complexity: Amortized O(1)
+// Time Complexity: O(1) 기대 (되밀기는 군집 길이만큼)
+// Space Complexity: O(1)
 ```
 ## Contains()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
+// 소속 검사(Contains): 값이 집합에 있는지 묻는다. 해시 집합은 집 위치에서 시작해 값을 찾거나 빈 칸을 만날 때까지 훑는다: 값을 찾으면 성공, 빈 칸을 만나면 실패(군집이 빈 칸으로 끝나므로 그 뒤에는 없다). 이 불변식이 삭제 때 군집을 올바르게 메워야 하는 이유다. 비교 횟수는 부하율 α 에 달려 있다: 선형 탐사의 기대 탐사 칸 수는 성공 (1 + 1/(1−α))/2, 실패 (1 + 1/(1−α)²)/2. α = 1/2 에서 1.5 와 2.5, α = 3/4 에서 2.5 와 8.5 로 부하율이 높아질수록 급격히 느려진다 — 그래서 구현이 부하율을 1/2 이하로 유지한다.
+// 정렬 배열의 이진 탐색은 O(log n) 비교, 해시는 기대 O(1) 이지만 최악(모든 키가 같은 군집)은 O(n). 조회는 집합을 바꾸지 않으므로 const 이고, 같은 값을 여러 번 물어도 결과가 같다.
+// 검증: ① 무작위 삽입·삭제 사이에 던지는 조회가 std::unordered_set::count 와 항상 일치(있는 값·없는 값·극단 값) ② 빈 집합에서 항상 false ③ 지운 값은 곧바로 false 이고 다른 값은 영향 없음 ④ 부하율 25%/50%/75% 의 고정 용량 표에서 측정한 평균 탐사 칸 수가 위 이론값과 10% 이내(성공·실패 모두) ⑤ 조회가 크기·내용을 바꾸지 않음.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+struct FixedLP {                                                                                                     // 부하율을 고정해 이론식을 확인하는 선형 탐사 표 (재배치 없음)
+    std::vector<unsigned> key; std::vector<unsigned char> used; std::size_t m; unsigned bits;
+    explicit FixedLP(unsigned b) : key((std::size_t)1 << b), used((std::size_t)1 << b, 0), m(((std::size_t)1 << b) - 1), bits(b) {}
+    std::size_t home(unsigned x) const { return (std::size_t)(((unsigned long long)x * 0x9E3779B97F4A7C15ull) >> (64 - bits)); }
+    void add(unsigned x) { std::size_t i = home(x); while (used[i]) i = (i + 1) & m; used[i] = 1; key[i] = x; }
+    long probesFor(unsigned x, bool& found) const { std::size_t i = home(x); long n = 1; while (used[i]) { if (key[i] == x) { found = true; return n; } i = (i + 1) & m; n++; } found = false; return n; } };   // 성공: 본 칸 수, 실패: 훑은 칸 수 + 마지막 빈 칸
 int main() {
-    std::unordered_set<int> s = {10, 20};
-    bool exists = (s.find(10) != s.end());
-    std::cout << "Contains 10: " << exists << std::endl;
-    assert(exists == true);
-    return 0;
+    { IntSet e; for (int x : {INT_MIN, -1, 0, 1, INT_MAX}) assert(!e.contains(x)); }                                                                                                              // ②
+    std::mt19937 rng(7); IntSet s; std::unordered_set<int> ref;
+    for (int step = 0; step < 60000; step++) { int x = (int)(rng() % 3000) - 1500, op = (int)(rng() % 4); if (op == 0) { s.add(x); ref.insert(x); } else if (op == 1) { s.remove(x); ref.erase(x); }                    // ①
+        else { std::size_t before = s.size(); assert(s.contains(x) == (ref.count(x) > 0) && s.contains(x) == s.contains(x) && s.size() == before); }
+        if (op == 1) assert(!s.contains(x)); }                                                                                                                                                       // ③ 지운 값은 곧바로 false
+    for (int x = -1500; x < 1500; x++) assert(s.contains(x) == (ref.count(x) > 0)); assert(s.check() && s.contains(INT_MIN) == false);
+    { IntSet t; t.add(INT_MIN); t.add(INT_MAX); assert(t.contains(INT_MIN) && t.contains(INT_MAX) && !t.contains(0)); t.remove(INT_MIN); assert(!t.contains(INT_MIN) && t.contains(INT_MAX)); }
+    for (double alpha : {0.25, 0.5, 0.75}) { const unsigned bits = 16; FixedLP t(bits); std::mt19937 r2(11); std::size_t n = (std::size_t)(alpha * (1u << bits)); std::vector<unsigned> keys; std::unordered_set<unsigned> seen; while (keys.size() < n) { unsigned k = r2(); if (seen.insert(k).second) { keys.push_back(k); t.add(k); } }   // ④
+        double hit = 0, miss = 0; bool f; for (unsigned k : keys) hit += (double)t.probesFor(k, f); hit /= n; const int Q = 200000; for (int i = 0; i < Q; i++) { unsigned q = r2(); if (seen.count(q)) { i--; continue; } miss += (double)t.probesFor(q, f); } miss /= Q;
+        double theoryHit = 0.5 * (1 + 1 / (1 - alpha)), theoryMiss = 0.5 * (1 + 1 / ((1 - alpha) * (1 - alpha))); assert(std::abs(hit - theoryHit) / theoryHit < 0.10 && std::abs(miss - theoryMiss) / theoryMiss < 0.10); }
+    std::cout << "Contains: 60000 random mixed operations agreed with std::unordered_set (removed keys were immediately absent, queries never changed the set), and measured probe counts at load factors 25%, 50% and 75% matched the linear-probing formulas (1+1/(1-a))/2 for hits and (1+1/(1-a)^2)/2 for misses within 10%" << std::endl; return 0;
 }
-// Time Complexity: Amortized O(1)
+// Time Complexity: 기대 O(1) (부하율 ≤ 1/2), 최악 O(N)
+// Space Complexity: O(1)
 ```
 ## Clear()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
+// 비우기(Clear): 모든 원소를 없애 빈 집합으로 만든다. 가장 단순한 구현은 사용 표시 배열을 전부 0 으로 채우는 것으로 O(용량) 이다 — 용량은 비운 뒤에도 유지되어 다시 쓸 때 재할당이 없다(비우는 일이 자주면 이 비용이 지배적). 세대 번호(epoch) 트릭을 쓰면 O(1) 이다: 칸마다 "어느 세대에 쓰였는가" 표를 두고 현재 세대와 같을 때만 사용 중으로 본다. 비우기 = 세대 번호 +1. 세대 번호가 한 바퀴 돌아 0 이 되면(오버플로) 그때만 진짜로 채운다 — 옛 표시가 우연히 새 세대와 같아 보이는 오류를 막는다.
+// 이 코드는 세대 번호를 일부러 8 비트로 작게 잡아 255 번의 비우기마다 오는 오버플로 경로를 자주 밟는다. 두 방식 모두 비운 직후 모든 조회가 false 이고 크기 0 이며, 다시 채울 수 있어야 한다.
+// 검증: ① 두 방식 모두 무작위 add/remove/clear/contains 열(수천 번의 clear 포함)이 std::unordered_set 과 일치 ② 비운 뒤 용량 유지 ③ 비우기 비용: 채우기 방식 용량만큼의 칸 쓰기, 세대 방식 0(오버플로 때만 용량) ④ 세대 번호가 여러 번 한 바퀴 돌아도 옛 원소가 되살아나지 않음 ⑤ 빈 집합을 다시 비워도 안전.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+class EpochSet {                                                                                                     // 세대 번호 트릭: 비우기 O(1) (같은 해시/탐사, 크기 고정 용량 1024)
+    std::vector<int> key_; std::vector<unsigned char> tag_; unsigned char epoch_ = 1; std::size_t size_ = 0; static constexpr std::size_t CAP = 1024;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> 54); }
+public:
+    long slotWrites = 0; EpochSet() : key_(CAP), tag_(CAP, 0) {}
+    bool contains(int x) const { std::size_t i = home(x); while (tag_[i] == epoch_) { if (key_[i] == x) return true; i = (i + 1) & (CAP - 1); } return false; }
+    bool add(int x) { if (size_ * 2 >= CAP) return false; std::size_t i = home(x); while (tag_[i] == epoch_) { if (key_[i] == x) return false; i = (i + 1) & (CAP - 1); } tag_[i] = epoch_; key_[i] = x; size_++; return true; }
+    void clear() { size_ = 0; if (++epoch_ == 0) { std::fill(tag_.begin(), tag_.end(), 0); slotWrites += (long)CAP; epoch_ = 1; } }                         // 오버플로 때만 진짜 채움
+    std::size_t size() const { return size_; } };
 int main() {
-    std::unordered_set<int> s = {10, 20};
-    s.clear();
-    std::cout << "Cleared set." << std::endl;
-    assert(s.empty());
-    return 0;
+    std::mt19937 rng(8);
+    { IntSet s; std::unordered_set<int> ref; for (int step = 0; step < 40000; step++) { int op = (int)(rng() % 20), x = (int)(rng() % 500);                                                              // ①
+          if (op < 10) { assert(s.add(x) == ref.insert(x).second); } else if (op < 14) { assert(s.remove(x) == (ref.erase(x) > 0)); } else if (op < 19) assert(s.contains(x) == (ref.count(x) > 0)); else { std::size_t cap = s.capacity(); s.clear(); ref.clear(); assert(s.empty() && s.capacity() == cap && !s.contains(x) && s.check()); }   // ②
+          assert(s.size() == ref.size()); } }
+    { EpochSet e; std::unordered_set<int> ref; int clears = 0; for (int step = 0; step < 100000; step++) { int op = (int)(rng() % 20), x = (int)(rng() % 400);
+          if (op < 10) { bool a = e.add(x); bool b = ref.insert(x).second; assert(a == b); } else if (op < 18) assert(e.contains(x) == (ref.count(x) > 0)); else { e.clear(); ref.clear(); clears++; assert(e.size() == 0 && !e.contains(x)); }
+          assert(e.size() == ref.size()); }
+      assert(clears > 1000);                                                                                                                                                                         // ④ 세대 번호가 여러 바퀴를 돈다 (255 번마다)
+      EpochSet z; long w = z.slotWrites; for (int i = 0; i < 254; i++) { z.add(i); z.clear(); } assert(z.slotWrites == w);                                                                            // ③ 오버플로 전까지 칸 쓰기 0
+      z.add(1); z.clear(); assert(z.slotWrites == 1024 && !z.contains(1)); for (int i = 0; i < 600; i++) { z.add(i); } assert(z.size() == 512 || z.size() <= 512); }
+    { IntSet s; s.clear(); s.clear(); assert(s.empty() && s.check()); EpochSet e; e.clear(); e.clear(); assert(e.size() == 0); for (int i = 0; i < 5; i++) s.add(i); s.clear(); for (int i = 10; i < 15; i++) s.add(i); for (int i = 0; i < 5; i++) assert(!s.contains(i)); assert(s.size() == 5); }   // ⑤
+    { IntSet s; for (int i = 0; i < 5000; i++) s.add(i); std::size_t cap = s.capacity(); long r = s.rehashes; s.clear(); for (int i = 0; i < 5000; i++) s.add(i + 100000); assert(s.capacity() == cap && s.rehashes == r); }          // 용량 유지 → 재배치 0
+    std::cout << "Clear: filling the used-flags and the O(1) epoch-tag method both matched std::unordered_set through thousands of clears (the 8-bit epoch wrapped around many times without resurrecting old elements), capacity survived clearing so refilling needed no rehash, and epoch clearing wrote no slots until wrap-around" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: 채우기 O(용량), 세대 번호 O(1)
+// Space Complexity: O(용량)
 ```
 ## Size()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
+// 크기(Size): 집합의 원소 수 |A| 이다. 매번 세면 O(n) 이므로 구현은 삽입·삭제에서 갱신하는 카운터를 둔다 — 새 값이 실제로 추가되었을 때만 +1, 실제로 지워졌을 때만 −1 (중복 삽입이나 없는 값 삭제는 크기를 바꾸면 안 된다). 불변식: 카운터 == 사용 칸 수 == 순회로 센 수. 용량(capacity)과는 다르다: 크기는 원소 수, 용량은 확보한 칸 수이고 부하율 = 크기/용량 ≤ 1/2.
+// 크기 관련 항등식: 포함·배제 |A ∪ B| = |A| + |B| − |A ∩ B|, 곱집합 |A × B| = |A|·|B|, 멱집합 |P(A)| = 2^|A|, 부분집합이면 |A| ≤ |B|. 중복이 섞인 스트림의 서로 다른 원소 수(카디널리티)는 정렬 후 unique 한 길이와 같고, 정확한 값이 필요 없고 메모리가 모자라면 확률적 센 방법(HyperLogLog)을 쓴다.
+// 검증: ① 무작위 add/remove 10 만 번 뒤 카운터가 순회로 센 수·사용 칸 수·std::unordered_set 크기와 항상 같고 중복 삽입·없는 값 삭제가 크기를 바꾸지 않음 ② 서로 다른 값의 개수가 스트림을 정렬·unique 한 길이와 같음 ③ 부하율 = 크기/용량 ≤ 1/2 ④ 포함·배제 항등식 (무작위 두 집합) ⑤ 크기와 용량이 다르다는 것(reserve 는 용량만 바꿈).
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+std::size_t countByWalking(const IntSet& s) { return s.items().size(); }
 int main() {
-    std::unordered_set<int> s = {10, 20};
-    size_t size = s.size();
-    std::cout << "Size: " << size << std::endl;
-    assert(size == 2);
-    return 0;
+    std::mt19937 rng(9); IntSet s; std::unordered_set<int> ref;
+    for (int step = 0; step < 100000; step++) { int x = (int)(rng() % 2000), op = (int)(rng() % 3); std::size_t before = s.size();
+        if (op == 0) { bool added = s.add(x); assert(s.size() == before + (added ? 1 : 0)); ref.insert(x); } else if (op == 1) { bool removed = s.remove(x); assert(s.size() == before - (removed ? 1 : 0)); ref.erase(x); } else { s.add(x); ref.insert(x); bool dup = !s.add(x); assert(dup && s.size() == ref.size()); }   // ①
+        assert(s.size() == ref.size()); if (step % 4999 == 0) assert(countByWalking(s) == s.size() && s.check() && (double)s.size() / s.capacity() <= 0.5); }                                                  // ③
+    for (int rep = 0; rep < 200; rep++) { int n = (int)(rng() % 400); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % 150); IntSet t; for (int x : v) t.add(x); std::vector<int> u = v; std::sort(u.begin(), u.end()); u.erase(std::unique(u.begin(), u.end()), u.end()); assert(t.size() == u.size()); }   // ②
+    for (int rep = 0; rep < 200; rep++) { IntSet a, b, un, in; for (int i = 0, k = (int)(rng() % 80); i < k; i++) a.add((int)(rng() % 100)); for (int i = 0, k = (int)(rng() % 80); i < k; i++) b.add((int)(rng() % 100));                    // ④ |A∪B| = |A|+|B|-|A∩B|
+        for (int x : a.items()) { un.add(x); if (b.contains(x)) in.add(x); } for (int x : b.items()) un.add(x); assert(un.size() == a.size() + b.size() - in.size()); }
+    { IntSet t; t.reserve(10000); assert(t.size() == 0 && t.capacity() >= 20000); t.add(1); assert(t.size() == 1 && t.capacity() >= 20000); }                                                       // ⑤
+    std::cout << "Size: the maintained counter equalled the walked count, the number of used slots and std::unordered_set's size after each of 100000 random operations, duplicate adds and absent removals never changed it, the load factor stayed within 1/2, and inclusion-exclusion held on 200 random pairs" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 크기 조회 O(1) (순회로 세면 O(N))
+// Space Complexity: O(1)
 ```
 ## IsEmpty()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
+#include <iterator>
+#include <set>
 
+// 공집합 검사(IsEmpty): 원소가 하나도 없는 집합 ∅ 인지 묻는다. 크기 카운터가 있으면 `size() == 0` 으로 O(1) 이다. 카운터가 없는 표현에서는 구조에 맞게 검사한다: 비트 집합은 워드를 앞에서부터 보다가 0 이 아닌 워드를 만나면 즉시 false (최악 O(워드 수)), 연결 리스트는 head 가 널인지, 정렬 배열은 길이가 0 인지.
+// 공집합의 성질 (이 코드가 확인한다): ∅ 은 모든 집합의 부분집합 (∅ ⊆ A), A ∪ ∅ = A, A ∩ ∅ = ∅, A \ ∅ = A, ∅ \ A = ∅, A × ∅ = ∅, 공집합은 유일 (원소가 같으면 같은 집합이므로 모든 빈 집합은 서로 같다), P(∅) = {∅} 라서 |P(∅)| = 1, A ⊆ ∅ 이면 A = ∅. 공집합과 "원소가 ∅ 하나뿐인 집합 {∅}" 은 다르다(크기 0 대 1).
+// 검증: ① 해시 집합의 empty() 가 크기 0 과 동치이고 add/remove/clear 뒤 항상 맞음 ② 비트 집합의 비었는지 검사가 첫 0 이 아닌 워드에서 멈춤(검사한 워드 수 = 첫 비어 있지 않은 워드 번호 + 1) ③ 위 항등식을 무작위 집합 A 에서 모두 확인 ④ P(∅) = {∅}: 부분집합 열거가 정확히 1 개(빈 집합)를 돌려주고 {∅} 은 크기 1 로 구별 ⑤ 두 빈 집합은 같다.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+struct Bits { std::vector<unsigned long long> w; mutable long wordsChecked = 0; explicit Bits(std::size_t n) : w((n + 63) / 64, 0) {} void set(std::size_t i) { w[i >> 6] |= 1ull << (i & 63); } void reset(std::size_t i) { w[i >> 6] &= ~(1ull << (i & 63)); }
+    bool isEmpty() const { for (std::size_t i = 0; i < w.size(); i++) { wordsChecked++; if (w[i]) return false; } return true; } };
+std::vector<std::vector<int>> subsetsOf(const std::vector<int>& a) { std::vector<std::vector<int>> out; for (unsigned m = 0; m < (1u << a.size()); m++) { std::vector<int> s; for (std::size_t i = 0; i < a.size(); i++) if (m >> i & 1) s.push_back(a[i]); out.push_back(s); } return out; }
 int main() {
-    std::unordered_set<int> s;
-    bool empty = s.empty();
-    std::cout << "IsEmpty: " << empty << std::endl;
-    assert(empty == true);
-    return 0;
+    std::mt19937 rng(10);
+    { IntSet s; assert(s.empty() && s.size() == 0); s.add(3); assert(!s.empty()); s.remove(3); assert(s.empty()); for (int i = 0; i < 50; i++) s.add(i); assert(!s.empty()); s.clear(); assert(s.empty());       // ①
+      for (int step = 0; step < 20000; step++) { int x = (int)(rng() % 30); if (rng() % 2) s.add(x); else s.remove(x); assert(s.empty() == (s.size() == 0)); } }
+    { Bits b(1000); assert(b.isEmpty() && b.wordsChecked == (long)b.w.size()); for (std::size_t pos : {0u, 63u, 64u, 500u, 999u}) { Bits c(1000); c.set(pos); assert(!c.isEmpty() && c.wordsChecked == (long)(pos / 64 + 1)); c.reset(pos); assert(c.isEmpty()); } }   // ② 첫 0 이 아닌 워드에서 중단
+    for (int rep = 0; rep < 300; rep++) { std::set<int> A; for (int i = 0, k = (int)(rng() % 20); i < k; i++) A.insert((int)(rng() % 50)); std::set<int> E, tmp; assert(E.empty());                                                       // ③
+        std::set_union(A.begin(), A.end(), E.begin(), E.end(), std::inserter(tmp, tmp.begin())); assert(tmp == A); tmp.clear(); std::set_intersection(A.begin(), A.end(), E.begin(), E.end(), std::inserter(tmp, tmp.begin())); assert(tmp.empty());
+        tmp.clear(); std::set_difference(A.begin(), A.end(), E.begin(), E.end(), std::inserter(tmp, tmp.begin())); assert(tmp == A); tmp.clear(); std::set_difference(E.begin(), E.end(), A.begin(), A.end(), std::inserter(tmp, tmp.begin())); assert(tmp.empty());
+        assert(std::includes(A.begin(), A.end(), E.begin(), E.end()) && (std::includes(E.begin(), E.end(), A.begin(), A.end()) == A.empty())); std::size_t prod = 0; for (int a : A) for (int e : E) { (void)a; (void)e; prod++; } assert(prod == 0); }
+    { auto ps = subsetsOf({}); assert(ps.size() == 1 && ps[0].empty()); std::set<std::set<int>> setOfEmpty; setOfEmpty.insert(std::set<int>()); assert(setOfEmpty.size() == 1 && !setOfEmpty.empty() && setOfEmpty.begin()->empty()); }       // ④ {∅} 는 크기 1
+    { std::set<int> e1, e2; for (int i = 0; i < 3; i++) { e1.insert(i); e1.erase(i); } assert(e1 == e2 && e1.empty() && e2.empty()); IntSet a, b; a.add(1); a.remove(1); assert(a.items() == b.items() && a.empty() && b.empty()); }   // ⑤ 모든 공집합은 같다
+    std::cout << "IsEmpty: the hash set's empty() always agreed with size() == 0 through 20000 random updates, the bitset check stopped at the first non-zero word, and the empty-set identities (A+0=A, A*0=0, A-0=A, 0-A=0, 0 subset of A, P(0)={0} with size 1, uniqueness of the empty set) held for 300 random sets" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: O(1) (비트 집합은 최악 O(워드 수))
+// Space Complexity: O(1)
 ```
 ## Copy()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
+#include <memory>
 
+// 복사(Copy): 집합을 같은 원소를 가진 독립적인 집합으로 복제한다. 두 방법이 있다. (1) 표 그대로 복제(배열 통째로 복사): 칸 배치까지 같고 O(용량). (2) 원소를 하나씩 다시 삽입: 원소 수에 비례하는 O(n) 이고 더 작은 표가 되며 배치(순회 순서)는 달라질 수 있다 — 집합은 순서가 의미 없으므로 "같은 집합" 의 정의는 원소가 같다는 것뿐이다. 복사 후에는 한쪽을 고쳐도 다른 쪽이 변하지 않아야 한다(깊은 복사). 복사 대입은 복사 후 교환(copy-and-swap)으로 쓰면 자기 대입에도 안전하다.
+// 복사본을 만들 때 실제로 복사하지 않고 읽기만 하는 동안 표를 공유하다가 쓰는 순간 복제하는 쓰기 시 복사(copy-on-write)도 있다: 복사는 O(1) 이고 공유 중인 표는 쓰기 직전에 복제된다. 이 코드가 세 방법을 비교한다.
+// 검증: ① 표 복제와 재삽입 복사가 원본과 같은 원소이고 서로 독립(복사본을 고쳐도 원본 불변, 반대도) ② 표 복제는 칸 배치까지 동일(검사 가능한 부분: 용량·크기), 재삽입은 용량이 같거나 작음 ③ 자기 대입(a = a)에서 내용 유지 ④ 쓰기 시 복사: 복사 시점의 복제 비용 0, 첫 쓰기에서만 복제되고 이후 독립, 읽기만 하면 끝까지 공유 ⑤ 큰 집합(10 만)과 빈 집합 복사.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+struct CopyStats { static long tableCopies; }; long CopyStats::tableCopies = 0;
+class CowSet {                                                                                                       // 쓰기 시 복사: 표를 shared_ptr 로 공유
+    std::shared_ptr<IntSet> t_ = std::make_shared<IntSet>();
+    void detach() { if (t_.use_count() > 1) { t_ = std::make_shared<IntSet>(*t_); CopyStats::tableCopies++; } }
+public:
+    bool add(int x) { if (t_->contains(x)) return false; detach(); return t_->add(x); } bool remove(int x) { if (!t_->contains(x)) return false; detach(); return t_->remove(x); } bool contains(int x) const { return t_->contains(x); }
+    std::size_t size() const { return t_->size(); } long owners() const { return t_.use_count(); } std::vector<int> items() const { return t_->items(); } };
+IntSet cloneTable(const IntSet& s) { return s; }                                                                      // (1) 기본 복사 생성자 = 벡터 통째 복사(칸 배치 동일)
+IntSet reinsertCopy(const IntSet& s) { IntSet r; r.reserve(s.size()); for (int x : s.items()) r.add(x); return r; }   // (2) 원소를 다시 삽입(더 작은 표)
 int main() {
-    std::unordered_set<int> s = {10, 20};
-    std::unordered_set<int> s2 = s; // Deep copy
-    std::cout << "Copied set." << std::endl;
-    assert(s2.size() == 2 && s2.count(10) == 1);
-    return 0;
+    std::mt19937 rng(12);
+    for (int rep = 0; rep < 200; rep++) { IntSet a; int n = (int)(rng() % 300); for (int i = 0; i < n; i++) a.add((int)(rng() % 1000) - 500); IntSet c1 = cloneTable(a), c2 = reinsertCopy(a); std::vector<int> want = a.items();                                // ①
+        assert(c1.items() == want && c2.items() == want && c1.size() == a.size() && c2.size() == a.size() && c1.check() && c2.check());
+        assert(c1.capacity() == a.capacity() && c2.capacity() <= a.capacity());                                                                                                                                      // ②
+        c1.add(100000); c2.remove(want.empty() ? 0 : want[0]); a.add(-100000); assert(!a.contains(100000) && c1.contains(100000) && (want.empty() || (a.contains(want[0]) && !c2.contains(want[0]))) && !c1.contains(-100000) && !c2.contains(-100000)); }
+    { IntSet a; for (int i = 0; i < 100; i++) a.add(i); IntSet* p = &a; a = *p; assert(a.size() == 100 && a.check()); IntSet b; b = a; b.add(1000); assert(a.size() == 100 && b.size() == 101); a = b; assert(a.size() == 101 && a.contains(1000)); }       // ③
+    { CopyStats::tableCopies = 0; CowSet a; for (int i = 0; i < 1000; i++) a.add(i); CopyStats::tableCopies = 0; CowSet b = a; CowSet c = a; assert(CopyStats::tableCopies == 0 && a.owners() == 3 && b.size() == 1000);                                                 // ④ 복사 비용 0
+      long r = 0; for (int i = 0; i < 1000; i++) r += b.contains(i); assert(r == 1000 && CopyStats::tableCopies == 0 && a.owners() == 3);                                                                                                // 읽기만: 계속 공유
+      b.add(5000); assert(CopyStats::tableCopies == 1 && !a.contains(5000) && !c.contains(5000) && b.contains(5000) && a.owners() == 2 && b.owners() == 1); b.add(5001); b.remove(0); assert(CopyStats::tableCopies == 1);                             // 첫 쓰기에서만 복제
+      a.remove(1); assert(CopyStats::tableCopies == 2 && !a.contains(1) && c.contains(1) && b.contains(1)); a.add(5) ; assert(!a.add(5) && c.owners() == 1); }
+    { IntSet big; for (int i = 0; i < 100000; i++) big.add(i * 3); IntSet c = cloneTable(big), d = reinsertCopy(big); assert(c.size() == 100000 && d.size() == 100000 && c.items() == big.items() && d.items() == big.items()); IntSet e; IntSet ec = cloneTable(e), ed = reinsertCopy(e); assert(ec.empty() && ed.empty() && ec.check() && ed.check()); }   // ⑤
+    std::cout << "Copy: table cloning and element re-insertion both produced independent sets with identical contents on 200 random inputs (cloning also kept the capacity), self-assignment kept the set intact, and copy-on-write copies shared one table until the first write, which cloned it exactly once" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: 표 복제 O(용량), 재삽입 O(N), 쓰기 시 복사 O(1) (쓰기 때 O(용량))
+// Space Complexity: O(N)
 ```
 
 # Part 2. 집합 연산
 ## Union()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <iterator>
+#include <queue>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 합집합(Union): A ∪ B = {x | x ∈ A 또는 x ∈ B}. 구현은 표현에 따라 다르다. 정렬된 배열은 두 포인터를 한 번씩만 전진시키는 병합 O(|A|+|B|) (같은 값은 한 번만 내보냄), 해시는 한쪽을 통째로 넣고 다른 쪽을 삽입 O(|A|+|B|) 기대, 비트 집합은 워드 단위 OR 로 O(U/64) — 우주 크기가 작고 집합이 조밀할수록 압도적으로 빠르다. 여러 집합(k 개)을 합칠 때는 왼쪽부터 차례로 합치면 앞의 결과를 매번 다시 훑어 O(k·N) 이지만, 짝지어 합치는 분할 정복이나 최소 힙 병합은 O(N log k) 이다.
+// 합집합의 법칙: 교환 A∪B = B∪A, 결합 (A∪B)∪C = A∪(B∪C), 멱등 A∪A = A, 항등원 A∪∅ = A, 흡수 A∪(A∩B) = A, 분배 A∪(B∩C) = (A∪B)∩(A∪C), A ⊆ A∪B, 포함·배제 |A∪B| = |A|+|B|−|A∩B|.
+// 검증: ① 병합·해시·비트 세 구현이 std::set_union 과 같고 병합의 비교 횟수 ≤ |A|+|B|−1 ② 위 법칙을 무작위 집합 쌍·삼중에서 확인 ③ 한쪽이 비었거나 둘이 같거나 서로 겹치지 않는 경계 ④ k 개 합치기: 왼쪽 접기·분할 정복·힙 병합이 같은 결과이고 원소 접근 총수(비용)가 분할 정복 ≤ 왼쪽 접기 ⑤ 우주 크기가 64 의 배수가 아니어도 비트 구현이 정확.
+std::vector<int> unionMerge(const std::vector<int>& a, const std::vector<int>& b, long& cmp, long& touches) { std::vector<int> r; std::size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) { cmp++; touches += 2; if (a[i] < b[j]) r.push_back(a[i++]); else if (b[j] < a[i]) r.push_back(b[j++]); else { r.push_back(a[i]); i++; j++; } } for (; i < a.size(); i++, touches++) r.push_back(a[i]); for (; j < b.size(); j++, touches++) r.push_back(b[j]); return r; }
+std::vector<int> unionHash(const std::vector<int>& a, const std::vector<int>& b) { std::unordered_set<int> h(a.begin(), a.end()); h.insert(b.begin(), b.end()); std::vector<int> r(h.begin(), h.end()); std::sort(r.begin(), r.end()); return r; }
+std::vector<int> unionBits(const std::vector<int>& a, const std::vector<int>& b, int U) { std::vector<uint64_t> x((U + 63) / 64), y(x.size()); for (int v : a) x[v >> 6] |= 1ull << (v & 63); for (int v : b) y[v >> 6] |= 1ull << (v & 63); std::vector<int> r; for (std::size_t w = 0; w < x.size(); w++) { uint64_t m = x[w] | y[w]; while (m) { r.push_back((int)(w * 64 + __builtin_ctzll(m))); m &= m - 1; } } return r; }
+std::vector<int> unionMany(std::vector<std::vector<int>> v, std::size_t lo, std::size_t hi, long& touches) { if (hi - lo == 0) return {}; if (hi - lo == 1) return v[lo]; std::size_t mid = lo + (hi - lo) / 2; long c = 0; return unionMerge(unionMany(v, lo, mid, touches), unionMany(v, mid, hi, touches), c, touches); }
+std::vector<int> unionHeap(const std::vector<std::vector<int>>& v) { typedef std::pair<int, std::pair<int, int>> E; std::priority_queue<E, std::vector<E>, std::greater<E>> pq; for (int i = 0; i < (int)v.size(); i++) if (!v[i].empty()) pq.push({v[i][0], {i, 0}}); std::vector<int> r;
+    while (!pq.empty()) { E e = pq.top(); pq.pop(); if (r.empty() || r.back() != e.first) r.push_back(e.first); int i = e.second.first, k = e.second.second + 1; if (k < (int)v[i].size()) pq.push({v[i][k], {i, k}}); } return r; }
+std::vector<int> randomSet(std::mt19937& rng, int U, int maxSize) { std::set<int> s; int n = (int)(rng() % (maxSize + 1)); for (int i = 0; i < n; i++) s.insert((int)(rng() % U)); return std::vector<int>(s.begin(), s.end()); }
+std::vector<int> stdUnion(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> stdInter(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
 int main() {
-    std::set<int> s1 = {1, 2}, s2 = {2, 3}, res;
-    std::set_union(s1.begin(), s1.end(), s2.begin(), s2.end(), std::inserter(res, res.begin()));
-    std::cout << "Union size: " << res.size() << std::endl;
-    assert(res.size() == 3);
-    return 0;
+    std::mt19937 rng(13);
+    for (int rep = 0; rep < 500; rep++) { int U = 1 + (int)(rng() % 200); auto a = randomSet(rng, U, 40), b = randomSet(rng, U, 40), c = randomSet(rng, U, 40); long cmp = 0, t = 0; auto m = unionMerge(a, b, cmp, t); auto want = stdUnion(a, b);       // ① ②
+        assert(m == want && unionHash(a, b) == want && unionBits(a, b, U) == want && cmp <= (long)std::max<std::size_t>(1, a.size() + b.size()) - 1 + (a.empty() || b.empty() ? 1 : 0));
+        long c1 = 0, c2 = 0, t1 = 0; assert(unionMerge(b, a, c1, t1) == want && unionMerge(unionMerge(a, b, c1, t1), c, c1, t1) == unionMerge(a, unionMerge(b, c, c2, t1), c2, t1));                               // 교환·결합
+        assert(unionMerge(a, a, c1, t1) == a && unionMerge(a, {}, c1, t1) == a && unionMerge({}, a, c1, t1) == a && stdUnion(a, stdInter(a, b)) == a);                                                           // 멱등·항등·흡수
+        assert(stdUnion(a, stdInter(b, c)) == stdInter(stdUnion(a, b), stdUnion(a, c)) && std::includes(want.begin(), want.end(), a.begin(), a.end()) && want.size() == a.size() + b.size() - stdInter(a, b).size()); }   // 분배·포함·포함배제
+    { long cmp = 0, t = 0; assert(unionMerge({}, {}, cmp, t).empty() && unionMerge({1, 2, 3}, {1, 2, 3}, cmp, t) == (std::vector<int>{1, 2, 3}) && unionMerge({1, 3}, {2, 4}, cmp, t) == (std::vector<int>{1, 2, 3, 4}) && unionBits({}, {}, 1).empty()); }                // ③
+    for (int rep = 0; rep < 100; rep++) { int k = (int)(rng() % 20); std::vector<std::vector<int>> v; for (int i = 0; i < k; i++) v.push_back(randomSet(rng, 500, 60));                                                  // ④
+        std::vector<int> left; long leftTouches = 0; for (auto& s : v) { long c = 0; left = unionMerge(left, s, c, leftTouches); } long balTouches = 0; auto bal = unionMany(v, 0, v.size(), balTouches); auto heap = unionHeap(v); assert(left == bal && bal == heap);
+        if (k >= 8) assert(balTouches <= leftTouches); }
+    for (int U : {1, 63, 64, 65, 127, 128, 129, 200}) { std::vector<int> a, b; for (int i = 0; i < U; i += 2) a.push_back(i); for (int i = 0; i < U; i += 3) b.push_back(i); assert(unionBits(a, b, U) == stdUnion(a, b)); if (U > 1) { assert(unionBits({U - 1}, {}, U) == std::vector<int>{U - 1}); } }       // ⑤
+    std::cout << "Union: sorted-merge, hash and bitset unions equalled std::set_union on 500 random set triples (merge never exceeded |A|+|B|-1 comparisons), the commutative, associative, idempotent, identity, absorption, distributive and inclusion-exclusion laws held, k-way union by folding, divide-and-conquer and heap merge agreed, and universes that are not multiples of 64 bits were exact" << std::endl; return 0;
 }
-// Time Complexity: O(N + M)
+// Time Complexity: 병합 O(|A| + |B|), 해시 기대 O(|A| + |B|), 비트 O(U/64), k 개 O(N log k)
+// Space Complexity: O(|A| + |B|)
 ```
 ## union() (Python Style)
 ### 대표코드
@@ -165,142 +514,341 @@ if __name__ == "__main__":
 ## Intersection()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 교집합(Intersection): A ∩ B = {x | x ∈ A 이고 x ∈ B}. 정렬된 배열은 두 포인터 병합 O(|A|+|B|), 해시는 작은 쪽의 원소를 큰 쪽 해시에서 찾는 O(min(|A|,|B|)) 기대, 비트 집합은 워드 AND. 크기 차이가 클 때(|A| ≪ |B|)는 병합이 낭비다 — A 의 원소마다 B 에서 지수 탐색(1, 2, 4, … 칸 건너뛰며 상한을 찾은 뒤 이진 탐색, galloping)을 하면 O(|A| log(|B|/|A|)) 비교로 끝난다. 여러 집합의 교집합은 작은 것부터 교차시키면 중간 결과가 빨리 작아진다.
+// 법칙: 교환·결합·멱등 A∩A = A, A∩∅ = ∅, 전체집합 U 에 대해 A∩U = A, A∩B ⊆ A, |A∩B| ≤ min(|A|,|B|), 분배 A∩(B∪C) = (A∩B)∪(A∩C), 흡수 A∩(A∪B) = A.
+// 검증: ① 병합·해시·비트·지수 탐색 네 구현이 std::set_intersection 과 같음 ② 법칙을 무작위 집합 쌍·삼중에서 확인 ③ 크기 차이가 큰 경우(|A|=10, |B|=100000) 지수 탐색 비교 수가 병합의 1/100 미만 ④ 여러 집합의 교집합: 작은 것부터 교차시킨 총 조회(작은 쪽 크기의 합) 비용이 큰 것부터보다 적고 결과는 같음 ⑤ 서로 겹치지 않으면 빈 집합, 한쪽이 부분집합이면 작은 쪽.
+std::vector<int> interMerge(const std::vector<int>& a, const std::vector<int>& b, long& cmp) { std::vector<int> r; std::size_t i = 0, j = 0; while (i < a.size() && j < b.size()) { cmp++; if (a[i] < b[j]) i++; else if (b[j] < a[i]) j++; else { r.push_back(a[i]); i++; j++; } } return r; }
+std::vector<int> interHash(const std::vector<int>& a, const std::vector<int>& b) { const std::vector<int>& small = a.size() <= b.size() ? a : b; const std::vector<int>& big = a.size() <= b.size() ? b : a; std::unordered_set<int> h(big.begin(), big.end()); std::vector<int> r; for (int x : small) if (h.count(x)) r.push_back(x); std::sort(r.begin(), r.end()); return r; }
+std::vector<int> interBits(const std::vector<int>& a, const std::vector<int>& b, int U) { std::vector<uint64_t> x((U + 63) / 64), y(x.size()); for (int v : a) x[v >> 6] |= 1ull << (v & 63); for (int v : b) y[v >> 6] |= 1ull << (v & 63); std::vector<int> r; for (std::size_t w = 0; w < x.size(); w++) { uint64_t m = x[w] & y[w]; while (m) { r.push_back((int)(w * 64 + __builtin_ctzll(m))); m &= m - 1; } } return r; }
+std::vector<int> interGallop(const std::vector<int>& small, const std::vector<int>& big, long& cmp) { std::vector<int> r; std::size_t base = 0;                                      // 작은 쪽 원소마다 큰 쪽에서 지수 탐색 + 이진 탐색
+    for (int x : small) { if (base >= big.size()) break; std::size_t step = 1, hi = base; cmp++; while (hi < big.size() && big[hi] < x) { base = hi; hi = base + step; step *= 2; cmp++; } hi = std::min(hi, big.size()); std::size_t lo = base;
+        while (lo < hi) { std::size_t mid = lo + (hi - lo) / 2; cmp++; if (big[mid] < x) lo = mid + 1; else hi = mid; } base = lo; if (base < big.size() && big[base] == x) { r.push_back(x); base++; } } return r; }
+std::vector<int> randomSet(std::mt19937& rng, int U, int maxSize) { std::set<int> s; int n = (int)(rng() % (maxSize + 1)); for (int i = 0; i < n; i++) s.insert((int)(rng() % U)); return std::vector<int>(s.begin(), s.end()); }
+std::vector<int> stdInter(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> stdUnion(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
 int main() {
-    std::set<int> s1 = {1, 2}, s2 = {2, 3}, res;
-    std::set_intersection(s1.begin(), s1.end(), s2.begin(), s2.end(), std::inserter(res, res.begin()));
-    std::cout << "Intersection size: " << res.size() << std::endl;
-    assert(res.size() == 1 && res.count(2));
-    return 0;
+    std::mt19937 rng(14);
+    for (int rep = 0; rep < 500; rep++) { int U = 1 + (int)(rng() % 300); auto a = randomSet(rng, U, 60), b = randomSet(rng, U, 60), c = randomSet(rng, U, 60); long cm = 0, cg = 0; auto want = stdInter(a, b);                          // ① ②
+        const auto& small = a.size() <= b.size() ? a : b; const auto& big = a.size() <= b.size() ? b : a; assert(interMerge(a, b, cm) == want && interHash(a, b) == want && interBits(a, b, U) == want && interGallop(small, big, cg) == want);
+        long c1 = 0; assert(interMerge(b, a, c1) == want && interMerge(interMerge(a, b, c1), c, c1) == interMerge(a, interMerge(b, c, c1), c1) && interMerge(a, a, c1) == a && interMerge(a, {}, c1).empty());   // 교환·결합·멱등·영
+        std::vector<int> universe(U); for (int i = 0; i < U; i++) universe[i] = i; assert(interMerge(a, universe, c1) == a && want.size() <= std::min(a.size(), b.size()) && std::includes(a.begin(), a.end(), want.begin(), want.end()));
+        assert(stdInter(a, stdUnion(b, c)) == stdUnion(stdInter(a, b), stdInter(a, c)) && stdInter(a, stdUnion(a, b)) == a); }                                                                          // 분배·흡수
+    { std::vector<int> big(100000); for (int i = 0; i < 100000; i++) big[i] = i * 3; std::set<int> sm; while (sm.size() < 10) sm.insert((int)(rng() % 300000)); std::vector<int> small(sm.begin(), sm.end()); long cm = 0, cg = 0;                           // ③
+      auto r1 = interMerge(small, big, cm), r2 = interGallop(small, big, cg); assert(r1 == r2 && r1 == stdInter(small, big) && cg * 100 < cm); }
+    long totalOrdered = 0, totalUnordered = 0;
+    for (int rep = 0; rep < 100; rep++) { std::vector<std::vector<int>> sets; int k = 3 + (int)(rng() % 4); for (int i = 0; i < k; i++) sets.push_back(randomSet(rng, 400, i == 0 ? 300 : 20 + (int)(rng() % 280)));                      // ④ 비용 = 해시 조회 수 min(|r|, |s|)
+        std::vector<std::vector<int>> bySize = sets; std::sort(bySize.begin(), bySize.end(), [](auto& x, auto& y) { return x.size() < y.size(); }); std::vector<int> r2 = bySize[0]; long dummy = 0, ordered = 0; for (std::size_t i = 1; i < bySize.size(); i++) { ordered += (long)std::min(r2.size(), bySize[i].size()); r2 = interMerge(r2, bySize[i], dummy); }
+        std::sort(sets.begin(), sets.end(), [](auto& x, auto& y) { return x.size() > y.size(); }); std::vector<int> r1 = sets[0]; long unordered = 0; for (std::size_t i = 1; i < sets.size(); i++) { unordered += (long)std::min(r1.size(), sets[i].size()); r1 = interMerge(r1, sets[i], dummy); }
+        assert(r1 == r2); totalOrdered += ordered; totalUnordered += unordered; }
+    assert(totalOrdered < totalUnordered);
+    { long c = 0; assert(interMerge({1, 3, 5}, {2, 4, 6}, c).empty() && interMerge({2, 4}, {1, 2, 3, 4, 5}, c) == (std::vector<int>{2, 4}) && interGallop({}, {1, 2}, c).empty() && interGallop({1}, {}, c).empty() && interBits({}, {}, 1).empty()); }                        // ⑤
+    std::cout << "Intersection: merge, hash, bitset and galloping intersections equalled std::set_intersection on 500 random triples, the commutative, associative, idempotent, zero, universe, absorption and distributive laws held, galloping used under 1/100 of the merge comparisons when |A|=10 and |B|=100000, and intersecting the smallest sets first cost fewer hash lookups than largest first" << std::endl; return 0;
 }
-// Time Complexity: O(N + M)
+// Time Complexity: 병합 O(|A| + |B|), 해시 O(min) 기대, 지수 탐색 O(|A| log(|B|/|A|))
+// Space Complexity: O(min(|A|, |B|))
 ```
 ## Difference()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 차집합(Difference): A \ B = {x | x ∈ A 이고 x ∉ B}. 교환 법칙이 성립하지 않는다(A\B ≠ B\A, 보통은). 정렬 배열은 병합 O(|A|+|B|) 로 A 에서 B 와 겹치는 원소를 건너뛰고, 해시는 B 를 해시로 만든 뒤 A 를 훑으며 해시에 없는 것만 남긴다 — A 가 정렬되지 않았거나 스트림이어도 되고 O(|A|+|B|) 기대. 비트 집합은 A AND (NOT B) 워드 연산.
+// 항등식: A\B = A∩Bᶜ (우주 U 에서의 여집합), |A\B| = |A|−|A∩B|, A\A = ∅, A\∅ = A, ∅\A = ∅, (A\B)\C = A\(B∪C), A\(B\C) = (A\B)∪(A∩C), A\B 와 B 는 서로소, A = (A\B) ∪ (A∩B) (서로소 분할). 결합 법칙은 성립하지 않는다.
+// 검증: ① 병합·해시·비트 세 구현이 std::set_difference 와 같음 ② 위 항등식을 무작위 삼중에서 확인 ③ 교환·결합이 성립하지 않는 구체적 반례가 실제로 존재함을 찾아 확인 ④ A = (A\B) ⊔ (A∩B) 분할이 서로소이고 합이 A ⑤ 순서 없는 입력(정렬 안 된 스트림)을 해시로 처리해도 같은 원소(순서만 입력 순서 유지) ⑥ 경계: 빈 집합, 같은 집합, 부분집합.
+std::vector<int> diffMerge(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::size_t i = 0, j = 0; while (i < a.size()) { if (j >= b.size() || a[i] < b[j]) r.push_back(a[i++]); else if (b[j] < a[i]) j++; else { i++; j++; } } return r; }
+std::vector<int> diffHash(const std::vector<int>& a, const std::vector<int>& b) { std::unordered_set<int> h(b.begin(), b.end()); std::vector<int> r; std::unordered_set<int> seen; for (int x : a) if (!h.count(x) && seen.insert(x).second) r.push_back(x); return r; }   // a 의 입력 순서를 유지, 중복은 한 번만
+std::vector<int> diffBits(const std::vector<int>& a, const std::vector<int>& b, int U) { std::vector<uint64_t> x((U + 63) / 64), y(x.size()); for (int v : a) x[v >> 6] |= 1ull << (v & 63); for (int v : b) y[v >> 6] |= 1ull << (v & 63); std::vector<int> r; for (std::size_t w = 0; w < x.size(); w++) { uint64_t m = x[w] & ~y[w]; while (m) { r.push_back((int)(w * 64 + __builtin_ctzll(m))); m &= m - 1; } } return r; }
+std::vector<int> randomSet(std::mt19937& rng, int U, int maxSize) { std::set<int> s; int n = (int)(rng() % (maxSize + 1)); for (int i = 0; i < n; i++) s.insert((int)(rng() % U)); return std::vector<int>(s.begin(), s.end()); }
+std::vector<int> uni(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> inter(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
 int main() {
-    std::set<int> s1 = {1, 2}, s2 = {2, 3}, res;
-    std::set_difference(s1.begin(), s1.end(), s2.begin(), s2.end(), std::inserter(res, res.begin()));
-    std::cout << "Difference size: " << res.size() << std::endl;
-    assert(res.size() == 1 && res.count(1));
-    return 0;
+    std::mt19937 rng(15); int commutativeFails = 0, associativeFails = 0;
+    for (int rep = 0; rep < 500; rep++) { int U = 1 + (int)(rng() % 150); auto a = randomSet(rng, U, 40), b = randomSet(rng, U, 40), c = randomSet(rng, U, 40); std::vector<int> want; std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(want));
+        auto h = diffHash(a, b); std::sort(h.begin(), h.end()); assert(diffMerge(a, b) == want && h == want && diffBits(a, b, U) == want);                                                           // ①
+        std::vector<int> comp; { std::vector<int> all(U); for (int i = 0; i < U; i++) all[i] = i; comp = diffMerge(all, b); } assert(diffMerge(a, b) == inter(a, comp) && want.size() == a.size() - inter(a, b).size());      // ② A\B = A∩Bᶜ, 크기
+        assert(diffMerge(a, a).empty() && diffMerge(a, {}) == a && diffMerge({}, a).empty() && diffMerge(diffMerge(a, b), c) == diffMerge(a, uni(b, c)) && diffMerge(a, diffMerge(b, c)) == uni(diffMerge(a, b), inter(a, c)));
+        assert(inter(want, b).empty() && uni(want, inter(a, b)) == a);                                                                                                                                 // ④ 서로소 분할
+        if (diffMerge(a, b) != diffMerge(b, a)) commutativeFails++; if (diffMerge(diffMerge(a, b), c) != diffMerge(a, diffMerge(b, c))) associativeFails++; }                                              // ③ 반례 개수
+    assert(commutativeFails > 100 && associativeFails > 10);
+    { assert((diffMerge({1, 2, 3}, {3, 4}) == std::vector<int>{1, 2}) && (diffMerge({3, 4}, {1, 2, 3}) == std::vector<int>{4}) && diffMerge({1, 2}, {1, 2, 3}).empty()); }                           // 구체적 반례: A\B ≠ B\A
+    { std::vector<int> stream = {9, 3, 3, 7, 1, 9, 5, 7}; auto r = diffHash(stream, {3, 5}); assert(r == (std::vector<int>{9, 7, 1})); }                                                                  // ⑤ 정렬 안 된 스트림: 입력 순서 유지, 중복 제거
+    { assert(diffBits({}, {}, 1).empty() && diffBits({0}, {0}, 1).empty() && diffBits({0}, {}, 1) == std::vector<int>{0}); for (int U : {63, 64, 65, 129}) { std::vector<int> a, b; for (int i = 0; i < U; i++) { a.push_back(i); if (i % 2) b.push_back(i); } std::vector<int> w; std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(w)); assert(diffBits(a, b, U) == w); } }   // ⑥
+    std::cout << "Difference: merge, hash and bitset differences equalled std::set_difference on 500 random triples, A\\B = A and complement-of-B, |A\\B| = |A|-|A and B|, (A\\B)\\C = A\\(B or C) and A = (A\\B) disjoint-union (A and B) held, and non-commutativity (" << commutativeFails << " cases) and non-associativity (" << associativeFails << " cases) were found concretely" << std::endl; return 0;
 }
-// Time Complexity: O(N + M)
+// Time Complexity: 병합 O(|A| + |B|), 해시 기대 O(|A| + |B|), 비트 O(U/64)
+// Space Complexity: O(|A| + |B|)
 ```
 ## SymmetricDifference()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 
+// 대칭차집합(Symmetric Difference): A △ B = (A \ B) ∪ (B \ A) = (A ∪ B) \ (A ∩ B), 즉 둘 중 정확히 한쪽에만 있는 원소들이다. 정렬 배열은 병합으로 한 쪽에만 있는 값을 내보내고(같으면 건너뜀) O(|A|+|B|), 비트 집합은 워드 XOR. 논리의 배타적 논리합(XOR)과 같은 구조라서 집합의 모임 (P(U), △) 은 ∅ 을 항등원으로, 모든 원소가 자기 자신이 역원인 아벨 군을 이룬다.
+// 법칙: 교환·결합, A△∅ = A, A△A = ∅ (자기 역원), A△B△B = A (같은 변화를 두 번 적용하면 원상복구 — 차이 적용·패치·체크섬에 쓰임), |A△B| = |A|+|B|−2|A∩B|, A△B = ∅ ⇔ A = B, 교집합에 대한 분배 A∩(B△C) = (A∩B)△(A∩C). k 개 집합을 연속으로 △ 하면 홀수 개의 집합에 들어 있는 원소만 남는다.
+// 검증: ① 병합·비트·정의(두 차집합의 합집합)·(합집합 − 교집합) 네 구현이 서로 같음 ② 군 법칙: 교환·결합·항등·자기 역원·A△B△B = A ③ 크기 공식 |A|+|B|−2|A∩B| 와 A△B = ∅ ⇔ A = B ④ 분배 법칙 ⑤ k 개 집합을 연속 △ 하면 홀수 번 등장한 원소만 남음(빈도 맵으로 대조) ⑥ 경계와 64 비트 비경계 우주.
+std::vector<int> symMerge(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::size_t i = 0, j = 0; while (i < a.size() || j < b.size()) { if (j >= b.size() || (i < a.size() && a[i] < b[j])) r.push_back(a[i++]); else if (i >= a.size() || b[j] < a[i]) r.push_back(b[j++]); else { i++; j++; } } return r; }
+std::vector<int> symBits(const std::vector<int>& a, const std::vector<int>& b, int U) { std::vector<uint64_t> x((U + 63) / 64), y(x.size()); for (int v : a) x[v >> 6] |= 1ull << (v & 63); for (int v : b) y[v >> 6] |= 1ull << (v & 63); std::vector<int> r; for (std::size_t w = 0; w < x.size(); w++) { uint64_t m = x[w] ^ y[w]; while (m) { r.push_back((int)(w * 64 + __builtin_ctzll(m))); m &= m - 1; } } return r; }
+template <class F> std::vector<int> bin(const std::vector<int>& a, const std::vector<int>& b, F f) { std::vector<int> r; f(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> uni(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> inter(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> diff(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> randomSet(std::mt19937& rng, int U, int maxSize) { std::set<int> s; int n = (int)(rng() % (maxSize + 1)); for (int i = 0; i < n; i++) s.insert((int)(rng() % U)); return std::vector<int>(s.begin(), s.end()); }
 int main() {
-    std::set<int> s1 = {1, 2}, s2 = {2, 3}, res;
-    std::set_symmetric_difference(s1.begin(), s1.end(), s2.begin(), s2.end(), std::inserter(res, res.begin()));
-    std::cout << "Symmetric Difference size: " << res.size() << std::endl;
-    assert(res.size() == 2 && !res.count(2));
-    return 0;
+    std::mt19937 rng(16);
+    for (int rep = 0; rep < 500; rep++) { int U = 1 + (int)(rng() % 200); auto a = randomSet(rng, U, 50), b = randomSet(rng, U, 50), c = randomSet(rng, U, 50); auto m = symMerge(a, b);                                // ① 네 구현
+        std::vector<int> viaStd; std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(viaStd)); assert(m == viaStd && symBits(a, b, U) == viaStd && m == uni(diff(a, b), diff(b, a)) && m == diff(uni(a, b), inter(a, b)));
+        assert(symMerge(b, a) == m && symMerge(symMerge(a, b), c) == symMerge(a, symMerge(b, c)) && symMerge(a, {}) == a && symMerge(a, a).empty() && symMerge(symMerge(a, b), b) == a);                             // ② 군 법칙
+        assert(m.size() == a.size() + b.size() - 2 * inter(a, b).size() && (m.empty() == (a == b)));                                                                                                       // ③
+        assert(inter(a, symMerge(b, c)) == symMerge(inter(a, b), inter(a, c))); }                                                                                                                          // ④ 분배
+    for (int rep = 0; rep < 200; rep++) { int k = 1 + (int)(rng() % 9); std::vector<int> acc; std::map<int, int> freq; for (int i = 0; i < k; i++) { auto s = randomSet(rng, 60, 30); acc = symMerge(acc, s); for (int x : s) freq[x]++; }       // ⑤ 홀수 번 등장
+        std::vector<int> odd; for (auto& kv : freq) if (kv.second % 2) odd.push_back(kv.first); assert(acc == odd); }
+    { assert(symMerge({}, {}).empty() && symMerge({1, 2}, {1, 2}).empty() && symMerge({1, 2}, {}) == (std::vector<int>{1, 2}) && symMerge({1, 3}, {2, 3}) == (std::vector<int>{1, 2}) && symBits({}, {}, 1).empty());                      // ⑥
+      for (int U : {63, 64, 65, 130}) { std::vector<int> a, b; for (int i = 0; i < U; i += 2) a.push_back(i); for (int i = 0; i < U; i += 3) b.push_back(i); std::vector<int> w; std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(w)); assert(symBits(a, b, U) == w); } }
+    std::cout << "SymmetricDifference: merge, bitset XOR, the union-of-differences definition and (union minus intersection) all equalled std::set_symmetric_difference on 500 random triples, the abelian-group laws (commutative, associative, identity, self-inverse, A xor B xor B = A) and |A|+|B|-2|A and B| held, and XOR-ing k sets kept exactly the elements present in an odd number of them" << std::endl; return 0;
 }
-// Time Complexity: O(N + M)
+// Time Complexity: 병합 O(|A| + |B|), 비트 O(U/64)
+// Space Complexity: O(|A| + |B|)
 ```
 ## Complement()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <vector>
 
+// 여집합(Complement): 전체집합(우주) U 안에서 A 에 속하지 않는 원소들, Aᶜ = U \ A. 여집합은 우주가 정해져 있어야 의미가 있다 — 우주 없이는 "A 에 없는 모든 것"이 무한 집합이다. 정렬 배열은 A 의 빈틈(gap)을 훑어 O(|U|)(우주가 {0..n−1} 이면 A 의 원소 사이의 구간), 비트 집합은 모든 워드를 NOT 한다.
+// 비트 구현의 전형적인 함정: 우주 크기 n 이 64 의 배수가 아니면 마지막 워드의 남는 비트(n 이상의 위치)까지 ~ 가 1 로 만들어 우주 밖 원소가 생기고 크기·순회·비교가 틀어진다. NOT 한 뒤 마지막 워드를 마스크로 잘라 내야 한다. 법칙: (Aᶜ)ᶜ = A, A ∪ Aᶜ = U, A ∩ Aᶜ = ∅, 드모르간 (A∪B)ᶜ = Aᶜ∩Bᶜ, (A∩B)ᶜ = Aᶜ∪Bᶜ, |Aᶜ| = |U|−|A|, ∅ᶜ = U, Uᶜ = ∅, A ⊆ B ⇔ Bᶜ ⊆ Aᶜ.
+// 검증: ① 우주 크기 1..200(64 의 배수 아닌 값 다수)에서 비트 여집합이 정의(U \ A)와 같고 마스크 없는 ~ 는 n 이 64 의 배수가 아닐 때 우주 밖 비트를 만든다는 것을 확인 ② 위 법칙들을 무작위 집합에서 확인 ③ 정렬 배열의 틈 훑기 여집합 == 비트 여집합 ④ 연속하지 않는 우주 U 에서도 Aᶜ = U \ A ⑤ 크기 공식 |Aᶜ| = n − |A|, 우주 크기 1 과 빈 집합 경계.
+struct Bits { std::size_t n; std::vector<uint64_t> w;
+    explicit Bits(std::size_t universe) : n(universe), w((universe + 63) / 64, 0) {}
+    void set(std::size_t i) { w[i >> 6] |= 1ull << (i & 63); } bool test(std::size_t i) const { return w[i >> 6] >> (i & 63) & 1; }
+    void maskTail() { if (n % 64) w[w.size() - 1] &= (1ull << (n % 64)) - 1; }
+    Bits complement() const { Bits r(n); for (std::size_t i = 0; i < w.size(); i++) r.w[i] = ~w[i]; r.maskTail(); return r; }                      // 마스크로 우주 밖 비트를 지운다
+    Bits complementNoMask() const { Bits r(n); for (std::size_t i = 0; i < w.size(); i++) r.w[i] = ~w[i]; return r; }                          // 함정: 마스크 없음
+    std::size_t count() const { std::size_t c = 0; for (uint64_t x : w) c += (std::size_t)__builtin_popcountll(x); return c; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < w.size(); i++) { uint64_t m = w[i]; while (m) { r.push_back((int)(i * 64 + __builtin_ctzll(m))); m &= m - 1; } } return r; }
+    friend Bits operator&(const Bits& a, const Bits& b) { Bits r(a.n); for (std::size_t i = 0; i < a.w.size(); i++) r.w[i] = a.w[i] & b.w[i]; return r; }
+    friend Bits operator|(const Bits& a, const Bits& b) { Bits r(a.n); for (std::size_t i = 0; i < a.w.size(); i++) r.w[i] = a.w[i] | b.w[i]; return r; }
+    friend bool operator==(const Bits& a, const Bits& b) { return a.n == b.n && a.w == b.w; } };
+std::vector<int> complementSorted(const std::vector<int>& a, int n) { std::vector<int> r; int next = 0; for (int x : a) { for (; next < x; next++) r.push_back(next); next = x + 1; } for (; next < n; next++) r.push_back(next); return r; }       // 빈틈 훑기
+std::vector<int> relativeComplement(const std::vector<int>& U, const std::vector<int>& a) { std::vector<int> r; std::set_difference(U.begin(), U.end(), a.begin(), a.end(), std::back_inserter(r)); return r; }
+Bits fromItems(const std::vector<int>& v, int n) { Bits b((std::size_t)n); for (int x : v) b.set((std::size_t)x); return b; }
 int main() {
-    std::set<int> U = {1, 2, 3, 4}, A = {2, 3}, res;
-    std::set_difference(U.begin(), U.end(), A.begin(), A.end(), std::inserter(res, res.begin()));
-    std::cout << "Complement size: " << res.size() << std::endl;
-    assert(res.size() == 2 && res.count(1) && res.count(4));
-    return 0;
+    std::mt19937 rng(17);
+    for (int n = 1; n <= 200; n++) { std::vector<int> a; for (int i = 0; i < n; i++) if (rng() % 3 == 0) a.push_back(i); Bits A = fromItems(a, n); std::vector<int> want; { std::vector<int> U(n); for (int i = 0; i < n; i++) U[i] = i; want = relativeComplement(U, a); }   // ① ③ ⑤
+        Bits C = A.complement(); assert(C.items() == want && complementSorted(a, n) == want && C.count() == (std::size_t)n - a.size()); Bits bad = A.complementNoMask(); if (n % 64) assert(bad.count() > C.count() && !(bad == C)); else assert(bad == C);       // 마스크 없는 NOT 의 함정
+        assert(C.complement() == A && (A | C).count() == (std::size_t)n && (A & C).count() == 0); }
+    for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 190); std::vector<int> a, b; for (int i = 0; i < n; i++) { if (rng() % 2) a.push_back(i); if (rng() % 2) b.push_back(i); } Bits A = fromItems(a, n), B = fromItems(b, n);                              // ② 법칙
+        assert((A | B).complement() == (A.complement() & B.complement()) && (A & B).complement() == (A.complement() | B.complement()));                                                                                          // 드모르간
+        Bits empty(n), U = empty.complement(); assert(U.count() == (std::size_t)n && U.complement() == empty);                                                                                                                      // ∅ᶜ = U, Uᶜ = ∅
+        std::vector<int> inter; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(inter)); bool aSubB = inter.size() == a.size(); assert(aSubB == ((B.complement() & A).count() == 0) && aSubB == ((B.complement() | A.complement()) == A.complement())); }   // A ⊆ B ⇔ Bᶜ ⊆ Aᶜ
+    for (int rep = 0; rep < 200; rep++) { std::set<int> us; for (int i = 0, k = 5 + (int)(rng() % 40); i < k; i++) us.insert((int)(rng() % 1000)); std::vector<int> U(us.begin(), us.end()); std::vector<int> a; for (int x : U) if (rng() % 3 == 0) a.push_back(x);     // ④ 연속하지 않는 우주
+        std::vector<int> c = relativeComplement(U, a); assert(c.size() == U.size() - a.size()); std::vector<int> back = relativeComplement(U, c); assert(back == a); std::vector<int> both; std::set_union(a.begin(), a.end(), c.begin(), c.end(), std::back_inserter(both)); assert(both == U); }
+    { Bits z(1); assert(z.complement().count() == 1 && z.complement().complement().count() == 0); Bits e(0); assert(e.complement().count() == 0 && complementSorted({}, 0).empty() && complementSorted({}, 3) == (std::vector<int>{0, 1, 2}) && complementSorted({0, 1, 2}, 3).empty()); }   // ⑤
+    std::cout << "Complement: for every universe size 1..200 the masked bitset complement equalled U minus A, the unmasked NOT leaked bits beyond the universe whenever n was not a multiple of 64, the gap-scan complement of a sorted array agreed, and double complement, De Morgan, A subset B iff B' subset A', and complements in non-contiguous universes all held" << std::endl; return 0;
 }
-// Time Complexity: O(|U| + |A|)
+// Time Complexity: 비트 O(U/64), 정렬 배열 O(|U|)
+// Space Complexity: O(U/64)
 ```
 ## CartesianProduct()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
 
+// 데카르트 곱(Cartesian Product): A × B = {(a, b) | a ∈ A, b ∈ B}, 순서쌍의 집합이다. 크기는 |A|·|B|, 순서가 있어서 A × B ≠ B × A (A = B 이거나 한쪽이 공집합일 때만 같다). 행 우선(사전식) 순서로 만들면 i 번째 쌍은 (A[i / |B|], B[i % |B|]) 로 곧바로 계산되므로 곱을 실제로 저장하지 않고 "게으르게" 다룰 수 있다. 반대로 쌍 (a, b) 의 번호는 index(a)·|B| + index(b). k 개 집합의 곱은 마지막 자리부터 올리는 주행 계수기(odometer)로 순회한다 — 각 자리의 크기가 다른 혼합 진법의 수 세기와 같다.
+// 성질: 어느 한쪽이 공집합이면 곱도 공집합, 분배 A×(B∪C) = (A×B)∪(A×C), A×(B∩C) = (A×B)∩(A×C), 결합은 ((a,b),c) ↔ (a,(b,c)) 의 일대일 대응(엄밀히는 같은 집합이 아니라 동형), 사영 π₁(A×B) = A (B ≠ ∅ 일 때). 곱의 크기는 k 개 집합이면 Π|Aᵢ| 로 빠르게 커진다.
+// 검증: ① 곱의 크기·사전식 순서·중복 없음이 이중 반복문과 같고 번호 ↔ 쌍 변환이 서로 역 ② 공집합 곱과 A×B = B×A 조건을 {0,1,2} 의 모든 부분집합 쌍(8×8)에서 전수 확인 ③ 분배 법칙 ④ k 개 집합 곱의 주행 계수기가 재귀 정의와 같은 순서·개수이고 사영이 원래 집합을 복원 ⑤ 결합 동형 ((a,b),c) ↔ (a,(b,c)) 가 일대일 ⑥ 곱을 저장하지 않고 번호로 접근하는 게으른 접근이 저장한 곱과 일치.
+typedef std::vector<std::pair<int, int>> Pairs;
+Pairs product(const std::vector<int>& a, const std::vector<int>& b) { Pairs r; for (int x : a) for (int y : b) r.push_back({x, y}); return r; }
+std::pair<int, int> lazyAt(const std::vector<int>& a, const std::vector<int>& b, std::size_t i) { return {a[i / b.size()], b[i % b.size()]}; }                  // 저장하지 않고 번호로 접근
+std::size_t indexOf(const std::vector<int>& a, const std::vector<int>& b, int x, int y) { return (std::size_t)(std::find(a.begin(), a.end(), x) - a.begin()) * b.size() + (std::size_t)(std::find(b.begin(), b.end(), y) - b.begin()); }
+std::vector<std::vector<int>> productK(const std::vector<std::vector<int>>& sets) { std::vector<std::vector<int>> out; for (const auto& s : sets) if (s.empty()) return out; std::vector<std::size_t> idx(sets.size(), 0); if (sets.empty()) return {{}};
+    for (;;) { std::vector<int> t; for (std::size_t i = 0; i < sets.size(); i++) t.push_back(sets[i][idx[i]]); out.push_back(t); std::size_t d = sets.size(); while (d > 0) { d--; if (++idx[d] < sets[d].size()) break; idx[d] = 0; if (d == 0) return out; } } }   // 주행 계수기
+void productRec(const std::vector<std::vector<int>>& sets, std::size_t k, std::vector<int>& cur, std::vector<std::vector<int>>& out) { if (k == sets.size()) { out.push_back(cur); return; } for (int x : sets[k]) { cur.push_back(x); productRec(sets, k + 1, cur, out); cur.pop_back(); } }
+std::vector<int> subsetOf(unsigned mask) { std::vector<int> r; for (int i = 0; i < 3; i++) if (mask >> i & 1) r.push_back(i); return r; }
+std::vector<int> uni(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> inter(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+Pairs sortedPairs(Pairs p) { std::sort(p.begin(), p.end()); return p; }
 int main() {
-    std::vector<int> A = {1, 2}, B = {3, 4};
-    std::vector<std::pair<int, int>> result;
-    for (int a : A) for (int b : B) result.push_back({a, b});
-    std::cout << "Cartesian Product size: " << result.size() << std::endl;
-    assert(result.size() == 4);
-    return 0;
+    std::mt19937 rng(18);
+    for (int rep = 0; rep < 300; rep++) { std::set<int> sa, sb; for (int i = 0, k = (int)(rng() % 9); i < k; i++) sa.insert((int)(rng() % 30)); for (int i = 0, k = (int)(rng() % 9); i < k; i++) sb.insert((int)(rng() % 30)); std::vector<int> a(sa.begin(), sa.end()), b(sb.begin(), sb.end());
+        Pairs p = product(a, b); assert(p.size() == a.size() * b.size() && std::is_sorted(p.begin(), p.end()) && std::adjacent_find(p.begin(), p.end()) == p.end());                                                      // ① 크기·사전식·중복 없음
+        for (std::size_t i = 0; i < p.size(); i++) { assert(lazyAt(a, b, i) == p[i] && indexOf(a, b, p[i].first, p[i].second) == i); }                                                                               // ⑥ ① 번호 ↔ 쌍
+        if (!p.empty()) { std::set<int> proj1, proj2; for (auto& q : p) { proj1.insert(q.first); proj2.insert(q.second); } assert(proj1 == sa && proj2 == sb); } else assert(a.empty() || b.empty()); }                 // ④ 사영 복원
+    int equalCases = 0; for (unsigned ma = 0; ma < 8; ma++) for (unsigned mb = 0; mb < 8; mb++) { auto a = subsetOf(ma), b = subsetOf(mb); bool commute = sortedPairs(product(a, b)) == [&] { Pairs q = product(b, a); Pairs r; for (auto& t : q) r.push_back({t.second, t.first}); return sortedPairs(r); }();   // ②
+        bool swapped = true; { Pairs ab = sortedPairs(product(a, b)), ba = sortedPairs(product(b, a)); swapped = ab == ba; } bool expected = (a == b) || a.empty() || b.empty(); assert(swapped == expected && commute); equalCases += swapped; }
+    assert(equalCases > 8);
+    for (int rep = 0; rep < 200; rep++) { std::set<int> sa, sb, sc; for (int i = 0, k = (int)(rng() % 6); i < k; i++) { sa.insert((int)(rng() % 12)); sb.insert((int)(rng() % 12)); sc.insert((int)(rng() % 12)); } std::vector<int> a(sa.begin(), sa.end()), b(sb.begin(), sb.end()), c(sc.begin(), sc.end());   // ③
+        Pairs left = sortedPairs(product(a, uni(b, c))), r1 = product(a, b), r2 = product(a, c); r1.insert(r1.end(), r2.begin(), r2.end()); r1 = sortedPairs(r1); r1.erase(std::unique(r1.begin(), r1.end()), r1.end()); assert(left == r1);
+        Pairs li = sortedPairs(product(a, inter(b, c))), pb = sortedPairs(product(a, b)), pc = sortedPairs(product(a, c)), both; std::set_intersection(pb.begin(), pb.end(), pc.begin(), pc.end(), std::back_inserter(both)); assert(li == both);
+        std::set<std::pair<std::pair<int, int>, int>> left3; std::set<std::pair<int, std::pair<int, int>>> right3; for (int x : a) for (int y : b) for (int z : c) { left3.insert({{x, y}, z}); right3.insert({x, {y, z}}); } assert(left3.size() == right3.size() && left3.size() == a.size() * b.size() * c.size()); }   // ⑤ 결합 동형
+    for (int rep = 0; rep < 200; rep++) { int k = (int)(rng() % 5); std::vector<std::vector<int>> sets; std::size_t expect = 1; for (int i = 0; i < k; i++) { std::vector<int> s; for (int j = 0, m = (int)(rng() % 4); j < m; j++) s.push_back(j * 10 + i); sets.push_back(s); expect *= s.size(); }       // ④ k 개 곱
+        auto fast = productK(sets); std::vector<std::vector<int>> rec, cur; std::vector<int> tmp; productRec(sets, 0, tmp, rec); assert(fast == rec && fast.size() == (k == 0 ? 1u : expect) && std::is_sorted(fast.begin(), fast.end())); }
+    std::cout << "CartesianProduct: pair products matched the nested-loop definition (size, lexicographic order, no duplicates, index to pair conversion in both directions without storing the product), A x B = B x A held exactly when A = B or one side is empty over all 64 subset pairs of {0,1,2}, distributive and associative-isomorphism laws held, and the odometer enumeration of k-fold products matched the recursive definition" << std::endl; return 0;
 }
-// Time Complexity: O(|A| * |B|)
+// Time Complexity: 생성 O(|A|·|B|), 번호로 접근 O(1)
+// Space Complexity: 저장하면 O(|A|·|B|), 게으른 접근 O(1)
 ```
 ## PowerSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <iterator>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
+// 멱집합(Power Set): P(A) = A 의 모든 부분집합의 집합, 크기 2^|A|. 원소마다 "넣는다/안 넣는다" 두 갈래이므로 n 비트 이진수 0 .. 2ⁿ−1 이 곧 부분집합 하나하나이다(i 번째 비트가 1 이면 i 번째 원소 포함). 열거 방법 셋: (1) 비트마스크 반복 — 가장 단순하고 순서가 이진수 세기, (2) 재귀 — 원소 하나를 넣고/빼고 갈라 깊이 우선으로, (3) 이중화 — 빈 집합으로 시작해 새 원소 x 를 볼 때마다 지금까지의 모든 부분집합에 x 를 더한 복사본을 이어 붙인다(크기가 두 배로). 그레이 코드 순서로 열거하면 이웃한 부분집합이 정확히 원소 하나만 다르다.
+// 성질: |P(A)| = 2^|A| (공집합의 멱집합은 {∅} 로 크기 1), 크기별 개수는 이항계수 C(n, k) 이고 합이 2ⁿ, A 와 B 가 서로소이면 |P(A∪B)| = |P(A)|·|P(B)|, P(A)∩P(B) = P(A∩B), P(A)∪P(B) ⊆ P(A∪B) (보통은 진부분집합 — 한쪽의 원소와 다른 쪽의 원소를 섞은 부분집합이 빠짐), A ⊆ B ⇔ P(A) ⊆ P(B). 2ⁿ 이라서 n ≈ 25 만 넘어도 열거가 불가능해진다.
+// 검증: ① n ≤ 12 에서 세 열거 방법이 같은 부분집합들(집합으로 비교)이고 개수가 정확히 2ⁿ, 중복 없음 ② 크기별 개수가 이항계수 ③ 그레이 순서에서 이웃한 부분집합이 대칭차가 정확히 1 원소(첫째·마지막도 순환적으로) ④ P(A∩B) = P(A)∩P(B), 서로소일 때 크기의 곱, P(A)∪P(B) ⊊ P(A∪B) 가 되는 사례 ⑤ A ⊆ B ⇔ P(A) ⊆ P(B) ⑥ n = 0 에서 {∅}, n = 16 (65536 개)도 확인.
+typedef std::vector<int> Subset;
+std::vector<Subset> byMask(const std::vector<int>& a) { std::vector<Subset> out; for (unsigned m = 0; m < (1u << a.size()); m++) { Subset s; for (std::size_t i = 0; i < a.size(); i++) if (m >> i & 1) s.push_back(a[i]); out.push_back(s); } return out; }
+void recur(const std::vector<int>& a, std::size_t i, Subset& cur, std::vector<Subset>& out) { if (i == a.size()) { out.push_back(cur); return; } recur(a, i + 1, cur, out); cur.push_back(a[i]); recur(a, i + 1, cur, out); cur.pop_back(); }
+std::vector<Subset> byDoubling(const std::vector<int>& a) { std::vector<Subset> out{Subset()}; for (int x : a) { std::size_t m = out.size(); for (std::size_t i = 0; i < m; i++) { Subset s = out[i]; s.push_back(x); out.push_back(s); } } return out; }
+std::vector<Subset> byGray(const std::vector<int>& a) { std::vector<Subset> out; for (unsigned i = 0; i < (1u << a.size()); i++) { unsigned g = i ^ (i >> 1); Subset s; for (std::size_t j = 0; j < a.size(); j++) if (g >> j & 1) s.push_back(a[j]); out.push_back(s); } return out; }
+std::set<Subset> asSet(const std::vector<Subset>& v) { std::set<Subset> s; for (auto x : v) { std::sort(x.begin(), x.end()); s.insert(x); } return s; }
+unsigned long long binom(int n, int k) { unsigned long long r = 1; for (int i = 1; i <= k; i++) r = r * (n - k + i) / i; return r; }
 int main() {
-    std::vector<int> s = {1, 2, 3};
-    int n = s.size();
-    int count = 0;
-    for (int i = 0; i < (1 << n); ++i) count++;
-    std::cout << "PowerSet subsets: " << count << std::endl;
-    assert(count == 8);
-    return 0;
+    for (int n = 0; n <= 12; n++) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 1); auto m = byMask(a), d = byDoubling(a), g = byGray(a); std::vector<Subset> r; Subset cur; recur(a, 0, cur, r);                                       // ①
+        assert(m.size() == (1u << n) && d.size() == m.size() && g.size() == m.size() && r.size() == m.size() && asSet(m).size() == m.size()); assert(asSet(m) == asSet(d) && asSet(m) == asSet(g) && asSet(m) == asSet(r));
+        std::vector<unsigned long long> bySize(n + 1, 0); for (auto& s : m) bySize[s.size()]++; for (int k = 0; k <= n; k++) assert(bySize[k] == binom(n, k));                                                          // ②
+        for (std::size_t i = 0; i < g.size(); i++) { const Subset& x = g[i]; const Subset& y = g[(i + 1) % g.size()]; Subset sd; std::set_symmetric_difference(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(sd)); if (n >= 1) assert(sd.size() == 1); } }   // ③ 순환 그레이
+    { auto e = byMask({}); assert(e.size() == 1 && e[0].empty()); }                                                                                                                                                  // ⑥ P(∅) = {∅}
+    std::mt19937 rng(19);
+    for (int rep = 0; rep < 100; rep++) { std::set<int> sa, sb; for (int i = 0, k = (int)(rng() % 7); i < k; i++) sa.insert((int)(rng() % 10)); for (int i = 0, k = (int)(rng() % 7); i < k; i++) sb.insert((int)(rng() % 10));
+        std::vector<int> a(sa.begin(), sa.end()), b(sb.begin(), sb.end()), u, in; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(u)); std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(in));
+        auto PA = asSet(byMask(a)), PB = asSet(byMask(b)), PU = asSet(byMask(u)), PI = asSet(byMask(in)); std::set<Subset> inter; std::set_intersection(PA.begin(), PA.end(), PB.begin(), PB.end(), std::inserter(inter, inter.begin())); assert(inter == PI);   // ④
+        std::set<Subset> uniP; std::set_union(PA.begin(), PA.end(), PB.begin(), PB.end(), std::inserter(uniP, uniP.begin())); assert(std::includes(PU.begin(), PU.end(), uniP.begin(), uniP.end()));
+        if (in.empty() && !a.empty() && !b.empty()) { assert(PU.size() == PA.size() * PB.size() && uniP.size() < PU.size()); }                                                                                           // 서로소: 크기의 곱, P(A)∪P(B) 는 진부분집합
+        bool aSubB = std::includes(b.begin(), b.end(), a.begin(), a.end()); assert(aSubB == std::includes(PB.begin(), PB.end(), PA.begin(), PA.end())); }                                                               // ⑤
+    { std::vector<int> a(16); std::iota(a.begin(), a.end(), 0); auto m = byMask(a); auto g = byGray(a); assert(m.size() == 65536 && g.size() == 65536 && asSet(m).size() == 65536 && asSet(g).size() == 65536); }
+    std::cout << "PowerSet: bitmask, recursive, doubling and Gray-code enumerations produced the same 2^n distinct subsets for every n<=12 (and n=16), the counts by size were the binomial coefficients, consecutive Gray-code subsets (cyclically) differed by exactly one element, and P(A and B) = P(A) and P(B), the disjoint-size product and P(A) subset P(B) iff A subset B all held" << std::endl; return 0;
 }
-// Time Complexity: O(2^N)
+// Time Complexity: O(2ⁿ · n)
+// Space Complexity: 열거 O(n) (모두 저장하면 O(2ⁿ · n))
 ```
 
 # Part 3. 관계 판별
 ## IsSubset()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 부분집합 판정(IsSubset): A ⊆ B ⇔ A 의 모든 원소가 B 에 있다. 먼저 |A| > |B| 이면 O(1) 에 false (필요조건). 정렬 배열은 두 포인터로 B 를 훑으며 A 의 원소를 하나씩 맞춘다 — A 의 원소가 B 에서 건너뛰어지면(B 의 현재 원소가 더 크면) 즉시 false 로 조기 종료, 최악 O(|A|+|B|). 해시는 B 를 해시로 만든 뒤 A 의 각 원소를 조회 O(|A|). 비트 집합은 워드마다 (A AND NOT B) == 0 을 검사하고 0 이 아닌 워드가 나오면 즉시 종료. |A| ≪ |B| 이면 병합 대신 지수 탐색이 낫다.
+// 성질(부분 순서): 반사 A ⊆ A, 반대칭 A ⊆ B 이고 B ⊆ A 이면 A = B, 추이 A ⊆ B ⊆ C 이면 A ⊆ C. ∅ ⊆ A ⊆ U, A∩B ⊆ A ⊆ A∪B, A ⊆ B ⇔ A∪B = B ⇔ A∩B = A ⇔ A\B = ∅.
+// 검증: ① 우주 {0..4} 의 모든 부분집합 쌍 32×32 = 1024 개에서 병합·해시·비트·정의(원소별 검사) 네 구현이 일치 ② 우주 {0..3} 의 모든 부분집합 삼중 16³ 에서 반사·반대칭·추이 ③ 동치 표현 A∪B=B, A∩B=A, A\B=∅ ④ 무작위 큰 집합에서 std::includes 와 일치 ⑤ 조기 종료: 크기로 O(1) 거절, 첫 원소가 어긋나면 비교 1 번, 부분집합이면 |B| 이하 ⑥ 비트 구현이 첫 어긋난 워드에서 멈춤.
+bool subMerge(const std::vector<int>& a, const std::vector<int>& b, long& cmp) { if (a.size() > b.size()) return false; std::size_t j = 0; for (std::size_t i = 0; i < a.size(); i++) { while (j < b.size() && b[j] < a[i]) { j++; cmp++; } cmp++; if (j >= b.size() || b[j] != a[i]) return false; j++; } return true; }   // b[j] > a[i] 이면 a[i] 가 b 에 없다
+bool subHash(const std::vector<int>& a, const std::vector<int>& b) { if (a.size() > b.size()) return false; std::unordered_set<int> h(b.begin(), b.end()); for (int x : a) if (!h.count(x)) return false; return true; }
+bool subBits(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b, long& words) { for (std::size_t i = 0; i < a.size(); i++) { words++; if (a[i] & ~b[i]) return false; } return true; }
+bool subDefinition(const std::vector<int>& a, const std::vector<int>& b) { for (int x : a) { bool found = false; for (int y : b) found |= x == y; if (!found) return false; } return true; }
+std::vector<int> fromMask(unsigned m, int n) { std::vector<int> r; for (int i = 0; i < n; i++) if (m >> i & 1) r.push_back(i); return r; }
+std::vector<uint64_t> toBits(const std::vector<int>& a, int n) { std::vector<uint64_t> w((n + 63) / 64); for (int x : a) w[x >> 6] |= 1ull << (x & 63); return w; }
+std::vector<int> uni(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> inter(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> diff(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
 int main() {
-    std::set<int> A = {1, 2, 3}, B = {1, 2};
-    bool isSubset = std::includes(A.begin(), A.end(), B.begin(), B.end());
-    std::cout << "B is subset of A: " << isSubset << std::endl;
-    assert(isSubset == true);
-    return 0;
+    int subsetPairs = 0;
+    for (unsigned ma = 0; ma < 32; ma++) for (unsigned mb = 0; mb < 32; mb++) { auto a = fromMask(ma, 5), b = fromMask(mb, 5); long cmp = 0, words = 0; bool want = (ma & ~mb) == 0; subsetPairs += want;                                    // ① 1024 쌍
+        assert(subMerge(a, b, cmp) == want && subHash(a, b) == want && subBits(toBits(a, 5), toBits(b, 5), words) == want && subDefinition(a, b) == want && std::includes(b.begin(), b.end(), a.begin(), a.end()) == want);
+        assert(want == (uni(a, b) == b) && want == (inter(a, b) == a) && want == diff(a, b).empty()); }                                                                                                              // ③ 동치 표현
+    assert(subsetPairs == 243);                                                                                                                                                                                  // 3^5 쌍
+    for (unsigned ma = 0; ma < 16; ma++) for (unsigned mb = 0; mb < 16; mb++) { auto a = fromMask(ma, 4), b = fromMask(mb, 4); long c = 0; bool ab = subMerge(a, b, c), ba = subMerge(b, a, c); assert(subMerge(a, a, c)); if (ab && ba) assert(a == b);       // ② 반사·반대칭
+        for (unsigned mc = 0; mc < 16; mc++) { auto cc = fromMask(mc, 4); if (ab && subMerge(b, cc, c)) assert(subMerge(a, cc, c)); } assert(subMerge({}, a, c) && subMerge(a, fromMask(15, 4), c)); }                                    // 추이, ∅ ⊆ A ⊆ U
+    std::mt19937 rng(20);
+    for (int rep = 0; rep < 1000; rep++) { std::set<int> sb, sa; for (int i = 0, k = (int)(rng() % 60); i < k; i++) sb.insert((int)(rng() % 120)); std::vector<int> b(sb.begin(), sb.end()); for (int x : b) if (rng() % 4 == 0) sa.insert(x); if (rng() % 3 == 0) sa.insert((int)(rng() % 120)); std::vector<int> a(sa.begin(), sa.end());   // ④
+        long cmp = 0, words = 0; bool want = std::includes(b.begin(), b.end(), a.begin(), a.end()); assert(subMerge(a, b, cmp) == want && subHash(a, b) == want && subBits(toBits(a, 120), toBits(b, 120), words) == want); }
+    { long cmp = 0; assert(!subMerge({1, 2, 3}, {1, 2}, cmp) && cmp == 0); cmp = 0; assert(!subMerge({0}, {5, 6, 7, 8}, cmp) && cmp == 1); cmp = 0; assert(subMerge({1, 2, 3}, {0, 1, 2, 3, 4}, cmp) && cmp <= 5);                                  // ⑤ 크기로 O(1) 거절, 첫 원소 어긋남 1 번
+      std::vector<int> a(1000), b(100000); for (int i = 0; i < 1000; i++) a[i] = i * 3; for (int i = 0; i < 100000; i++) b[i] = i; cmp = 0; assert(subMerge(a, b, cmp) && cmp <= 100000 + 1000); }
+    { std::vector<int> a = {200}, b(65); for (int i = 0; i < 65; i++) b[i] = i; long w = 0; assert(!subBits(toBits(a, 256), toBits(b, 256), w) && w == 4);                                                                           // ⑥ 마지막 워드에서야 어긋남: 4 워드 확인
+      std::vector<int> c = {1}; w = 0; assert(!subBits(toBits(c, 256), toBits({}, 256), w) && w == 1); }
+    std::cout << "IsSubset: merge, hash, bitset and definitional implementations agreed on all 1024 subset pairs of {0..4} (" << subsetPairs << " are subset pairs, 3^5 as predicted), reflexive/antisymmetric/transitive laws held over all subsets of {0..3}, the equivalent formulations A or B = B, A and B = A and A minus B = empty matched, results equalled std::includes on 1000 random pairs, and early exits fired as designed" << std::endl; return 0;
 }
-// Time Complexity: O(|A| + |B|)
+// Time Complexity: 병합 O(|A| + |B|), 해시 O(|A|) 기대, 비트 O(U/64)
+// Space Complexity: O(1) (해시 방식은 O(|B|))
 ```
 ## IsProperSubset()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 
+// 진부분집합 판정(IsProperSubset): A ⊊ B ⇔ A ⊆ B 이고 A ≠ B. A ⊆ B 이면 A = B 일 때만 크기가 같으므로 A ⊊ B ⇔ A ⊆ B 이고 |A| < |B| 이다 — 동등성 검사를 따로 할 필요 없이 크기만 비교하면 된다. 진부분집합 관계는 엄격한 부분 순서이다: 비반사 A ⊊ A 는 거짓, 비대칭 A ⊊ B 이면 B ⊊ A 는 거짓, 추이. ⊆ 와의 관계: A ⊆ B ⇔ A ⊊ B 또는 A = B.
+// 두 집합의 관계는 정확히 네 가지 중 하나이다: 같다(A = B), A ⊊ B, B ⊊ A, 비교 불가(서로 상대의 부분집합이 아님). n 개 원소의 전체집합에서 부분집합 쌍 (A, B) 중 A ⊆ B 인 것은 3ⁿ 쌍(각 원소가 "A 와 B 모두 / B 에만 / 둘 다 아님" 세 상태), 진부분집합 쌍은 3ⁿ − 2ⁿ 쌍이다. 집합 하나의 진부분집합은 2^|B| − 1 개이다. 불 격자에서 원소 하나만 더 큰 직접 위쪽 이웃(cover)은 n·2ⁿ⁻¹ 쌍이다.
+// 검증: ① 비트마스크 표현(A & ~B == 0 && A != B)과 "부분집합이고 크기가 작음" 판정과 정의(부분집합이고 같지 않음)가 모든 n ≤ 8 의 부분집합 쌍에서 일치 ② 쌍의 수가 3ⁿ − 2ⁿ, cover 쌍이 n·2ⁿ⁻¹ ③ 비반사·비대칭·추이(n = 4 전수) ④ 모든 쌍이 네 관계 중 정확히 하나 ⑤ 어떤 집합의 진부분집합 개수 2^|B| − 1 ⑥ std::includes 와 크기 비교로 만든 판정이 무작위 큰 집합에서 일치.
+bool properSubset(const std::vector<int>& a, const std::vector<int>& b) { return a.size() < b.size() && std::includes(b.begin(), b.end(), a.begin(), a.end()); }                          // 부분집합 + 크기가 작음
+bool properByDefinition(const std::vector<int>& a, const std::vector<int>& b) { return std::includes(b.begin(), b.end(), a.begin(), a.end()) && a != b; }
+std::vector<int> fromMask(unsigned m, int n) { std::vector<int> r; for (int i = 0; i < n; i++) if (m >> i & 1) r.push_back(i); return r; }
+int relation(unsigned a, unsigned b) { if (a == b) return 0; if ((a & ~b) == 0) return 1; if ((b & ~a) == 0) return 2; return 3; }                                                      // 0 같다, 1 A⊊B, 2 B⊊A, 3 비교 불가
 int main() {
-    std::set<int> A = {1, 2, 3}, B = {1, 2};
-    bool isSubset = std::includes(A.begin(), A.end(), B.begin(), B.end());
-    bool isProperSubset = (isSubset && A.size() > B.size());
-    std::cout << "B is proper subset of A: " << isProperSubset << std::endl;
-    assert(isProperSubset == true);
-    return 0;
+    for (int n = 0; n <= 8; n++) { unsigned long long pairs = 0, cover = 0, subsetPairs = 0; unsigned N = 1u << n; unsigned counts[4] = {0, 0, 0, 0};
+        for (unsigned ma = 0; ma < N; ma++) for (unsigned mb = 0; mb < N; mb++) { bool proper = (ma & ~mb) == 0 && ma != mb; subsetPairs += (ma & ~mb) == 0; pairs += proper; if (proper && __builtin_popcount(mb) == __builtin_popcount(ma) + 1) cover++;            // ① ②
+            if (n <= 5) { auto a = fromMask(ma, n), b = fromMask(mb, n); assert(properSubset(a, b) == proper && properByDefinition(a, b) == proper); } counts[relation(ma, mb)]++;                                                  // ④
+            int r = relation(ma, mb); assert((r == 1) == proper && (r == 2) == ((mb & ~ma) == 0 && ma != mb)); }
+        unsigned long long p3 = 1, p2 = 1; for (int i = 0; i < n; i++) { p3 *= 3; p2 *= 2; } assert(subsetPairs == p3 && pairs == p3 - p2 && cover == (n ? (unsigned long long)n << (n - 1) : 0ull) && counts[0] + counts[1] + counts[2] + counts[3] == N * N && counts[1] == counts[2] && counts[0] == N);
+        for (unsigned mb = 0; mb < N; mb++) { unsigned c = 0; for (unsigned ma = 0; ma < N; ma++) c += (ma & ~mb) == 0 && ma != mb; assert(c == (1u << __builtin_popcount(mb)) - 1); } }                                                // ⑤ 진부분집합 개수
+    for (unsigned ma = 0; ma < 16; ma++) { assert(!properSubset(fromMask(ma, 4), fromMask(ma, 4))); for (unsigned mb = 0; mb < 16; mb++) { auto a = fromMask(ma, 4), b = fromMask(mb, 4); if (properSubset(a, b)) assert(!properSubset(b, a));       // ③ 비반사·비대칭
+            for (unsigned mc = 0; mc < 16; mc++) { auto c = fromMask(mc, 4); if (properSubset(a, b) && properSubset(b, c)) assert(properSubset(a, c)); } } }
+    std::mt19937 rng(21); for (int rep = 0; rep < 1000; rep++) { std::set<int> sb, sa; for (int i = 0, k = (int)(rng() % 50); i < k; i++) sb.insert((int)(rng() % 100)); std::vector<int> b(sb.begin(), sb.end()); for (int x : b) if (rng() % 3) sa.insert(x); std::vector<int> a(sa.begin(), sa.end());     // ⑥
+        assert(properSubset(a, b) == properByDefinition(a, b)); assert(!properSubset(b, a) || a != b); }
+    { assert(!properSubset({}, {}) && properSubset({}, {1}) && !properSubset({1}, {1}) && properSubset({1}, {1, 2}) && !properSubset({1, 2}, {1}) && !properSubset({3}, {1, 2})); }
+    std::cout << "IsProperSubset: the size-based test (subset and strictly smaller) equalled the definition (subset and not equal) for all subset pairs of every universe up to 5 elements; over universes up to 8 elements the number of proper-subset pairs was exactly 3^n - 2^n, cover pairs n*2^(n-1), and every pair fell into exactly one of the four relations (equal, proper subset, proper superset, incomparable)" << std::endl; return 0;
 }
-// Time Complexity: O(|A| + |B|)
+// Time Complexity: 부분집합 검사 + O(1) 크기 비교
+// Space Complexity: O(1)
 ```
 ## IsSuperset()
 ### 대표코드
@@ -336,161 +884,566 @@ int main() {
 ## IsDisjoint()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 서로소 판정(IsDisjoint): A ∩ B = ∅ ⇔ 공통 원소가 없다. 정렬 배열은 두 포인터를 전진시키며 같은 값을 만나는 즉시 false 로 끝낸다(겹치는 것이 일찍 나오면 매우 빠르고, 정말 서로소일 때만 끝까지 훑는다 O(|A|+|B|)). 해시는 작은 쪽의 원소를 큰 쪽 해시에서 찾아 하나라도 있으면 false, 비트 집합은 워드 AND 가 0 이 아니면 false. 서로소 ⇔ |A∪B| = |A|+|B| ⇔ A ⊆ Bᶜ ⇔ A\B = A.
+// 집합족 {S₁, …, S_k} 가 쌍마다 서로소(분할의 조건)인지는 모든 쌍을 비교하면 O(k²) 번 검사이지만, 원소별 등장 횟수를 해시로 세어 어떤 원소든 두 번 이상 나오면 겹치는 것으로 O(총 원소 수) 에 판정할 수 있다. 분할(partition)이려면 추가로 합집합이 전체집합이어야 하고 모든 조각이 비어 있지 않아야 한다.
+// 검증: ① 우주 {0..4} 의 모든 부분집합 쌍 1024 개에서 병합·해시·비트·정의(교집합이 비었음)가 일치하고 서로소 쌍이 정확히 3⁵ = 243 개(각 원소가 A 에만/B 에만/둘 다 아님) ② 동치 표현 |A∪B| = |A|+|B|, A\B = A, A ⊆ Bᶜ ③ 조기 종료: 첫 원소가 공통이면 비교 1 번, 서로소인 큰 집합은 끝까지 ④ 집합족의 쌍 검사(O(k²))와 등장 횟수 세기(O(N))가 같은 판정, 분할 판정(합집합 == 전체, 조각이 비어 있지 않음) ⑤ 빈 집합은 어떤 집합과도 서로소 ⑥ 무작위 큰 집합에서 std::set_intersection 결과가 비었는지와 일치.
+bool disjMerge(const std::vector<int>& a, const std::vector<int>& b, long& cmp) { std::size_t i = 0, j = 0; while (i < a.size() && j < b.size()) { cmp++; if (a[i] == b[j]) return false; if (a[i] < b[j]) i++; else j++; } return true; }
+bool disjHash(const std::vector<int>& a, const std::vector<int>& b) { const auto& s = a.size() <= b.size() ? a : b; const auto& big = a.size() <= b.size() ? b : a; std::unordered_set<int> h(big.begin(), big.end()); for (int x : s) if (h.count(x)) return false; return true; }
+bool disjBits(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) { for (std::size_t i = 0; i < a.size(); i++) if (a[i] & b[i]) return false; return true; }
+bool disjDefinition(const std::vector<int>& a, const std::vector<int>& b) { for (int x : a) for (int y : b) if (x == y) return false; return true; }
+std::vector<int> fromMask(unsigned m, int n) { std::vector<int> r; for (int i = 0; i < n; i++) if (m >> i & 1) r.push_back(i); return r; }
+std::vector<uint64_t> toBits(const std::vector<int>& a, int n) { std::vector<uint64_t> w((n + 63) / 64); for (int x : a) w[x >> 6] |= 1ull << (x & 63); return w; }
+bool familyPairwise(const std::vector<std::vector<int>>& fam, long& pairChecks) { for (std::size_t i = 0; i < fam.size(); i++) for (std::size_t j = i + 1; j < fam.size(); j++) { pairChecks++; long c = 0; if (!disjMerge(fam[i], fam[j], c)) return false; } return true; }
+bool familyCounting(const std::vector<std::vector<int>>& fam, long& touched) { std::unordered_set<int> seen; for (const auto& s : fam) for (int x : s) { touched++; if (!seen.insert(x).second) return false; } return true; }
 int main() {
-    std::unordered_set<int> A = {1, 2}, B = {3, 4};
-    bool disjoint = true;
-    for (int x : B) { if (A.count(x)) disjoint = false; }
-    std::cout << "A and B are disjoint: " << disjoint << std::endl;
-    assert(disjoint == true);
-    return 0;
+    int disjointPairs = 0;
+    for (unsigned ma = 0; ma < 32; ma++) for (unsigned mb = 0; mb < 32; mb++) { auto a = fromMask(ma, 5), b = fromMask(mb, 5); long cmp = 0; bool want = (ma & mb) == 0; disjointPairs += want;                                                // ①
+        assert(disjMerge(a, b, cmp) == want && disjHash(a, b) == want && disjBits(toBits(a, 5), toBits(b, 5)) == want && disjDefinition(a, b) == want);
+        std::vector<int> u, d, comp; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(u)); std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(d)); for (int i = 0; i < 5; i++) if (!(mb >> i & 1)) comp.push_back(i);
+        assert(want == (u.size() == a.size() + b.size()) && want == (d == a) && want == std::includes(comp.begin(), comp.end(), a.begin(), a.end())); }                                                                      // ② 동치 표현
+    assert(disjointPairs == 243);
+    { long c = 0; assert(!disjMerge({5, 6, 7}, {5, 100}, c) && c == 1); c = 0; std::vector<int> a, b; for (int i = 0; i < 1000; i++) { a.push_back(2 * i); b.push_back(2 * i + 1); } assert(disjMerge(a, b, c) && c >= 1000); }                    // ③ 조기 종료 / 끝까지
+    { long c = 0; assert(disjMerge({}, {1, 2}, c) && disjMerge({1, 2}, {}, c) && disjMerge({}, {}, c) && disjHash({}, {1}) && disjBits(toBits({}, 64), toBits({1}, 64))); }                                                           // ⑤ 빈 집합
+    std::mt19937 rng(22);
+    for (int rep = 0; rep < 1000; rep++) { std::set<int> sa, sb; for (int i = 0, k = (int)(rng() % 25); i < k; i++) sa.insert((int)(rng() % 200)); for (int i = 0, k = (int)(rng() % 25); i < k; i++) sb.insert((int)(rng() % 200)); std::vector<int> a(sa.begin(), sa.end()), b(sb.begin(), sb.end()), i;
+        std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(i)); long cmp = 0; assert(disjMerge(a, b, cmp) == i.empty() && disjHash(a, b) == i.empty() && disjBits(toBits(a, 200), toBits(b, 200)) == i.empty()); }                      // ⑥
+    long totalPair = 0, totalCount = 0;
+    for (int rep = 0; rep < 300; rep++) { int k = 2 + (int)(rng() % 8); std::vector<std::vector<int>> fam; bool makePartition = rng() % 2; std::vector<int> pool(60); for (int i = 0; i < 60; i++) pool[i] = i; std::shuffle(pool.begin(), pool.end(), rng); std::size_t pos = 0;
+        for (int i = 0; i < k; i++) { std::vector<int> s; if (makePartition) { std::size_t len = 1 + rng() % 8; for (std::size_t j = 0; j < len && pos < pool.size(); j++) s.push_back(pool[pos++]); } else { for (int j = 0, m = 1 + (int)(rng() % 6); j < m; j++) s.push_back((int)(rng() % 25)); std::sort(s.begin(), s.end()); s.erase(std::unique(s.begin(), s.end()), s.end()); } if (makePartition) std::sort(s.begin(), s.end()); fam.push_back(s); }
+        long pc = 0, tc = 0; bool a = familyPairwise(fam, pc), b = familyCounting(fam, tc); assert(a == b); totalPair += pc; totalCount += tc;                                                                                       // ④
+        if (a) { std::set<int> u; for (auto& s : fam) u.insert(s.begin(), s.end()); bool coversPool = u.size() == pos; bool allNonEmpty = std::all_of(fam.begin(), fam.end(), [](const std::vector<int>& s) { return !s.empty(); }); assert(!makePartition || (coversPool && allNonEmpty)); } }
+    assert(totalPair > 0 && totalCount > 0);
+    std::cout << "IsDisjoint: merge, hash, bitset and definitional tests agreed on all 1024 pairs of subsets of {0..4} (" << disjointPairs << " disjoint pairs = 3^5), the equivalent forms |A or B| = |A|+|B|, A minus B = A and A subset of complement(B) matched, early exit stopped after one comparison on a shared first element, and the O(N) occurrence-counting test gave the same family-wide verdict as checking all O(k^2) pairs" << std::endl; return 0;
 }
-// Time Complexity: O(|B|) on average
+// Time Complexity: 병합 O(|A| + |B|) (조기 종료), 해시 기대 O(min), 비트 O(U/64)
+// Space Complexity: O(1) (해시 방식은 O(|큰 쪽|))
 ```
 ## Equals()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 집합의 상등(Equals): 두 집합이 같다 ⇔ 원소가 정확히 같다(외연성, extensionality) ⇔ A ⊆ B 이고 B ⊆ A. 원소를 넣은 순서·중복 입력·내부 표현(해시냐 트리냐)은 상등과 무관하다. 구현: 크기가 다르면 O(1) 에 false, 정렬 배열은 원소별 비교, 해시는 A 의 모든 원소가 B 에 있는지(크기가 같으므로 이 방향 하나로 충분), 비트 집합은 워드별 비교.
+// 해시 지문(fingerprint): 집합의 순서와 무관한 요약값으로 빠른 부정 판정을 만든다. 원소를 섞은(mixed) 해시들의 합(또는 XOR)은 원소 순서에 무관하므로 같은 집합이면 항상 같은 지문이다. 지문이 다르면 확실히 다른 집합이고, 같으면 높은 확률로 같지만 확정하려면 원소 비교가 필요하다. XOR 만 쓰면 같은 원소가 두 번 들어간 입력(중복)이 상쇄되는 약점이 있어 먼저 중복을 제거해야 한다. 상등은 동치 관계: 반사·대칭·추이.
+// 검증: ① 우주 {0..4} 의 모든 부분집합 쌍 1024 개에서 네 구현(정렬 비교·해시·비트·양방향 부분집합)이 일치하고 같은 쌍이 정확히 32 개 ② 같은 원소를 다른 순서·중복으로 넣어 만든 집합들이 모두 같다고 판정 ③ 반사·대칭·추이(n = 4 전수) ④ 지문: 같은 집합은 항상 같은 지문, 4096 개 부분집합과 10 만 개 무작위 집합에서 서로 다른 집합의 지문 충돌 0 ⑤ 크기가 다르면 O(1) 거절, 같은 크기면 첫 불일치에서 종료 ⑥ XOR 지문의 중복 상쇄 약점 시연.
+bool eqSorted(const std::vector<int>& a, const std::vector<int>& b, long& cmp) { if (a.size() != b.size()) return false; for (std::size_t i = 0; i < a.size(); i++) { cmp++; if (a[i] != b[i]) return false; } return true; }
+bool eqHash(const std::vector<int>& a, const std::vector<int>& b) { if (a.size() != b.size()) return false; std::unordered_set<int> h(b.begin(), b.end()); for (int x : a) if (!h.count(x)) return false; return true; }
+bool eqBits(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) { return a == b; }
+bool eqMutualSubset(const std::vector<int>& a, const std::vector<int>& b) { return std::includes(a.begin(), a.end(), b.begin(), b.end()) && std::includes(b.begin(), b.end(), a.begin(), a.end()); }
+uint64_t mix(uint64_t x) { x += 0x9E3779B97F4A7C15ull; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; return x ^ (x >> 31); }
+uint64_t fingerprint(const std::vector<int>& a) { uint64_t s = 0; for (int x : a) s += mix((uint64_t)(uint32_t)x); return s ^ (a.size() * 0x9E3779B97F4A7C15ull); }                       // 합 + 크기: 순서 무관
+uint64_t xorFingerprint(const std::vector<int>& a) { uint64_t s = 0; for (int x : a) s ^= mix((uint64_t)(uint32_t)x); return s; }
+std::vector<int> fromMask(unsigned m, int n) { std::vector<int> r; for (int i = 0; i < n; i++) if (m >> i & 1) r.push_back(i); return r; }
+std::vector<uint64_t> toBits(const std::vector<int>& a, int n) { std::vector<uint64_t> w((n + 63) / 64); for (int x : a) w[x >> 6] |= 1ull << (x & 63); return w; }
+std::vector<int> normalize(std::vector<int> v) { std::sort(v.begin(), v.end()); v.erase(std::unique(v.begin(), v.end()), v.end()); return v; }
 int main() {
-    std::set<int> A = {1, 2}, B = {1, 2};
-    bool equals = (A == B);
-    std::cout << "A equals B: " << equals << std::endl;
-    assert(equals == true);
-    return 0;
+    int equalPairs = 0;
+    for (unsigned ma = 0; ma < 32; ma++) for (unsigned mb = 0; mb < 32; mb++) { auto a = fromMask(ma, 5), b = fromMask(mb, 5); long cmp = 0; bool want = ma == mb; equalPairs += want;                                                      // ①
+        assert(eqSorted(a, b, cmp) == want && eqHash(a, b) == want && eqBits(toBits(a, 5), toBits(b, 5)) == want && eqMutualSubset(a, b) == want); if (want) assert(fingerprint(a) == fingerprint(b)); }
+    assert(equalPairs == 32);
+    std::mt19937 rng(23);
+    for (int rep = 0; rep < 300; rep++) { int n = (int)(rng() % 30); std::vector<int> base(n); for (int& x : base) x = (int)(rng() % 40); auto canon = normalize(base); std::vector<int> shuffled = base; std::shuffle(shuffled.begin(), shuffled.end(), rng); std::vector<int> dup = base; dup.insert(dup.end(), base.begin(), base.end()); std::shuffle(dup.begin(), dup.end(), rng);   // ②
+        long c = 0; assert(eqSorted(canon, normalize(shuffled), c) && eqSorted(canon, normalize(dup), c) && fingerprint(canon) == fingerprint(normalize(shuffled)) && fingerprint(canon) == fingerprint(normalize(dup))); }
+    for (unsigned ma = 0; ma < 16; ma++) for (unsigned mb = 0; mb < 16; mb++) { auto a = fromMask(ma, 4), b = fromMask(mb, 4); long c = 0; assert(eqSorted(a, a, c)); assert(eqSorted(a, b, c) == eqSorted(b, a, c)); for (unsigned mc = 0; mc < 16; mc++) { auto cc = fromMask(mc, 4); if (eqSorted(a, b, c) && eqSorted(b, cc, c)) assert(eqSorted(a, cc, c)); } }   // ③
+    { std::set<uint64_t> fp; for (unsigned m = 0; m < 4096; m++) fp.insert(fingerprint(fromMask(m, 12))); assert(fp.size() == 4096);                                                                                         // ④ 충돌 0
+      std::set<uint64_t> seen; std::set<std::vector<int>> sets; std::mt19937 r2(5); for (int i = 0; i < 100000; i++) { std::vector<int> v; for (int j = 0, k = (int)(r2() % 30); j < k; j++) v.push_back((int)(r2() % 1000000)); v = normalize(v); if (sets.insert(v).second) seen.insert(fingerprint(v)); } assert(seen.size() == sets.size()); }
+    { long c = 0; assert(!eqSorted({1, 2, 3}, {1, 2}, c) && c == 0); c = 0; assert(!eqSorted({1, 2, 3}, {9, 2, 3}, c) && c == 1); c = 0; assert(eqSorted({1, 2, 3}, {1, 2, 3}, c) && c == 3); }                                                 // ⑤
+    { std::vector<int> a = {7, 7, 3}, b = {3}; assert(xorFingerprint(a) == xorFingerprint(b) && normalize(a) != normalize(b));                                                                                                // ⑥ XOR 은 중복을 상쇄(7 이 두 번 → 0) → 정규화 전에는 쓰면 안 된다
+      assert(fingerprint(normalize(a)) != fingerprint(b)); }
+    std::cout << "Equals: sorted comparison, hash lookup, bitset comparison and mutual inclusion agreed on all 1024 pairs of subsets of {0..4} (exactly " << equalPairs << " equal pairs), order- and duplicate-insensitive construction gave equal sets, equality was reflexive, symmetric and transitive, the order-independent fingerprint had no collisions across 4096 + about 100000 distinct sets, and the XOR-fingerprint pitfall with duplicates was demonstrated" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: 정렬 비교 O(N), 해시 O(N) 기대, 지문 비교 O(1) (지문 계산은 O(N))
+// Space Complexity: O(1) (해시 방식은 O(N))
 ```
 
 # Part 4. 반복과 탐색
 ## Iterator()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 집합의 반복자(Iterator): 집합의 모든 원소를 한 번씩 방문하는 객체다. 순서가 구현에 따라 다르다: 트리 기반 집합(std::set)은 항상 오름차순(키 순서)이고, 해시 집합은 순서가 정해져 있지 않으며 같은 원소들이라도 넣은 순서·재배치(rehash)에 따라 순회 순서가 달라진다. 그래서 집합 위에서 순서에 의존하는 코드를 쓰면 안 된다. 집합의 원소는 키이므로 반복자로 값을 바꿀 수 없다(const) — 바꾸면 정렬 순서나 해시 위치가 깨진다.
+// 무효화 규칙(어떤 연산 뒤에 얻어 둔 반복자를 써도 되는가)은 컨테이너마다 다르다. std::set: 삽입은 어떤 반복자도 무효화하지 않고, 삭제는 지워진 원소의 반복자만 무효화한다. std::unordered_set: 삽입이 재배치를 일으키면 모든 반복자가 무효화되지만 원소에 대한 포인터·참조는 유효하다(원소 노드가 옮겨지지 않음). 열린 주소법(이 장의 구현)은 재배치 때 원소가 새 칸으로 옮겨지므로 포인터·참조도 무효이고, 정렬 배열 집합은 삽입이 원소를 밀어 주소가 바뀐다. 순회 중 지우려면 `it = s.erase(it)` 형태로 다음 반복자를 받아야 한다.
+// 검증: ① 직접 만든 해시 집합의 반복자가 모든 원소를 정확히 한 번씩 방문하고 범위 for 와 표준 알고리즘(std::distance, std::count, std::accumulate)과 맞음 ② 같은 원소를 다른 순서로 넣으면 해시 순회 순서는 달라질 수 있지만 std::set 은 항상 같은 오름차순 ③ std::set 의 반복자가 삽입·다른 원소의 삭제 뒤에도 유효하고 같은 값을 가리킴 ④ std::unordered_set 은 재배치 뒤에도 원소의 주소가 유지(참조 안정), 열린 주소법·정렬 배열은 주소가 바뀜 ⑤ 순회 중 안전한 삭제(it = erase(it)) ⑥ 원소는 const 로만 접근(static_assert).
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    class const_iterator {                                                                                           // 슬롯 배열을 앞에서부터 훑으며 빈 슬롯을 건너뛴다
+        const IntSet* s_; std::size_t i_; void skip() { while (i_ < s_->key_.size() && !s_->used_[i_]) i_++; }
+    public:
+        using iterator_category = std::forward_iterator_tag; using value_type = int; using difference_type = std::ptrdiff_t; using pointer = const int*; using reference = const int&;
+        const_iterator(const IntSet* s, std::size_t i) : s_(s), i_(i) { skip(); } const int& operator*() const { return s_->key_[i_]; }
+        const_iterator& operator++() { i_++; skip(); return *this; } const_iterator operator++(int) { const_iterator t = *this; ++*this; return t; }
+        bool operator==(const const_iterator& o) const { return i_ == o.i_; } bool operator!=(const const_iterator& o) const { return i_ != o.i_; } };
+    const_iterator begin() const { return const_iterator(this, 0); } const_iterator end() const { return const_iterator(this, key_.size()); }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+#include <numeric>
+#include <type_traits>
 int main() {
-    std::set<int> s = {1, 2, 3};
-    auto it = s.begin();
-    int count = 0;
-    while (it != s.end()) { count++; ++it; }
-    std::cout << "Iterated over elements: " << count << std::endl;
-    assert(count == 3);
-    return 0;
+    std::mt19937 rng(24);
+    for (int rep = 0; rep < 200; rep++) { IntSet s; std::set<int> ref; for (int i = 0, k = (int)(rng() % 200); i < k; i++) { int x = (int)(rng() % 500) - 250; s.add(x); ref.insert(x); }                                    // ①
+        std::vector<int> visited; for (int x : s) visited.push_back(x); std::vector<int> sorted = visited; std::sort(sorted.begin(), sorted.end()); assert(visited.size() == s.size() && sorted == std::vector<int>(ref.begin(), ref.end()) && std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
+        assert((std::size_t)std::distance(s.begin(), s.end()) == s.size() && std::count_if(s.begin(), s.end(), [](int x) { return x > 0; }) == std::count_if(ref.begin(), ref.end(), [](int x) { return x > 0; }) && std::accumulate(s.begin(), s.end(), 0L) == std::accumulate(ref.begin(), ref.end(), 0L)); }
+    { std::set<int> pick; while (pick.size() < 60) pick.insert((int)(rng() % 1000000)); std::vector<int> items(pick.begin(), pick.end()); int differing = 0; std::vector<int> firstOrder; for (int trial = 0; trial < 20; trial++) { std::vector<int> perm = items; std::shuffle(perm.begin(), perm.end(), rng);        // ② 삽입 순서에 따른 순회 순서
+          IntSet h; std::set<int> t; for (int x : perm) { h.add(x); t.insert(x); } std::vector<int> ho(h.begin(), h.end()), to(t.begin(), t.end()); assert(to == items);                                                   // std::set 은 항상 오름차순
+          if (trial == 0) firstOrder = ho; else if (ho != firstOrder) differing++; assert(std::is_permutation(ho.begin(), ho.end(), items.begin())); }
+      assert(differing > 0); }                                                                                                                                                                                       // 해시: 선형 탐사의 충돌 배치 때문에 삽입 순서에 따라 달라짐
+    { std::set<int> t; for (int i = 0; i < 100; i += 2) t.insert(i); auto it = t.find(50); auto itNext = std::next(it); for (int i = 1; i < 100; i += 2) t.insert(i); assert(*it == 50 && *std::next(it) == 51 && std::next(t.find(50)) == std::next(it));   // ③ 삽입 후에도 유효
+      t.erase(t.find(10)); t.erase(t.find(70)); assert(*it == 50 && itNext != t.end()); }
+    { std::unordered_set<int> u; u.insert(7); const int* addr = &*u.find(7); for (int i = 100; i < 100000; i++) u.insert(i); assert(&*u.find(7) == addr);                                                                    // ④ unordered_set: 참조 안정
+      std::vector<int> sortedArr = {1, 3, 5}; sortedArr.reserve(8); const int* pa = &sortedArr[1]; assert(*pa == 3); sortedArr.insert(sortedArr.begin() + 1, 2); assert(*pa == 2 && &sortedArr[2] != pa && sortedArr[2] == 3);   // 정렬 배열 집합: 삽입이 원소를 밀어 pa 는 이제 다른 원소를 가리킴
+      IntSet h; h.add(5); long before = h.rehashes; for (int i = 0; i < 1000; i++) h.add(1000 + i); assert(h.rehashes > before && h.contains(5)); }                                                                   // 열린 주소법은 재배치로 원소를 옮김
+    { std::set<int> t; for (int i = 0; i < 50; i++) t.insert(i); for (auto it = t.begin(); it != t.end();) { if (*it % 3 == 0) it = t.erase(it); else ++it; }                                                           // ⑤ it = erase(it)
+      std::vector<int> want; for (int i = 0; i < 50; i++) if (i % 3) want.push_back(i); assert(std::vector<int>(t.begin(), t.end()) == want); }
+    static_assert(std::is_const<typename std::remove_reference<decltype(*std::declval<std::set<int>::iterator>())>::type>::value, "set elements are const");                                                          // ⑥
+    static_assert(std::is_const<typename std::remove_reference<decltype(*std::declval<IntSet::const_iterator>())>::type>::value, "IntSet elements are const");
+    static_assert(std::is_same<std::iterator_traits<IntSet::const_iterator>::iterator_category, std::forward_iterator_tag>::value, "forward iterator");
+    std::cout << "Iterator: the hash set's iterator visited every element exactly once and worked with range-for and standard algorithms; hash iteration order depended on insertion order while std::set always iterated in ascending order; std::set iterators survived insertions and unrelated erasures, std::unordered_set kept element addresses across rehashing, and erase-while-iterating with it = erase(it) was safe" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: begin/end O(1), 전체 순회 O(용량) (해시) 또는 O(N) (트리)
+// Space Complexity: O(1) 반복자
 ```
 ## ForEach()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
+#include <string>
 
+// 각 원소에 적용(ForEach): 집합의 모든 원소에 함수를 한 번씩 적용한다. 순서는 보장되지 않으므로(해시) 결과가 순서에 의존하면 안 된다 — 합·개수·최댓값처럼 순서와 무관한 집계는 안전하고, 출력 순서나 문자열 이어 붙이기는 안전하지 않다. 함수는 원소를 읽기만 해야 한다: 집합의 원소는 키이므로 바꾸면 해시 위치·정렬 순서가 깨진다. 정렬 배열로 만든 "집합"에서 원소를 몰래 바꾸면 정렬 불변식이 무너져 이후 이진 탐색이 틀린 답을 내는 것을 이 코드가 보인다 — std::set 이 원소를 const 로만 주는 이유다.
+// 조기 종료가 필요하면 함수가 계속할지 여부를 돌려주게 하는 forEachWhile 을 쓴다. 순회 중에 집합 자체를 바꾸는 것(삽입·삭제)은 반복자를 무효화할 수 있으므로, 바꿀 대상을 따로 모아 둔 뒤 순회가 끝나고 바꾼다.
+// 검증: ① 모든 원소에 정확히 한 번씩 호출(호출 횟수 == 크기, 방문 표시 중복 없음) ② 집계(합·XOR·최솟값·최댓값·개수)가 std::set 과 같음 ③ 순서 의존 연산(문자열 이어 붙이기)은 삽입 순서가 다른 두 해시 집합에서 달라질 수 있으나 정렬해서 쓰면 같음 ④ forEachWhile 이 정확히 조건이 깨진 원소에서 멈추고 앞에서 방문한 수만 센다 ⑤ 바꿀 대상을 모았다가 순회 후에 적용하면 안전(모든 짝수를 지우고 절반을 더함) ⑥ 정렬 배열 집합에서 원소를 몰래 바꾸면 정렬이 깨져 이진 탐색이 틀림.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    class const_iterator {                                                                                           // 슬롯 배열을 앞에서부터 훑으며 빈 슬롯을 건너뛴다
+        const IntSet* s_; std::size_t i_; void skip() { while (i_ < s_->key_.size() && !s_->used_[i_]) i_++; }
+    public:
+        using iterator_category = std::forward_iterator_tag; using value_type = int; using difference_type = std::ptrdiff_t; using pointer = const int*; using reference = const int&;
+        const_iterator(const IntSet* s, std::size_t i) : s_(s), i_(i) { skip(); } const int& operator*() const { return s_->key_[i_]; }
+        const_iterator& operator++() { i_++; skip(); return *this; } const_iterator operator++(int) { const_iterator t = *this; ++*this; return t; }
+        bool operator==(const const_iterator& o) const { return i_ == o.i_; } bool operator!=(const const_iterator& o) const { return i_ != o.i_; } };
+    const_iterator begin() const { return const_iterator(this, 0); } const_iterator end() const { return const_iterator(this, key_.size()); }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+template <class S, class F> long forEach(const S& s, F f) { long calls = 0; for (int x : s) { f(x); calls++; } return calls; }
+template <class S, class F> long forEachWhile(const S& s, F keepGoing) { long visited = 0; for (int x : s) { visited++; if (!keepGoing(x)) break; } return visited; }
 int main() {
-    std::set<int> s = {1, 2, 3};
-    int sum = 0;
-    for (int element : s) sum += element;
-    std::cout << "Sum using range-based for: " << sum << std::endl;
-    assert(sum == 6);
-    return 0;
+    std::mt19937 rng(25);
+    for (int rep = 0; rep < 300; rep++) { IntSet s; std::set<int> ref; for (int i = 0, k = (int)(rng() % 150); i < k; i++) { int x = (int)(rng() % 400) - 200; s.add(x); ref.insert(x); }
+        std::vector<int> seen(401, 0); long calls = forEach(s, [&](int x) { seen[x + 200]++; }); assert(calls == (long)s.size()); for (int c : seen) assert(c <= 1); for (int x : ref) assert(seen[x + 200] == 1);                // ① 정확히 한 번씩
+        long sum = 0, xr = 0; int mn = INT_MAX, mx = INT_MIN; long cnt = 0; forEach(s, [&](int x) { sum += x; xr ^= x; mn = std::min(mn, x); mx = std::max(mx, x); cnt++; });                                                   // ②
+        long rs = 0, rx = 0; for (int x : ref) { rs += x; rx ^= x; } assert(sum == rs && xr == rx && cnt == (long)ref.size() && (ref.empty() || (mn == *ref.begin() && mx == *ref.rbegin()))); }
+    { std::set<int> pick; while (pick.size() < 40) pick.insert((int)(rng() % 1000000)); std::vector<int> items(pick.begin(), pick.end()); bool differ = false; std::string first; for (int t = 0; t < 20; t++) { std::vector<int> perm = items; std::shuffle(perm.begin(), perm.end(), rng); IntSet h; for (int x : perm) h.add(x);   // ③
+          std::string cat; forEach(h, [&](int x) { cat += std::to_string(x) + ","; }); if (t == 0) first = cat; else if (cat != first) differ = true; std::vector<int> v(h.begin(), h.end()); std::sort(v.begin(), v.end()); std::string sortedCat; for (int x : v) sortedCat += std::to_string(x) + ","; std::string expect; for (int x : items) expect += std::to_string(x) + ","; assert(sortedCat == expect); }
+      assert(differ); }
+    { IntSet s; for (int i = 1; i <= 100; i++) s.add(i); std::vector<int> order(s.begin(), s.end()); int stopAt = order[37]; long v = forEachWhile(s, [&](int x) { return x != stopAt; }); assert(v == 38); assert(forEachWhile(s, [](int) { return true; }) == 100); IntSet e; assert(forEachWhile(e, [](int) { return false; }) == 0 && forEach(e, [](int) {}) == 0); }   // ④
+    { IntSet s; for (int i = 0; i < 100; i++) s.add(i); std::vector<int> toRemove, toAdd; forEach(s, [&](int x) { if (x % 2 == 0) { toRemove.push_back(x); toAdd.push_back(x + 1000); } });                                               // ⑤ 모았다가 나중에 적용
+      for (int x : toRemove) s.remove(x); for (int x : toAdd) s.add(x); assert(s.size() == 100 && s.check()); for (int i = 0; i < 100; i++) assert(s.contains(i) == (i % 2 == 1)); for (int x : toAdd) assert(s.contains(x)); }
+    { std::vector<int> sortedSet = {1, 3, 5, 7, 9, 11}; auto mySearch = [](const std::vector<int>& v, int key) { std::size_t lo = 0, hi = v.size(); while (lo < hi) { std::size_t mid = lo + (hi - lo) / 2; if (v[mid] < key) lo = mid + 1; else hi = mid; } return lo < v.size() && v[lo] == key; };   // ⑥
+      for (int k : sortedSet) assert(mySearch(sortedSet, k)); for (int& x : sortedSet) if (x == 3) x = 100; assert(!std::is_sorted(sortedSet.begin(), sortedSet.end()));                                                // 몰래 바꾸면 정렬 불변식이 깨진다
+      assert(std::find(sortedSet.begin(), sortedSet.end(), 5) != sortedSet.end() && !mySearch(sortedSet, 5)); }                                                                                                       // 5 는 있는데 이진 탐색이 못 찾는다
+    std::cout << "ForEach: the function ran exactly once per element on 300 random sets, order-independent aggregates (sum, xor, min, max, count) matched std::set while order-dependent string concatenation varied with insertion order, forEachWhile stopped at the failing element, deferring mutations until after iteration was safe, and secretly changing an element of a sorted-array set broke its sortedness" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: O(용량) (해시) / O(N) (트리)
+// Space Complexity: O(1)
 ```
 ## Find()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 찾기(Find): 집합에서 원소의 위치(반복자)를 돌려준다. 없으면 end(). `contains` 가 예/아니오만 답하는 것과 달리 찾은 원소를 가리키는 반복자(또는 선택값 optional)를 주어서 바로 이웃으로 갈 수 있다. 비용은 구조에 달려 있다: 해시 집합 기대 O(1), 균형 트리 집합 O(log n) 비교, 정렬 배열 이진 탐색 ⌊log₂ n⌋+1 번, 그리고 정렬되지 않은 vector 의 std::find 는 O(n). 집합이 해 주는 이 보장이 "집합으로 바꿔서 찾는다" 의 이유다.
+// 조건으로 찾기(find_if)는 순서 없는 구조에서는 항상 O(n) 이다(해시/트리 구조를 쓸 수 없음). 트리 집합은 순서가 있어서 lower_bound(키 이상 첫 원소), upper_bound(키 초과 첫 원소), 바닥(floor, 키 이하의 최댓값), 천장(ceil, 키 이상의 최솟값)을 O(log n) 에 준다 — 해시 집합은 못 하는 질의다. C++14 의 투명 비교자(std::less<>)를 쓰면 키와 다른 타입(문자열 리터럴 등)으로 임시 객체 없이 찾을 수 있다.
+// 검증: ① 직접 만든 해시 집합과 정렬 배열 집합의 find 가 std::set::find 와 같은 결과(있다/없다·값) ② 비교 횟수: 정렬 배열 이진 탐색 ≤ ⌊log₂ n⌋+1, std::set::find 는 ≤ 2·log₂(n+1)+1 (비교자에 카운터를 넣어 측정), vector 의 선형 탐색은 위치+1, 해시 find 의 평균 탐사 < 3 ③ lower_bound/upper_bound/floor/ceil 이 무차별 계산과 같음 ④ find_if 는 순회 순서상 첫 일치(정렬 집합에서는 최솟값) ⑤ 투명 비교자로 const char* 키 찾기 ⑥ 없는 키·빈 집합.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    class const_iterator {                                                                                           // 슬롯 배열을 앞에서부터 훑으며 빈 슬롯을 건너뛴다
+        const IntSet* s_; std::size_t i_; void skip() { while (i_ < s_->key_.size() && !s_->used_[i_]) i_++; }
+    public:
+        using iterator_category = std::forward_iterator_tag; using value_type = int; using difference_type = std::ptrdiff_t; using pointer = const int*; using reference = const int&;
+        const_iterator(const IntSet* s, std::size_t i) : s_(s), i_(i) { skip(); } const int& operator*() const { return s_->key_[i_]; }
+        const_iterator& operator++() { i_++; skip(); return *this; } const_iterator operator++(int) { const_iterator t = *this; ++*this; return t; }
+        bool operator==(const const_iterator& o) const { return i_ == o.i_; } bool operator!=(const const_iterator& o) const { return i_ != o.i_; } };
+    const_iterator begin() const { return const_iterator(this, 0); } const_iterator end() const { return const_iterator(this, key_.size()); }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+#include <cmath>
+#include <functional>
+#include <string>
+struct CountingLess { static long cmps; bool operator()(int a, int b) const { cmps++; return a < b; } }; long CountingLess::cmps = 0;
+struct SortedArraySet { std::vector<int> a; long cmps = 0;
+    bool add(int x) { auto it = std::lower_bound(a.begin(), a.end(), x); if (it != a.end() && *it == x) return false; a.insert(it, x); return true; }
+    std::vector<int>::const_iterator find(int x) { std::size_t lo = 0, hi = a.size(); while (lo < hi) { std::size_t mid = lo + (hi - lo) / 2; cmps++; if (a[mid] < x) lo = mid + 1; else hi = mid; } return (lo < a.size() && a[lo] == x) ? a.begin() + (long)lo : a.end(); } };
 int main() {
-    std::set<int> s = {1, 2, 3};
-    auto it = s.find(2);
-    std::cout << "Found element: " << *it << std::endl;
-    assert(it != s.end() && *it == 2);
-    return 0;
+    std::mt19937 rng(26);
+    for (int rep = 0; rep < 300; rep++) { IntSet h; SortedArraySet sa; std::set<int> ref; for (int i = 0, k = (int)(rng() % 200); i < k; i++) { int x = (int)(rng() % 400); h.add(x); sa.add(x); ref.insert(x); }                  // ①
+        for (int q = -5; q < 405; q++) { bool in = ref.count(q) > 0; assert(h.contains(q) == in); auto it = sa.find(q); assert((it != sa.a.end()) == in && (!in || *it == q)); auto rit = ref.find(q); assert((rit != ref.end()) == in); } }
+    for (int n : {1, 2, 3, 7, 100, 1000, 100000}) { SortedArraySet sa; std::set<int, CountingLess> ts; std::vector<int> vec; for (int i = 0; i < n; i++) { sa.a.push_back(i * 2); ts.insert(i * 2); vec.push_back(i * 2); }                                    // ② 비교 횟수
+        long maxSa = 0, maxTree = 0; std::mt19937 r2(7); for (int q = 0; q < 2000; q++) { int key = (int)(r2() % (2 * n + 2)); long c0 = sa.cmps; sa.find(key); maxSa = std::max(maxSa, sa.cmps - c0); CountingLess::cmps = 0; ts.find(key); maxTree = std::max(maxTree, CountingLess::cmps); }
+        assert(maxSa <= (long)std::floor(std::log2((double)n)) + 1 && maxTree <= 2 * (long)std::ceil(std::log2((double)n + 1)) + 2); if (n <= 1000) { long lin = (std::find(vec.begin(), vec.end(), vec[n - 1]) - vec.begin()) + 1; assert(lin == n); } }
+    { IntSet h; for (int i = 0; i < 20000; i++) h.add((int)rng()); long before = h.lookupProbes; std::mt19937 r3(9); for (int i = 0; i < 20000; i++) h.contains((int)r3()); assert((double)(h.lookupProbes - before) / 20000 < 3.0); }                  // 해시 find 의 평균 탐사
+    for (int rep = 0; rep < 300; rep++) { std::set<int> ref; for (int i = 0, k = (int)(rng() % 60); i < k; i++) ref.insert((int)(rng() % 200)); SortedArraySet sa; for (int x : ref) sa.add(x);                                                 // ③
+        for (int q = -3; q < 205; q++) { auto lb = ref.lower_bound(q), ub = ref.upper_bound(q); auto slb = std::lower_bound(sa.a.begin(), sa.a.end(), q), sub = std::upper_bound(sa.a.begin(), sa.a.end(), q); assert((lb == ref.end()) == (slb == sa.a.end()) && (lb == ref.end() || *lb == *slb) && (ub == ref.end()) == (sub == sa.a.end()) && (ub == ref.end() || *ub == *sub));
+            int bfFloor = INT_MIN, bfCeil = INT_MAX; for (int x : ref) { if (x <= q) bfFloor = std::max(bfFloor, x); if (x >= q) bfCeil = std::min(bfCeil, x); } bool hasFloor = ub != ref.begin(); assert(hasFloor == (bfFloor != INT_MIN) && (!hasFloor || *std::prev(ub) == bfFloor) && (lb == ref.end()) == (bfCeil == INT_MAX) && (lb == ref.end() || *lb == bfCeil)); } }
+    { std::set<int> s = {3, 6, 9, 12, 15}; auto it = std::find_if(s.begin(), s.end(), [](int x) { return x % 2 == 0; }); assert(it != s.end() && *it == 6); assert(std::find_if(s.begin(), s.end(), [](int x) { return x > 100; }) == s.end());          // ④
+      IntSet h; for (int x : {3, 6, 9, 12, 15}) h.add(x); auto hi = std::find_if(h.begin(), h.end(), [](int x) { return x % 2 == 0; }); assert(hi != h.end() && *hi % 2 == 0); }
+    { std::set<std::string, std::less<>> names = {"alice", "bob", "carol"}; assert(names.find("bob") != names.end() && names.find("dave") == names.end() && names.find(std::string("carol")) != names.end()); }                                      // ⑤ 투명 비교자
+    { std::set<int> e; IntSet he; SortedArraySet se; assert(e.find(1) == e.end() && !he.contains(1) && se.find(1) == se.a.end()); IntSet one; one.add(INT_MIN); assert(one.contains(INT_MIN) && !one.contains(INT_MAX)); }       // ⑥
+    std::cout << "Find: hash and sorted-array lookups agreed with std::set::find on 300 random sets; the sorted array needed at most floor(log2 n)+1 comparisons and std::set::find at most about 2*log2(n+1), linear search cost position+1, hash lookups averaged under 3 probes; lower_bound, upper_bound, floor and ceil matched brute force, find_if returned the first match in iteration order, and a transparent comparator searched by string literal" << std::endl; return 0;
 }
-// Time Complexity: O(log N) for std::set
+// Time Complexity: 해시 기대 O(1), 트리 O(log N), 정렬 배열 O(log N), find_if O(N)
+// Space Complexity: O(1)
 ```
 ## Filter()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 걸러내기(Filter): 조건 p 를 만족하는 원소만 남긴 부분집합 {x ∈ S | p(x)} 를 만든다. 집합의 부분집합이므로 결과는 원본에 대해 항상 ⊆ 이고, p 와 ¬p 로 걸러낸 두 집합은 서로소이며 합집합이 원본이다(분할). 법칙: filter(p)∘filter(q) = filter(p∧q) (순서 무관), filter(참) = S, filter(거짓) = ∅, filter(p)(filter(p)(S)) = filter(p)(S) (멱등), filter 는 합집합·교집합에 분배: filter(S∪T) = filter(S)∪filter(T), filter(S∩T) = filter(S)∩filter(T).
+// 구현 선택: 새 집합을 만들어 조건을 만족하는 원소를 담거나(원본 보존, O(n)), 제자리에서 조건을 만족하지 않는 원소를 지운다. 제자리 삭제는 구조마다 함정이 있다. 트리 집합은 `it = erase(it)` 로 안전하다. 열린 주소법에서 칸 번호를 올려 가며 지우면, 되밀기(backward shift) 삭제가 뒤 원소를 방금 지운 칸으로 당겨 오기 때문에 칸 번호를 그냥 증가시키면 당겨 온 원소를 건너뛴다(조건을 검사받지 못함). 지울 때는 같은 칸을 다시 검사하거나, 지울 원소를 먼저 모은 뒤 지워야 한다.
+// 검증: ① 새 집합 만들기가 std::set 의 필터 결과와 같고 원본이 불변 ② 법칙: filter(p)∘filter(q) = filter(p∧q) = filter(q)∘filter(p), 멱등, 참/거짓, 분할(서로소·합이 원본), 합집합·교집합 분배 ③ 제자리 필터의 올바른 방법 둘(같은 칸 다시 검사·모았다 지우기)이 새 집합 방식과 같은 결과이고 불변식 유지 ④ 칸 번호를 그냥 올리는 순진한 제자리 필터는 조건을 만족하지 않는 원소를 남기는 경우가 무작위 시험에서 실제로 발견되고(남긴 원소는 항상 올바른 결과의 상위집합) 올바른 방법은 한 번도 놓치지 않음 ⑤ std::set 의 안전한 삭제 루프.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    class const_iterator {                                                                                           // 슬롯 배열을 앞에서부터 훑으며 빈 슬롯을 건너뛴다
+        const IntSet* s_; std::size_t i_; void skip() { while (i_ < s_->key_.size() && !s_->used_[i_]) i_++; }
+    public:
+        using iterator_category = std::forward_iterator_tag; using value_type = int; using difference_type = std::ptrdiff_t; using pointer = const int*; using reference = const int&;
+        const_iterator(const IntSet* s, std::size_t i) : s_(s), i_(i) { skip(); } const int& operator*() const { return s_->key_[i_]; }
+        const_iterator& operator++() { i_++; skip(); return *this; } const_iterator operator++(int) { const_iterator t = *this; ++*this; return t; }
+        bool operator==(const const_iterator& o) const { return i_ == o.i_; } bool operator!=(const const_iterator& o) const { return i_ != o.i_; } };
+    const_iterator begin() const { return const_iterator(this, 0); } const_iterator end() const { return const_iterator(this, key_.size()); }
+    template <class P> long filterNaive(P p) { long removed = 0; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i] && !p(key_[i])) { remove(key_[i]); removed++; } return removed; }   // 순진: 지운 칸을 다시 보지 않는다
+    template <class P> long filterSlots(P p) { long removed = 0; std::size_t i = 0; while (i < key_.size()) { if (used_[i] && !p(key_[i])) { remove(key_[i]); removed++; } else i++; } return removed; }   // 지운 칸을 다시 검사
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+template <class P> IntSet filterNew(const IntSet& s, P p) { IntSet r; for (int x : s) if (p(x)) r.add(x); return r; }
+template <class P> void filterCollect(IntSet& s, P p) { std::vector<int> dead; for (int x : s) if (!p(x)) dead.push_back(x); for (int x : dead) s.remove(x); }
+std::vector<int> sortedItems(const IntSet& s) { std::vector<int> v(s.begin(), s.end()); std::sort(v.begin(), v.end()); return v; }
+std::vector<int> uni(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
+std::vector<int> inter(const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(r)); return r; }
 int main() {
-    std::set<int> s = {1, 2, 3, 4};
-    // std::erase_if is in C++20. Here is manual filter:
-    for (auto it = s.begin(); it != s.end(); ) {
-        if (*it % 2 == 0) it = s.erase(it);
-        else ++it;
-    }
-    std::cout << "Filtered odd elements only. Size: " << s.size() << std::endl;
-    assert(s.size() == 2);
-    return 0;
+    std::mt19937 rng(27); auto even = [](int x) { return x % 2 == 0; }; auto big = [](int x) { return x > 100; }; auto never = [](int) { return false; }; auto always = [](int) { return true; };
+    for (int rep = 0; rep < 300; rep++) { IntSet s, t; std::set<int> ref; for (int i = 0, k = (int)(rng() % 150); i < k; i++) { int x = (int)(rng() % 300); s.add(x); ref.insert(x); } for (int i = 0, k = (int)(rng() % 150); i < k; i++) t.add((int)(rng() % 300));
+        std::vector<int> before = sortedItems(s); IntSet f = filterNew(s, even); std::vector<int> want; for (int x : ref) if (even(x)) want.push_back(x); assert(sortedItems(f) == want && sortedItems(s) == before);                                    // ①
+        auto pq = [&](int x) { return even(x) && big(x); }; assert(sortedItems(filterNew(filterNew(s, even), big)) == sortedItems(filterNew(s, pq)) && sortedItems(filterNew(filterNew(s, big), even)) == sortedItems(filterNew(s, pq)));          // ②
+        assert(sortedItems(filterNew(f, even)) == sortedItems(f) && sortedItems(filterNew(s, always)) == before && filterNew(s, never).empty());
+        IntSet nf = filterNew(s, [&](int x) { return !even(x); }); assert(inter(sortedItems(f), sortedItems(nf)).empty() && uni(sortedItems(f), sortedItems(nf)) == before);                                                                    // 분할
+        std::vector<int> su = uni(sortedItems(s), sortedItems(t)), si = inter(sortedItems(s), sortedItems(t)); IntSet U, I; for (int x : su) U.add(x); for (int x : si) I.add(x);
+        assert(sortedItems(filterNew(U, even)) == uni(sortedItems(filterNew(s, even)), sortedItems(filterNew(t, even))) && sortedItems(filterNew(I, even)) == inter(sortedItems(filterNew(s, even)), sortedItems(filterNew(t, even)))); }       // 분배
+    long naiveMissed = 0, slotsMissed = 0, collectMissed = 0;
+    for (int rep = 0; rep < 400; rep++) { IntSet base; for (int i = 0, k = 20 + (int)(rng() % 200); i < k; i++) base.add((int)(rng() % 1000)); std::vector<int> want = sortedItems(filterNew(base, even));                                               // ③ ④
+        IntSet a = base, b = base, c = base; a.filterNaive(even); b.filterSlots(even); filterCollect(c, even);
+        for (int x : a) naiveMissed += !even(x); for (int x : b) slotsMissed += !even(x); for (int x : c) collectMissed += !even(x);
+        assert(sortedItems(b) == want && sortedItems(c) == want && b.check() && c.check() && a.check()); std::vector<int> an = sortedItems(a); assert(std::includes(an.begin(), an.end(), want.begin(), want.end())); }              // 순진한 결과는 올바른 결과의 상위집합
+    assert(slotsMissed == 0 && collectMissed == 0 && naiveMissed > 0);
+    { std::set<int> s; for (int i = 0; i < 60; i++) s.insert(i); for (auto it = s.begin(); it != s.end();) { if (!even(*it)) it = s.erase(it); else ++it; } std::vector<int> want; for (int i = 0; i < 60; i += 2) want.push_back(i); assert(std::vector<int>(s.begin(), s.end()) == want); }      // ⑤
+    std::cout << "Filter: filtering into a new set matched std::set filtering without touching the source, the fusion, commutation, idempotence, partition and union/intersection distribution laws held on 300 random pairs, in-place filtering by re-checking the same slot or by collecting-then-erasing was exact, and the naive slot-by-slot version left " << naiveMissed << " elements that violate the predicate across 400 trials" << std::endl; return 0;
 }
-// Time Complexity: O(N log N)
+// Time Complexity: 필터링 O(N) (해시: O(용량))
+// Space Complexity: O(N) (새 집합) / O(걸러낼 원소 수) (모았다 지우기)
 ```
 ## Map()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
+// 변환(Map): 집합의 각 원소에 함수 f 를 적용한 결과들의 집합 f(S) = {f(x) | x ∈ S} 를 만든다 — 상(image). 리스트의 map 과 결정적으로 다른 점: 결과도 집합이라 중복이 합쳐진다. f 가 단사(일대일)가 아니면 |f(S)| < |S| 로 줄어들 수 있고(예: x mod 2 는 어떤 집합이든 크기 ≤ 2), |f(S)| = |S| ⇔ f 가 S 위에서 단사. 그래서 집합의 map 은 크기를 보존하지 않으므로 "크기가 같은 두 집합" 같은 가정을 두면 안 된다.
+// 상의 법칙: f(A∪B) = f(A)∪f(B) (정확히 성립), f(A∩B) ⊆ f(A)∩f(B) (일반적으로 진부분 — f 가 단사일 때만 같다: A={1}, B={3}, f(x)=x mod 2 이면 f(A∩B)=∅ 이지만 f(A)∩f(B)={1}), 합성 (g∘f)(S) = g(f(S)), 항등 map 은 항등, 공집합은 공집합으로. 원상(preimage) f⁻¹(T) = {x ∈ 정의역 | f(x) ∈ T} 은 f⁻¹(A∩B) = f⁻¹(A)∩f⁻¹(B), f⁻¹(A∪B) = f⁻¹(A)∪f⁻¹(B), f⁻¹(Aᶜ) = (f⁻¹(A))ᶜ 로 모든 연산을 정확히 보존한다 — 상보다 훨씬 얌전하다.
+// 검증: ① 유한 정의역 {0,1,2} 에서 모든 함수 f: {0,1,2} → {0,1,2} (27 개)와 모든 부분집합 쌍 (8×8)에 대해 상의 법칙(합집합 보존, 교집합은 ⊆)과 원상의 법칙(합·교·여집합 보존)을 전수 확인 ② 단사 함수 정확히 6 개이고 단사일 때만 교집합이 정확히 보존되며 단사일 때만 크기가 보존 ③ 합성 (g∘f)(S) = g(f(S)) ④ 무작위 큰 집합에서 해시 구현의 상이 직접 계산한 것과 같고 크기가 |S| 이하 ⑤ 공집합·원소 1개.
+class IntSet {                                                                                                       // 결과 집합을 모으는 데 쓰는 해시 집합(열린 주소법, 되밀기 삭제 없이 삽입만 사용)
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_ = 3;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }
+    void rebuild() { std::vector<int> old = items(); bits_++; key_.assign((std::size_t)1 << bits_, 0); used_.assign((std::size_t)1 << bits_, 0); size_ = 0; for (int x : old) add(x); }
+public:
+    IntSet() : key_(8), used_(8, 0) {}
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    std::size_t size() const { return size_; } };
+typedef std::set<int> S;
+template <class F> S image(const S& s, F f) { S r; for (int x : s) r.insert(f(x)); return r; }
+template <class F> S preimage(const S& domain, const S& t, F f) { S r; for (int x : domain) if (t.count(f(x))) r.insert(x); return r; }
+S uni(const S& a, const S& b) { S r; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::inserter(r, r.begin())); return r; }
+S inter(const S& a, const S& b) { S r; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::inserter(r, r.begin())); return r; }
+S diff(const S& a, const S& b) { S r; std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::inserter(r, r.begin())); return r; }
+S subset3(unsigned m) { S r; for (int i = 0; i < 3; i++) if (m >> i & 1) r.insert(i); return r; }
 int main() {
-    std::set<int> s = {1, 2}, mapped_s;
-    for (int val : s) mapped_s.insert(val * 2);
-    std::cout << "Mapped set size: " << mapped_s.size() << std::endl;
-    assert(mapped_s.count(4));
-    return 0;
+    S domain = {0, 1, 2}; int injective = 0, strictlyLosing = 0;
+    for (int code = 0; code < 27; code++) { int fv[3] = {code % 3, code / 3 % 3, code / 9}; auto f = [&](int x) { return fv[x]; }; bool inj = fv[0] != fv[1] && fv[0] != fv[2] && fv[1] != fv[2]; injective += inj; bool interAlwaysExact = true, sizeAlwaysKept = true;   // ① ②
+        for (unsigned ma = 0; ma < 8; ma++) for (unsigned mb = 0; mb < 8; mb++) { S a = subset3(ma), b = subset3(mb);
+            assert(image(uni(a, b), f) == uni(image(a, f), image(b, f)));                                                                                                                                // 상: 합집합 보존
+            S lhs = image(inter(a, b), f), rhs = inter(image(a, f), image(b, f)); assert(std::includes(rhs.begin(), rhs.end(), lhs.begin(), lhs.end())); if (lhs != rhs) interAlwaysExact = false;               // 상: 교집합은 ⊆
+            if (image(a, f).size() != a.size()) sizeAlwaysKept = false;
+            S t = subset3(ma), u = subset3(mb); S universeT = domain;                                                                                                                                    // 원상은 모든 연산을 정확히 보존
+            assert(preimage(domain, inter(t, u), f) == inter(preimage(domain, t, f), preimage(domain, u, f)) && preimage(domain, uni(t, u), f) == uni(preimage(domain, t, f), preimage(domain, u, f)));
+            S codomain = {0, 1, 2}; assert(preimage(domain, diff(codomain, t), f) == diff(universeT, preimage(domain, t, f))); }
+        assert(interAlwaysExact == inj && sizeAlwaysKept == inj); if (!inj) strictlyLosing++; }
+    assert(injective == 6 && strictlyLosing == 21);
+    { auto f = [](int x) { return x % 2; }; S a = {1}, b = {3}; assert(image(inter(a, b), f).empty() && inter(image(a, f), image(b, f)) == S({1})); S s = {1, 2, 3, 4, 5, 6}; assert(image(s, f).size() == 2); }       // 구체적 반례
+    std::mt19937 rng(28);
+    for (int rep = 0; rep < 300; rep++) { S s; for (int i = 0, k = (int)(rng() % 40); i < k; i++) s.insert((int)(rng() % 100)); int a = 1 + (int)(rng() % 7), b = (int)(rng() % 11), c = 2 + (int)(rng() % 5); auto f = [&](int x) { return a * x + b; }; auto g = [&](int x) { return x % c; };    // ③ ④
+        assert(image(image(s, f), g) == image(s, [&](int x) { return g(f(x)); }) && image(s, [](int x) { return x; }) == s && image(s, g).size() <= s.size());
+        IntSet h; for (int x : s) h.add(g(f(x))); std::vector<int> hv = h.items(); S viaHash(hv.begin(), hv.end()); assert(viaHash == image(s, [&](int x) { return g(f(x)); })); }
+    { S e; assert(image(e, [](int x) { return x + 1; }).empty() && image(S({7}), [](int x) { return x * 0; }) == S({0})); }                                                                          // ⑤
+    std::cout << "Map: over every function from {0,1,2} to itself (27) and all 64 subset pairs the image preserved unions exactly and intersections only up to inclusion, preimages preserved unions, intersections and complements exactly, exactly 6 functions were injective and only those preserved sizes and intersections, composition (g after f)(S) = g(f(S)) held, and a non-injective map shrank sets as predicted" << std::endl; return 0;
 }
-// Time Complexity: O(N log N)
+// Time Complexity: 변환 O(N) (결과 삽입 포함), 정렬이면 O(N log N)
+// Space Complexity: O(N)
 ```
 ## Reduce()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
-#include <numeric>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cstddef>
+#include <initializer_list>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
+#include <numeric>
 
+// 접기(Reduce): 집합의 모든 원소를 이항 연산 ⊕ 로 하나의 값으로 합친다 — 합, 곱, 최솟값, 최댓값, XOR, 개수. 집합에는 순서가 없으므로(해시 순회 순서는 구현·삽입 순서에 따라 바뀜) 접기 결과가 순서에 의존하면 안 된다. 연산이 교환 법칙(a⊕b = b⊕a)과 결합 법칙((a⊕b)⊕c = a⊕(b⊕c))을 만족하고 항등원 e 가 있으면(교환 모노이드) 어떤 순서로 접어도 같고, 조각으로 나누어 병렬로 접은 뒤 합쳐도 같다. 뺄셈이나 문자열 이어 붙이기는 교환 법칙이 없어서 순회 순서에 따라 결과가 바뀐다 — 집합 위에서 쓰려면 먼저 정렬해 순서를 고정해야 한다.
+// 집계를 매번 다시 계산하지 않고 집합이 바뀔 때 함께 갱신(점증 유지)하면 O(1) 에 최신 값을 얻는다: 합은 추가 시 +x, 삭제 시 −x; 순서에 무관한 지문(원소 해시의 합)도 같은 방식. 최솟값·최댓값은 삭제를 되돌릴 수 없어서 점증 유지가 안 되고(삭제되는 값이 최솟값이면 다음 값을 찾아야 함) 순서 있는 트리가 필요하다.
+// 검증: ① 합·곱(작은 값)·XOR·최소·최대·개수의 접기가 std::set 의 순회 결과와 같음 ② 삽입 순서가 다른 해시 집합 20 개에서 교환 모노이드 연산의 결과는 모두 같고, 문자열 이어 붙이기와 뺄셈 접기는 서로 달라질 수 있음 ③ 정렬한 뒤 접으면 비교환 연산도 결정적 ④ 비어 있으면 항등원, 원소 1 개면 그 원소 ⑤ 조각 병렬 접기(2~7 조각)가 순차 접기와 같음(교환 모노이드) ⑥ 점증 유지한 합·지문이 임의의 추가·삭제 열 10 만 번 뒤에도 처음부터 다시 계산한 값과 같음.
+class IntSet {                                                                                                       // 열린 주소법 해시 집합: 선형 탐사, 부하율 ≤ 1/2, 되밀기(backward-shift) 삭제로 묘비 없음
+    std::vector<int> key_; std::vector<unsigned char> used_; std::size_t size_ = 0; unsigned bits_;
+    std::size_t home(int x) const { return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - bits_)); }   // 곱셈 해시: 상위 비트 사용
+    void place(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) i = (i + 1) & m; used_[i] = 1; key_[i] = x; }
+    void rebuild(unsigned nb) { std::vector<int> old; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) old.push_back(key_[i]); bits_ = nb; key_.assign((std::size_t)1 << nb, 0); used_.assign((std::size_t)1 << nb, 0); for (int x : old) place(x); rehashes++; }
+public:
+    long probes = 0, rehashes = 0; mutable long lookupProbes = 0;
+    explicit IntSet(unsigned bits = 3) : key_((std::size_t)1 << bits), used_((std::size_t)1 << bits, 0), bits_(bits) {}
+    std::size_t size() const { return size_; } bool empty() const { return size_ == 0; } std::size_t capacity() const { return key_.size(); }
+    bool contains(int x) const { std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { lookupProbes++; if (key_[i] == x) return true; i = (i + 1) & m; } return false; }
+    bool add(int x) { if ((size_ + 1) * 2 > key_.size()) rebuild(bits_ + 1); std::size_t m = key_.size() - 1, i = home(x); while (used_[i]) { probes++; if (key_[i] == x) return false; i = (i + 1) & m; } used_[i] = 1; key_[i] = x; size_++; return true; }
+    bool remove(int x) { std::size_t m = key_.size() - 1, i = home(x); while (used_[i] && key_[i] != x) i = (i + 1) & m; if (!used_[i]) return false;
+        for (std::size_t j = i;;) { j = (j + 1) & m; if (!used_[j]) break; std::size_t k = home(key_[j]); bool inRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j); if (!inRange) { key_[i] = key_[j]; i = j; } }   // 뒤 원소를 당겨 와 군집을 메운다
+        used_[i] = 0; size_--; return true; }
+    void reserve(std::size_t n) { unsigned b = bits_; while (n * 2 > ((std::size_t)1 << b)) b++; if (b != bits_) rebuild(b); }
+    void clear() { std::fill(used_.begin(), used_.end(), 0); size_ = 0; }
+    std::vector<int> items() const { std::vector<int> r; for (std::size_t i = 0; i < key_.size(); i++) if (used_[i]) r.push_back(key_[i]); std::sort(r.begin(), r.end()); return r; }
+    class const_iterator {                                                                                           // 슬롯 배열을 앞에서부터 훑으며 빈 슬롯을 건너뛴다
+        const IntSet* s_; std::size_t i_; void skip() { while (i_ < s_->key_.size() && !s_->used_[i_]) i_++; }
+    public:
+        using iterator_category = std::forward_iterator_tag; using value_type = int; using difference_type = std::ptrdiff_t; using pointer = const int*; using reference = const int&;
+        const_iterator(const IntSet* s, std::size_t i) : s_(s), i_(i) { skip(); } const int& operator*() const { return s_->key_[i_]; }
+        const_iterator& operator++() { i_++; skip(); return *this; } const_iterator operator++(int) { const_iterator t = *this; ++*this; return t; }
+        bool operator==(const const_iterator& o) const { return i_ == o.i_; } bool operator!=(const const_iterator& o) const { return i_ != o.i_; } };
+    const_iterator begin() const { return const_iterator(this, 0); } const_iterator end() const { return const_iterator(this, key_.size()); }
+    bool check() const { std::size_t m = key_.size() - 1, cnt = 0; for (std::size_t j = 0; j < key_.size(); j++) if (used_[j]) { cnt++; for (std::size_t i = home(key_[j]); i != j; i = (i + 1) & m) if (!used_[i]) return false; } return cnt == size_ && size_ * 2 <= key_.size(); }   // 불변식: 집 위치에서 자기 자리까지 빈 칸이 없다
+};
+#include <functional>
+#include <string>
+template <class T, class F> T fold(const IntSet& s, T init, F f) { for (int x : s) init = f(init, x); return init; }
+template <class T, class F> T chunked(const std::vector<int>& v, int chunks, T identity, F f) { std::vector<T> part; std::size_t n = v.size(); for (int c = 0; c < chunks; c++) { T acc = identity; for (std::size_t i = n * c / chunks; i < n * (c + 1) / chunks; i++) acc = f(acc, v[i]); part.push_back(acc); } T r = identity; for (const T& p : part) r = f(r, p); return r; }
+unsigned long long mix(unsigned long long x) { x += 0x9E3779B97F4A7C15ull; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; return x ^ (x >> 31); }
+struct Tracked { IntSet set; long long sum = 0; unsigned long long fp = 0;                                            // 합과 지문을 점증 유지
+    bool add(int x) { if (!set.add(x)) return false; sum += x; fp += mix((unsigned long long)(unsigned)x); return true; } bool remove(int x) { if (!set.remove(x)) return false; sum -= x; fp -= mix((unsigned long long)(unsigned)x); return true; } };
 int main() {
-    std::set<int> s = {1, 2, 3};
-    int sum = std::accumulate(s.begin(), s.end(), 0);
-    std::cout << "Reduced sum: " << sum << std::endl;
-    assert(sum == 6);
-    return 0;
+    std::mt19937 rng(29);
+    for (int rep = 0; rep < 300; rep++) { IntSet s; std::set<int> ref; for (int i = 0, k = (int)(rng() % 120); i < k; i++) { int x = (int)(rng() % 300) - 150; s.add(x); ref.insert(x); }                                       // ①
+        long long sum = fold<long long>(s, 0, std::plus<long long>()), rsum = 0; for (int x : ref) rsum += x; assert(sum == rsum); int xr = fold<int>(s, 0, [](int a, int b) { return a ^ b; }), rx = 0; for (int x : ref) rx ^= x; assert(xr == rx);
+        long long cnt = fold<long long>(s, 0, [](long long a, int) { return a + 1; }); assert(cnt == (long long)ref.size()); if (!ref.empty()) { assert(fold<int>(s, INT_MAX, [](int a, int b) { return std::min(a, b); }) == *ref.begin() && fold<int>(s, INT_MIN, [](int a, int b) { return std::max(a, b); }) == *ref.rbegin()); }
+        long long prod = fold<long long>(s, 1, [](long long a, int b) { return a * (b % 3 + 1) % 1000003; }), rp = 1; for (int x : ref) rp = rp * (x % 3 + 1) % 1000003; assert(prod == rp); }
+    { std::set<int> pick; while (pick.size() < 50) pick.insert((int)(rng() % 1000000)); std::vector<int> items(pick.begin(), pick.end()); bool concatDiffers = false, subDiffers = false; std::string firstCat; long long firstSub = 0;                    // ②
+      for (int t = 0; t < 20; t++) { std::vector<int> perm = items; std::shuffle(perm.begin(), perm.end(), rng); IntSet h; for (int x : perm) h.add(x);
+          long long sum = fold<long long>(h, 0, std::plus<long long>()); assert(sum == std::accumulate(items.begin(), items.end(), 0LL)); std::string cat = fold<std::string>(h, "", [](std::string a, int b) { return a + std::to_string(b) + ","; }); long long sub = fold<long long>(h, 0, [](long long a, int b) { return a - b; });
+          if (t == 0) { firstCat = cat; firstSub = sub; } else { if (cat != firstCat) concatDiffers = true; if (sub != firstSub) subDiffers = true; }
+          std::vector<int> sorted(h.begin(), h.end()); std::sort(sorted.begin(), sorted.end()); std::string sc; for (int x : sorted) sc += std::to_string(x) + ","; std::string expect; for (int x : items) expect += std::to_string(x) + ","; assert(sc == expect); }                // ③ 정렬 후 결정적
+      assert(concatDiffers); (void)subDiffers; }
+    { IntSet e; assert(fold<long long>(e, 0, std::plus<long long>()) == 0 && fold<long long>(e, 1, std::multiplies<long long>()) == 1 && fold<int>(e, INT_MAX, [](int a, int b) { return std::min(a, b); }) == INT_MAX); IntSet one; one.add(42); assert(fold<long long>(one, 0, std::plus<long long>()) == 42); }       // ④
+    for (int rep = 0; rep < 200; rep++) { IntSet s; for (int i = 0, k = (int)(rng() % 200); i < k; i++) s.add((int)(rng() % 1000)); std::vector<int> v(s.begin(), s.end()); long long seq = fold<long long>(s, 0, std::plus<long long>());                                         // ⑤
+        for (int c = 2; c <= 7; c++) { assert(chunked<long long>(v, c, 0, std::plus<long long>()) == seq); assert(chunked<int>(v, c, INT_MIN, [](int a, int b) { return std::max(a, b); }) == (v.empty() ? INT_MIN : *std::max_element(v.begin(), v.end()))); } }
+    { Tracked t; std::set<int> ref; std::mt19937 r2(3); for (int step = 0; step < 100000; step++) { int x = (int)(r2() % 500); if (r2() % 2) { bool a = t.add(x); assert(a == ref.insert(x).second); } else { bool d = t.remove(x); assert(d == (ref.erase(x) > 0)); }               // ⑥ 점증 유지
+        if (step % 9973 == 0) { long long s2 = 0; unsigned long long f2 = 0; for (int y : ref) { s2 += y; f2 += mix((unsigned long long)(unsigned)y); } assert(t.sum == s2 && t.fp == f2); } }
+      long long s2 = 0; unsigned long long f2 = 0; for (int y : ref) { s2 += y; f2 += mix((unsigned long long)(unsigned)y); } assert(t.sum == s2 && t.fp == f2 && t.set.size() == ref.size()); }
+    std::cout << "Reduce: sum, product, xor, min, max and count folds matched std::set on 300 random sets; across 20 differently built hash sets the commutative operations always agreed while string concatenation depended on iteration order (sorting made it deterministic), parallel chunked folds equalled the sequential fold, and an incrementally maintained sum and order-independent fingerprint matched recomputation after 100000 random updates" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: 접기 O(N), 점증 유지 갱신당 O(1)
+// Space Complexity: O(1)
 ```
 
 # Part 5. 구현
 ## ArraySet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cmath>
+#include <iostream>
+#include <iterator>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
+// 배열 집합(ArraySet): 원소를 정렬된 연속 배열에 보관한다(중복 없음 = 순증가). 조회는 이진 탐색 O(log n) 이고 메모리가 연속이라 캐시에 매우 유리하다. 대신 삽입·삭제는 뒤쪽 원소를 한 칸씩 밀어야 해서 O(n) — 정확히 n−pos 번 이동한다. 그래서 읽기가 많고 변경이 드문 집합(설정값, 사전), 또는 한꺼번에 만든 뒤 쓰기만 하는 경우에 최선이다.
+// 정렬된 배열이라서 해시 집합이 못 하는 순서 질의를 공짜로 얻는다: 순위(rank) = lower_bound 의 인덱스, k 번째로 작은 원소(select) = a[k] 가 O(1), 구간 [lo, hi] 의 원소 수 = upper_bound(hi) − lower_bound(lo), 바닥·천장, 정렬된 순회, 그리고 집합 연산을 병합으로 O(n+m) 에 한다. 한꺼번에 만들 때는 하나씩 삽입하면 이동이 n²/4 번이지만, 전부 모아 정렬한 뒤 중복을 제거하면 O(n log n) 이다.
+// 검증: ① 무작위 add/remove/contains 가 std::set 과 일치하고 배열이 항상 순증가 ② 삽입 이동 횟수가 매번 정확히 n−pos, 삭제는 n−pos−1 ③ 하나씩 삽입으로 만든 비용 ≈ n²/4 vs 정렬+unique 의 비교 횟수 ≈ n log n (n = 20000, 10 배 이상 차이) ④ 순위·select·구간 개수·바닥·천장이 무차별 계산과 일치 ⑤ 두 배열 집합의 합·교·차가 병합으로 std 결과와 일치 ⑥ 빈 집합·원소 1 개.
+class ArraySet { std::vector<int> a_; public: long moves = 0, cmps = 0;
+    bool contains(int x) { std::size_t lo = 0, hi = a_.size(); while (lo < hi) { std::size_t mid = lo + (hi - lo) / 2; cmps++; if (a_[mid] < x) lo = mid + 1; else hi = mid; } return lo < a_.size() && a_[lo] == x; }
+    std::size_t lowerBound(int x) const { return (std::size_t)(std::lower_bound(a_.begin(), a_.end(), x) - a_.begin()); }
+    bool add(int x) { std::size_t pos = lowerBound(x); if (pos < a_.size() && a_[pos] == x) return false; a_.push_back(0); for (std::size_t i = a_.size() - 1; i > pos; i--) { a_[i] = a_[i - 1]; moves++; } a_[pos] = x; return true; }
+    bool remove(int x) { std::size_t pos = lowerBound(x); if (pos >= a_.size() || a_[pos] != x) return false; for (std::size_t i = pos; i + 1 < a_.size(); i++) { a_[i] = a_[i + 1]; moves++; } a_.pop_back(); return true; }
+    static ArraySet fromUnsorted(std::vector<int> v) { std::sort(v.begin(), v.end()); v.erase(std::unique(v.begin(), v.end()), v.end()); ArraySet s; s.a_ = std::move(v); return s; }
+    std::size_t size() const { return a_.size(); } const std::vector<int>& items() const { return a_; }
+    std::size_t rank(int x) const { return lowerBound(x); } int select(std::size_t k) const { return a_[k]; }
+    std::size_t countRange(int lo, int hi) const { return (std::size_t)(std::upper_bound(a_.begin(), a_.end(), hi) - std::lower_bound(a_.begin(), a_.end(), lo)); }
+    bool floorOf(int x, int& out) const { auto it = std::upper_bound(a_.begin(), a_.end(), x); if (it == a_.begin()) return false; out = *std::prev(it); return true; }
+    bool ceilOf(int x, int& out) const { auto it = std::lower_bound(a_.begin(), a_.end(), x); if (it == a_.end()) return false; out = *it; return true; }
+    static ArraySet unite(const ArraySet& p, const ArraySet& q) { ArraySet r; std::set_union(p.a_.begin(), p.a_.end(), q.a_.begin(), q.a_.end(), std::back_inserter(r.a_)); return r; }
+    static ArraySet intersect(const ArraySet& p, const ArraySet& q) { ArraySet r; std::set_intersection(p.a_.begin(), p.a_.end(), q.a_.begin(), q.a_.end(), std::back_inserter(r.a_)); return r; }
+    static ArraySet minus(const ArraySet& p, const ArraySet& q) { ArraySet r; std::set_difference(p.a_.begin(), p.a_.end(), q.a_.begin(), q.a_.end(), std::back_inserter(r.a_)); return r; } };
 int main() {
-    std::vector<int> s;
-    int val = 10;
-    if (std::find(s.begin(), s.end(), val) == s.end()) s.push_back(val);
-    assert(s.size() == 1);
-    std::cout << "ArraySet insert verified." << std::endl;
-    return 0;
+    std::mt19937 rng(30); { ArraySet s; std::set<int> ref; for (int step = 0; step < 30000; step++) { int x = (int)(rng() % 600), op = (int)(rng() % 3); long before = s.moves;                                                          // ① ②
+          if (op == 0) { std::size_t n = s.size(), pos = s.lowerBound(x); bool added = s.add(x); assert(added == ref.insert(x).second); if (added) assert(s.moves - before == (long)(n - pos)); else assert(s.moves == before); }
+          else if (op == 1) { std::size_t n = s.size(), pos = s.lowerBound(x); bool removed = s.remove(x); assert(removed == (ref.erase(x) > 0)); if (removed) assert(s.moves - before == (long)(n - pos - 1)); }
+          else assert(s.contains(x) == (ref.count(x) > 0)); assert(s.size() == ref.size()); if (step % 997 == 0) { const auto& v = s.items(); assert(std::is_sorted(v.begin(), v.end()) && std::adjacent_find(v.begin(), v.end()) == v.end() && std::equal(v.begin(), v.end(), ref.begin(), ref.end())); } } }
+    { const int n = 20000; std::vector<int> keys(n); for (int& k : keys) k = (int)(rng() % 1000000); ArraySet inc; for (int k : keys) inc.add(k); ArraySet bulk = ArraySet::fromUnsorted(keys); assert(inc.items() == bulk.items());                                         // ③
+      double nlogn = n * std::log2((double)n); assert((double)inc.moves > 0.15 * (double)n * n && (double)inc.moves > 10 * nlogn); }
+    for (int rep = 0; rep < 200; rep++) { std::set<int> ref; for (int i = 0, k = (int)(rng() % 100); i < k; i++) ref.insert((int)(rng() % 500)); ArraySet s = ArraySet::fromUnsorted(std::vector<int>(ref.begin(), ref.end())); std::vector<int> sorted(ref.begin(), ref.end());   // ④
+        for (std::size_t k = 0; k < sorted.size(); k++) { assert(s.select(k) == sorted[k] && s.rank(sorted[k]) == k); } for (int q = -3; q < 505; q += 3) { std::size_t brute = 0; for (int x : sorted) brute += x < q; assert(s.rank(q) == brute);
+            int lo = q, hi = q + (int)(rng() % 100); std::size_t cr = 0; for (int x : sorted) cr += (x >= lo && x <= hi); assert(s.countRange(lo, hi) == cr);
+            int fl = INT_MIN, ce = INT_MAX; for (int x : sorted) { if (x <= q) fl = x; if (x >= q && ce == INT_MAX) ce = x; } int got; assert(s.floorOf(q, got) == (fl != INT_MIN) && (fl == INT_MIN || got == fl)); assert(s.ceilOf(q, got) == (ce != INT_MAX) && (ce == INT_MAX || got == ce)); } }
+    for (int rep = 0; rep < 200; rep++) { std::set<int> ra, rb; for (int i = 0, k = (int)(rng() % 60); i < k; i++) { ra.insert((int)(rng() % 100)); rb.insert((int)(rng() % 100)); } ArraySet a = ArraySet::fromUnsorted(std::vector<int>(ra.begin(), ra.end())), b = ArraySet::fromUnsorted(std::vector<int>(rb.begin(), rb.end()));   // ⑤
+        std::vector<int> u, in, d; std::set_union(ra.begin(), ra.end(), rb.begin(), rb.end(), std::back_inserter(u)); std::set_intersection(ra.begin(), ra.end(), rb.begin(), rb.end(), std::back_inserter(in)); std::set_difference(ra.begin(), ra.end(), rb.begin(), rb.end(), std::back_inserter(d));
+        assert(ArraySet::unite(a, b).items() == u && ArraySet::intersect(a, b).items() == in && ArraySet::minus(a, b).items() == d); }
+    { ArraySet e; int out; assert(e.size() == 0 && !e.contains(1) && !e.remove(1) && !e.floorOf(5, out) && !e.ceilOf(5, out) && e.countRange(0, 100) == 0 && e.rank(7) == 0); e.add(5); assert(e.size() == 1 && e.contains(5) && e.select(0) == 5 && e.floorOf(5, out) && out == 5 && e.ceilOf(6, out) == false); }   // ⑥
+    std::cout << "ArraySet: 30000 random operations matched std::set with the array always strictly increasing, an insertion moved exactly n-pos elements and a removal n-pos-1, one-by-one construction of 20000 keys needed over 10x the work of sort-and-unique, and rank, select, range count, floor, ceil and merge-based set algebra matched brute force" << std::endl; return 0;
 }
-// Time Complexity: O(N) for insert
+// Time Complexity: 조회 O(log N), 삽입·삭제 O(N), 순위·select O(log N)/O(1), 집합 연산 O(N + M)
+// Space Complexity: O(N) 연속
 ```
 ## LinkedSet()
 ### 대표코드
@@ -532,85 +1485,231 @@ int main() {
 ## HashSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <unordered_set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cmath>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
+// 해시 집합(HashSet): 키를 해시 함수로 버킷 번호에 대응시켜 저장한다. 이 장의 구현은 분리 연쇄법(separate chaining): 버킷마다 연결 리스트(체인)를 두고 같은 버킷에 걸린 키를 거기에 단다. 부하율 α = n/버킷 수 가 1 을 넘으면 버킷 수를 두 배로 늘려 다시 배치한다(rehash). 무작위 해시 아래에서 성공 조회의 기대 탐사 1 + α/2, 실패 조회 α(+ 버킷 접근 1) — 선형 탐사(열린 주소법)와 달리 α 가 1 을 넘어도 완만하게 나빠지고 삭제가 단순(체인에서 노드 제거)하다. 노드를 새로 만들어 연결하므로 재배치는 노드를 다시 잇기만 하고 원소의 주소가 바뀌지 않는다 — 열린 주소법과 달리 원소에 대한 포인터·참조가 재배치 후에도 유효하다.
+// 해시 함수가 나쁘면(모든 키가 같은 버킷) 체인이 길이 n 이 되어 모든 연산이 O(n) 이다 — 외부 입력을 키로 쓰는 서버에서는 공격자가 충돌하는 키만 보내는 해시 플러딩(hash flooding)이 가능한 이유다. 빈 버킷의 비율은 α = 1 에서 e⁻¹ ≈ 0.368 이다.
+// 검증: ① 무작위 add/remove/contains 20000 번이 std::unordered_set 과 일치하고 크기·부하율 ≤ 1 유지 ② 재배치 후에도 원소의 주소가 그대로(참조 안정) ③ 부하율 1 일 때 빈 버킷 비율 ≈ 0.368(±0.03), 성공 조회 평균 탐사 ≈ 1.5(±10%), 실패 ≈ 1.0 ④ 나쁜 해시(모든 키가 같은 버킷)에서는 체인 길이가 n 이고 조회 탐사가 n/2 로 폭발, 좋은 해시에서는 최대 체인이 작음 ⑤ 삭제가 체인 중간·머리·꼬리에서 모두 올바름 ⑥ 모두 지운 뒤 빈 집합.
+template <bool Good> class ChainSet {
+    struct Node { int key; Node* next; }; std::vector<Node*> b_; std::size_t size_ = 0;
+    std::size_t home(int x) const { if (!Good) return 0; return (std::size_t)(((unsigned long long)(unsigned)x * 0x9E3779B97F4A7C15ull) >> (64 - __builtin_ctzll((unsigned long long)b_.size()))); }
+    void rehash() { std::vector<Node*> nb(b_.size() * 2, nullptr); std::swap(nb, b_); for (Node* head : nb) while (head) { Node* nx = head->next; std::size_t h = home(head->key); head->next = b_[h]; b_[h] = head; head = nx; } rehashes++; }   // 노드를 다시 잇기만 한다
+public:
+    long rehashes = 0, probes = 0; ChainSet() : b_(8, nullptr) {} ChainSet(const ChainSet&) = delete; ChainSet& operator=(const ChainSet&) = delete; ~ChainSet() { for (Node* h : b_) while (h) { Node* nx = h->next; delete h; h = nx; } }
+    std::size_t size() const { return size_; } std::size_t buckets() const { return b_.size(); } double load() const { return (double)size_ / (double)b_.size(); }
+    const int* find(int x) const { for (Node* n = b_[home(x)]; n; n = n->next) { const_cast<ChainSet*>(this)->probes++; if (n->key == x) return &n->key; } return nullptr; }
+    bool contains(int x) const { return find(x) != nullptr; }
+    bool add(int x) { if (find(x)) return false; if (size_ + 1 > b_.size()) rehash(); std::size_t h = home(x); b_[h] = new Node{x, b_[h]}; size_++; return true; }
+    bool remove(int x) { Node** link = &b_[home(x)]; while (*link && (*link)->key != x) link = &(*link)->next; if (!*link) return false; Node* dead = *link; *link = dead->next; delete dead; size_--; return true; }
+    std::size_t longestChain() const { std::size_t m = 0; for (Node* h : b_) { std::size_t c = 0; for (Node* n = h; n; n = n->next) c++; m = std::max(m, c); } return m; }
+    std::size_t emptyBuckets() const { std::size_t c = 0; for (Node* h : b_) c += h == nullptr; return c; } };
 int main() {
-    std::unordered_set<int> s;
-    s.insert(1);
-    assert(s.count(1));
-    std::cout << "HashSet verified." << std::endl;
-    return 0;
+    std::mt19937 rng(31); { ChainSet<true> s; std::unordered_set<int> ref; for (int step = 0; step < 20000; step++) { int x = (int)(rng() % 2500), op = (int)(rng() % 3); if (op == 0) assert(s.add(x) == ref.insert(x).second); else if (op == 1) assert(s.remove(x) == (ref.erase(x) > 0)); else assert(s.contains(x) == (ref.count(x) > 0));   // ①
+          assert(s.size() == ref.size() && s.load() <= 1.0); } for (int x = 0; x < 2500; x++) assert(s.contains(x) == (ref.count(x) > 0)); }
+    { ChainSet<true> s; s.add(42); const int* addr = s.find(42); for (int i = 0; i < 5000; i++) s.add(1000 + i); assert(s.rehashes >= 9 && s.find(42) == addr && *addr == 42); }                                                                         // ② 재배치 후에도 주소 유지
+    { ChainSet<true> s; std::mt19937 r2(5); std::vector<int> keys; while (keys.size() < 1 << 15) { int k = (int)r2(); if (s.add(k)) keys.push_back(k); } assert(s.load() <= 1.0 && s.load() > 0.45);                                                                // ③ 부하율 ~ 0.5~1
+      ChainSet<true> t; std::unordered_set<int> seen; while (t.size() < (1u << 16) - 1) { int k = (int)r2(); if (t.add(k)) seen.insert(k); } double alpha = t.load(); assert(alpha > 0.99 && alpha <= 1.0);
+      double empty = (double)t.emptyBuckets() / (double)t.buckets(); assert(std::abs(empty - std::exp(-alpha)) < 0.03);                                                                                                                            // 빈 버킷 ≈ e^-α
+      long before = t.probes; for (int k : seen) t.contains(k); double hit = (double)(t.probes - before) / (double)seen.size(); assert(std::abs(hit - (1 + alpha / 2)) / (1 + alpha / 2) < 0.10);
+      before = t.probes; int misses = 0; for (int i = 0; i < 200000; i++) { int k = (int)r2(); if (seen.count(k)) continue; t.contains(k); misses++; } double miss = (double)(t.probes - before) / misses; assert(std::abs(miss - alpha) / alpha < 0.10); }
+    { ChainSet<false> bad; ChainSet<true> good; for (int i = 0; i < 2000; i++) { bad.add(i * 31); good.add(i * 31); } assert(bad.longestChain() == 2000 && good.longestChain() <= 12);                                                // ④ 나쁜 해시
+      long b0 = bad.probes, g0 = good.probes; for (int i = 0; i < 2000; i++) { bad.contains(i * 31); good.contains(i * 31); } assert((double)(bad.probes - b0) / 2000 > 900 && (double)(good.probes - g0) / 2000 < 3.0); }
+    { ChainSet<false> c; for (int x : {1, 2, 3, 4, 5, 6}) c.add(x); assert(c.remove(6) && c.remove(3) && c.remove(1) && !c.remove(3) && c.size() == 3 && c.contains(2) && c.contains(4) && c.contains(5) && !c.contains(1) && !c.contains(3) && !c.contains(6)); }   // ⑤ 머리·중간·꼬리
+    { ChainSet<true> s; for (int i = 0; i < 1000; i++) s.add(i); for (int i = 0; i < 1000; i++) assert(s.remove(i)); assert(s.size() == 0 && !s.contains(0) && s.longestChain() == 0); s.add(5); assert(s.contains(5)); }   // ⑥
+    std::cout << "HashSet: a separate-chaining set matched std::unordered_set over 20000 random operations, kept element addresses stable across rehashing, showed the textbook statistics at load factor 1 (empty buckets close to e^-1, about 1+a/2 probes for a hit and a for a miss), and degraded to chains of length n under a constant hash while the multiplicative hash kept the longest chain tiny" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 기대 O(1) (부하율 ≤ 1), 최악 O(N)
+// Space Complexity: O(N + 버킷 수)
 ```
 ## TreeSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cmath>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 
+// 트리 집합(TreeSet): 균형 이진 탐색 트리에 키를 보관한다. 조회·삽입·삭제가 모두 최악 O(log n) 이고, 해시 집합이 못 하는 순서 질의 — 정렬된 순회, 최솟값/최댓값, 순위(rank), k 번째 원소(select), lower_bound, 구간 질의 — 를 O(log n) 에 한다. 이 코드는 AVL 트리(높이 균형: 모든 노드의 왼쪽·오른쪽 높이 차 ≤ 1)에 부분 트리 크기를 더한 것이다(Tree.md Part 6 의 AVL 이 정본). 삽입은 갱신 후 되짚어 오르며 균형이 깨진 곳을 회전으로 고친다.
+// 성질: n 개 키의 AVL 트리 높이는 1.4405·log₂(n+2) − 0.3277 이하, 삽입은 재구성(단일 또는 이중 회전)이 많아야 한 번이지만 삭제는 경로를 따라 여러 번 필요할 수 있다. 정렬된 키를 차례로 넣어도 균형이 유지된다(균형 없는 이진 탐색 트리는 길이 n 의 사슬이 된다). 부분 트리 크기를 유지하면 순위와 select 도 O(log n) 이다.
+// 검증: ① 무작위 add/remove/contains 4 만 번이 std::set 과 일치하고 주기적으로 불변식(이진 탐색 순서, 높이·크기 필드, 균형 계수 |bf| ≤ 1) 성립 ② 정렬/역순/무작위 입력과 삭제 뒤에도 높이 ≤ 1.4405·log₂(n+2) 이고 삽입당 재구성 ≤ 1 ③ 중위 순회가 정렬 ④ rank·select·lower_bound·최솟값/최댓값이 정렬 배열 계산과 일치 ⑤ 노드 누수 없음(생성 − 소멸 = 크기) ⑥ 빈 트리·원소 1 개.
+class TreeSet {
+    struct Node { int key; Node *l, *r; int h, sz; }; Node* root_ = nullptr; static int live;
+    static int H(const Node* n) { return n ? n->h : 0; } static int S(const Node* n) { return n ? n->sz : 0; }
+    static void upd(Node* n) { n->h = 1 + std::max(H(n->l), H(n->r)); n->sz = 1 + S(n->l) + S(n->r); }
+    Node* rotR(Node* y) { Node* x = y->l; y->l = x->r; x->r = y; upd(y); upd(x); return x; } Node* rotL(Node* x) { Node* y = x->r; x->r = y->l; y->l = x; upd(x); upd(y); return y; }
+    Node* fix(Node* n) { upd(n); int bf = H(n->l) - H(n->r); if (bf > 1) { if (H(n->l->l) < H(n->l->r)) n->l = rotL(n->l); restructures++; return rotR(n); } if (bf < -1) { if (H(n->r->r) < H(n->r->l)) n->r = rotR(n->r); restructures++; return rotL(n); } return n; }
+    Node* ins(Node* n, int k, bool& added) { if (!n) { added = true; live++; return new Node{k, nullptr, nullptr, 1, 1}; } if (k < n->key) n->l = ins(n->l, k, added); else if (n->key < k) n->r = ins(n->r, k, added); else return n; return fix(n); }
+    Node* del(Node* n, int k, bool& removed) { if (!n) return nullptr; if (k < n->key) n->l = del(n->l, k, removed); else if (n->key < k) n->r = del(n->r, k, removed);
+        else { removed = true; if (!n->l || !n->r) { Node* c = n->l ? n->l : n->r; delete n; live--; return c; } Node* m = n->r; while (m->l) m = m->l; n->key = m->key; bool d; n->r = del(n->r, m->key, d); } return fix(n); }
+    static void destroy(Node* n) { if (!n) return; destroy(n->l); destroy(n->r); delete n; live--; }
+    bool checkNode(const Node* n, long long lo, long long hi) const { if (!n) return true; if (n->key <= lo || n->key >= hi) return false; if (n->h != 1 + std::max(H(n->l), H(n->r)) || n->sz != 1 + S(n->l) + S(n->r) || std::abs(H(n->l) - H(n->r)) > 1) return false; return checkNode(n->l, lo, n->key) && checkNode(n->r, n->key, hi); }
+public:
+    long restructures = 0; TreeSet() = default; TreeSet(const TreeSet&) = delete; TreeSet& operator=(const TreeSet&) = delete; ~TreeSet() { destroy(root_); } static int liveNodes() { return live; }
+    bool add(int k) { bool a = false; root_ = ins(root_, k, a); return a; } bool remove(int k) { bool r = false; root_ = del(root_, k, r); return r; }
+    bool contains(int k) const { const Node* n = root_; while (n) { if (k < n->key) n = n->l; else if (n->key < k) n = n->r; else return true; } return false; }
+    int size() const { return S(root_); } int height() const { return H(root_); } bool check() const { return checkNode(root_, LLONG_MIN, LLONG_MAX); }
+    std::vector<int> inorder() const { std::vector<int> r; std::vector<const Node*> st; const Node* n = root_; while (n || !st.empty()) { while (n) { st.push_back(n); n = n->l; } n = st.back(); st.pop_back(); r.push_back(n->key); n = n->r; } return r; }
+    int rank(int k) const { int c = 0; const Node* n = root_; while (n) { if (k <= n->key) n = n->l; else { c += S(n->l) + 1; n = n->r; } } return c; }
+    int select(int i) const { const Node* n = root_; while (n) { int ls = S(n->l); if (i < ls) n = n->l; else if (i == ls) return n->key; else { i -= ls + 1; n = n->r; } } return INT_MIN; }
+    bool lowerBound(int k, int& out) const { const Node* n = root_; bool found = false; while (n) { if (n->key >= k) { out = n->key; found = true; n = n->l; } else n = n->r; } return found; } };
+int TreeSet::live = 0;
 int main() {
-    std::set<int> s; // Ordered set (Tree)
-    s.insert(2); s.insert(1);
-    assert(*s.begin() == 1);
-    std::cout << "TreeSet verified." << std::endl;
-    return 0;
+    std::mt19937 rng(32); { TreeSet s; std::set<int> ref; for (int step = 0; step < 40000; step++) { int x = (int)(rng() % 3000), op = (int)(rng() % 3); if (op == 0) assert(s.add(x) == ref.insert(x).second); else if (op == 1) assert(s.remove(x) == (ref.erase(x) > 0)); else assert(s.contains(x) == (ref.count(x) > 0));   // ①
+          assert(s.size() == (int)ref.size() && TreeSet::liveNodes() == s.size()); if (step % 1999 == 0) assert(s.check() && s.inorder() == std::vector<int>(ref.begin(), ref.end())); } assert(s.check()); }
+    assert(TreeSet::liveNodes() == 0);
+    for (int mode = 0; mode < 3; mode++) { TreeSet s; int n = 20000; std::vector<int> keys(n); for (int i = 0; i < n; i++) keys[i] = mode == 1 ? n - i : i; if (mode == 2) { std::shuffle(keys.begin(), keys.end(), rng); }                                                    // ② 정렬/역순/무작위
+        long maxPer = 0; for (int i = 0; i < n; i++) { long before = s.restructures; s.add(keys[i]); maxPer = std::max(maxPer, s.restructures - before); if (i % 4096 == 0 || i == n - 1) assert(s.height() <= 1.4405 * std::log2((double)(s.size() + 2)) - 0.3277 + 1e-9); }
+        assert(maxPer <= 1 && s.check()); for (int i = 0; i < n; i += 2) s.remove(keys[i]); assert(s.check() && s.height() <= 1.4405 * std::log2((double)(s.size() + 2)) - 0.3277 + 1e-9); }
+    { TreeSet s; std::set<int> ref; for (int i = 0, k = 3000; i < k; i++) { int x = (int)(rng() % 100000); s.add(x); ref.insert(x); } std::vector<int> sorted(ref.begin(), ref.end()); assert(s.inorder() == sorted);                                             // ③ ④
+      for (int i = 0; i < (int)sorted.size(); i++) assert(s.select(i) == sorted[i] && s.rank(sorted[i]) == i); for (int q = -5; q < 100005; q += 37) { int got = 0; auto it = ref.lower_bound(q); assert(s.lowerBound(q, got) == (it != ref.end()) && (it == ref.end() || got == *it)); assert(s.rank(q) == (int)std::distance(ref.begin(), it)); }
+      assert(s.select(0) == *ref.begin() && s.select(s.size() - 1) == *ref.rbegin()); }
+    assert(TreeSet::liveNodes() == 0);
+    { TreeSet e; int out; assert(e.size() == 0 && e.height() == 0 && !e.contains(1) && !e.remove(1) && e.inorder().empty() && !e.lowerBound(0, out) && e.rank(5) == 0 && e.check()); e.add(7); assert(e.size() == 1 && e.height() == 1 && e.select(0) == 7 && e.lowerBound(7, out) && out == 7 && !e.lowerBound(8, out)); }   // ⑥
+    assert(TreeSet::liveNodes() == 0); std::cout << "TreeSet: an AVL tree with subtree sizes matched std::set over 40000 random operations with all invariants checked, kept its height within 1.4405*log2(n+2) for sorted, reversed and random insertion orders (at most one restructuring per insertion), produced sorted in-order traversals, answered rank, select and lower_bound in O(log n) in agreement with sorted arrays, and leaked no nodes" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회·삽입·삭제·순위·select 모두 O(log N)
+// Space Complexity: O(N)
 ```
 ## BitSet()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <bitset>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
 
+// 비트 집합(BitSet): 우주가 {0, …, n−1} 로 작게 고정되어 있으면 원소 i 의 소속을 비트 하나로 표현한다. 64 비트 워드 ⌈n/64⌉ 개면 충분해 원소당 1 비트의 메모리, 원소 접근은 워드 번호 i>>6 과 비트 위치 i&63 의 두 연산. 집합 연산이 워드 단위 비트 연산 한 번으로 64 개 원소를 동시에 처리해서 합·교·차·대칭차가 O(n/64) 로 매우 빠르다. 원소 수는 popcount 로 센다.
+// 마지막 워드의 남는 비트(n 이상의 위치)는 항상 0 으로 유지해야 한다 — NOT 이나 왼쪽 이동이 이 비트를 1 로 만들면 개수·상등·순회가 틀린다. 순회는 워드마다 `ctz`(끝의 0 개수)로 가장 낮은 켜진 비트를 찾고 `x &= x − 1` 로 지우며 켜진 비트만 방문한다(밀집하지 않아도 O(n/64 + 원소 수)). 이동(shift)은 워드 단위로 옮기고 비트 단위 나머지를 이웃 워드와 이어 붙인다.
+// 검증: ① 무작위 set/reset/flip/test 열이 std::bitset<200> 과 같고 count/any/none/all 일치 ② 여러 우주 크기(1..300)에서 벡터<bool> 모델과 비교하고 남는 비트가 항상 0 ③ 합·교·차·대칭차·여집합·부분집합·교차 판정이 모델과 같음 ④ findFirst/findNext 순회가 정확히 켜진 비트를 오름차순으로 나열 ⑤ 왼쪽·오른쪽 이동이 모든 k(0..n+1)에서 모델과 같음 ⑥ 메모리 워드 수 = ⌈n/64⌉.
+class BitSet { std::size_t n_; std::vector<uint64_t> w_;
+    void trim() { if (n_ % 64) w_.back() &= (1ull << (n_ % 64)) - 1; }
+public:
+    explicit BitSet(std::size_t n) : n_(n), w_((n + 63) / 64, 0) {} std::size_t size() const { return n_; } std::size_t words() const { return w_.size(); }
+    void set(std::size_t i) { w_[i >> 6] |= 1ull << (i & 63); } void reset(std::size_t i) { w_[i >> 6] &= ~(1ull << (i & 63)); } void flip(std::size_t i) { w_[i >> 6] ^= 1ull << (i & 63); } bool test(std::size_t i) const { return w_[i >> 6] >> (i & 63) & 1; }
+    void setAll() { for (auto& x : w_) x = ~0ull; trim(); } void clear() { for (auto& x : w_) x = 0; }
+    std::size_t count() const { std::size_t c = 0; for (uint64_t x : w_) c += (std::size_t)__builtin_popcountll(x); return c; }
+    bool any() const { for (uint64_t x : w_) if (x) return true; return false; } bool none() const { return !any(); } bool all() const { return count() == n_; }
+    BitSet& operator|=(const BitSet& o) { for (std::size_t i = 0; i < w_.size(); i++) w_[i] |= o.w_[i]; return *this; } BitSet& operator&=(const BitSet& o) { for (std::size_t i = 0; i < w_.size(); i++) w_[i] &= o.w_[i]; return *this; }
+    BitSet& operator^=(const BitSet& o) { for (std::size_t i = 0; i < w_.size(); i++) w_[i] ^= o.w_[i]; return *this; } BitSet& andNot(const BitSet& o) { for (std::size_t i = 0; i < w_.size(); i++) w_[i] &= ~o.w_[i]; return *this; }
+    BitSet operator~() const { BitSet r(n_); for (std::size_t i = 0; i < w_.size(); i++) r.w_[i] = ~w_[i]; r.trim(); return r; }
+    bool subsetOf(const BitSet& o) const { for (std::size_t i = 0; i < w_.size(); i++) if (w_[i] & ~o.w_[i]) return false; return true; } bool intersects(const BitSet& o) const { for (std::size_t i = 0; i < w_.size(); i++) if (w_[i] & o.w_[i]) return true; return false; }
+    bool operator==(const BitSet& o) const { return n_ == o.n_ && w_ == o.w_; }
+    long findNext(long after) const { std::size_t i = (std::size_t)(after + 1); if (i >= n_) return -1; std::size_t wi = i >> 6; uint64_t x = w_[wi] & (~0ull << (i & 63)); for (;;) { if (x) return (long)(wi * 64 + (std::size_t)__builtin_ctzll(x)); if (++wi >= w_.size()) return -1; x = w_[wi]; } }
+    long findFirst() const { return findNext(-1); }
+    BitSet shiftLeft(std::size_t k) const { BitSet r(n_); if (k >= n_) return r; std::size_t ws = k >> 6, bs = k & 63; for (std::size_t i = w_.size(); i-- > ws;) { uint64_t v = w_[i - ws] << bs; if (bs && i - ws > 0) v |= w_[i - ws - 1] >> (64 - bs); r.w_[i] = v; } r.trim(); return r; }          // 낮은 인덱스 → 높은 인덱스
+    BitSet shiftRight(std::size_t k) const { BitSet r(n_); if (k >= n_) return r; std::size_t ws = k >> 6, bs = k & 63; for (std::size_t i = 0; i + ws < w_.size(); i++) { uint64_t v = w_[i + ws] >> bs; if (bs && i + ws + 1 < w_.size()) v |= w_[i + ws + 1] << (64 - bs); r.w_[i] = v; } return r; }
+    bool tailClean() const { return n_ % 64 == 0 || (w_.back() >> (n_ % 64)) == 0; } };
+BitSet fromModel(const std::vector<bool>& m) { BitSet b(m.size()); for (std::size_t i = 0; i < m.size(); i++) if (m[i]) b.set(i); return b; }
+bool same(const BitSet& b, const std::vector<bool>& m) { if (b.size() != m.size()) return false; for (std::size_t i = 0; i < m.size(); i++) if (b.test(i) != m[i]) return false; return b.tailClean(); }
 int main() {
-    std::bitset<100> bs;
-    bs.set(10);
-    assert(bs.test(10));
-    std::cout << "BitSet verified." << std::endl;
-    return 0;
+    std::mt19937 rng(33); { BitSet b(200); std::bitset<200> ref; for (int step = 0; step < 30000; step++) { std::size_t i = rng() % 200; int op = (int)(rng() % 4); if (op == 0) { b.set(i); ref.set(i); } else if (op == 1) { b.reset(i); ref.reset(i); } else if (op == 2) { b.flip(i); ref.flip(i); } else assert(b.test(i) == ref.test(i));   // ①
+          assert(b.count() == ref.count() && b.any() == ref.any() && b.none() == ref.none() && b.all() == ref.all() && b.tailClean()); } b.setAll(); ref.set(); assert(b.all() && ref.all() && b.count() == 200); b.clear(); assert(b.none()); }
+    for (int n : {1, 2, 63, 64, 65, 127, 128, 129, 200, 300}) { assert(BitSet(n).words() == (std::size_t)((n + 63) / 64));                                                                                                                       // ⑥
+        for (int rep = 0; rep < 40; rep++) { std::vector<bool> ma(n), mb(n); for (int i = 0; i < n; i++) { ma[i] = rng() % 3 == 0; mb[i] = rng() % 2; } BitSet a = fromModel(ma), b = fromModel(mb); assert(same(a, ma) && same(b, mb));                         // ②
+            BitSet u = a, in = a, d = a, x = a; u |= b; in &= b; d.andNot(b); x ^= b; std::vector<bool> mu(n), mi(n), md(n), mx(n), mc(n); bool sub = true, inter = false; for (int i = 0; i < n; i++) { mu[i] = ma[i] || mb[i]; mi[i] = ma[i] && mb[i]; md[i] = ma[i] && !mb[i]; mx[i] = ma[i] != mb[i]; mc[i] = !ma[i]; if (ma[i] && !mb[i]) sub = false; if (ma[i] && mb[i]) inter = true; }
+            assert(same(u, mu) && same(in, mi) && same(d, md) && same(x, mx) && same(~a, mc) && a.subsetOf(b) == sub && a.intersects(b) == inter && (a == b) == (ma == mb));                                                                  // ③
+            std::vector<long> seen; for (long i = a.findFirst(); i >= 0; i = a.findNext(i)) seen.push_back(i); std::vector<long> want; for (int i = 0; i < n; i++) if (ma[i]) want.push_back(i); assert(seen == want && seen.size() == a.count());   // ④
+            for (int k : {0, 1, 5, 63, 64, 65, n - 1, n, n + 1}) { if (k < 0) continue; std::vector<bool> ml(n, false), mr(n, false); for (int i = 0; i < n; i++) { if (i >= k && ma[i - k]) ml[i] = true; if (i + k < n && ma[i + k]) mr[i] = true; }   // ⑤ 이동
+                assert(same(a.shiftLeft((std::size_t)k), ml) && same(a.shiftRight((std::size_t)k), mr)); } } }
+    std::cout << "BitSet: a word-array bit set matched std::bitset<200> over 30000 random operations, matched a vector<bool> model for universes of 1..300 elements including set algebra, complement, subset/intersection tests, findFirst/findNext enumeration and left/right shifts by every interesting amount, and always kept the unused tail bits zero" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 원소 접근 O(1), 집합 연산·count O(N/64), 순회 O(N/64 + 원소 수)
+// Space Complexity: N/8 바이트
 ```
 ## ImmutableSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
 
+// 불변 집합(ImmutableSet): 한 번 만들면 바뀌지 않는 집합이다. 추가·삭제는 원본을 고치는 대신 새 집합(새 버전)을 돌려주고 원본은 그대로 남는다 — 그러면 여러 스레드가 락 없이 안전하게 읽고, 이전 버전으로 되돌리기(undo)가 공짜이며, 함수가 부작용 없이 집합을 주고받을 수 있다. 매번 전체를 복사하면 O(n) 이지만, 영속 자료구조는 바뀐 경로의 노드만 새로 만들고 나머지는 이전 버전과 공유(structural sharing)해서 갱신당 O(log n) 노드만 할당한다.
+// 이 코드는 영속 트립(treap)이다: 이진 탐색 트리이면서 우선순위에 대해 힙. 우선순위를 키의 해시(결정적)로 정하면 같은 키 집합은 삽입 순서와 무관하게 항상 같은 모양의 트리가 된다(정규 형태) — 두 집합의 동등성이 구조 비교로 환원되고 해시 컨싱(hash-consing)이 가능하다. 삽입은 분할(split)과 병합(merge)으로, 삭제는 왼쪽·오른쪽 부분 트리를 병합해 구현하고, 모든 노드는 const 로 만들어 공유가 안전하다.
+// 검증: ① 무작위 삽입·삭제 열의 모든 버전이 std::set 스냅샷과 같고, 갱신 후에도 이전 버전 전부가 변하지 않음(영속성) ② 갱신당 새로 할당한 노드 수가 O(log n) (평균 ≤ 4·log₂ n + 10) ③ 이미 있는 원소 삽입·없는 원소 삭제는 새 노드 0 개이고 같은 버전을 돌려줌 ④ 같은 키 집합을 다른 순서·삽입과 삭제를 섞은 이력으로 만들어도 트리 모양이 완전히 같음(정규 형태) ⑤ 크기 필드·힙 순서·이진 탐색 순서 불변식 ⑥ 생존 노드 수 관리(버전을 놓으면 해제)와 공유 확인.
+struct Node; typedef std::shared_ptr<const Node> P;
+struct Node { int key; unsigned long long pri; P l, r; int sz; static int live, created; Node(int k, unsigned long long p, P a, P b) : key(k), pri(p), l(std::move(a)), r(std::move(b)), sz(1 + (l ? l->sz : 0) + (r ? r->sz : 0)) { ++live; ++created; } ~Node() { --live; } };
+int Node::live = 0, Node::created = 0;
+unsigned long long prio(int k) { unsigned long long x = (unsigned long long)(unsigned)k + 0x9E3779B97F4A7C15ull; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; return x ^ (x >> 31); }
+P mk(int k, unsigned long long p, P l, P r) { return std::make_shared<const Node>(k, p, std::move(l), std::move(r)); }
+int size(const P& t) { return t ? t->sz : 0; }
+bool contains(const P& t, int k) { const Node* n = t.get(); while (n) { if (k < n->key) n = n->l.get(); else if (n->key < k) n = n->r.get(); else return true; } return false; }
+std::pair<P, P> split(const P& t, int k) { if (!t) return {nullptr, nullptr}; if (t->key < k) { auto s = split(t->r, k); return {mk(t->key, t->pri, t->l, s.first), s.second}; } auto s = split(t->l, k); return {s.first, mk(t->key, t->pri, s.second, t->r)}; }   // (< k, ≥ k)
+P merge(const P& a, const P& b) { if (!a) return b; if (!b) return a; if (a->pri > b->pri) return mk(a->key, a->pri, a->l, merge(a->r, b)); return mk(b->key, b->pri, merge(a, b->l), b->r); }
+P insert(const P& t, int k) { if (contains(t, k)) return t; auto s = split(t, k); return merge(merge(s.first, mk(k, prio(k), nullptr, nullptr)), s.second); }
+P erase(const P& t, int k) { if (!t) return t; if (k < t->key) { P nl = erase(t->l, k); return nl == t->l ? t : mk(t->key, t->pri, nl, t->r); } if (t->key < k) { P nr = erase(t->r, k); return nr == t->r ? t : mk(t->key, t->pri, t->l, nr); } return merge(t->l, t->r); }
+void inorder(const P& t, std::vector<int>& out) { if (!t) return; inorder(t->l, out); out.push_back(t->key); inorder(t->r, out); }
+bool sameShape(const P& a, const P& b) { if (!a || !b) return !a && !b; return a->key == b->key && sameShape(a->l, b->l) && sameShape(a->r, b->r); }
+bool valid(const P& t, long long lo, long long hi) { if (!t) return true; if (t->key <= lo || t->key >= hi || t->sz != 1 + size(t->l) + size(t->r)) return false; if ((t->l && t->l->pri > t->pri) || (t->r && t->r->pri > t->pri)) return false; return valid(t->l, lo, t->key) && valid(t->r, t->key, hi); }
 int main() {
-    const std::set<int> s = {1, 2, 3};
-    // s.insert(4); // Compiler error
-    assert(s.size() == 3);
-    std::cout << "ImmutableSet verified." << std::endl;
-    return 0;
+    std::mt19937 rng(34); std::vector<P> versions; std::vector<std::vector<int>> snapshots; P cur; std::set<int> ref; long newNodes = 0, updates = 0; double bound = 0;
+    for (int step = 0; step < 4000; step++) { int x = (int)(rng() % 1500); int created0 = Node::created; if (rng() % 3) cur = insert(cur, x), ref.insert(x); else cur = erase(cur, x), ref.erase(x);                                             // ① ②
+        if (ref.size() > 16) { newNodes += Node::created - created0; updates++; bound += 4 * std::log2((double)ref.size()) + 10; } if (step % 40 == 0) { versions.push_back(cur); snapshots.push_back(std::vector<int>(ref.begin(), ref.end())); }
+        assert(size(cur) == (int)ref.size()); if (step % 500 == 0) assert(valid(cur, -1, 1 << 30)); }
+    assert((double)newNodes <= bound);                                                                                                                                                                          // 갱신당 평균 새 노드 ≤ 4 log n + 10
+    for (std::size_t i = 0; i < versions.size(); i++) { std::vector<int> got; inorder(versions[i], got); assert(got == snapshots[i] && valid(versions[i], -1, 1 << 30)); }                                                    // 이전 버전은 변하지 않았다
+    { P t = insert(insert(insert(nullptr, 3), 1), 2); int c = Node::created; P same = insert(t, 2); assert(same == t && Node::created == c); P same2 = erase(t, 99); assert(same2 == t && Node::created == c); P gone = erase(t, 2); assert(gone != t && contains(t, 2) && !contains(gone, 2) && size(t) == 3 && size(gone) == 2); }   // ③
+    for (int rep = 0; rep < 100; rep++) { std::set<int> keys; for (int i = 0, k = (int)(rng() % 80); i < k; i++) keys.insert((int)(rng() % 1000)); std::vector<int> a(keys.begin(), keys.end()), b = a, c = a; std::shuffle(b.begin(), b.end(), rng);    // ④ 정규 형태
+        P t1, t2, t3; for (int x : a) t1 = insert(t1, x); for (int x : b) t2 = insert(t2, x); for (int x : c) t3 = insert(t3, x); std::vector<int> extra; for (int i = 0; i < 30; i++) { int e = 2000 + (int)(rng() % 500); extra.push_back(e); t3 = insert(t3, e); } for (int e : extra) t3 = erase(t3, e);
+        assert(sameShape(t1, t2) && sameShape(t1, t3) && valid(t1, -1, 1 << 30) && size(t1) == (int)a.size()); }
+    assert(Node::live > 0); versions.clear(); cur.reset(); assert(Node::live == 0);                                                                                                                              // ⑥ 모든 버전을 놓으면 해제
+    { P base; for (int i = 0; i < 1000; i++) base = insert(base, i * 2); int live0 = Node::live; P next = insert(base, 777); int retained = Node::live - live0; assert(retained <= 4 * 10 + 10 && retained < 1001 / 10 && size(next) == 1001 && size(base) == 1000 && contains(next, 777) && !contains(base, 777)); }   // 공유: 새 버전이 보유한 새 노드는 O(log n) 개뿐(split 의 임시 노드는 병합 뒤 해제)
+    std::cout << "ImmutableSet: a persistent treap with hash priorities kept every one of " << 4000 / 40 << " saved versions unchanged through 4000 random inserts and erases, allocated " << (double)newNodes / (double)updates << " nodes per update on average (O(log n)), returned the identical version for no-op updates, built identical tree shapes for the same key set from different histories, and released all nodes once the versions were dropped" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 조회·삽입·삭제 기대 O(log N)
+// Space Complexity: 갱신당 새 노드 O(log N), 나머지는 이전 버전과 공유
 ```
 
 # Part 6. 비트 집합
 ## SetBit()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <bitset>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
+// 비트 켜기(SetBit): 정수의 i 번째 비트를 1 로 만든다 — `x | (1 << i)`. 집합으로는 "원소 i 추가" 이다. 이미 켜져 있으면 변화가 없다(멱등). 함정이 많다. (1) 리터럴 `1` 은 int 라서 `1 << 31` 은 부호 있는 정수 오버플로(정의되지 않은 동작)이고 `1 << 32` 이상은 시프트 폭 초과(정의되지 않음)이다 — 64 비트 값에는 `1ULL << i` 를 쓰고 i < 64 임을 보장해야 한다. (2) 부호 있는 정수의 최상위 비트를 켜면 음수가 된다 — 비트 연산은 부호 없는 형으로 한다. (3) 비트 번호가 범위 밖이면 조용히 틀린다.
+// 여러 워드로 된 큰 비트열은 i 를 워드 번호 i/64 와 비트 번호 i%64 로 나눈다(`i >> 6`, `i & 63`). 연속한 비트 구간 [l, r) 을 한 번에 켜려면 마스크 `((1ULL << (r−l)) − 1) << l` 인데 r−l = 64 일 때 `1ULL << 64` 가 정의되지 않으므로 그 경우를 따로 처리해야 한다. 켜기 전후의 popcount 가 정확히 1 늘어나는 것은 그 비트가 꺼져 있었을 때뿐이다.
+// 검증: ① 모든 16 비트 값 × 모든 비트 위치(0..15) 전수에서 `x | (1<<i)` 가 산술 정의(x + (꺼져 있었으면 2^i))와 같음 ② 무작위 64 비트 값과 위치 0..63 에서 std::bitset 과 일치, 멱등 ③ popcount 변화 == (이전에 꺼져 있었으면 1) ④ 여러 워드 비트열의 set 이 모델(vector<bool>)과 일치 ⑤ 구간 켜기 마스크가 반복문과 같음(폭 64 포함) ⑥ 안전하지 않은 `1 << 31`·`1 << 32` 대신 `1ULL` 을 쓰면 최상위 비트(63)까지 정확.
+uint64_t setBit(uint64_t x, unsigned i) { assert(i < 64); return x | (1ull << i); }
+void setBitWide(std::vector<uint64_t>& w, std::size_t i) { w[i >> 6] |= 1ull << (i & 63); }
+uint64_t rangeMask(unsigned l, unsigned r) { assert(l <= r && r <= 64); unsigned len = r - l; if (len == 0) return 0; uint64_t m = len == 64 ? ~0ull : ((1ull << len) - 1); return m << l; }           // len == 64 이면 시프트 폭 64 를 피한다
 int main() {
-    int mask = 0;
-    mask |= (1 << 5);
-    assert(mask == 32);
-    std::cout << "SetBit verified." << std::endl;
-    return 0;
+    for (unsigned x = 0; x < 65536; x++) for (unsigned i = 0; i < 16; i++) { bool was = x >> i & 1; uint64_t got = setBit(x, i); assert(got == (uint64_t)x + (was ? 0u : (1u << i)));   // ① 산술 정의와 같음
+        assert(setBit(got, i) == got && (got >> i & 1)); }                                                                                                                                  // ② 멱등, 켜짐
+    std::mt19937_64 rng(35);
+    for (int rep = 0; rep < 20000; rep++) { uint64_t x = rng(); unsigned i = (unsigned)(rng() % 64); std::bitset<64> b(x); b.set(i); uint64_t got = setBit(x, i); assert(got == b.to_ullong() && setBit(got, i) == got);                  // ② 무작위 64 비트
+        assert(__builtin_popcountll(got) == __builtin_popcountll(x) + ((x >> i & 1) ? 0 : 1)); }                                                                                              // ③
+    { assert(setBit(0, 63) == 0x8000000000000000ull && setBit(0, 0) == 1 && setBit(~0ull, 17) == ~0ull);                                                                                // ⑥ 최상위 비트
+      uint64_t viaInt = 0; unsigned i = 31; uint64_t good = 1ull << i; viaInt = (uint64_t)(uint32_t)(1u << i); assert(good == viaInt && good == 0x80000000ull); }                                                              // 1 << 31 대신 1u 또는 1ULL
+    for (int rep = 0; rep < 200; rep++) { std::size_t n = 1 + rng() % 500; std::vector<uint64_t> w((n + 63) / 64, 0); std::vector<bool> model(n, false); for (int s = 0; s < 300; s++) { std::size_t i = rng() % n; setBitWide(w, i); model[i] = true; }   // ④ 여러 워드
+        for (std::size_t i = 0; i < n; i++) assert(((w[i >> 6] >> (i & 63)) & 1) == (model[i] ? 1u : 0u)); }
+    for (unsigned l = 0; l <= 64; l++) for (unsigned r = l; r <= 64; r++) { uint64_t loop = 0; for (unsigned i = l; i < r; i++) loop = setBit(loop, i); assert(rangeMask(l, r) == loop); }                                            // ⑤ 구간 켜기 (폭 64 포함)
+    std::cout << "SetBit: x | (1<<i) agreed with the arithmetic definition for all 16-bit values and positions, matched std::bitset on 20000 random 64-bit values, was idempotent and raised the popcount exactly when the bit was previously clear, worked across multi-word bit strings, and the range-mask formula (including the full 64-bit width case) equalled a bit-by-bit loop" << std::endl; return 0;
 }
 // Time Complexity: O(1)
 // Space Complexity: O(1)
@@ -618,32 +1717,65 @@ int main() {
 ## ClearBit()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <bitset>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
+// 비트 끄기(ClearBit): i 번째 비트를 0 으로 만든다 — `x & ~(1ULL << i)`. 집합으로는 "원소 i 제거" 이다. 이미 꺼져 있으면 변화가 없다. 관련 관용구: 가장 낮은 켜진 비트 지우기 `x & (x − 1)` (x−1 은 가장 낮은 1 과 그 아래 0 들을 뒤집어 1 로 바꾸므로 AND 하면 가장 낮은 1 만 사라짐), 가장 낮은 켜진 비트 분리하기 `x & −x`, 2 의 거듭제곱 판정 `x != 0 && (x & (x − 1)) == 0` (켜진 비트가 하나뿐), 하위 k 비트만 남기기 `x & ((1ULL << k) − 1)`, 구간 끄기 `x & ~mask`.
+// `x & (x−1)` 를 반복하면 켜진 비트 수만큼만 반복하고 끝난다(켜진 비트를 낮은 쪽부터 하나씩 방문하는 순회의 기본형). 끄기와 켜기는 서로 독립이라 이미 꺼진 비트를 끄기는 변화 없음, 끈 비트의 켜기는 원래 값 복원은 아님(원래 켜져 있었는지 알 수 없음).
+// 검증: ① 모든 16 비트 값 × 위치에서 `x & ~(1<<i)` 가 산술 정의(x − (켜져 있었으면 2^i))와 같음, 멱등, 끈 뒤 테스트하면 0 ② 무작위 64 비트에서 std::bitset 과 일치, popcount 변화 == 이전에 켜져 있었으면 −1 ③ `x & (x−1)` 가 가장 낮은 켜진 비트를 정확히 지우고 반복 횟수 == popcount, `x & −x` 가 가장 낮은 켜진 비트만 남김 ④ 2 의 거듭제곱 판정이 0..2^16 에서 정의(popcount == 1)와 일치하고 64 비트 경계값(2^63, 2^63+1, 0, 모든 비트) 확인 ⑤ 하위 k 비트 남기기·구간 끄기가 반복문과 같음(k = 0, 64 포함) ⑥ 끄기와 켜기의 교환 불가(같은 비트에서 순서에 따라 다름).
+uint64_t clearBit(uint64_t x, unsigned i) { assert(i < 64); return x & ~(1ull << i); }
+uint64_t lowMask(unsigned k) { assert(k <= 64); return k == 64 ? ~0ull : ((1ull << k) - 1); }
+bool isPow2(uint64_t x) { return x != 0 && (x & (x - 1)) == 0; }
 int main() {
-    int mask = 32;
-    mask &= ~(1 << 5);
-    assert(mask == 0);
-    std::cout << "ClearBit verified." << std::endl;
-    return 0;
+    for (unsigned x = 0; x < 65536; x++) for (unsigned i = 0; i < 16; i++) { bool was = x >> i & 1; uint64_t got = clearBit(x, i); assert(got == (uint64_t)x - (was ? (1u << i) : 0u) && !(got >> i & 1) && clearBit(got, i) == got); }       // ①
+    std::mt19937_64 rng(36);
+    for (int rep = 0; rep < 20000; rep++) { uint64_t x = rng(); unsigned i = (unsigned)(rng() % 64); std::bitset<64> b(x); b.reset(i); uint64_t got = clearBit(x, i); assert(got == b.to_ullong() && __builtin_popcountll(got) == __builtin_popcountll(x) - ((x >> i & 1) ? 1 : 0));   // ②
+        uint64_t y = rng() >> (rng() % 64); int iterations = 0; uint64_t t = y; while (t) { uint64_t lowest = t & (~t + 1); uint64_t cleared = t & (t - 1); assert(cleared == (t ^ lowest) && lowest == (t & -t)); assert(__builtin_ctzll(lowest) == __builtin_ctzll(t)); t = cleared; iterations++; } assert(iterations == __builtin_popcountll(y)); }   // ③
+    for (unsigned x = 0; x < 65536; x++) assert(isPow2(x) == (__builtin_popcount(x) == 1));                                                                                                       // ④
+    assert(isPow2(1ull << 63) && !isPow2((1ull << 63) + 1) && !isPow2(0) && !isPow2(~0ull) && isPow2(1) && isPow2(2) && !isPow2(3));
+    for (unsigned k = 0; k <= 64; k++) { uint64_t m = lowMask(k); for (int rep = 0; rep < 20; rep++) { uint64_t x = rng(); uint64_t keep = x & m, loop = 0; for (unsigned i = 0; i < k; i++) loop |= x & (1ull << i); assert(keep == loop);                // ⑤ 하위 k 비트
+            unsigned l = (unsigned)(rng() % 65), r = l + (unsigned)(rng() % (65 - l)); uint64_t cleared = x; for (unsigned i = l; i < r; i++) cleared = clearBit(cleared, i); uint64_t rm = (r - l == 0) ? 0 : (lowMask(r - l) << l); assert((x & ~rm) == cleared); } }
+    { assert(clearBit(0b0100, 2) == clearBit(0, 2));                                                                                                                                   // ⑥ 끄기는 정보를 잃는다: 서로 다른 입력이 같은 결과
+      for (int rep = 0; rep < 1000; rep++) { uint64_t x = rng(); unsigned i = (unsigned)(rng() % 64); uint64_t bit = 1ull << i; assert((clearBit(x, i) | bit) != clearBit(x | bit, i) && (clearBit(x, i) | bit) == (x | bit) && clearBit(x | bit, i) == (x & ~bit)); } }   // 끄기→켜기 와 켜기→끄기 는 다르다
+    std::cout << "ClearBit: x & ~(1<<i) matched the arithmetic definition for all 16-bit values and positions and std::bitset on 20000 random 64-bit values; x & (x-1) removed exactly the lowest set bit (loop count equal to popcount), x & -x isolated it, the power-of-two test matched popcount == 1 up to 2^16 and at the 64-bit boundaries, and low-bit and range masks equalled bit-by-bit loops" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: O(1) (켜진 비트 순회는 O(popcount))
 // Space Complexity: O(1)
 ```
 ## ToggleBit()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <bitset>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
+// 비트 뒤집기(ToggleBit): i 번째 비트를 반대로 — `x ^ (1ULL << i)`. 집합으로는 "원소 i 가 있으면 빼고 없으면 넣기". 두 번 뒤집으면 원래대로(involution)이고, 서로 다른 위치의 뒤집기는 순서와 무관하게 교환 가능하다(XOR 의 교환·결합 법칙) — 여러 위치를 뒤집는 일은 그 위치들의 마스크 하나로 XOR 하는 것과 같다. toggle(x, i) = 켜져 있으면 끄기, 꺼져 있으면 켜기이므로 `test ? clear : set` 과 같다.
+// 응용: 그레이 코드(i 번째 코드에서 i+1 번째로 갈 때 뒤집을 비트는 i+1 의 끝의 0 개수 ctz), 패리티 비트, XOR 으로 두 값 교환·변경 사항 적용, 스위치 퍼즐. 라이츠 아웃(Lights Out)은 버튼 하나가 자기와 상하좌우 이웃을 뒤집는 퍼즐이라 버튼 누름의 조합이 마스크 XOR 이다 — 누르는 순서는 상관없고 같은 버튼은 두 번 누르면 상쇄되므로 각 버튼을 누를지 말지 2ⁿ 가지만 보면 된다.
+// 검증: ① 모든 16 비트 값 × 위치에서 `x ^ (1<<i)` 가 (켜져 있었으면 끄기, 아니면 켜기) 와 같고 두 번 뒤집으면 원래 값, popcount 가 ±1 ② 무작위 64 비트에서 std::bitset::flip 과 일치 ③ 서로 다른 위치 뒤집기의 교환·결합: 순서를 섞어 적용해도 같고 마스크 하나로 XOR 한 것과 같음 ④ 그레이 코드: 이웃한 코드가 정확히 한 비트 다르고 뒤집는 비트가 ctz(i+1), n = 1..16 에서 모두 서로 다름(2ⁿ 개) ⑤ 라이츠 아웃 3×3 과 4×4: 모든 버튼 마스크 2ⁿ 개를 열거해 "전부 켜짐 → 전부 꺼짐" 해의 개수를 구하고 해를 적용해 실제로 풀리는지 확인(3×3 은 유일해 1 개, 4×4 는 16 개 — 영공간 차원 4) ⑥ 자기 자신과 XOR 하면 0.
+uint64_t toggleBit(uint64_t x, unsigned i) { assert(i < 64); return x ^ (1ull << i); }
+uint32_t pressMask(int r, int c, int R, int C) { uint32_t m = 0; auto bit = [&](int rr, int cc) { if (rr >= 0 && rr < R && cc >= 0 && cc < C) m ^= 1u << (rr * C + cc); }; bit(r, c); bit(r - 1, c); bit(r + 1, c); bit(r, c - 1); bit(r, c + 1); return m; }
+int lightsOutSolutions(int R, int C, std::vector<uint32_t>* sols) { int n = R * C; std::vector<uint32_t> pm(n); for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) pm[r * C + c] = pressMask(r, c, R, C); uint32_t full = (1u << n) - 1; int count = 0;
+    for (uint32_t presses = 0; presses <= full; presses++) { uint32_t board = full; for (int b = 0; b < n; b++) if (presses >> b & 1) board ^= pm[b]; if (board == 0) { count++; if (sols) sols->push_back(presses); } } return count; }          // 전부 켜짐에서 시작해 누른 버튼들의 마스크를 XOR
 int main() {
-    int mask = 0;
-    mask ^= (1 << 5); // 32
-    mask ^= (1 << 5); // 0
-    assert(mask == 0);
-    std::cout << "ToggleBit verified." << std::endl;
-    return 0;
+    for (unsigned x = 0; x < 65536; x++) for (unsigned i = 0; i < 16; i++) { bool was = x >> i & 1; uint64_t got = toggleBit(x, i); uint64_t viaBranch = was ? (uint64_t)x - (1u << i) : (uint64_t)x + (1u << i); assert(got == viaBranch && toggleBit(got, i) == x);       // ①
+        assert(__builtin_popcountll(got) == __builtin_popcount(x) + (was ? -1 : 1)); }
+    std::mt19937_64 rng(37);
+    for (int rep = 0; rep < 20000; rep++) { uint64_t x = rng(); unsigned i = (unsigned)(rng() % 64); std::bitset<64> b(x); b.flip(i); assert(toggleBit(x, i) == b.to_ullong()); assert((x ^ x) == 0); }                                       // ② ⑥
+    for (int rep = 0; rep < 2000; rep++) { uint64_t x = rng(); std::vector<unsigned> pos; uint64_t mask = 0; for (int k = 0, m = (int)(rng() % 10); k < m; k++) { unsigned p = (unsigned)(rng() % 64); pos.push_back(p); mask ^= 1ull << p; }             // ③
+        uint64_t a = x; for (unsigned p : pos) a = toggleBit(a, p); std::vector<unsigned> shuffled = pos; std::shuffle(shuffled.begin(), shuffled.end(), rng); uint64_t b = x; for (unsigned p : shuffled) b = toggleBit(b, p); assert(a == b && a == (x ^ mask)); }
+    for (int n = 1; n <= 16; n++) { std::vector<bool> seen(1u << n, false); uint32_t g = 0; seen[0] = true; for (uint32_t i = 1; i < (1u << n); i++) { uint32_t ng = i ^ (i >> 1); uint32_t flipped = g ^ ng; assert(__builtin_popcount(flipped) == 1 && flipped == (1u << __builtin_ctz(i)) && toggleBit(g, (unsigned)__builtin_ctz(i)) == ng);   // ④
+            assert(!seen[ng]); seen[ng] = true; g = ng; } }
+    { std::vector<uint32_t> s3, s4; int c3 = lightsOutSolutions(3, 3, &s3), c4 = lightsOutSolutions(4, 4, &s4); assert(c3 == 1 && c4 == 16 && s3.size() == 1 && s4.size() == 16);                                                          // ⑤
+      for (int R = 2; R <= 4; R++) for (int C = 2; C <= 4; C++) { std::vector<uint32_t> s; int c = lightsOutSolutions(R, C, &s); assert(c >= 1 && (c & (c - 1)) == 0); } }                                                                   // 해 개수는 2 의 거듭제곱 (영공간 차원)
+    std::cout << "ToggleBit: x ^ (1<<i) equalled the set-or-clear definition for all 16-bit values and positions (an involution changing popcount by one) and matched std::bitset::flip on 20000 random values, toggles at different positions commuted and equalled one XOR with the combined mask, the Gray-code step flipped exactly bit ctz(i) and visited all 2^n codes for n up to 16, and Lights Out had 1 solution on 3x3 and 16 on 4x4" << std::endl; return 0;
 }
 // Time Complexity: O(1)
 // Space Complexity: O(1)
@@ -651,15 +1783,32 @@ int main() {
 ## TestBit()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <bitset>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
+// 비트 검사(TestBit): i 번째 비트가 켜져 있는지 읽는다 — `(x >> i) & 1` 또는 `(x & (1ULL << i)) != 0`. 집합으로는 "원소 i 가 속하는가". 부호 있는 정수에서 `x >> i` 는 오른쪽 이동이 산술 이동(구현 정의: 부호 비트를 채움)이라 음수에 대해 위쪽 비트가 1 로 채워지지만 `& 1` 로 최하위 비트만 읽으면 이어진다. 그래도 음수의 비트 패턴은 2 의 보수 표현이므로 먼저 부호 없는 형으로 바꿔서 읽는 것이 안전하다. 위치가 폭 이상이면 시프트가 정의되지 않으므로 범위를 검사해야 한다.
+// 비트 필드 추출: 위치 lo 에서 폭 w 비트 `(x >> lo) & ((1ULL << w) − 1)` (w = 64 이면 마스크를 따로 처리). 패리티(켜진 비트 수의 홀짝)는 `popcount & 1` 이고 접어 XOR 하는 방법 `x ^= x >> 32; x ^= x >> 16; … ; x & 1` 로도 구한다. 비트열 뒤집기, 최상위 켜진 비트의 위치(floor(log₂ x))는 `63 − clz(x)`.
+// 검증: ① 모든 16 비트 값 × 위치에서 두 가지 공식 `(x>>i)&1` 과 `(x & (1<<i)) != 0` 이 산술 정의 ⌊x / 2ⁱ⌋ mod 2 와 같음 ② 음수(int32, int64)의 2 의 보수 비트가 부호 없는 변환을 거쳐 올바르게 읽힘: 예컨대 −1 은 모든 비트가 1, INT_MIN 은 31 번만 1 ③ 무작위 64 비트가 std::bitset 과 일치, 범위 밖 위치는 안전하게 false 로 처리 ④ 비트 필드 추출이 반복문과 같음(폭 64 포함) ⑤ 패리티(접어 XOR 방식 == popcount&1) ⑥ 최상위 비트 위치 == floor(log₂ x) 와 비트 길이.
+bool testBit(uint64_t x, unsigned i) { return i < 64 && ((x >> i) & 1); }
+bool testBitMask(uint64_t x, unsigned i) { return i < 64 && (x & (1ull << i)) != 0; }
+uint64_t extract(uint64_t x, unsigned lo, unsigned w) { assert(lo <= 64 && w <= 64 - lo); if (w == 0) return 0; uint64_t mask = w == 64 ? ~0ull : ((1ull << w) - 1); return (x >> lo) & mask; }
+unsigned parityFold(uint64_t x) { x ^= x >> 32; x ^= x >> 16; x ^= x >> 8; x ^= x >> 4; x ^= x >> 2; x ^= x >> 1; return (unsigned)(x & 1); }
 int main() {
-    int mask = 32;
-    bool exists = mask & (1 << 5);
-    assert(exists == true);
-    std::cout << "TestBit verified." << std::endl;
-    return 0;
+    for (unsigned x = 0; x < 65536; x++) for (unsigned i = 0; i < 16; i++) { unsigned def = (x / (1u << i)) % 2; assert(testBit(x, i) == (def == 1) && testBitMask(x, i) == (def == 1)); }                              // ①
+    { int32_t m1 = -1; for (unsigned i = 0; i < 32; i++) assert(testBit((uint64_t)(uint32_t)m1, i)); int32_t mn = INT32_MIN; for (unsigned i = 0; i < 32; i++) assert(testBit((uint64_t)(uint32_t)mn, i) == (i == 31));           // ②
+      int64_t m64 = -1; for (unsigned i = 0; i < 64; i++) assert(testBit((uint64_t)m64, i)); int32_t neg5 = -5; assert((uint32_t)neg5 == 0xFFFFFFFBu); for (unsigned i = 0; i < 32; i++) assert(testBit((uint64_t)(uint32_t)neg5, i) == (bool)((0xFFFFFFFBu >> i) & 1u)); }
+    std::mt19937_64 rng(38);
+    for (int rep = 0; rep < 20000; rep++) { uint64_t x = rng(); std::bitset<64> b(x); for (unsigned i = 0; i < 64; i += 1 + (unsigned)(rng() % 7)) assert(testBit(x, i) == b.test(i) && testBitMask(x, i) == b.test(i)); assert(!testBit(x, 64) && !testBit(x, 100) && !testBitMask(x, 64)); }          // ③ 범위 밖
+    for (int rep = 0; rep < 5000; rep++) { uint64_t x = rng(); unsigned lo = (unsigned)(rng() % 65), w = (unsigned)(rng() % (65 - lo)); uint64_t loop = 0; for (unsigned k = 0; k < w; k++) loop |= (uint64_t)testBit(x, lo + k) << k; assert(extract(x, lo, w) == loop); }   // ④
+    assert(extract(~0ull, 0, 64) == ~0ull && extract(0xABCDull, 4, 8) == 0xBC && extract(5, 0, 0) == 0 && extract(0x8000000000000000ull, 63, 1) == 1);
+    for (int rep = 0; rep < 20000; rep++) { uint64_t x = rng() >> (rng() % 64); assert(parityFold(x) == (unsigned)(__builtin_popcountll(x) & 1)); }                                                                       // ⑤
+    for (int rep = 0; rep < 20000; rep++) { uint64_t x = (rng() >> (rng() % 64)) | 1; int hi = 63 - __builtin_clzll(x); unsigned bitLength = 0; for (uint64_t t = x; t; t >>= 1) bitLength++; assert((unsigned)(hi + 1) == bitLength && testBit(x, (unsigned)hi) && (hi == 63 || (x >> (hi + 1)) == 0)); }   // ⑥
+    { uint64_t x = 1; for (unsigned k = 0; k < 64; k++) { assert(63 - __builtin_clzll(x) == (int)k); x <<= 1; } }
+    std::cout << "TestBit: both read-a-bit formulas equalled floor(x / 2^i) mod 2 for all 16-bit values and positions, two's-complement bits of negative 32- and 64-bit integers were read correctly through unsigned conversion, out-of-range positions returned false instead of invoking undefined shifts, bit-field extraction matched a bit-by-bit loop, fold-XOR parity equalled popcount parity, and the highest set bit position equalled floor(log2 x)" << std::endl; return 0;
 }
 // Time Complexity: O(1)
 // Space Complexity: O(1)
@@ -667,98 +1816,184 @@ int main() {
 ## CountBits()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <bitset>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
+// 켜진 비트 세기(CountBits, popcount): 집합의 원소 수 |S|, 두 값의 해밍 거리 popcount(a ^ b). 방법: (1) 모든 비트를 훑기 — 비트 길이만큼 반복. (2) 커니핸(Kernighan): `x &= x − 1` 로 가장 낮은 켜진 비트를 하나씩 지우며 센다 — 반복이 정확히 popcount 번. (3) 표 조회: 8(또는 16)비트 조각마다 미리 계산한 표를 찾아 더한다 — 8 번의 조회. (4) 병렬 비트 합(SWAR): 인접한 1 비트 쌍을 더해 2 비트 칸에, 그 쌍을 더해 4 비트 칸에, … 로 이어 상수 번의 연산에 센다. (5) 하드웨어 명령어(`__builtin_popcountll`, x86 의 POPCNT): 한 명령.
+// 관련: 가장 낮은 켜진 비트의 위치(ctz), 가장 높은 켜진 비트의 위치(63 − clz), ctz(x) == popcount((x & −x) − 1), 패리티는 popcount 의 홀짝. 0 부터 N 까지의 총 켜진 비트 수는 점화식으로 O(log N) 에 구한다(최상위 비트 2^k 이하의 수 전체 k·2^(k−1) + (남은 개수) + 나머지의 재귀).
+// 검증: ① 다섯 방법이 무작위 64 비트 20 만 개와 특수 값(0, 모든 비트, 2의 거듭제곱, 교대 패턴 0x5555…, 0xAAAA…, 2^63)에서 일치 ② 커니핸의 반복 횟수 == popcount, 전체 훑기는 비트 길이 ③ 해밍 거리 popcount(a^b) 가 비트별 비교와 같고 삼각 부등식 성립 ④ ctz == popcount((x & −x) − 1) 와 clz 관계 ⑤ 0..N 의 총 켜진 비트 수 점화식이 N ≤ 5000 에서 직접 합과 일치, 큰 N 도 일치 ⑥ 부분집합 크기별 개수: 모든 n 비트 값의 popcount 분포가 이항계수.
+int popLoop(uint64_t x, int& iters) { int c = 0; iters = 0; while (x) { c += (int)(x & 1); x >>= 1; iters++; } return c; }
+int popKernighan(uint64_t x, int& iters) { int c = 0; iters = 0; while (x) { x &= x - 1; c++; iters++; } return c; }
+int popTable(uint64_t x) { static int table[256]; static bool init = false; if (!init) { for (int i = 0; i < 256; i++) table[i] = (i & 1) + table[i / 2]; init = true; } int c = 0; for (int b = 0; b < 8; b++) c += table[(x >> (8 * b)) & 0xFF]; return c; }
+int popSwar(uint64_t x) { x = x - ((x >> 1) & 0x5555555555555555ull); x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull); x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Full; return (int)((x * 0x0101010101010101ull) >> 56); }
+long long totalBits(long long n) { if (n <= 0) return 0; int k = 63 - __builtin_clzll((unsigned long long)n + 0); long long p = 1LL << k; return (long long)k * (p / 2) + (n - p + 1) + totalBits(n - p); }        // 0..n 의 켜진 비트 총합
 int main() {
-    int mask = 5; // 101 in binary
-    int count = __builtin_popcount(mask);
-    assert(count == 2);
-    std::cout << "CountBits verified." << std::endl;
-    return 0;
+    std::mt19937_64 rng(39); std::vector<uint64_t> special = {0, ~0ull, 1, 2, 0x8000000000000000ull, 0x5555555555555555ull, 0xAAAAAAAAAAAAAAAAull, 0xFFFFFFFF00000000ull, 0x00000000FFFFFFFFull, 0x0123456789ABCDEFull};
+    for (int i = 0; i < 64; i++) special.push_back(1ull << i);
+    auto check = [&](uint64_t x) { int i1, i2; int a = popLoop(x, i1), b = popKernighan(x, i2), c = popTable(x), d = popSwar(x), e = __builtin_popcountll(x), f = (int)std::bitset<64>(x).count(); assert(a == b && b == c && c == d && d == e && e == f);   // ① ②
+        assert(i2 == a); unsigned bitLength = 0; for (uint64_t t = x; t; t >>= 1) bitLength++; assert(i1 == (int)bitLength); };
+    for (uint64_t x : special) check(x); for (int rep = 0; rep < 200000; rep++) check(rng() >> (rng() % 64));
+    for (int rep = 0; rep < 20000; rep++) { uint64_t a = rng(), b = rng(), c = rng(); int hd = 0; for (int i = 0; i < 64; i++) hd += (int)((a >> i & 1) != (b >> i & 1)); assert(__builtin_popcountll(a ^ b) == hd && __builtin_popcountll(a ^ c) <= __builtin_popcountll(a ^ b) + __builtin_popcountll(b ^ c)); }   // ③
+    for (int rep = 0; rep < 20000; rep++) { uint64_t x = (rng() >> (rng() % 63)) | (1ull << (rng() % 64)); if (!x) continue; assert(__builtin_ctzll(x) == __builtin_popcountll((x & (~x + 1)) - 1) && 63 - __builtin_clzll(x) >= __builtin_ctzll(x)); }          // ④
+    { long long direct = 0; for (long long n = 0; n <= 5000; n++) { direct += __builtin_popcountll((unsigned long long)n); assert(totalBits(n) == direct); } long long big = 123456789; long long sum = 0; for (long long n = 0; n <= 2000000; n++) sum += __builtin_popcountll((unsigned long long)n); assert(totalBits(2000000) == sum); (void)big; }   // ⑤
+    for (int n : {1, 5, 10, 16}) { std::vector<long long> dist(n + 1, 0); for (uint32_t m = 0; m < (1u << n); m++) dist[__builtin_popcount(m)]++; long long c = 1; for (int k = 0; k <= n; k++) { assert(dist[k] == c); c = c * (n - k) / (k + 1); } }       // ⑥ 이항 분포
+    std::cout << "CountBits: bit-by-bit, Kernighan, table lookup, SWAR, the hardware builtin and std::bitset::count agreed on 200000 random and 74 special 64-bit values, Kernighan iterated exactly popcount times, Hamming distance and the triangle inequality held, ctz equalled popcount((x & -x) - 1), the O(log N) total-set-bits recurrence matched direct sums, and the popcount distribution of n-bit values was binomial" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 커니핸 O(popcount), 표 조회·SWAR·하드웨어 O(1)
+// Space Complexity: O(1) (표 방식 256 칸)
 ```
 ## EnumerateSubsets()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 
+// 부분집합 열거(EnumerateSubsets): 마스크 m 의 모든 부분마스크(켜진 비트의 부분집합)를 `for (s = m; ; s = (s − 1) & m) { …; if (s == 0) break; }` 로 훑는다. 핵심은 `(s − 1) & m` 이 "m 에 속한 비트로만 이루어진 s 다음으로 작은 수"를 곧바로 주는 것이다: s − 1 은 가장 낮은 켜진 비트를 끄고 그 아래를 모두 켜는데, & m 으로 m 밖의 비트를 버리면 정확히 m 의 부분마스크 중 s 바로 아래 값이 된다. 내림차순으로 2^popcount(m) 개(공집합 포함)를 방문하고, 방문 사이의 일은 O(1).
+// 모든 마스크 m 에 대해 그 부분마스크를 전부 돌면 총 Σₘ 2^popcount(m) = 3ⁿ 이다(원소마다 "m 에 없음 / m 에 있고 부분마스크에 없음 / 둘 다 있음"). 비슷하게 상위집합 열거는 `s = (s + 1) | m`, 크기가 k 인 마스크만 순서대로 열거하는 고스퍼의 해킹은 `c = x & −x, r = x + c, x = (((r ^ x) >> 2) / c) | r` 이다(C(n, k) 개, 증가 순서). 그레이 코드 순서는 연속한 부분집합이 한 원소만 다르다.
+// 검증: ① 모든 마스크 m (n = 10)에서 부분마스크 열거가 방문한 값들이 정의(s & ~m == 0 인 모든 s)와 같은 집합, 정확히 2^popcount(m) 개, 내림차순, 중복 없음, 마지막이 0 ② 모든 m 에 대한 총 방문 수가 3ⁿ (n = 1..12) ③ 상위집합 열거: 방문한 값이 (s & m) == m 인 모든 s 이고 개수가 2^(n−popcount(m)) ④ 고스퍼의 해킹이 크기 k 인 모든 n 비트 마스크를 증가 순서로 정확히 한 번씩, 개수 C(n, k) ⑤ 부분집합 합 응용: 모든 부분마스크의 합 중 목표와 같은 개수를 세는 O(2^popcount) 열거가 완전 탐색과 같음 ⑥ 빈 마스크와 모든 비트 마스크(m = 2^n − 1)의 경계.
+std::vector<uint32_t> submasks(uint32_t m) { std::vector<uint32_t> r; for (uint32_t s = m;; s = (s - 1) & m) { r.push_back(s); if (s == 0) break; } return r; }
+std::vector<uint32_t> supermasks(uint32_t m, int n) { std::vector<uint32_t> r; uint32_t full = (1u << n) - 1; for (uint32_t s = m;; s = (s + 1) | m) { r.push_back(s); if (s == full) break; } return r; }
+std::vector<uint32_t> gosper(int n, int k) { std::vector<uint32_t> r; if (k == 0) { r.push_back(0); return r; } uint32_t x = (1u << k) - 1, limit = 1u << n; while (x < limit) { r.push_back(x); uint32_t c = x & -x, rr = x + c; x = (((rr ^ x) >> 2) / c) | rr; } return r; }
 int main() {
-    int mask = 5; // 101 in binary (4 + 1)
-    int count = 0;
-    for (int i = mask; i > 0; i = (i - 1) & mask) count++;
-    assert(count == 3); // 5, 4, 1
-    std::cout << "EnumerateSubsets verified." << std::endl;
-    return 0;
+    { const int n = 10; for (uint32_t m = 0; m < (1u << n); m++) { auto v = submasks(m); std::set<uint32_t> got(v.begin(), v.end()), want; for (uint32_t s = 0; s < (1u << n); s++) if ((s & ~m) == 0) want.insert(s);                      // ①
+          assert(got == want && v.size() == (std::size_t)1 << __builtin_popcount(m) && got.size() == v.size() && std::is_sorted(v.rbegin(), v.rend()) && v.front() == m && v.back() == 0); } }
+    for (int n = 1; n <= 12; n++) { long long total = 0, pow3 = 1; for (int i = 0; i < n; i++) pow3 *= 3; for (uint32_t m = 0; m < (1u << n); m++) { uint32_t s = m; long long c = 0; for (;; s = (s - 1) & m) { c++; if (s == 0) break; } total += c; } assert(total == pow3); }          // ② 3ⁿ
+    { const int n = 8; for (uint32_t m = 0; m < (1u << n); m++) { auto v = supermasks(m, n); std::set<uint32_t> got(v.begin(), v.end()), want; for (uint32_t s = 0; s < (1u << n); s++) if ((s & m) == m) want.insert(s); assert(got == want && v.size() == (std::size_t)1 << (n - __builtin_popcount(m)) && std::is_sorted(v.begin(), v.end())); } }   // ③
+    for (int n = 1; n <= 14; n++) for (int k = 0; k <= n; k++) { auto v = gosper(n, k); long long binom = 1; for (int i = 1; i <= k; i++) binom = binom * (n - k + i) / i; std::vector<uint32_t> want; for (uint32_t m = 0; m < (1u << n); m++) if (__builtin_popcount(m) == k) want.push_back(m);   // ④
+        assert((long long)v.size() == binom && v == want); }
+    { std::mt19937 rng(40); for (int rep = 0; rep < 200; rep++) { int n = 1 + (int)(rng() % 14); std::vector<int> val(n); for (int& x : val) x = (int)(rng() % 20) - 5; uint32_t m = (uint32_t)(rng() & ((1u << n) - 1)); int target = (int)(rng() % 30) - 5;               // ⑤
+          long long viaSubmasks = 0, brute = 0; for (uint32_t s = m;; s = (s - 1) & m) { int sum = 0; for (int i = 0; i < n; i++) if (s >> i & 1) sum += val[i]; viaSubmasks += sum == target; if (s == 0) break; }
+          for (uint32_t s = 0; s < (1u << n); s++) if ((s & ~m) == 0) { int sum = 0; for (int i = 0; i < n; i++) if (s >> i & 1) sum += val[i]; brute += sum == target; } assert(viaSubmasks == brute); } }
+    { auto e = submasks(0); assert(e.size() == 1 && e[0] == 0); auto f = submasks(0xFFFFu); assert(f.size() == 65536 && f.front() == 0xFFFFu && f.back() == 0); auto g = gosper(5, 0); assert(g.size() == 1 && g[0] == 0); auto h = gosper(5, 5); assert(h.size() == 1 && h[0] == 31); }     // ⑥
+    std::cout << "EnumerateSubsets: the (s-1)&m loop visited exactly the 2^popcount(m) submasks in descending order for all 1024 masks of 10 bits, the total work over all masks was 3^n for n up to 12, superset enumeration and Gosper's hack (all C(n,k) masks of popcount k in increasing order, n up to 14) were exact, and counting target-sum subsets of a mask by submask enumeration matched exhaustive search" << std::endl; return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(1)
+// Time Complexity: 부분마스크 열거 O(2^popcount), 모든 마스크에 대해 O(3ⁿ), 고스퍼 O(C(n, k))
+// Space Complexity: O(1) (열거 중)
 ```
 
 # Part 7. 서로소 집합
 ## MakeSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
+// 집합 만들기 MakeSet (집합 관점의 요약, 정본은 Graph.md Part 8): 서로소 집합 자료구조(Union-Find)에서 MakeSet(x) 는 원소 x 만으로 이루어진 새 집합을 만든다 — 부모를 자기 자신으로(`parent[x] = x`), 크기 1, 랭크 0. n 개 원소를 만들면 서로소인 n 개의 단일 원소 집합이 생겨 연결 성분이 n 개이고 모든 find(i) = i 이다. O(1) 이 원소당 걸려 총 O(n).
+// 원소가 0..n−1 정수가 아니라 문자열처럼 임의의 키이면 해시 맵으로 키 → 번호를 지급하며 필요할 때 만든다(지연 생성). 주의: 이미 있는 원소에 MakeSet 을 다시 부르면 안 된다 — 부모를 자기 자신으로 되돌려 그 원소가 속한 합쳐진 집합에서 떨어져 나간다. 그래서 "있으면 건드리지 않음" 검사를 둔다.
+// 검증: ① 배열 방식 n 개 생성 후 성분 수 n, find(i) == i, 크기 1, 랭크 0 ② 지연 생성: 키를 처음 볼 때만 번호 지급, 같은 키 재요청은 같은 번호이고 합쳐진 상태를 보존 ③ 순진하게 MakeSet 을 다시 부르면 이미 합쳐진 원소가 분리되어 성분 수가 틀려짐을 시연 ④ 무작위 합치기·질의 뒤에도 지연 생성 구조와 배열 구조의 연결 판정이 일치 ⑤ 빈 구조·원소 1 개.
+struct DSU { std::vector<int> parent, sz, rk; int components = 0;
+    void makeSet(int x) { if (x >= (int)parent.size()) { parent.resize(x + 1); sz.resize(x + 1); rk.resize(x + 1); } parent[x] = x; sz[x] = 1; rk[x] = 0; }
+    int add() { int x = (int)parent.size(); makeSet(x); components++; return x; }
+    int find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+    bool unite(int a, int b) { a = find(a); b = find(b); if (a == b) return false; if (sz[a] < sz[b]) std::swap(a, b); parent[b] = a; sz[a] += sz[b]; components--; return true; } };
+struct LazyDSU { DSU d; std::unordered_map<std::string, int> id;
+    int get(const std::string& key) { auto it = id.find(key); if (it != id.end()) return it->second; int x = d.add(); id[key] = x; return x; }                       // 처음 볼 때만 MakeSet
+    int getNaive(const std::string& key) { auto it = id.find(key); if (it != id.end()) { d.makeSet(it->second); return it->second; } int x = d.add(); id[key] = x; return x; }        // 잘못된 방식: 매번 다시 MakeSet
+    bool same(const std::string& a, const std::string& b) { return d.find(get(a)) == d.find(get(b)); } };
 int main() {
-    int N = 5;
-    std::vector<int> parent(N);
-    for (int i = 0; i < N; ++i) parent[i] = i; 
-    assert(parent[4] == 4);
-    std::cout << "MakeSet verified." << std::endl;
-    return 0;
+    for (int n : {0, 1, 2, 10, 1000}) { DSU d; for (int i = 0; i < n; i++) assert(d.add() == i); assert(d.components == n); for (int i = 0; i < n; i++) assert(d.find(i) == i && d.sz[i] == 1 && d.rk[i] == 0 && d.parent[i] == i); }       // ① ⑤
+    { LazyDSU z; int a = z.get("alice"), b = z.get("bob"), c = z.get("carol"); assert(a == 0 && b == 1 && c == 2 && z.get("bob") == 1 && z.d.components == 3);                                                              // ②
+      z.d.unite(a, b); assert(z.d.components == 2 && z.same("alice", "bob") && z.get("alice") == 0 && z.get("bob") == 1 && z.same("alice", "bob") && z.d.components == 2 && !z.same("alice", "carol")); }
+    { LazyDSU bad; int a = bad.getNaive("x"), b = bad.getNaive("y"); bad.d.unite(a, b); assert(bad.d.find(a) == bad.d.find(b)); bad.getNaive("x"); bad.getNaive("y");                                                           // ③ 다시 MakeSet 하면 분리됨
+      assert(bad.d.find(a) != bad.d.find(b) && bad.d.components == 1); }                                                                                                                                         // 성분 수 카운터(1)와 실제(2)가 어긋난다
+    std::mt19937 rng(41);
+    for (int rep = 0; rep < 100; rep++) { int n = 1 + (int)(rng() % 60); LazyDSU z; DSU arr; for (int i = 0; i < n; i++) arr.add(); std::vector<std::string> names; for (int i = 0; i < n; i++) names.push_back("n" + std::to_string(i));                                      // ④
+        for (int step = 0; step < 200; step++) { int a = (int)(rng() % n), b = (int)(rng() % n); if (rng() % 2) { z.d.unite(z.get(names[a]), z.get(names[b])); arr.unite(a, b); } else { std::string ka = names[a], kb = names[b]; assert(z.same(ka, kb) == (arr.find(a) == arr.find(b))); } }
+        std::vector<int> roots; for (int i = 0; i < n; i++) roots.push_back(arr.find(i)); std::sort(roots.begin(), roots.end()); roots.erase(std::unique(roots.begin(), roots.end()), roots.end()); assert((int)roots.size() == arr.components); }
+    std::cout << "MakeSet: creating n singleton sets gave n components with find(i) = i, size 1 and rank 0; lazily creating sets for string keys gave stable ids and preserved merges, re-running MakeSet on an existing element was shown to split it from its set, and the lazy structure matched an array structure on 100 random union/query sequences" << std::endl; return 0;
 }
-// Time Complexity: O(N)
+// Time Complexity: O(1) (원소당)
 // Space Complexity: O(N)
 ```
 ## FindSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-std::vector<int> parent = {0, 0, 1};
-int findSet(int v) {
-    if (v == parent[v]) return v;
-    return parent[v] = findSet(parent[v]); 
-}
-
+// 대표 찾기 FindSet (집합 관점의 요약, 정본은 Graph.md Part 8): find(x) 는 x 가 속한 집합의 대표(트리의 루트)를 부모 포인터를 따라 올라가 찾는다. 같은 집합의 원소는 같은 대표를 가지므로 find(a) == find(b) 가 동치 질의다. 경로 압축(path compression)은 올라가는 길에 만난 모든 노드의 부모를 루트로 바꿔 다음 find 를 짧게 만든다: 재귀 방식은 한 번에 완전 압축, 반복(경로 반분, path halving)은 한 칸씩 건너뛰며 부모를 조부모로 바꾼다. 합치기에서 크기가 작은 트리를 큰 트리 밑에 붙이면(union by size) 높이가 ⌊log₂ n⌋ 이하라 압축이 없어도 find 가 O(log n) 이고, 둘을 함께 쓰면 분할상환 O(α(n)) (역아커만 함수, 현실에서 4 이하).
+// 검증: ① 압축 없는 find, 완전 압축 find, 경로 반분 find 의 결과(대표)가 모든 원소에서 같음 ② 합치기를 크기 기준으로 하면 압축 없이도 깊이 ≤ ⌊log₂ n⌋ ③ 완전 압축 find 한 번 뒤 그 원소의 깊이는 ≤ 1 이고 경로의 모든 노드가 루트를 직접 가리킴, 반분은 깊이가 절반 이하로 ④ 같은 find 를 두 번 부르면 두 번째는 걸음 ≤ 1 ⑤ 무작위 질의 열의 총 걸음 수: 압축 있음 ≪ 압축 없음(순진한 합치기 사슬에서), 원소당 평균 걸음이 작음 ⑥ 연결 성분 판별이 BFS 와 같음.
+struct DSU { std::vector<int> p, sz; long steps = 0; explicit DSU(int n) : p(n), sz(n, 1) { std::iota(p.begin(), p.end(), 0); }
+    int findPlain(int x) { while (p[x] != x) { x = p[x]; steps++; } return x; }
+    int findFull(int x) { if (p[x] == x) return x; steps++; return p[x] = findFull(p[x]); }                                                                                       // 완전 압축(재귀)
+    int findHalving(int x) { while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; steps++; } return x; }                                                                                 // 경로 반분
+    void uniteSize(int a, int b) { a = findPlain(a); b = findPlain(b); if (a == b) return; if (sz[a] < sz[b]) std::swap(a, b); p[b] = a; sz[a] += sz[b]; }
+    void makeChain() { for (std::size_t i = 1; i < p.size(); i++) p[i] = (int)i - 1; }                                                                                     // 최악의 모양: 0 ← 1 ← 2 ← … (길이 n−1 사슬)
+    int depth(int x) const { int d = 0; while (p[x] != x) { x = p[x]; d++; } return d; } };
 int main() {
-    assert(findSet(2) == 0);
-    std::cout << "FindSet verified." << std::endl;
-    return 0;
+    std::mt19937 rng(42);
+    for (int rep = 0; rep < 200; rep++) { int n = 2 + (int)(rng() % 200); DSU a(n), b(n), c(n); for (int k = 0; k < 2 * n; k++) { int x = (int)(rng() % n), y = (int)(rng() % n); a.uniteSize(x, y); b.uniteSize(x, y); c.uniteSize(x, y); }                       // ①
+        std::vector<int> ra, rb, rc; for (int v = 0; v < n; v++) { ra.push_back(a.findPlain(v)); rb.push_back(b.findFull(v)); rc.push_back(c.findHalving(v)); } assert(ra == rb && ra == rc);
+        int maxDepth = 0; DSU d(n); for (int k = 0; k < 3 * n; k++) d.uniteSize((int)(rng() % n), (int)(rng() % n)); for (int v = 0; v < n; v++) maxDepth = std::max(maxDepth, d.depth(v)); assert(maxDepth <= (int)std::floor(std::log2((double)n)));       // ② 크기 기준 합치기: 깊이 ≤ log₂ n
+        for (int v = 0; v < n; v++) { int r = d.findFull(v); assert(v == r || (d.depth(v) == 1 && d.p[v] == r)); } }                                                                                                    // ③ 완전 압축 후 깊이 ≤ 1
+    { const int N = 4096; DSU full(N), half(N); full.makeChain(); half.makeChain(); assert(full.depth(N - 1) == N - 1);
+      full.steps = 0; full.findFull(N - 1); long s1 = full.steps; full.steps = 0; full.findFull(N - 1); long s2 = full.steps; assert(s1 == N - 1 && s2 <= 1 && full.depth(N - 1) <= 1 && full.depth(N / 2) <= 1);                              // ④ 첫 find 는 깊이만큼, 두 번째는 1 걸음 이하
+      half.findHalving(N - 1); assert(half.depth(N - 1) == 1 + (N - 1) / 2 || half.depth(N - 1) <= (N - 1) / 2 + 1); }                                                                                           // 반분: 깊이가 절반
+    { const int N = 3000; DSU withC(N), without(N); withC.makeChain(); without.makeChain(); withC.steps = without.steps = 0; for (int q = 0; q < 20000; q++) { int v = (int)(rng() % N); withC.findHalving(v); without.findPlain(v); }          // ⑤
+      assert(withC.steps * 20 < without.steps && (double)withC.steps / 20000 < 5.0); }
+    for (int rep = 0; rep < 100; rep++) { int n = 1 + (int)(rng() % 50); std::vector<std::pair<int, int>> edges; DSU d(n); for (int k = 0, m = (int)(rng() % (2 * n)); k < m; k++) { int a = (int)(rng() % n), b = (int)(rng() % n); edges.push_back({a, b}); d.uniteSize(a, b); }              // ⑥
+        std::vector<std::vector<int>> adj(n); for (auto& e : edges) { adj[e.first].push_back(e.second); adj[e.second].push_back(e.first); } std::vector<int> comp(n, -1); int cc = 0; for (int s = 0; s < n; s++) if (comp[s] < 0) { std::vector<int> st{s}; comp[s] = cc; while (!st.empty()) { int u = st.back(); st.pop_back(); for (int v : adj[u]) if (comp[v] < 0) { comp[v] = cc; st.push_back(v); } } cc++; }
+        for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) assert((d.findHalving(a) == d.findHalving(b)) == (comp[a] == comp[b])); }
+    std::cout << "FindSet: plain, fully compressing and path-halving finds returned identical representatives, union by size kept depth within floor(log2 n) without compression, one full-compression find on a 4096-chain walked its depth and the repeat took at most one step, halving shortened paths by half, compression cut total steps by over 20x on a chain workload, and component queries matched BFS" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 분할상환 O(α(N)) (경로 압축 + 크기 기준 합치기)
 // Space Complexity: O(N)
 ```
 ## UnionSet()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-std::vector<int> parent = {0, 1};
-int findSet(int v) { return v == parent[v] ? v : parent[v] = findSet(parent[v]); }
-void unionSet(int a, int b) {
-    a = findSet(a); b = findSet(b);
-    if (a != b) parent[a] = b;
-}
-
+// 합치기 UnionSet (집합 관점의 요약, 정본은 Graph.md Part 8): union(a, b) 는 a 와 b 가 속한 두 집합을 하나로 합친다 — 두 대표를 찾아 같으면 이미 같은 집합이므로 아무것도 하지 않고(false), 다르면 한 대표를 다른 대표의 자식으로 단다(true). 어느 쪽을 아래로 붙이는지가 성능을 가른다: 작은 트리를 큰 트리 밑에 붙이면(크기 기준) 깊이가 log n 이하로 유지된다. 합치기는 되돌릴 수 없고(분리는 지원하지 않음), 연결 성분 수는 성공한 합치기마다 정확히 1 씩 줄어든다.
+// 서로소 집합은 동치 관계의 닫힘을 계산한다: 합치기 열이 주어지면 find 가 같다는 것은 "합치기 간선으로 이어진 경로가 있다"(반사·대칭·추이로 닫힌 관계)와 정확히 같다. 이것이 크러스칼 최소 신장 트리의 사이클 검사, 이미지의 연결 영역 라벨링, 동치류 계산의 기반이다.
+// 검증: ① 무작위 합치기·질의 열(수천 번)에서 매 질의 same(a, b) 가 간선 그래프의 BFS 연결성과 일치 ② 합치기의 반환값이 "서로 다른 집합이었는가" 와 같고 성분 수가 성공마다 1 감소, 최종 성분 수가 BFS 성분 수와 같음 ③ 크기 필드: 루트의 크기 == 그 집합의 실제 원소 수, 모든 크기의 합 == n ④ 반사·대칭·추이(find 동치) ⑤ 크러스칼 응용: 간선을 무게순으로 합치며 사이클을 거르면 신장 트리의 간선 수 n−c, 총 무게가 프림 알고리즘과 같음 ⑥ 자기 자신과 합치기·같은 쌍 재합치기는 false.
+struct DSU { std::vector<int> p, sz; int comps; explicit DSU(int n) : p(n), sz(n, 1), comps(n) { std::iota(p.begin(), p.end(), 0); }
+    int find(int x) { while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; } return x; } bool same(int a, int b) { return find(a) == find(b); }
+    bool unite(int a, int b) { a = find(a); b = find(b); if (a == b) return false; if (sz[a] < sz[b]) std::swap(a, b); p[b] = a; sz[a] += sz[b]; comps--; return true; } };
+int bfsComponents(int n, const std::vector<std::pair<int, int>>& edges, std::vector<int>& comp) { std::vector<std::vector<int>> adj(n); for (auto& e : edges) { adj[e.first].push_back(e.second); adj[e.second].push_back(e.first); } comp.assign(n, -1); int cc = 0;
+    for (int s = 0; s < n; s++) if (comp[s] < 0) { std::vector<int> st{s}; comp[s] = cc; while (!st.empty()) { int u = st.back(); st.pop_back(); for (int v : adj[u]) if (comp[v] < 0) { comp[v] = cc; st.push_back(v); } } cc++; } return cc; }
 int main() {
-    unionSet(0, 1);
-    assert(findSet(0) == findSet(1));
-    std::cout << "UnionSet verified." << std::endl;
-    return 0;
+    std::mt19937 rng(43);
+    for (int rep = 0; rep < 150; rep++) { int n = 1 + (int)(rng() % 80); DSU d(n); std::vector<std::pair<int, int>> edges; int successes = 0;                                                                                                // ① ②
+        for (int step = 0; step < 4 * n; step++) { int a = (int)(rng() % n), b = (int)(rng() % n); if (rng() % 3) { bool different = !d.same(a, b); int before = d.comps; bool merged = d.unite(a, b); assert(merged == different && d.comps == before - (merged ? 1 : 0)); successes += merged; edges.push_back({a, b}); }
+            else { std::vector<int> comp; bfsComponents(n, edges, comp); assert(d.same(a, b) == (comp[a] == comp[b])); } }
+        std::vector<int> comp; int cc = bfsComponents(n, edges, comp); assert(d.comps == cc && successes == n - cc);
+        std::vector<int> count(n, 0); for (int v = 0; v < n; v++) count[d.find(v)]++; int total = 0; for (int v = 0; v < n; v++) if (d.find(v) == v) { assert(d.sz[v] == count[v]); total += d.sz[v]; } assert(total == n);                       // ③ 크기
+        for (int a = 0; a < n && a < 10; a++) for (int b = 0; b < n && b < 10; b++) { assert(d.same(a, a) && d.same(a, b) == d.same(b, a)); for (int c = 0; c < n && c < 10; c++) if (d.same(a, b) && d.same(b, c)) assert(d.same(a, c)); } }               // ④
+    for (int rep = 0; rep < 100; rep++) { int n = 2 + (int)(rng() % 30); std::vector<std::vector<int>> w(n, std::vector<int>(n, 0)); std::vector<std::array<int, 3>> es; for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (rng() % 3 == 0) { int c = 1 + (int)(rng() % 50); w[i][j] = w[j][i] = c; es.push_back({c, i, j}); }   // ⑤ 크러스칼 == 프림
+        std::sort(es.begin(), es.end()); DSU d(n); long kruskal = 0; int used = 0; for (auto& e : es) if (d.unite(e[1], e[2])) { kruskal += e[0]; used++; } long prim = 0; std::vector<bool> in(n, false); std::vector<int> comp; std::vector<std::pair<int, int>> eg; for (auto& e : es) eg.push_back({e[1], e[2]}); int cc = bfsComponents(n, eg, comp);
+        for (int s = 0; s < n; s++) if (!in[s]) { std::vector<int> best(n, 1 << 30); best[s] = 0; for (;;) { int u = -1; for (int v = 0; v < n; v++) if (!in[v] && best[v] < (1 << 30) && (u < 0 || best[v] < best[u])) u = v; if (u < 0) break; in[u] = true; prim += best[u]; for (int v = 0; v < n; v++) if (w[u][v] && !in[v] && w[u][v] < best[v]) best[v] = w[u][v]; } }
+        assert(used == n - cc && kruskal == prim); }
+    { DSU d(5); assert(!d.unite(2, 2) && d.unite(0, 1) && !d.unite(1, 0) && !d.unite(0, 1) && d.comps == 4); }                                                                                                   // ⑥
+    std::cout << "UnionSet: on 150 random union/query sequences the return value of union said exactly whether the sets were different, the component count fell by one per success and ended at the BFS count, every root's size equalled its real member count, find-equivalence was reflexive, symmetric and transitive, and Kruskal built on union found the same minimum spanning forest weight as Prim on 100 random graphs" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 분할상환 O(α(N))
 // Space Complexity: O(N)
 ```
 ## UnionByRank()
@@ -855,41 +2090,80 @@ int main() {
 ## Combination()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
+// 조합(Combination): n 개 중 순서 없이 k 개를 고르는 방법, C(n, k) = n! / (k!(n−k)!). 성질: 대칭 C(n,k) = C(n,n−k), 파스칼 C(n,k) = C(n−1,k−1) + C(n−1,k), 행의 합 Σₖ C(n,k) = 2ⁿ (부분집합의 총수), 반데르몽드 항등식 Σ C(m,i)·C(n,k−i) = C(m+n,k). 값은 빠르게 커지므로 곱셈 공식으로 계산할 때 곱한 뒤 나누면 중간값이 넘친다 — 각 단계에서 `r = r * (n−k+i) / i` 처럼 정수 나눗셈이 항상 나누어떨어지는 순서(i 번째 단계의 r 이 C(n−k+i, i))로 계산한다.
+// 열거: (1) 재귀 백트래킹(원소를 넣고/뺌), (2) 인덱스 배열 c[0..k−1] 를 사전식으로 다음 조합으로 올리는 반복(가장 오른쪽에서 최대값에 닿지 않은 위치를 찾아 1 늘리고 그 오른쪽을 연속으로 채움 — k ≤ n/2 이면 조합당 평균 쓰기 2 번 미만), (3) 길이 n 의 0/1 마스크에 `std::next_permutation` (1 이 k 개). 사전식 순서의 조합에는 순위(rank)와 역순위(unrank)가 있다: 조합수 체계(combinatorial number system)로 순위 = Σ C(n−1−cᵢ, k−i) 를 계산해 O(k) 번의 조회로 번호 ↔ 조합을 오간다.
+// 검증: ① n ≤ 14 모든 k 에서 세 열거 방법이 같은 조합들(사전식)과 개수 C(n,k), 각 조합이 순증가이고 중복 없음 ② 항등식: 대칭·파스칼·행의 합 2ⁿ·반데르몽드·곱셈 공식 == 파스칼 표 (n ≤ 60 에서 64 비트 안에서 정확) ③ k ≤ n/2 에서 반복 방식의 인덱스 쓰기 총수가 조합 수의 2 배 미만(분할상환 상수; k 가 n 에 가까우면 보수 조합 C(n, n−k) 로 바꿔 열거해야 함) ④ 순위: 사전식 i 번째 조합의 순위가 i 이고 unrank 가 역함수(전수) ⑤ 경계: k = 0, k = n, k > n.
+unsigned long long binomMul(int n, int k) { if (k < 0 || k > n) return 0; k = std::min(k, n - k); unsigned long long r = 1; for (int i = 1; i <= k; i++) r = r * (unsigned long long)(n - k + i) / (unsigned long long)i; return r; }
+std::vector<std::vector<unsigned long long>> pascal(int n) { std::vector<std::vector<unsigned long long>> c(n + 1, std::vector<unsigned long long>(n + 1, 0)); for (int i = 0; i <= n; i++) { c[i][0] = 1; for (int j = 1; j <= i; j++) c[i][j] = c[i - 1][j - 1] + (j <= i - 1 ? c[i - 1][j] : 0); } return c; }
+void recur(int n, int k, int start, std::vector<int>& cur, std::vector<std::vector<int>>& out) { if ((int)cur.size() == k) { out.push_back(cur); return; } for (int x = start; x < n; x++) { cur.push_back(x); recur(n, k, x + 1, cur, out); cur.pop_back(); } }
+bool nextComb(std::vector<int>& c, int n, long& writes) { int k = (int)c.size(); int i = k - 1; while (i >= 0 && c[i] == n - k + i) i--; if (i < 0) return false; c[i]++; writes++; for (int j = i + 1; j < k; j++) { c[j] = c[j - 1] + 1; writes++; } return true; }
+std::vector<std::vector<int>> byMaskPermutation(int n, int k) { std::vector<int> mask(n, 0); std::fill(mask.end() - k, mask.end(), 1); std::vector<std::vector<int>> out; do { std::vector<int> c; for (int i = 0; i < n; i++) if (mask[i]) c.push_back(i); out.push_back(c); } while (std::next_permutation(mask.begin(), mask.end())); std::sort(out.begin(), out.end()); return out; }   // 마스크 순열을 사전식으로 정렬
+unsigned long long rankOf(const std::vector<int>& c, int n, const std::vector<std::vector<unsigned long long>>& C) { int k = (int)c.size(); unsigned long long r = 0; for (int i = 0; i < k; i++) { int lo = i ? c[i - 1] + 1 : 0; for (int x = lo; x < c[i]; x++) r += C[n - 1 - x][k - 1 - i]; } return r; }   // 앞에 오는 조합의 개수
+std::vector<int> unrank(unsigned long long r, int n, int k, const std::vector<std::vector<unsigned long long>>& C) { std::vector<int> c; int x = 0; for (int i = 0; i < k; i++) { for (;; x++) { unsigned long long cnt = C[n - 1 - x][k - 1 - i]; if (r < cnt) break; r -= cnt; } c.push_back(x++); } return c; }
 int main() {
-    int n = 4, k = 2, count = 0;
-    std::vector<int> mask(n, 0);
-    std::fill(mask.end() - k, mask.end(), 1);
-    do { count++; } while(std::next_permutation(mask.begin(), mask.end()));
-    assert(count == 6); // 4C2
-    std::cout << "Combination generated." << std::endl;
-    return 0;
+    auto C = pascal(60);
+    for (int n = 0; n <= 14; n++) for (int k = 0; k <= n; k++) { std::vector<std::vector<int>> a; std::vector<int> cur; recur(n, k, 0, cur, a); std::vector<std::vector<int>> b; if (k <= n) { std::vector<int> c(k); std::iota(c.begin(), c.end(), 0); long w = 0; do { b.push_back(c); } while (nextComb(c, n, w)); if (k == 0) assert(w == 0); else if (2 * k <= n) assert(w < 2 * (long)b.size()); }   // ① ③
+        auto m = byMaskPermutation(n, k); assert(a == b && a == m && a.size() == C[n][k] && std::is_sorted(a.begin(), a.end())); for (auto& c : a) { assert(std::is_sorted(c.begin(), c.end()) && std::adjacent_find(c.begin(), c.end()) == c.end()); } }
+    for (int n = 0; n <= 60; n++) { unsigned long long rowSum = 0; for (int k = 0; k <= n; k++) { assert(binomMul(n, k) == C[n][k] && C[n][k] == C[n][n - k]); if (n >= 1 && k >= 1 && k <= n - 1) assert(C[n][k] == C[n - 1][k - 1] + C[n - 1][k]); if (n <= 62) rowSum += C[n][k]; } if (n < 63) assert(rowSum == (1ull << n)); }   // ②
+    for (int m = 0; m <= 10; m++) for (int n = 0; n <= 10; n++) for (int k = 0; k <= m + n; k++) { unsigned long long s = 0; for (int i = 0; i <= k; i++) s += (i <= m && k - i <= n ? C[m][i] * C[n][k - i] : 0); assert(s == C[m + n][k]); }       // 반데르몽드
+    for (int n = 0; n <= 12; n++) for (int k = 0; k <= n; k++) { auto all = byMaskPermutation(n, k); for (std::size_t i = 0; i < all.size(); i++) { assert(rankOf(all[i], n, C) == i && unrank(i, n, k, C) == all[i]); } }                                                  // ④ 순위
+    { assert(binomMul(5, 0) == 1 && binomMul(5, 5) == 1 && binomMul(5, 6) == 0 && binomMul(0, 0) == 1 && binomMul(60, 30) == 118264581564861424ull); std::vector<int> e; long w = 0; assert(!nextComb(e, 5, w)); std::vector<int> full = {0, 1, 2}; assert(!nextComb(full, 3, w)); }   // ⑤
+    std::cout << "Combination: recursive, index-incrementing and mask-permutation enumerations produced identical lexicographic lists of C(n,k) combinations for every n<=14 (for k <= n/2 the iterative method wrote fewer than 2 indices per combination on average), symmetry, Pascal, row-sum and Vandermonde identities held with exact 64-bit arithmetic up to n=60, and rank/unrank by the combinatorial number system were inverse bijections" << std::endl; return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(N)
+// Time Complexity: 열거 분할상환 O(1)/조합 (k ≤ n/2), C(n,k) 계산 O(min(k, n−k))
+// Space Complexity: O(k)
 ```
 ## Permutation()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
+// 순열(Permutation): n 개를 순서를 구분해 늘어놓는 방법, n! 가지. k 개만 골라 늘어놓으면 P(n,k) = n!/(n−k)!, 같은 값이 섞인 다중집합이면 서로 다른 순열이 n!/(m₁! m₂! …) 개(mᵢ = 각 값의 개수). 열거: (1) 재귀 교환(첫 자리에 각 원소를 차례로 놓고 나머지를 재귀), (2) 힙(Heap)의 알고리즘 — 이웃한 순열이 정확히 한 번의 교환으로 이어져서 n! − 1 번의 교환으로 모든 순열을 만든다, (3) 사전식 다음 순열(NextPermutation 항목). 순열 번호 ↔ 순열은 팩토리얼 수 체계(레머 코드)로 O(n²) 에 오간다: 자리 i 에서 남은 원소 중 몇 번째인지를 (n−1−i)! 로 나눈 몫으로 정한다.
+// 순열의 성질: 역순쌍(inversion) 수의 홀짝이 부호(짝/홀 순열), 순환 분해의 (길이 − 1) 합의 홀짝과 같다. 모든 원소가 제자리에 있지 않은 순열(교란순열, derangement)의 수는 D(n) = (n−1)(D(n−1) + D(n−2)), D(0)=1, D(1)=0 이다. 순열의 합성과 역순열은 군(대칭군 Sₙ)을 이룬다.
+// 검증: ① n ≤ 8 에서 재귀·힙·사전식 세 열거가 같은 집합(개수 n!, 중복 없음)이고 힙은 이웃 순열이 교환 한 번(정확히 n!−1 번) ② 다중집합 순열 개수가 n!/Πmᵢ! 이고 서로 다른 것만 나옴 ③ k-순열 개수 P(n,k) ④ 레머 코드로 순위·역순위가 사전식 순서와 일치하는 전단사(n ≤ 8 전수) ⑤ 역순쌍 수 분포(마호니안 수)가 동적 계획과 일치하고 부호 == 순환 분해로 계산한 부호 ⑥ 교란순열 개수가 점화식과 같음, 합성·역순열이 군 법칙을 만족.
+void recur(std::vector<int>& a, std::size_t i, std::vector<std::vector<int>>& out) { if (i == a.size()) { out.push_back(a); return; } for (std::size_t j = i; j < a.size(); j++) { std::swap(a[i], a[j]); recur(a, i + 1, out); std::swap(a[i], a[j]); } }
+void heap(std::vector<int>& a, int k, std::vector<std::vector<int>>& out, long& swaps) { if (k == 1) { out.push_back(a); return; } heap(a, k - 1, out, swaps); for (int i = 0; i < k - 1; i++) { if (k % 2 == 0) std::swap(a[i], a[k - 1]); else std::swap(a[0], a[k - 1]); swaps++; heap(a, k - 1, out, swaps); } }
+unsigned long long fact(int n) { unsigned long long r = 1; for (int i = 2; i <= n; i++) r *= (unsigned long long)i; return r; }
+std::vector<int> unrankPerm(unsigned long long r, int n) { std::vector<int> avail(n), p; std::iota(avail.begin(), avail.end(), 0); for (int i = 0; i < n; i++) { unsigned long long f = fact(n - 1 - i); std::size_t idx = (std::size_t)(r / f); r %= f; p.push_back(avail[idx]); avail.erase(avail.begin() + (long)idx); } return p; }
+unsigned long long rankPerm(const std::vector<int>& p) { int n = (int)p.size(); unsigned long long r = 0; for (int i = 0; i < n; i++) { int smaller = 0; for (int j = i + 1; j < n; j++) smaller += p[j] < p[i]; r += (unsigned long long)smaller * fact(n - 1 - i); } return r; }
+int inversions(const std::vector<int>& p) { int c = 0; for (std::size_t i = 0; i < p.size(); i++) for (std::size_t j = i + 1; j < p.size(); j++) c += p[i] > p[j]; return c; }
+int signByCycles(const std::vector<int>& p) { std::vector<bool> seen(p.size(), false); int parity = 0; for (std::size_t s = 0; s < p.size(); s++) if (!seen[s]) { int len = 0; for (std::size_t x = s; !seen[x]; x = (std::size_t)p[x]) { seen[x] = true; len++; } parity += len - 1; } return parity % 2; }
 int main() {
-    std::vector<int> v = {1, 2, 3};
-    int count = 0;
-    do { count++; } while(std::next_permutation(v.begin(), v.end()));
-    assert(count == 6); // 3!
-    std::cout << "Permutation generated." << std::endl;
-    return 0;
+    for (int n = 0; n <= 8; n++) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); std::vector<std::vector<int>> r, h, lex; { auto b = a; recur(b, 0, r); } long swaps = 0; { auto b = a; if (n) heap(b, n, h, swaps); else h.push_back(b); } { auto b = a; do { lex.push_back(b); } while (std::next_permutation(b.begin(), b.end())); }   // ①
+        std::set<std::vector<int>> sr(r.begin(), r.end()), sh(h.begin(), h.end()), sl(lex.begin(), lex.end()); assert(r.size() == fact(n) && h.size() == fact(n) && lex.size() == fact(n) && sr.size() == fact(n) && sr == sh && sr == sl && std::is_sorted(lex.begin(), lex.end()));
+        if (n >= 1) assert(swaps == (long)fact(n) - 1); for (std::size_t i = 1; i < h.size(); i++) { int diff = 0; for (int j = 0; j < n; j++) diff += h[i][j] != h[i - 1][j]; assert(diff == 2); } }                                                      // 힙: 이웃은 교환 한 번(두 자리만 다름)
+    { std::vector<int> ms = {1, 1, 2, 2, 2, 3}; std::sort(ms.begin(), ms.end()); std::set<std::vector<int>> distinct; { std::vector<int> b = ms; do { distinct.insert(b); } while (std::next_permutation(b.begin(), b.end())); }                              // ②
+      std::map<int, int> mult; for (int x : ms) mult[x]++; unsigned long long expect = fact((int)ms.size()); for (auto& kv : mult) expect /= fact(kv.second); assert(distinct.size() == expect && expect == 60);
+      std::vector<std::vector<int>> all; { auto b = ms; recur(b, 0, all); } std::set<std::vector<int>> viaAll(all.begin(), all.end()); assert(all.size() == fact(6) && viaAll == distinct); }
+    for (int n = 0; n <= 7; n++) for (int k = 0; k <= n; k++) { std::set<std::vector<int>> ks; std::vector<int> pick(n, 0); std::fill(pick.end() - k, pick.end(), 1); do { std::vector<int> items; for (int i = 0; i < n; i++) if (pick[i]) items.push_back(i); do { ks.insert(items); } while (std::next_permutation(items.begin(), items.end())); } while (std::next_permutation(pick.begin(), pick.end())); assert(ks.size() == fact(n) / fact(n - k)); }   // ③ P(n,k)
+    for (int n = 0; n <= 8; n++) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); unsigned long long i = 0; do { assert(rankPerm(a) == i && unrankPerm(i, n) == a); i++; } while (std::next_permutation(a.begin(), a.end())); assert(i == fact(n)); }                  // ④
+    for (int n = 0; n <= 7; n++) { std::vector<unsigned long long> dist(n * (n - 1) / 2 + 1, 0), dp(1, 1); for (int m = 2; m <= n; m++) { std::vector<unsigned long long> next(dp.size() + (std::size_t)m - 1, 0); for (std::size_t j = 0; j < dp.size(); j++) for (int t = 0; t < m; t++) next[j + (std::size_t)t] += dp[j]; dp = next; } if (n <= 1) dp = {1};     // ⑤ 마호니안 수
+        std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); do { int inv = inversions(a); dist.resize(std::max(dist.size(), (std::size_t)inv + 1), 0); dist[(std::size_t)inv]++; assert((inv % 2) == signByCycles(a)); } while (std::next_permutation(a.begin(), a.end()));
+        dist.resize(std::max(dist.size(), dp.size()), 0); dp.resize(dist.size(), 0); assert(dist == dp); }
+    { std::vector<unsigned long long> D = {1, 0}; for (int n = 2; n <= 12; n++) D.push_back((unsigned long long)(n - 1) * (D[n - 1] + D[n - 2])); for (int n = 0; n <= 8; n++) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); unsigned long long cnt = 0; do { bool der = true; for (int i = 0; i < n; i++) if (a[i] == i) der = false; cnt += der; } while (std::next_permutation(a.begin(), a.end())); assert(cnt == D[n]); }   // ⑥
+      std::mt19937 rng(44); for (int rep = 0; rep < 200; rep++) { int n = 1 + (int)(rng() % 8); std::vector<int> p(n), q(n), r(n); std::iota(p.begin(), p.end(), 0); std::iota(q.begin(), q.end(), 0); std::iota(r.begin(), r.end(), 0); std::shuffle(p.begin(), p.end(), rng); std::shuffle(q.begin(), q.end(), rng); std::shuffle(r.begin(), r.end(), rng);
+          auto compose = [&](const std::vector<int>& a, const std::vector<int>& b) { std::vector<int> c(n); for (int i = 0; i < n; i++) c[i] = a[b[i]]; return c; }; std::vector<int> id(n), inv(n); std::iota(id.begin(), id.end(), 0); for (int i = 0; i < n; i++) inv[p[i]] = i;
+          assert(compose(compose(p, q), r) == compose(p, compose(q, r)) && compose(p, id) == p && compose(id, p) == p && compose(p, inv) == id && compose(inv, p) == id && signByCycles(compose(p, q)) == (signByCycles(p) + signByCycles(q)) % 2); } }
+    std::cout << "Permutation: recursive swapping, Heap's algorithm (exactly n!-1 swaps, neighbours differing in two positions) and lexicographic enumeration produced the same n! permutations for n<=8, multiset permutations numbered n!/prod(m_i!) and k-permutations n!/(n-k)!, Lehmer-code rank/unrank was an order-preserving bijection, inversion counts followed the Mahonian distribution with sign equal to the cycle-parity sign, derangements matched their recurrence, and composition obeyed the group laws" << std::endl; return 0;
 }
-// Time Complexity: O(N)
-// Space Complexity: O(N)
+// Time Complexity: 열거 O(n·n!), 순위/역순위 O(n²)
+// Space Complexity: O(n)
 ```
 ## CombinationWithReplacement()
 ### 대표코드
@@ -923,35 +2197,65 @@ int main() {
 ## NextPermutation()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <random>
+#include <set>
+#include <vector>
 
+// 다음 순열(NextPermutation): 사전식 순서에서 현재 배열 다음에 오는 순열을 제자리에서 만든다. 알고리즘(O(n)): ① 뒤에서부터 a[i] < a[i+1] 인 가장 큰 i 를 찾는다(오른쪽 접미사 a[i+1..] 는 내림차순이므로 그 접미사만으로는 더 키울 수 없다). 없으면 마지막 순열 — 전체를 뒤집어 오름차순(처음 순열)으로 되돌리고 false. ② 접미사에서 a[i] 보다 큰 가장 오른쪽(= 가장 작은 큰 값) a[j] 를 찾아 a[i] 와 교환. ③ 접미사를 뒤집어 오름차순으로 만든다(교환 뒤에도 접미사는 내림차순이므로 뒤집기가 곧 정렬).
+// 같은 값이 있어도 올바르게 서로 다른 순열만 사전식으로 한 번씩 만든다(비교가 엄격한 `<` 이기 때문). 호출 횟수의 합은 다중집합 순열 수와 같고, 평균적으로 한 번에 움직이는 원소 수는 상수 근처다(접미사 길이의 평균이 작음: 길이 ≥ m 인 내림차순 접미사는 1/m! 의 비율). 이전 순열(prev_permutation)은 부등호를 반대로 한 대칭 알고리즘이다. 마지막에 처음으로 되돌아오므로 순환 호출이 가능하다.
+// 검증: ① 길이 ≤ 7, 알파벳 크기 ≤ 4 의 모든 배열(중복 포함)에서 직접 구현이 std::next_permutation 과 반환값·결과가 같음 ② 정렬된 다중집합에서 시작해 false 가 나올 때까지의 호출 횟수 == 서로 다른 순열 수 n!/Πmᵢ!, 모두 사전식이고 중복 없음, 끝에서 오름차순으로 복귀 ③ prev 가 next 의 역 ④ 접미사 뒤집기 평균 길이가 작음 (n = 9 전체 순열에서 평균 교환 수 < 2) ⑤ 큰 무작위 배열(n = 1000)과 같은 값만 있는 배열 ⑥ 길이 0·1·2.
+bool nextPerm(std::vector<int>& a, long* moved = nullptr) { int n = (int)a.size(); int i = n - 2; while (i >= 0 && !(a[i] < a[i + 1])) i--; if (i < 0) { std::reverse(a.begin(), a.end()); if (moved) *moved += n / 2; return false; }
+    int j = n - 1; while (!(a[i] < a[j])) j--; std::swap(a[i], a[j]); std::reverse(a.begin() + i + 1, a.end()); if (moved) *moved += 1 + (n - 1 - i) / 2; return true; }
+bool prevPerm(std::vector<int>& a) { int n = (int)a.size(); int i = n - 2; while (i >= 0 && !(a[i] > a[i + 1])) i--; if (i < 0) { std::reverse(a.begin(), a.end()); return false; } int j = n - 1; while (!(a[i] > a[j])) j--; std::swap(a[i], a[j]); std::reverse(a.begin() + i + 1, a.end()); return true; }
+unsigned long long fact(int n) { unsigned long long r = 1; for (int i = 2; i <= n; i++) r *= (unsigned long long)i; return r; }
 int main() {
-    std::vector<int> v = {1, 2, 3};
-    std::next_permutation(v.begin(), v.end()); 
-    assert(v[0] == 1 && v[1] == 3 && v[2] == 2);
-    std::cout << "NextPermutation executed." << std::endl;
-    return 0;
+    for (int n = 0; n <= 7; n++) { int alpha = std::min(4, std::max(n, 1)); std::vector<int> a(n, 0); for (;;) { std::vector<int> mine = a, ref = a; bool b1 = nextPerm(mine), b2 = std::next_permutation(ref.begin(), ref.end()); assert(b1 == b2 && mine == ref);                              // ① 모든 배열
+          std::vector<int> pm = a, pr = a; bool p1 = prevPerm(pm), p2 = std::prev_permutation(pr.begin(), pr.end()); assert(p1 == p2 && pm == pr); int i = n - 1; while (i >= 0 && ++a[i] == alpha) { a[i] = 0; i--; } if (i < 0) break; } }
+    for (int rep = 0; rep < 60; rep++) { std::mt19937 rng(100 + rep); int n = 1 + (int)(rng() % 8), alpha = 1 + (int)(rng() % 4); std::vector<int> ms(n); for (int& x : ms) x = (int)(rng() % alpha); std::sort(ms.begin(), ms.end());                                                                  // ②
+        std::map<int, int> mult; for (int x : ms) mult[x]++; unsigned long long expect = fact(n); for (auto& kv : mult) expect /= fact(kv.second); std::vector<int> a = ms, prev = ms; unsigned long long calls = 1; std::set<std::vector<int>> seen{a}; while (nextPerm(a)) { assert(prev < a && seen.insert(a).second); prev = a; calls++; }
+        assert(calls == expect && a == ms && seen.size() == expect);
+        std::vector<int> b = ms; for (unsigned long long k = 1; k < expect; k++) nextPerm(b); std::vector<int> back = b; for (unsigned long long k = 1; k < expect; k++) { std::vector<int> before = b; bool ok = prevPerm(b); assert(ok); std::vector<int> fwd = b; nextPerm(fwd); assert(fwd == before); } assert(b == ms && back.size() == ms.size()); }       // ③ prev 는 next 의 역
+    { int n = 9; std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); long moved = 0, calls = 0; while (nextPerm(a, &moved)) calls++; assert(calls == (long)fact(n) - 1 && (double)moved / (double)calls < 2.0); }                                    // ④ 평균 교환 수
+    { std::mt19937 rng(7); std::vector<int> a(1000); for (int& x : a) x = (int)(rng() % 50); std::vector<int> ref = a; for (int step = 0; step < 200; step++) { bool b1 = nextPerm(a), b2 = std::next_permutation(ref.begin(), ref.end()); assert(b1 == b2 && a == ref); }
+      std::vector<int> same(100, 7); std::vector<int> s2 = same; assert(!nextPerm(s2) && s2 == same && !prevPerm(s2)); }                                                                                                                                     // ⑤
+    { std::vector<int> e; assert(!nextPerm(e) && e.empty()); std::vector<int> one = {5}; assert(!nextPerm(one) && one == std::vector<int>{5}); std::vector<int> two = {1, 2}; assert(nextPerm(two) && two == (std::vector<int>{2, 1}) && !nextPerm(two) && two == (std::vector<int>{1, 2})); }   // ⑥
+    std::cout << "NextPermutation: the hand-written next/prev permutation matched std::next_permutation and std::prev_permutation on every array of length up to 7 over a 4-letter alphabet (duplicates included), enumerated each distinct multiset permutation exactly once in lexicographic order (n!/prod(m_i!) calls) and wrapped around to sorted order, prev undid next, and the average number of element moves per call over all permutations of 9 items was below 2" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(N)
+// Time Complexity: 호출당 O(n) (평균 O(1)), 전체 순열 열거 O(n!)
+// Space Complexity: O(1)
 ```
 ## GrayCode()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <vector>
 
+// 그레이 코드(Gray Code): 연속한 두 코드가 정확히 한 비트만 다른 이진수 배열. n 비트의 반사 이진 그레이 코드(reflected binary Gray code)는 i 번째 코드가 `g(i) = i ^ (i >> 1)` 이다. 만드는 법(반사): n−1 비트의 코드열을 쓰고, 그 뒤에 같은 열을 거꾸로 쓴 다음, 앞쪽 절반에는 맨 앞에 0, 뒤쪽 절반에는 1 을 붙인다. 역변환(코드 → 번호)은 상위 비트부터의 누적 XOR: `i = g ^ (g >> 1) ^ (g >> 2) ^ …` (로그 번의 시프트로도 가능).
+// 성질: 2ⁿ 개 코드가 모두 다르고(전단사), 이웃한 코드가 한 비트만 다르며 마지막과 처음도 한 비트만 다르다(원형). i−1 에서 i 로 갈 때 뒤집히는 비트는 i 의 끝의 0 의 개수 ctz(i) 이며 이 수열은 눈금자(ruler) 수열 0,1,0,2,0,1,0,3,… 이다 — 비트 j 는 총 2^(n−1−j) 번 뒤집힌다. 응용: 부분집합을 한 원소씩만 바꾸며 열거(합 갱신 O(1)), 회전식 인코더(여러 비트가 동시에 바뀌지 않아 읽는 중 오판독이 없음), 오류 최소화, 하노이 탑, 카르노 맵.
+// 검증: ① n = 1..20 에서 이웃한 코드(원형 포함)의 해밍 거리가 정확히 1, 모든 코드가 서로 다르고(전단사) 역변환이 항등 ② 반사 구성과 공식이 모든 n ≤ 12 에서 같음 ③ 뒤집히는 비트가 ctz(i) 이고 비트 j 의 총 뒤집힘 횟수가 2^(n−1−j) ④ 이진 카운터와 비교: 2ⁿ 번 증가할 때 총 뒤집힌 비트 수가 이진은 정확히 2^(n+1) − 2 − n, 그레이는 정확히 2ⁿ − 1 ⑤ 로그 시프트 역변환이 누적 XOR 과 같음 ⑥ 그레이 순서의 부분집합 합 갱신이 정의대로 계산한 합과 같음.
+uint32_t gray(uint32_t i) { return i ^ (i >> 1); }
+uint32_t grayInverse(uint32_t g) { uint32_t i = 0; for (; g; g >>= 1) i ^= g; return i; }                                                                        // 누적 XOR
+uint32_t grayInverseLog(uint32_t g) { g ^= g >> 16; g ^= g >> 8; g ^= g >> 4; g ^= g >> 2; g ^= g >> 1; return g; }                                          // 로그 번의 시프트
+std::vector<uint32_t> reflect(int n) { std::vector<uint32_t> g{0}; for (int b = 0; b < n; b++) { std::size_t m = g.size(); for (std::size_t i = m; i-- > 0;) g.push_back(g[i] | (1u << b)); } return g; }
 int main() {
-    int n = 3;
-    int gray = n ^ (n >> 1); // For 3 (011), Gray is 2 (010)
-    assert(gray == 2);
-    std::cout << "GrayCode evaluated." << std::endl;
-    return 0;
+    for (int n = 1; n <= 20; n++) { uint32_t N = 1u << n; std::vector<bool> seen(N, false); for (uint32_t i = 0; i < N; i++) { uint32_t g = gray(i); assert(g < N && !seen[g]); seen[g] = true; assert(grayInverse(g) == i && grayInverseLog(g) == i); uint32_t nxt = gray((i + 1) % N); assert(__builtin_popcount(g ^ nxt) == 1); } }   // ① 원형까지
+    for (int n = 1; n <= 12; n++) { auto r = reflect(n); assert(r.size() == (std::size_t)1 << n); for (uint32_t i = 0; i < r.size(); i++) assert(r[i] == gray(i)); }                                                                                  // ②
+    for (int n = 1; n <= 16; n++) { uint32_t N = 1u << n; std::vector<uint32_t> flips(n, 0); for (uint32_t i = 1; i < N; i++) { uint32_t diff = gray(i) ^ gray(i - 1); assert(diff == (1u << __builtin_ctz(i))); flips[__builtin_ctz(i)]++; } for (int j = 0; j < n; j++) assert(flips[j] == (1u << (n - 1 - j))); }   // ③ 눈금자 수열
+    for (int n = 2; n <= 16; n++) { uint32_t N = 1u << n; long long binFlips = 0, grayFlips = 0; for (uint32_t i = 1; i < N; i++) { binFlips += __builtin_popcount(i ^ (i - 1)); grayFlips += __builtin_popcount(gray(i) ^ gray(i - 1)); } assert(grayFlips == (long long)N - 1 && binFlips == 2LL * N - 2 - n && binFlips > grayFlips); }   // ④
+    { std::vector<long long> val = {5, -3, 8, 2, -7, 11, 4, 6, -2, 9}; int n = (int)val.size(); long long sum = 0; uint32_t g = 0; for (uint32_t i = 1; i < (1u << n); i++) { int bit = __builtin_ctz(i); g ^= 1u << bit; sum += (g >> bit & 1) ? val[bit] : -val[bit];                // ⑥ 한 번에 한 원소만 갱신
+          long long want = 0; for (int b = 0; b < n; b++) if (g >> b & 1) want += val[b]; assert(sum == want && g == gray(i)); } }
+    assert(gray(0) == 0 && gray(1) == 1 && gray(2) == 3 && gray(3) == 2 && gray(4) == 6 && gray(5) == 7 && gray(6) == 5 && gray(7) == 4 && grayInverse(4) == 7);                                                                      // 표준 3 비트 열 000 001 011 010 110 111 101 100
+    std::cout << "GrayCode: i ^ (i >> 1) gave 2^n distinct codes for n up to 20 with exactly one bit changing between neighbours (cyclically), the reflect-and-prefix construction equalled the formula, the flipped bit was ctz(i) so bit j flipped 2^(n-1-j) times, a Gray counter changed exactly 2^n - 1 bits in total against many more for a binary counter, and subset sums updated by one term per step matched direct sums" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: g(i) 계산 O(1), 역변환 O(log n) 또는 O(n)
 // Space Complexity: O(1)
 ```
 
@@ -1081,26 +2385,36 @@ int main() {
 ### 대표코드
 ```cpp
 #include <algorithm>
+#include <bitset>
+#include <cassert>
 #include <iostream>
+#include <numeric>
 #include <random>
 #include <vector>
-#include <cassert>
 
-// 0/1 배낭(Knapsack)을 부분집합 선택 문제로 보기: 물건의 집합에서 무게 합이 용량 W 이하인 부분집합 중 가치 합이 최대인 것을 고른다. DP: dp[i][w] = 앞의 i 개 물건 중에서 무게 w 이하로 얻는 최대 가치, 점화식 dp[i][w] = max(dp[i−1][w], dp[i−1][w − wt_i] + val_i).
-// 선택된 부분집합은 표를 거꾸로 따라가며 복원한다(dp[i][w] ≠ dp[i−1][w] 이면 i 번째 물건을 선택). 탐욕법(가치/무게 비율 순)은 항상 최적이 아니지만 분수 배낭(물건을 쪼갤 수 있을 때)의 최적값은 0/1 배낭 최적값의 상한이 된다.
-// 검증: n ≤ 16 무작위 입력 300개에서 ① DP 최적값 == 2ⁿ 완전 열거 ② 복원한 선택의 무게 ≤ W, 가치 == 최적값, 인덱스 중복 없음 ③ 비율 탐욕법 ≤ 최적이고 최적보다 작은 사례가 실제로 존재 ④ 분수 배낭 상한 ≥ 최적 (그리고 정수 해일 때만 같음)
+// 0/1 배낭(Knapsack)을 부분집합 선택 문제로 보기: 물건의 집합에서 무게 합이 용량 W 이하인 부분집합 중 가치 합이 최대인 것을 고른다. 부분집합이 2ⁿ 개라서 완전 열거는 O(2ⁿ·n) 이지만 DP 는 O(n·W): dp[i][w] = 앞의 i 개 물건 중에서 무게 w 이하로 얻는 최대 가치, 점화식 dp[i][w] = max(dp[i−1][w], dp[i−1][w−wt[i]] + val[i]) (i 번째를 넣거나 안 넣거나). 이 시간은 용량 W 의 값에 비례하는 의사 다항 시간이다(NP-난해이지만 W 가 작으면 빠름).
+// 선택된 부분집합은 표를 거꾸로 따라가며 복원한다(dp[i][w] ≠ dp[i−1][w] 이면 i 번째 물건을 선택). 값만 필요하면 w 를 큰 쪽에서 작은 쪽으로 돌려 1 차원 배열 하나(O(W) 공간)로 충분하다 — 작은 쪽부터 돌리면 같은 물건을 여러 번 쓰는 무한 배낭이 된다. 탐욕법(가치/무게 비율 순)은 항상 최적이 아니지만 분수 배낭(물건을 쪼갤 수 있을 때)의 최적값은 0/1 배낭 최적값의 상한이 된다. 가치를 무시하고 "무게 합이 정확히 W 인 부분집합이 있는가"만 물으면 부분집합 합 문제이고 비트 집합 DP(`reach |= reach << wt`)로 64 개씩 묶어 푼다.
+// 검증: n ≤ 16 무작위 입력 300개에서 ① 2차원 DP·1차원 DP·완전 열거(2ⁿ)의 최적값이 같음 ② 복원한 선택의 무게 ≤ W, 가치 == 최적값, 인덱스 중복 없음 ③ 비율 탐욕법 ≤ 최적이고 최적보다 작은 사례가 실제로 존재 ④ 분수 배낭 상한 ≥ 최적 ⑤ 1차원 DP 를 작은 쪽부터 돌리면(무한 배낭) 0/1 최적보다 크거나 같고 큰 사례가 존재 ⑥ 비트 집합 DP 의 도달 가능한 무게 집합 == 완전 열거로 만든 무게 집합.
+int dp2D(const std::vector<int>& wt, const std::vector<int>& val, int W, std::vector<int>& chosen) { int n = (int)wt.size(); std::vector<std::vector<int>> dp(n + 1, std::vector<int>(W + 1, 0));
+    for (int i = 1; i <= n; i++) for (int w = 0; w <= W; w++) { dp[i][w] = dp[i - 1][w]; if (w >= wt[i - 1]) dp[i][w] = std::max(dp[i][w], dp[i - 1][w - wt[i - 1]] + val[i - 1]); }
+    chosen.clear(); int w = W; for (int i = n; i >= 1; i--) if (dp[i][w] != dp[i - 1][w]) { chosen.push_back(i - 1); w -= wt[i - 1]; } std::reverse(chosen.begin(), chosen.end()); return dp[n][W]; }
+int dp1D(const std::vector<int>& wt, const std::vector<int>& val, int W, bool descending) { std::vector<int> dp(W + 1, 0); for (std::size_t i = 0; i < wt.size(); i++) { if (descending) { for (int w = W; w >= wt[i]; w--) dp[w] = std::max(dp[w], dp[w - wt[i]] + val[i]); } else { for (int w = wt[i]; w <= W; w++) dp[w] = std::max(dp[w], dp[w - wt[i]] + val[i]); } } return dp[W]; }
+int bruteBest(const std::vector<int>& wt, const std::vector<int>& val, int W) { int n = (int)wt.size(), best = 0; for (unsigned mask = 0; mask < (1u << n); mask++) { int w = 0, v = 0; for (int i = 0; i < n; i++) if (mask >> i & 1) { w += wt[i]; v += val[i]; } if (w <= W) best = std::max(best, v); } return best; }
+int greedyRatio(const std::vector<int>& wt, const std::vector<int>& val, int W) { std::vector<int> order(wt.size()); std::iota(order.begin(), order.end(), 0); std::sort(order.begin(), order.end(), [&](int a, int b) { return (long long)val[a] * wt[b] > (long long)val[b] * wt[a]; }); int w = 0, v = 0; for (int i : order) if (w + wt[i] <= W) { w += wt[i]; v += val[i]; } return v; }
+double fractionalBound(const std::vector<int>& wt, const std::vector<int>& val, int W) { std::vector<int> order(wt.size()); std::iota(order.begin(), order.end(), 0); std::sort(order.begin(), order.end(), [&](int a, int b) { return (long long)val[a] * wt[b] > (long long)val[b] * wt[a]; }); double v = 0, cap = W; for (int i : order) { if (wt[i] <= cap) { v += val[i]; cap -= wt[i]; } else { v += val[i] * cap / wt[i]; break; } } return v; }
 int main() {
-    std::mt19937 rng(14); int greedyWorse = 0, instances = 0;
-    for (int t = 0; t < 300; t++) { int n = 1 + rng() % 16; std::vector<int> wt(n), val(n); for (int i = 0; i < n; i++) { wt[i] = 1 + rng() % 15; val[i] = 1 + rng() % 30; } int W = 1 + rng() % 45; instances++;
-        std::vector<std::vector<int>> dp(n + 1, std::vector<int>(W + 1, 0)); for (int i = 1; i <= n; i++) for (int w = 0; w <= W; w++) { dp[i][w] = dp[i - 1][w]; if (w >= wt[i - 1]) dp[i][w] = std::max(dp[i][w], dp[i - 1][w - wt[i - 1]] + val[i - 1]); }
-        int best = 0; for (int mask = 0; mask < (1 << n); mask++) { int w = 0, v = 0; for (int i = 0; i < n; i++) if (mask >> i & 1) { w += wt[i]; v += val[i]; } if (w <= W) best = std::max(best, v); } assert(dp[n][W] == best);                       // ① 완전 열거와 같음
-        std::vector<int> chosen; int w = W; for (int i = n; i >= 1; i--) if (dp[i][w] != dp[i - 1][w]) { chosen.push_back(i - 1); w -= wt[i - 1]; } int tw = 0, tv = 0; std::vector<char> seen(n, 0); for (int i : chosen) { assert(!seen[i]); seen[i] = 1; tw += wt[i]; tv += val[i]; } assert(tw <= W && tv == best);   // ② 복원
-        std::vector<int> order(n); for (int i = 0; i < n; i++) order[i] = i; std::sort(order.begin(), order.end(), [&](int a, int b) { return (long long)val[a] * wt[b] > (long long)val[b] * wt[a]; }); int gw = 0, gv = 0; for (int i : order) if (gw + wt[i] <= W) { gw += wt[i]; gv += val[i]; } assert(gv <= best); greedyWorse += gv < best;   // ③ 비율 탐욕법
-        double frac = 0, cap = W; for (int i : order) { if (wt[i] <= cap) { frac += val[i]; cap -= wt[i]; } else { frac += val[i] * cap / wt[i]; break; } } assert(frac >= best - 1e-9); }                                                                            // ④ 분수 배낭 상한
-    assert(greedyWorse > 10);
-    std::cout << "KnapsackSubset: DP optimum equals exhaustive search on " << instances << " random instances and the reconstructed item set is feasible and optimal; ratio-greedy was strictly worse on " << greedyWorse << " instances; the fractional relaxation was always an upper bound" << std::endl; return 0;
+    std::mt19937 rng(14); int greedyWorse = 0, unboundedBigger = 0, instances = 0;
+    for (int t = 0; t < 300; t++) { int n = 1 + (int)(rng() % 16); std::vector<int> wt(n), val(n); for (int i = 0; i < n; i++) { wt[i] = 1 + (int)(rng() % 15); val[i] = 1 + (int)(rng() % 30); } int W = 1 + (int)(rng() % 60); instances++;
+        std::vector<int> chosen; int opt2 = dp2D(wt, val, W, chosen), opt1 = dp1D(wt, val, W, true), brute = bruteBest(wt, val, W); assert(opt2 == brute && opt1 == brute);                                    // ①
+        int tw = 0, tv = 0; std::vector<int> sorted = chosen; assert(std::is_sorted(sorted.begin(), sorted.end()) && std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end()); for (int i : chosen) { tw += wt[i]; tv += val[i]; } assert(tw <= W && tv == opt2);   // ②
+        int g = greedyRatio(wt, val, W); assert(g <= opt2); greedyWorse += g < opt2; assert(fractionalBound(wt, val, W) + 1e-9 >= opt2);                                                                       // ③ ④
+        int unbounded = dp1D(wt, val, W, false); assert(unbounded >= opt2); unboundedBigger += unbounded > opt2; }                                                                                              // ⑤
+    assert(greedyWorse > 10 && unboundedBigger > 20);
+    for (int t = 0; t < 200; t++) { int n = 1 + (int)(rng() % 14); std::vector<int> wt(n); for (int& x : wt) x = 1 + (int)(rng() % 12); std::bitset<200> reach; reach[0] = 1; for (int x : wt) reach |= reach << x; std::bitset<200> brute; for (unsigned mask = 0; mask < (1u << n); mask++) { int w = 0; for (int i = 0; i < n; i++) if (mask >> i & 1) w += wt[i]; if (w < 200) brute[w] = 1; } assert(reach == brute); }   // ⑥
+    { std::vector<int> chosen; assert(dp2D({}, {}, 10, chosen) == 0 && chosen.empty() && dp2D({5}, {9}, 4, chosen) == 0 && chosen.empty() && dp2D({5}, {9}, 5, chosen) == 9 && chosen == std::vector<int>{0}); }
+    std::cout << "KnapsackSubset: the 2D table, the 1D descending-capacity table and exhaustive search over all 2^n subsets gave the same optimum on " << instances << " random instances, the reconstructed item set was feasible, duplicate-free and optimal, ratio-greedy was suboptimal in " << greedyWorse << " instances, the fractional relaxation always bounded the optimum from above, ascending-capacity (unbounded) DP exceeded it in " << unboundedBigger << " cases, and the bitset subset-sum DP matched enumeration" << std::endl; return 0;
 }
-// Time Complexity: O(n · W)
+// Time Complexity: O(n · W) (DP), 복원 O(n), 비트 집합 DP O(n · W / 64)
 // Space Complexity: O(n · W) (복원 포함), 값만 구하면 O(W)
 ```
 
@@ -1273,28 +2587,39 @@ int main() {
 ### 대표코드
 ```cpp
 #include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <map>
+#include <numeric>
 #include <random>
 #include <set>
 #include <vector>
-#include <cassert>
 
-// 몫집합(quotient set) X/~ 은 동치류들의 집합이다. 투영 π: X → X/~ (x ↦ [x])는 전사이고, "~ 을 존중하는 함수" 는 몫집합 위에서 정의할 수 있다: f 가 a ~ b ⇒ f(a) = f(b) (well-defined 조건)를 만족하면 f̃([x]) = f(x) 가 문제없이 정의되고 f̃ ∘ π = f 이며 f̃ 은 유일하다(몫의 보편 성질).
-// 반대로 임의의 함수 f 는 "f(a) = f(b)" 라는 핵 관계 ker f 를 정의하고 이는 동치 관계다 — X/ker f 와 치역 f(X) 사이에는 일대일 대응이 있다(제1 동형 정리의 집합 버전). 프로그램에서는 해시 키·정규형이 이 원리의 실례다: 키가 같은 것을 같은 류로 본다.
-// 검증: ① X = {0..59}, x ~ y ⇔ x mod 6 = y mod 6 에서 몫집합 크기 6, π 가 전사, 잘 정의된 f(x) = (x mod 6)² 의 유도 함수 f̃ 가 f̃∘π = f 를 만족 ② 잘 정의되지 않은 f(x) = x 는 well-defined 검사에서 거부됨 ③ 무작위 함수 200개의 핵 ker f 에서 |X/ker f| = |f(X)| 이고 유도된 f̃ 가 단사
+// 몫집합(quotient set) X/~ 은 동치류들의 집합이다. 투영 π: X → X/~ (x ↦ [x])는 전사이고, "~ 을 존중하는 함수" 는 몫집합 위에서 정의할 수 있다: f 가 a ~ b ⇒ f(a) = f(b) (well-defined 조건)를 만족하면 f̃([x]) = f(x) 가 문제없이 정의되며 f̃∘π = f. 이것이 몫집합의 보편 성질이다: ~ 을 존중하는 모든 함수는 몫집합을 거쳐 유일하게 분해된다.
+// 반대로 임의의 함수 f 는 "f(a) = f(b)" 라는 핵 관계 ker f 를 정의하고 이는 동치 관계다 — X/ker f 와 치역 f(X) 사이에는 일대일 대응이 있다(제1 동형 정리의 집합 버전). 프로그램에서는 해시 키·정규형이 이 원리의 실례다: 키가 같은 것을 같은 류로 본다. 몇 개의 쌍으로 관계를 주면 그것을 포함하는 가장 작은 동치 관계(반사·대칭·추이 닫힘)의 몫집합은 서로소 집합(Union-Find)으로 구한다.
+// 검증: ① X = {0..59}, x ~ y ⇔ x mod 6 = y mod 6 에서 몫집합 크기 6, π 가 전사, 잘 정의된 f(x) = (x mod 6)² 의 유도 함수 f̃ 가 f̃∘π = f 를 만족 ② 잘 정의되지 않은 f(x) = x 는 well-defined 검사에서 거부됨 ③ 무작위 함수 g 의 핵으로 만든 몫집합과 치역 g(X) 사이에 일대일 대응(제1 동형 정리) ④ 무작위 생성 쌍들의 닫힘: Union-Find 로 만든 몫집합이 플로이드–워셜 추이 닫힘으로 만든 동치류와 같고 서로소이며 X 를 덮음, 클래스 수 == n − (병합 성공 횟수) ⑤ 몫집합 위의 연산이 잘 정의됨: (a + b) mod 6 가 대표 선택과 무관 ⑥ 항등 관계의 몫 = X, 전체 관계의 몫 = 한 점.
+struct Quotient { std::vector<int> classOf; std::vector<std::vector<int>> classes; };
+Quotient byKey(int n, int (*key)(int)) { Quotient q; q.classOf.assign(n, -1); std::map<int, int> id; for (int x = 0; x < n; x++) { int k = key(x); auto it = id.find(k); if (it == id.end()) { it = id.emplace(k, (int)q.classes.size()).first; q.classes.push_back({}); } q.classOf[x] = it->second; q.classes[it->second].push_back(x); } return q; }
+Quotient byGenerators(int n, const std::vector<std::pair<int, int>>& gens, int& merges) { std::vector<int> p(n); std::iota(p.begin(), p.end(), 0); auto find = [&](int x) { while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; } return x; }; merges = 0; for (auto& g : gens) { int a = find(g.first), b = find(g.second); if (a != b) { p[a] = b; merges++; } }
+    Quotient q; q.classOf.assign(n, -1); std::map<int, int> id; for (int x = 0; x < n; x++) { int r = find(x); auto it = id.find(r); if (it == id.end()) { it = id.emplace(r, (int)q.classes.size()).first; q.classes.push_back({}); } q.classOf[x] = it->second; q.classes[it->second].push_back(x); } return q; }
+template <class F> bool wellDefined(const Quotient& q, int n, F f) { for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) if (q.classOf[a] == q.classOf[b] && f(a) != f(b)) return false; return true; }
+bool isPartition(const Quotient& q, int n) { std::vector<int> seen(n, 0); for (auto& c : q.classes) { if (c.empty()) return false; for (int x : c) seen[x]++; } for (int x = 0; x < n; x++) if (seen[x] != 1) return false; return true; }
+int mod6(int x) { return x % 6; }
 int main() {
-    const int n = 60, k = 6; std::vector<int> pi(n); std::map<int, int> classId; std::vector<std::set<int>> quotient; for (int x = 0; x < n; x++) { int key = x % k; if (!classId.count(key)) { classId[key] = quotient.size(); quotient.emplace_back(); } pi[x] = classId[key]; quotient[pi[x]].insert(x); }
-    assert((int)quotient.size() == k); std::set<int> image(pi.begin(), pi.end()); assert((int)image.size() == k);                                                                                            // 전사: π 의 치역 = X/~
-    auto wellDefined = [&](auto f) { for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) if (pi[a] == pi[b] && f(a) != f(b)) return false; return true; };
-    auto f = [](int x) { return (x % 6) * (x % 6); }; assert(wellDefined(f)); std::vector<int> ftilde(k); for (int c = 0; c < k; c++) ftilde[c] = f(*quotient[c].begin()); for (int x = 0; x < n; x++) assert(ftilde[pi[x]] == f(x));         // ① 보편 성질 f̃∘π = f
-    auto bad = [](int x) { return x; }; assert(!wellDefined(bad));                                                                                                                                              // ② 잘 정의되지 않음
-    std::mt19937 rng(9); for (int t = 0; t < 200; t++) { int range = 1 + rng() % 12; std::vector<int> g(n); for (int& v : g) v = rng() % range; std::map<int, int> kerClass; std::vector<int> proj(n); int next = 0; for (int x = 0; x < n; x++) { if (!kerClass.count(g[x])) kerClass[g[x]] = next++; proj[x] = kerClass[g[x]]; }
-        std::set<int> gimage(g.begin(), g.end()); assert((int)gimage.size() == next);                                                                                                                              // ③ |X/ker g| = |g(X)|
-        std::vector<int> tilde(next, -1); for (int x = 0; x < n; x++) { assert(tilde[proj[x]] == -1 || tilde[proj[x]] == g[x]); tilde[proj[x]] = g[x]; } std::set<int> vals(tilde.begin(), tilde.end()); assert((int)vals.size() == next); }                  // g̃ 는 단사
-    std::cout << "QuotientSet: X/(mod 6) has 6 classes, the projection is onto, a class-respecting function descends uniquely to the quotient (f~ o pi = f), a non-respecting function is rejected, and for 200 random functions |X/ker f| = |f(X)| with the induced map injective" << std::endl; return 0;
+    const int n = 60; Quotient q = byKey(n, mod6); assert((int)q.classes.size() == 6 && isPartition(q, n)); std::set<int> image(q.classOf.begin(), q.classOf.end()); assert((int)image.size() == 6);                                                         // ① 투영은 전사
+    auto f = [](int x) { return (x % 6) * (x % 6); }; assert(wellDefined(q, n, f)); std::vector<int> ftilde(6); for (int c = 0; c < 6; c++) ftilde[c] = f(q.classes[c].front()); for (int x = 0; x < n; x++) assert(ftilde[q.classOf[x]] == f(x));                          // f̃∘π = f
+    auto bad = [](int x) { return x; }; assert(!wellDefined(q, n, bad));                                                                                                                                                        // ②
+    std::mt19937 rng(9);
+    for (int t = 0; t < 200; t++) { int range = 1 + (int)(rng() % 12); std::vector<int> g(n); for (int& v : g) v = (int)(rng() % range); std::map<int, int> kerClass; std::vector<int> proj(n); int next = 0; for (int x = 0; x < n; x++) { auto it = kerClass.find(g[x]); if (it == kerClass.end()) it = kerClass.emplace(g[x], next++).first; proj[x] = it->second; }      // ③ 제1 동형 정리
+        std::set<int> gimage(g.begin(), g.end()); assert((int)gimage.size() == next); std::vector<int> tilde(next, -1); for (int x = 0; x < n; x++) { assert(tilde[proj[x]] == -1 || tilde[proj[x]] == g[x]); tilde[proj[x]] = g[x]; } std::set<int> values(tilde.begin(), tilde.end()); assert(values == gimage && (int)values.size() == next); }
+    for (int t = 0; t < 200; t++) { int m = 1 + (int)(rng() % 25); std::vector<std::pair<int, int>> gens; for (int k = 0, e = (int)(rng() % (m + 5)); k < e; k++) gens.push_back({(int)(rng() % m), (int)(rng() % m)}); int merges = 0; Quotient uf = byGenerators(m, gens, merges);       // ④ 닫힘
+        std::vector<std::vector<bool>> reach(m, std::vector<bool>(m, false)); for (int i = 0; i < m; i++) reach[i][i] = true; for (auto& gp : gens) reach[gp.first][gp.second] = reach[gp.second][gp.first] = true; for (int k = 0; k < m; k++) for (int i = 0; i < m; i++) for (int j = 0; j < m; j++) if (reach[i][k] && reach[k][j]) reach[i][j] = true;
+        assert(isPartition(uf, m) && (int)uf.classes.size() == m - merges); for (int a = 0; a < m; a++) for (int b = 0; b < m; b++) assert((uf.classOf[a] == uf.classOf[b]) == (bool)reach[a][b]); }
+    { auto add6 = [&](int a, int b) { return (a + b) % 6; }; for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) for (int a2 : q.classes[q.classOf[a]]) for (int b2 : q.classes[q.classOf[b]]) assert(add6(a2, b2) == add6(a, b)); }   // ⑤ 대표 선택과 무관
+    { int merges = 0; Quotient identity = byGenerators(7, {}, merges); assert((int)identity.classes.size() == 7 && merges == 0); std::vector<std::pair<int, int>> all; for (int i = 1; i < 7; i++) all.push_back({0, i}); Quotient whole = byGenerators(7, all, merges); assert((int)whole.classes.size() == 1 && merges == 6); }   // ⑥
+    std::cout << "QuotientSet: X/(mod 6) has 6 classes, the projection is onto, a class-respecting function descends uniquely to the quotient (f~ after pi equals f), a non-respecting function is rejected, the first isomorphism theorem (classes of ker g correspond one-to-one with the image of g) held for 200 random functions, and the quotient generated by random pairs via union-find equalled the Floyd-Warshall equivalence closure" << std::endl; return 0;
 }
-// Time Complexity: 몫집합 구성 O(n), 잘 정의됨 검사 O(n²) (또는 류별 O(n))
+// Time Complexity: 몫집합 구성 O(n α(n)), 잘 정의됨 검사 O(n²) (또는 류별 O(n))
 // Space Complexity: O(n)
 ```
 
@@ -1938,7 +3263,7 @@ int main() {
     double alpha = (double)N / (1 << Q), rate = (double)fp / T, theory = alpha * std::pow(2.0, -R); assert(rate > theory * 0.6 && rate < theory * 1.5);                                                          // ② 이론값
     for (auto& run : f.runs) assert(std::is_sorted(run.begin(), run.end()) && std::adjacent_find(run.begin(), run.end()) == run.end());                                                                          // ④ 런이 정렬·중복 없음
     QF g(Q, R); std::set<uint64_t> more; while (more.size() < 2000) more.insert(rng()); for (uint64_t k : more) g.insert(k); QF u = f.merged(g); std::set<std::pair<uint32_t, uint32_t>> fu = fingerprints; for (uint64_t k : more) fu.insert(g.split(k)); assert(u.n == fu.size()); for (uint64_t k : keys) assert(u.maybe(k)); for (uint64_t k : more) assert(u.maybe(k));    // ⑤ 병합
-    std::cout << "QuotientFilter: concept model of quotient/remainder runs; no false negatives, measured false-positive rate " << rate << " vs alpha*2^-r = " << theory << " (every false positive is exactly a fingerprint collision), runs stay sorted and two filters merge by sorted union of runs" << std::endl; return 0;
+    std::cout << "QuotientFilter: simplified run-based model of quotient/remainder buckets; no false negatives, measured false-positive rate " << rate << " vs alpha*2^-r = " << theory << " (every false positive is exactly a fingerprint collision), runs stay sorted and two filters merge by sorted union of runs" << std::endl; return 0;
 }
 // Time Complexity: 삽입·조회 O(log 런 길이) (이 개념 모델), 실제 몫 필터는 클러스터 길이에 비례하는 O(1) 기대
 // Space Complexity: 원소당 r 비트 + 메타데이터(실제 구현은 r + 3 비트), 이 모델은 벡터 오버헤드가 추가
@@ -2550,6 +3875,7 @@ int main() {
 // 집합과 관계 — 두 집합 A, B 의 곱집합 A × B 의 부분집합이 A 에서 B 로의 관계다. 크기 n 인 집합 위의 이항 관계는 n² 개의 순서쌍 각각을 넣거나 빼므로 모두 2^(n²) 개. 성질별로 세면 — 반사적 2^(n²−n), 대칭적 2^(n(n+1)/2), 반대칭적 2ⁿ·3^(n(n−1)/2) (쌍마다 {없음, a→b, b→a} 세 가지, 자기 쌍은 자유),
 // 추이적(수열 1, 2, 13, 171, 3994, …), 부분 순서(반사+반대칭+추이; 1, 3, 19, 219, 4231, … 구별되는 원소에 이름이 붙은 경우), 동치 관계는 Bell 수(1, 2, 5, 15, 52). 이 부록은 n ≤ 4 에서 2^(n²) ≤ 65536 개 관계를 전부 나열해 위 숫자를 직접 확인한다 — 수학적 사실을 프로그램이 검산하는 연습이다.
 // 추가로 관계의 연산: 역관계, 합성, 곱집합과의 관계(관계 ⊆ A × B 는 A→B 의 "다가 함수" 로 볼 수 있음; 각 a 에 b 가 정확히 하나면 함수). 검증: n = 1..4 에서 위 여섯 종류의 개수 + 전순서(선형 순서)가 n! 개이고 전부 부분 순서임, 동치 ∩ 부분 순서 = 항등 관계뿐, 엄격 부분 순서의 개수가 부분 순서의 개수와 같음(자기 쌍을 넣고 빼는 대응)
+// audit: exhaustive — 모든 2^(n²) 관계를 전수 열거하므로 무작위 표본이 필요 없다
 typedef std::vector<unsigned> Rel;  // 행 비트마스크: rel[a] 의 b 번째 비트 = (a, b) ∈ R
 bool refl(const Rel& r, int n) { for (int a = 0; a < n; a++) if (!(r[a] >> a & 1)) return false; return true; } bool irrefl(const Rel& r, int n) { for (int a = 0; a < n; a++) if (r[a] >> a & 1) return false; return true; }
 bool sym(const Rel& r, int n) { for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) if ((r[a] >> b & 1) != (r[b] >> a & 1)) return false; return true; } bool antisym(const Rel& r, int n) { for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) if ((r[a] >> b & 1) && (r[b] >> a & 1)) return false; return true; }
@@ -2684,13 +4010,23 @@ int main() {
 // 비트마스크와 집합의 대응 — 전체집합이 n 원소 {0..n−1} 이면 부분집합 S ↔ 정수 mask(S) = Σ_{i∈S} 2^i 는 부분집합 2ⁿ 개와 정수 0..2ⁿ−1 사이의 전단사다(이진수의 i 번째 비트 = i 의 소속). 이 대응은 연산까지 보존하는 동형 사상(부울 대수 동형)이다:
 //   합집합 ↔ OR  교집합 ↔ AND  여집합 ↔ XOR (전체 마스크)  차집합 A−B ↔ A & ~B  대칭차 ↔ XOR  A ⊆ B ↔ (A & B) == A  원소 i 추가 ↔ mask | 1<<i  제거 ↔ & ~(1<<i)  소속 ↔ mask >> i & 1  크기 ↔ popcount  최소 원소 ↔ ctz(mask)  최하위 원소 분리 ↔ mask & −mask  최하위 제거 ↔ mask & (mask − 1).
 // 포함 순서 A ⊆ B 이면 mask(A) ≤ mask(B) 이므로 정수의 대소 순서는 포함 순서의 선형 확장이다 — 마스크를 0 부터 증가시키며 DP 를 채우면 "부분집합이 먼저 나온다". Gray 코드는 연속한 마스크가 정확히 한 비트만 다른 열(초입방체의 해밀턴 경로)이다. 검증: ① n ≤ 10 의 모든 마스크 쌍에서 위 연산 대응이 std::set 과 일치(전수) ② 포함 ⇒ 수치 비교 ③ Gray 코드가 모든 마스크를 한 번씩 정확히 한 비트 차이로 방문 ④ 그 외 관용구 (분리·제거·최소 원소)
+std::set<int> toSet(uint32_t m, int n) { std::set<int> s; for (int i = 0; i < n; i++) if (m >> i & 1) s.insert(i); return s; }
+std::set<int> withElement(std::set<int> s, int i) { s.insert(i); return s; } std::set<int> withoutElement(std::set<int> s, int i) { s.erase(i); return s; }
+void verifyOperations(int n) {                                                                                       // ① ② 모든 마스크 쌍에서 연산이 std::set 과 일치
+    const uint32_t full = (1u << n) - 1;
+    for (uint32_t a = 0; a <= full; a++) for (uint32_t b = 0; b <= full; b++) { auto A = toSet(a, n), B = toSet(b, n); std::set<int> u(A), in, df, sd; u.insert(B.begin(), B.end()); for (int x : A) if (B.count(x)) in.insert(x); for (int x : A) if (!B.count(x)) df.insert(x); sd = df; for (int x : B) if (!A.count(x)) sd.insert(x);
+        assert(toSet(a | b, n) == u && toSet(a & b, n) == in && toSet(a & ~b & full, n) == df && toSet(a ^ b, n) == sd); bool sub = std::includes(B.begin(), B.end(), A.begin(), A.end()); assert(((a & b) == a) == sub); if (sub) assert(a <= b); } }
+void verifyIdioms(int n) {                                                                                           // ④ 크기·최소 원소·분리·제거·소속·추가·삭제
+    const uint32_t full = (1u << n) - 1;
+    for (uint32_t a = 0; a <= full; a++) { auto A = toSet(a, n); assert(toSet(full ^ a, n).size() + A.size() == (size_t)n && __builtin_popcount(a) == (int)A.size());
+        if (a) { std::set<int> rest = A; rest.erase(rest.begin()); assert(*A.begin() == __builtin_ctz(a) && (a & -a) == (1u << *A.begin()) && toSet(a & (a - 1), n) == rest); }
+        for (int i = 0; i < n; i++) assert((int)(a >> i & 1) == (int)A.count(i) && toSet(a | (1u << i), n) == withElement(A, i) && toSet(a & ~(1u << i), n) == withoutElement(A, i)); } }
+void verifyGray(int n) {                                                                                             // ③ Gray 코드: 모든 마스크를 한 번씩, 한 비트 차이로
+    const uint32_t full = (1u << n) - 1; std::set<uint32_t> visited; uint32_t prev = 0; for (uint32_t i = 0; i <= full; i++) { uint32_t g = i ^ (i >> 1); assert(visited.insert(g).second); if (i) assert(__builtin_popcount(g ^ prev) == 1); prev = g; } assert(visited.size() == (size_t)full + 1); }
 int main() {
-    for (int n = 1; n <= 8; n++) { const uint32_t full = (1u << n) - 1; auto toSet = [&](uint32_t m) { std::set<int> s; for (int i = 0; i < n; i++) if (m >> i & 1) s.insert(i); return s; };
-        for (uint32_t a = 0; a <= full; a++) for (uint32_t b = 0; b <= full; b++) { auto A = toSet(a), B = toSet(b); std::set<int> u(A), in, df, sd; u.insert(B.begin(), B.end()); for (int x : A) if (B.count(x)) in.insert(x); for (int x : A) if (!B.count(x)) df.insert(x); sd = df; for (int x : B) if (!A.count(x)) sd.insert(x);
-            assert(toSet(a | b) == u && toSet(a & b) == in && toSet(a & ~b & full) == df && toSet(a ^ b) == sd); bool sub = std::includes(B.begin(), B.end(), A.begin(), A.end()); assert(((a & b) == a) == sub); if (sub) assert(a <= b); }                                       // ① ② 연산 · 포함 ⇒ 수치 순서
-        for (uint32_t a = 0; a <= full; a++) { auto A = toSet(a); assert(toSet(full ^ a).size() + A.size() == (size_t)n && __builtin_popcount(a) == (int)A.size()); if (a) { assert(*A.begin() == __builtin_ctz(a) && (a & -a) == (1u << *A.begin()) && toSet(a & (a - 1)) == [&] { std::set<int> r = A; r.erase(r.begin()); return r; }()); } for (int i = 0; i < n; i++) { assert((int)(a >> i & 1) == (int)A.count(i) && toSet(a | (1u << i)) == [&] { std::set<int> r = A; r.insert(i); return r; }() && toSet(a & ~(1u << i)) == [&] { std::set<int> r = A; r.erase(i); return r; }()); } }   // ④ 관용구
-        std::set<uint32_t> visited; uint32_t prev = 0; for (uint32_t i = 0; i <= full; i++) { uint32_t g = i ^ (i >> 1); assert(visited.insert(g).second); if (i) assert(__builtin_popcount(g ^ prev) == 1); prev = g; } assert(visited.size() == (size_t)full + 1); }               // ③ Gray 코드: 모든 마스크를 한 번씩, 한 비트 차이로
-    std::cout << "Bitmask <-> set: for every pair of subsets of an n-element universe (n <= 8) OR/AND/AND-NOT/XOR/complement/subset-test/cardinality/lowest-element idioms equal the std::set operations, inclusion implies numeric order, and the Gray code visits all masks with single-bit steps" << std::endl; return 0;
+    for (int n = 1; n <= 8; n++) { verifyOperations(n); verifyIdioms(n); verifyGray(n); }
+    std::mt19937 rng(23); for (int rep = 0; rep < 2000; rep++) { int n = 9 + (int)(rng() % 20); uint32_t full = n == 32 ? ~0u : (1u << n) - 1; uint32_t a = (uint32_t)rng() & full, b = (uint32_t)rng() & full; auto A = toSet(a, n), B = toSet(b, n); std::set<int> u(A); u.insert(B.begin(), B.end()); assert(toSet(a | b, n) == u && toSet(~a & full, n).size() + A.size() == (size_t)n); }   // 큰 우주(9..28 원소)는 무작위 표본
+    std::cout << "Bitmask <-> set: for every pair of subsets of an n-element universe (n <= 8) OR/AND/AND-NOT/XOR/complement/subset-test/cardinality/lowest-element idioms equal the std::set operations, inclusion implies numeric order, the Gray code visits all masks with single-bit steps, and random masks over larger universes agree too" << std::endl; return 0;
 }
 // Time Complexity: 집합 연산 O(1) (n ≤ 64), 전수 검증 O(4ⁿ)
 // Space Complexity: O(1)

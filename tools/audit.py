@@ -16,6 +16,7 @@ Usage: python3 -I tools/audit.py [modes] [--only REGEX] [--jobs N] [--repeat N] 
   --list         print the names of placeholder-only entries
   --list-thin    print STL-wrapper / concept-only / trivial-assert entries (`// audit: stl-demo` exempts)
   --list-shallow print entries with <= 4 asserts, <= 40 lines and no randomized check
+                 (`// audit: exhaustive` exempts programs that enumerate their whole input space)
 """
 import concurrent.futures as cf
 import hashlib
@@ -202,7 +203,7 @@ def thin_reason(code):
 
 
 def shallow_reason(code):
-    if code is None or "audit: stl-demo" in code:
+    if code is None or "audit: stl-demo" in code or "audit: exhaustive" in code:
         return None
     lines = [l for l in code.split("\n") if l.strip()]
     asserts = len(re.findall(r"\bassert\(", code))
