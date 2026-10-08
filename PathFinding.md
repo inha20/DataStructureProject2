@@ -2713,72 +2713,230 @@ int main() {
 ## DistanceVectorRouting()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 거리 벡터 라우팅(Bellman–Ford 의 분산판; RIP·초기 ARPANET 이 사용): 각 라우터는 "모든 목적지까지의 거리 벡터" 만 알고 이웃에게 자기 벡터를 주기적으로 알린다. 이웃 v 의 광고를 받으면 dist[d] = min_v (w(u,v) + dist_v[d]) 로 다시 계산하고 그때의 v 를 다음 홉으로 둔다.
+// 전체 지도는 몰라도 수렴하며 라운드 수는 최대 (노드 수 − 1)이다(최단 경로의 간선 수 상한). 약점은 "나쁜 소식이 느리게 퍼진다" — 링크가 끊겨 거리가 늘어나면 이웃끼리 서로를 경유 경로로 믿고 거리를 하나씩 올리는 무한 세기(count-to-infinity)가 일어난다.
+// 완화책: 분할 지평(split horizon: 어떤 이웃에서 배운 경로는 그 이웃에게 광고하지 않음)과 독 역전(poison reverse: 대신 무한대로 광고). 검증: ① 무작위 연결 그래프 100개에서 수렴 라운드 ≤ n−1 이고 거리표가 Floyd–Warshall 과 일치 ② 모든 쌍에서 다음 홉을 따라가면 루프 없이 도착하고 비용이 dist 와 같음 ③ 선형망 A–B–C 에서 B–C 링크가 끊길 때 분할 지평 없이는 무한 세기(INF=16 까지 십수 라운드), 있으면 2~3 라운드로 수렴
+const int INF = 16 * 1000;
+struct Net { int n; std::vector<std::vector<int>> w; };
+struct Tables { std::vector<std::vector<int>> dist, next; };
+bool roundOnce(const Net& net, Tables& T, int cap, bool splitHorizon) {                                                          // 동기식 한 라운드: 모두 "이전 라운드 벡터" 를 받아 새로 계산
+    Tables prev = T; bool changed = false;
+    for (int u = 0; u < net.n; u++) for (int d = 0; d < net.n; d++) { if (u == d) continue; int best = INF, via = -1;
+        for (int v = 0; v < net.n; v++) if (net.w[u][v] > 0) { int adv = prev.dist[v][d]; if (splitHorizon && prev.next[v][d] == u) adv = INF;                                // 독 역전: u 에서 배운 경로는 u 에게 무한대로 광고
+            if (adv >= INF) continue; int c = net.w[u][v] + adv; if (c < best) { best = c; via = v; } }
+        if (best >= cap) { best = INF; via = -1; } if (best != T.dist[u][d] || via != T.next[u][d]) changed = true; T.dist[u][d] = best; T.next[u][d] = via; }
+    return changed; }
+Tables init(const Net& net) { Tables T{std::vector<std::vector<int>>(net.n, std::vector<int>(net.n, INF)), std::vector<std::vector<int>>(net.n, std::vector<int>(net.n, -1))}; for (int u = 0; u < net.n; u++) T.dist[u][u] = 0; return T; }
 int main() {
-    std::cout << "Nodes exchange distance vectors (Bellman-Ford based)." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(15); int graphs = 0, maxRounds = 0;
+    for (int t = 0; t < 100; t++) {
+        int n = 6 + rng() % 8; Net net{n, std::vector<std::vector<int>>(n, std::vector<int>(n, 0))}; for (int i = 1; i < n; i++) { int j = rng() % i, c = 1 + rng() % 9; net.w[i][j] = net.w[j][i] = c; } for (int k = 0; k < n; k++) { int a = rng() % n, b = rng() % n, c = 1 + rng() % 9; if (a != b && !net.w[a][b]) net.w[a][b] = net.w[b][a] = c; }
+        Tables T = init(net); int rounds = 0; while (roundOnce(net, T, INF, false)) { rounds++; assert(rounds <= n); } maxRounds = std::max(maxRounds, rounds); assert(rounds <= n - 1 + 1);                                       // ① 수렴 라운드(마지막 "변화 없음" 확인 라운드 제외)
+        std::vector<std::vector<int>> fw(n, std::vector<int>(n, INF)); for (int i = 0; i < n; i++) { fw[i][i] = 0; for (int j = 0; j < n; j++) if (net.w[i][j]) fw[i][j] = net.w[i][j]; } for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) fw[i][j] = std::min(fw[i][j], fw[i][k] + fw[k][j]);
+        for (int u = 0; u < n; u++) for (int d = 0; d < n; d++) { assert(T.dist[u][d] == fw[u][d]); int cur = u, cost = 0, hops = 0; while (cur != d) { int nx = T.next[cur][d]; assert(nx >= 0 && hops++ < n); cost += net.w[cur][nx]; cur = nx; } assert(cost == fw[u][d]); }        // ② 루프 없는 전달
+        graphs++; }
+    auto chainRounds = [&](bool split) { Net net{3, std::vector<std::vector<int>>(3, std::vector<int>(3, 0))}; net.w[0][1] = net.w[1][0] = net.w[1][2] = net.w[2][1] = 1; Tables T = init(net); const int cap = 16; for (int i = 0; i < 10; i++) roundOnce(net, T, cap, split); assert(T.dist[0][2] == 2 && T.dist[1][2] == 1);
+        net.w[1][2] = net.w[2][1] = 0; int rounds = 0; while (roundOnce(net, T, cap, split)) { rounds++; assert(rounds < 100); } assert(T.dist[0][2] >= INF && T.dist[1][2] >= INF); return rounds; };
+    int plain = chainRounds(false), split = chainRounds(true); assert(plain >= 12 && split <= 3);                                                                                          // ③ 무한 세기 vs 독 역전
+    std::cout << "DistanceVectorRouting: " << graphs << " random networks converge to Floyd-Warshall distances in at most " << maxRounds << " rounds; after a link failure the chain A-B-C needs " << plain << " rounds without split horizon (count-to-infinity up to 16) and " << split << " with poison reverse" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 라운드당 O(V² · deg), 수렴까지 최대 V − 1 라운드
+// Space Complexity: O(V²)
 ```
 ## LinkStateRouting()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 링크 상태 라우팅(OSPF·IS-IS): 거리 벡터가 "이웃의 요약" 만 믿는 것과 달리 모든 라우터가 네트워크 전체 지도(링크 상태 데이터베이스, LSDB)를 갖고 스스로 Dijkstra 를 돌린다.
+// 지도를 맞추는 방법이 플러딩이다. 각 라우터는 자기 링크 목록을 담은 LSA(링크 상태 광고: 출처, 일련번호 seq, 링크들)를 만들어 모든 이웃에게 보내고, LSA 를 받은 라우터는 "저장된 seq 보다 새것일 때만" 저장하고 받은 곳을 뺀 모든 이웃에게 다시 보낸다. 일련번호 덕에 중복·순서 뒤바뀜에도 안전하고 한 LSA 는 한 링크당 최대 한 번씩만 오간다.
+// 링크가 끊기면 양 끝 라우터가 seq 를 올려 새 LSA 를 내고 같은 방식으로 퍼진다. 검증: ① 무작위 지연·순서로 메시지를 처리해도 플러딩이 끝나면 모든 라우터의 LSDB 가 같음 ② 각 라우터의 Dijkstra 거리가 전역 최단 거리와 일치(링크는 양쪽 LSA 가 모두 광고할 때만 사용 = 양방향 확인) ③ 메시지 수 ≤ LSA 수 × 2·링크 수 ④ 링크 장애 후 LSA 2개만 플러딩되어 갱신되고 표가 다시 정확해짐
+struct LSA { int origin, seq; std::vector<std::pair<int, int>> links; };
+struct Msg { int from, to; LSA lsa; };
+struct Sim {
+    int n; std::vector<std::vector<int>> w; std::vector<std::map<int, LSA>> db; std::vector<Msg> pending; long messages = 0; std::mt19937 rng;
+    Sim(int n, std::vector<std::vector<int>> w, int seed) : n(n), w(w), db(n), rng(seed) {}
+    LSA make(int u, int seq) const { LSA a{u, seq, {}}; for (int v = 0; v < n; v++) if (w[u][v] > 0) a.links.push_back({v, w[u][v]}); return a; }
+    void originate(int u, int seq) { LSA a = make(u, seq); db[u][u] = a; for (int v = 0; v < n; v++) if (w[u][v] > 0) pending.push_back({u, v, a}); }
+    void run() { while (!pending.empty()) { size_t k = rng() % pending.size(); Msg m = pending[k]; pending[k] = pending.back(); pending.pop_back(); messages++;                                   // 임의 순서로 전달(지연·재정렬 모사)
+            auto it = db[m.to].find(m.lsa.origin); if (it != db[m.to].end() && it->second.seq >= m.lsa.seq) continue; db[m.to][m.lsa.origin] = m.lsa; for (int v = 0; v < n; v++) if (w[m.to][v] > 0 && v != m.from) pending.push_back({m.to, v, m.lsa}); } }
+    std::vector<int> spf(int src) const {                                                                                    // 라우터 src 가 자기 LSDB 로 구하는 거리
+        const int INF = 1 << 28; std::vector<int> d(n, INF); typedef std::pair<int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[src] = 0; pq.push({0, src}); auto cost = [&](int a, int b) { auto ia = db[src].find(a), ib = db[src].find(b); if (ia == db[src].end() || ib == db[src].end()) return -1; int ca = -1, cb = -1; for (auto& l : ia->second.links) if (l.first == b) ca = l.second; for (auto& l : ib->second.links) if (l.first == a) cb = l.second; return (ca > 0 && cb > 0) ? ca : -1; };   // 양방향 확인
+        while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; auto iu = db[src].find(u); if (iu == db[src].end()) continue; for (auto& l : iu->second.links) { int c = cost(u, l.first); if (c > 0 && du + c < d[l.first]) { d[l.first] = du + c; pq.push({d[l.first], l.first}); } } } return d; }
+};
+std::vector<std::vector<int>> allPairs(int n, const std::vector<std::vector<int>>& w) { const int INF = 1 << 28; std::vector<std::vector<int>> d(n, std::vector<int>(n, INF)); for (int i = 0; i < n; i++) { d[i][i] = 0; for (int j = 0; j < n; j++) if (w[i][j] > 0) d[i][j] = w[i][j]; } for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) d[i][j] = std::min(d[i][j], d[i][k] + d[k][j]); return d; }
 int main() {
-    std::cout << "Nodes build global map, run Dijkstra locally." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(21); int nets = 0; long totalMsgs = 0, failMsgs = 0;
+    for (int t = 0; t < 60; t++) {
+        int n = 6 + rng() % 8; std::vector<std::vector<int>> w(n, std::vector<int>(n, 0)); int edges = 0; for (int i = 1; i < n; i++) { int j = rng() % i, c = 1 + rng() % 9; w[i][j] = w[j][i] = c; edges++; } for (int k = 0; k < n; k++) { int a = rng() % n, b = rng() % n, c = 1 + rng() % 9; if (a != b && !w[a][b]) { w[a][b] = w[b][a] = c; edges++; } }
+        std::vector<std::map<int, LSA>> first; for (int order = 0; order < 3; order++) { Sim sim(n, w, 100 * t + order); for (int u = 0; u < n; u++) sim.originate(u, 1); sim.run();
+            for (int u = 0; u < n; u++) { assert((int)sim.db[u].size() == n); for (int v = 0; v < n; v++) assert(sim.db[u][v].seq == 1 && sim.db[u][v].links == sim.db[0][v].links); }                                                 // ① 모든 LSDB 동일
+            auto ap = allPairs(n, w); for (int u = 0; u < n; u++) { auto d = sim.spf(u); for (int v = 0; v < n; v++) assert(d[v] == ap[u][v]); } assert(sim.messages <= (long)n * 2 * edges); if (order == 0) totalMsgs += sim.messages; }       // ②③
+        Sim sim(n, w, 7); for (int u = 0; u < n; u++) sim.originate(u, 1); sim.run(); long before = sim.messages;
+        int a = -1, b = -1; for (int u = 0; u < n && a < 0; u++) for (int v = u + 1; v < n; v++) if (w[u][v] > 0) { auto w2 = w; w2[u][v] = w2[v][u] = 0; int comps = 0; std::vector<int> seen(n, 0); for (int s = 0; s < n; s++) if (!seen[s]) { comps++; std::vector<int> st = {s}; seen[s] = 1; while (!st.empty()) { int x = st.back(); st.pop_back(); for (int y = 0; y < n; y++) if (w2[x][y] > 0 && !seen[y]) { seen[y] = 1; st.push_back(y); } } } if (comps == 1) { a = u; b = v; break; } }
+        if (a >= 0) { sim.w[a][b] = sim.w[b][a] = 0; sim.originate(a, 2); sim.originate(b, 2); sim.run(); failMsgs += sim.messages - before; auto ap = allPairs(n, sim.w); for (int u = 0; u < n; u++) { auto d = sim.spf(u); for (int v = 0; v < n; v++) assert(d[v] == ap[u][v]); } nets++; }     // ④ 장애 후 갱신
+    }
+    assert(nets > 30 && failMsgs * 2 < totalMsgs);
+    std::cout << "LinkStateRouting: " << nets << " networks; LSDBs identical under 3 random delivery orders, SPF tables equal global shortest paths; initial flooding used " << totalMsgs << " messages in total, re-converging after a link failure only " << failMsgs << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 플러딩 O(LSA 수 · 링크 수), SPF O(E log V) 라우터마다
+// Space Complexity: O(라우터 수 · 링크 수) (각 라우터가 LSDB 보유)
 ```
 ## OSPF()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// OSPF(Open Shortest Path First, RFC 2328): 링크 상태 라우팅에 실무 규칙을 얹은 IGP 이다. 이 구현이 다루는 규칙은 넷 — ① 링크 비용 = 기준 대역폭 / 링크 대역폭(정수 반올림, 최소 1) ② SPF 결과가 같은 비용의 다중 경로(ECMP)면 다음 홉 집합을 모두 유지
+// ③ 지정 라우터(DR) 선출: 우선순위가 높은 라우터, 같으면 라우터 ID 가 큰 쪽 ④ 영역(area) 계층: 영역 간 트래픽은 반드시 백본(area 0)을 경유하는 ABR 를 거치며 같은 영역 목적지는 영역 안 경로가 항상 우선(더 싼 바깥 경로가 있어도) — 확장성의 대가로 flat SPF 보다 길 수 있다.
+// 검증: ① 비용 공식 ② ECMP — 다음 홉 집합이 정의(w(u,v)+d(v,t) == d(u,t))와 같고 무작위로 골라 따라가도 최단 비용으로 도착, 경로 수가 곱 규칙으로 센 값과 같음 ③ DR 선출이 라우터 입장 순서와 무관 ④ 영역 계층 비용 ≥ flat SPF, 같은 영역은 영역 내부 경로이며 계층이 더 비싼 사례가 존재
+const int INF = 1 << 28;
+int ospfCost(long refMbps, long linkMbps) { return (int)std::max(1L, refMbps / linkMbps); }
+int electDR(const std::vector<std::pair<int, int>>& routers) { int best = -1; std::pair<int, int> key{-1, -1}; for (size_t i = 0; i < routers.size(); i++) { std::pair<int, int> k{routers[i].first, routers[i].second}; if (k > key) { key = k; best = i; } } return routers[best].second; }      // (우선순위, 라우터 ID) 사전식 최대
+struct Graph { int n; std::vector<std::vector<int>> w; };
+std::vector<int> dijkstra(const Graph& g, int s) { std::vector<int> d(g.n, INF); typedef std::pair<int, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int v = 0; v < g.n; v++) if (g.w[u][v] > 0 && du + g.w[u][v] < d[v]) { d[v] = du + g.w[u][v]; pq.push({d[v], v}); } } return d; }
 int main() {
-    std::cout << "OSPF is the standard Link-State protocol." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    assert(ospfCost(100, 100) == 1 && ospfCost(100, 10) == 10 && ospfCost(100, 1000) == 1 && ospfCost(100, 1) == 100 && ospfCost(1000, 1000) == 1 && ospfCost(1000, 10) == 100);                          // ① 비용 공식
+    std::mt19937 rng(31); std::vector<std::pair<int, int>> rs = {{1, 10}, {5, 3}, {5, 7}, {0, 99}}; int dr = electDR(rs); assert(dr == 7); for (int k = 0; k < 20; k++) { std::shuffle(rs.begin(), rs.end(), rng); assert(electDR(rs) == 7); }       // ③ DR 선출은 순서 무관
+    int ecmpNets = 0, multi = 0; for (int t = 0; t < 60; t++) {
+        int n = 8 + rng() % 5; Graph g{n, std::vector<std::vector<int>>(n, std::vector<int>(n, 0))}; for (int i = 1; i < n; i++) { int j = rng() % i, c = 1 + rng() % 3; g.w[i][j] = g.w[j][i] = c; } for (int k = 0; k < 2 * n; k++) { int a = rng() % n, b = rng() % n, c = 1 + rng() % 3; if (a != b && !g.w[a][b]) g.w[a][b] = g.w[b][a] = c; }
+        std::vector<std::vector<int>> d(n); for (int s = 0; s < n; s++) d[s] = dijkstra(g, s);
+        for (int s = 0; s < n; s++) for (int tt = 0; tt < n; tt++) if (s != tt) { std::vector<int> hops; for (int v = 0; v < n; v++) if (g.w[s][v] > 0 && g.w[s][v] + d[v][tt] == d[s][tt]) hops.push_back(v); assert(!hops.empty()); multi += hops.size() > 1;       // ② ECMP 다음 홉 집합
+            std::vector<long> paths(n, 0); std::vector<int> order(n); for (int i = 0; i < n; i++) order[i] = i; std::sort(order.begin(), order.end(), [&](int a, int b) { return d[a][tt] < d[b][tt]; }); paths[tt] = 1; for (int u : order) if (u != tt) for (int v = 0; v < n; v++) if (g.w[u][v] > 0 && g.w[u][v] + d[v][tt] == d[u][tt]) paths[u] += paths[v];
+            long cnt = 0; std::function<void(int)> walk = [&](int u) { if (u == tt) { cnt++; return; } for (int v = 0; v < n; v++) if (g.w[u][v] > 0 && g.w[u][v] + d[v][tt] == d[u][tt]) walk(v); }; walk(s); assert(cnt == paths[s]);
+            int cur = s, cost = 0; while (cur != tt) { std::vector<int> c; for (int v = 0; v < n; v++) if (g.w[cur][v] > 0 && g.w[cur][v] + d[v][tt] == d[cur][tt]) c.push_back(v); int pick = c[rng() % c.size()]; cost += g.w[cur][pick]; cur = pick; } assert(cost == d[s][tt]); } ecmpNets++; }
+    int hierWorse = 0, hierEqual = 0, hierSame = 0;
+    for (int t = 0; t < 80; t++) {
+        int n = 15; std::vector<int> area(n); for (int i = 0; i < n; i++) area[i] = i < 5 ? 0 : (i < 10 ? 1 : 2); Graph g{n, std::vector<std::vector<int>>(n, std::vector<int>(n, 0))}; auto link = [&](int a, int b, int c) { g.w[a][b] = g.w[b][a] = c; };
+        for (int base : {0, 5, 10}) { for (int i = 1; i < 5; i++) link(base + i, base + rng() % i, 1 + rng() % 6); for (int k = 0; k < 3; k++) { int a = base + rng() % 5, b = base + rng() % 5; if (a != b && !g.w[a][b]) link(a, b, 1 + rng() % 6); } }
+        link(4, 5, 1 + rng() % 4); link(3, 10, 1 + rng() % 4); link(9, 12, 1 + rng() % 4);                                                                                       // 4–5 는 백본↔영역1, 3–10 은 백본↔영역2 의 ABR 연결로 간주; 9–12 는 백본을 거치지 않는 영역1–영역2 지름길(flat SPF 만 사용)
+        std::vector<std::vector<int>> flat(n); for (int s = 0; s < n; s++) flat[s] = dijkstra(g, s);
+        auto intra = [&](int s, int a) { Graph h = g; for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (area[u] != a || area[v] != a) h.w[u][v] = 0; return dijkstra(h, s); };       // 영역 a 의 링크만 사용
+        std::vector<std::vector<int>> in0(n), in1(n), in2(n); for (int s = 0; s < n; s++) { in0[s] = intra(s, 0); in1[s] = intra(s, 1); in2[s] = intra(s, 2); }
+        auto areaDist = [&](int s, int a) { return a == 0 ? in0[s] : (a == 1 ? in1[s] : in2[s]); };
+        for (int s = 0; s < n; s++) for (int tt = 0; tt < n; tt++) { if (s == tt) continue; int hier;
+            if (area[s] == area[tt]) hier = areaDist(s, area[s])[tt];                                                                                                          // 같은 영역은 영역 안 경로가 우선
+            else { hier = INF; int as = area[s], at = area[tt]; std::vector<int> ds = areaDist(s, as);
+                struct Abr { int inArea, inBackbone, area; }; std::vector<Abr> list = {{5, 4, 1}, {10, 3, 2}};                                                                  // (영역 쪽 노드, 백본 쪽 노드, 영역 번호)
+                for (auto& a1 : list) for (auto& a2 : list) { if (as != 0 && a1.area != as) continue; if (at != 0 && a2.area != at) continue; int up = as == 0 ? 0 : ds[a1.inArea]; int toBackboneStart = as == 0 ? s : a1.inBackbone; int mid = in0[toBackboneStart][at == 0 ? tt : a2.inBackbone]; int down = at == 0 ? 0 : areaDist(a2.inArea, at)[tt]; int extra = 0; if (as != 0) extra += g.w[a1.inArea][a1.inBackbone]; if (at != 0) extra += g.w[a2.inBackbone][a2.inArea]; if (up < INF && mid < INF && down < INF) hier = std::min(hier, up + extra + mid + down); } }
+            if (hier >= INF) continue; assert(hier >= flat[s][tt]); if (area[s] == area[tt]) hierSame++; else if (hier == flat[s][tt]) hierEqual++; else hierWorse++; } }
+    assert(ecmpNets == 60 && multi > 100 && hierWorse > 0 && hierEqual > 0 && hierSame > 0);
+    std::cout << "OSPF: cost formula and DR election verified; ECMP next-hop sets, path counts and random ECMP walks checked on " << ecmpNets << " networks (" << multi << " multipath pairs); area routing: " << hierEqual << " inter-area routes match flat SPF, " << hierWorse << " are longer because they must cross the backbone" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: SPF O(E log V), ECMP 경로 수 O(E)
+// Space Complexity: O(V + E)
 ```
 ## RIP()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// RIP(Routing Information Protocol, RFC 2453): 홉 수를 비용으로 쓰는 가장 단순한 거리 벡터 프로토콜. 매 30 초마다 전체 경로표를 이웃에게 광고하고, 비용이 16 이면 도달 불가(무한대)로 취급한다 — 그래서 지름 15 홉이 넘는 망은 못 쓴다(확장성 한계).
+// 무한 세기가 16 에서 멈추도록 한계를 둔 것이 이 설계의 핵심이다. 안정화 기법: 분할 지평 + 독 역전(받은 쪽으로는 비용 16 으로 광고)과 변화가 생기면 주기를 기다리지 않고 바로 알리는 촉발 갱신(triggered update). 경로를 알려 주던 이웃이 침묵하면 180 초 뒤 만료(timeout), 120 초 뒤 삭제(garbage collection).
+// 여기서는 라운드 모델로 검증한다. ① 홉 수 ≤ 15 인 목적지는 BFS 최단 홉과 같고 그보다 먼 목적지는 도달 불가(16)로 남음 ② 선형망의 끝 링크가 끊기면 독 역전이 있으면 나쁜 소식이 한 홉씩 퍼지는 만큼(≤ 7 라운드)에, 없으면 무한 세기로 16 까지 걸려 수렴 ③ 최종 표가 끊긴 뒤의 BFS 와 일치하고, 서로를 가리키는 루프가 남지 않음
+const int INF = 16;
+struct Net { int n; std::vector<std::vector<int>> adj; };
+struct RT { std::vector<std::vector<int>> dist, next; };
+RT init(const Net& net) { RT r{std::vector<std::vector<int>>(net.n, std::vector<int>(net.n, INF)), std::vector<std::vector<int>>(net.n, std::vector<int>(net.n, -1))}; for (int u = 0; u < net.n; u++) r.dist[u][u] = 0; return r; }
+bool round(const Net& net, RT& r, bool poison) {                                                                                     // 한 번의 주기적 갱신: 모두가 이전 표를 광고하고 받은 값 + 1 로 갱신(RIP 은 현재 다음 홉이 비용을 올려 알려도 따라간다)
+    RT prev = r; bool changed = false;
+    for (int u = 0; u < net.n; u++) for (int d = 0; d < net.n; d++) { if (u == d) continue; int best = INF, via = -1; for (int v : net.adj[u]) { int adv = prev.dist[v][d]; if (poison && prev.next[v][d] == u) adv = INF; if (adv + 1 < best) { best = adv + 1; via = v; } } if (best >= INF) { best = INF; via = -1; } if (best != r.dist[u][d] || via != r.next[u][d]) changed = true; r.dist[u][d] = best; r.next[u][d] = via; }
+    return changed; }
+std::vector<int> bfs(const Net& net, int s) { std::vector<int> d(net.n, INF); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int v : net.adj[u]) if (d[v] >= INF && v != s) { d[v] = d[u] + 1; q.push(v); } } return d; }
 int main() {
-    std::cout << "RIP uses hop counts up to 15 (Distance Vector)." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    Net chain{20, std::vector<std::vector<int>>(20)}; for (int i = 0; i + 1 < 20; i++) { chain.adj[i].push_back(i + 1); chain.adj[i + 1].push_back(i); } RT r = init(chain); int rounds = 0; while (round(chain, r, true)) rounds++;
+    for (int d = 0; d < 20; d++) { int hops = d; if (hops <= 15) assert(r.dist[0][d] == hops); else assert(r.dist[0][d] == INF); } assert(r.dist[0][15] == 15 && r.dist[0][16] == INF);                       // ① 15 홉까지만 도달
+    std::mt19937 rng(3); int nets = 0;
+    for (int t = 0; t < 60; t++) { int n = 6 + rng() % 8; Net net{n, std::vector<std::vector<int>>(n)}; auto add = [&](int a, int b) { if (std::find(net.adj[a].begin(), net.adj[a].end(), b) == net.adj[a].end()) { net.adj[a].push_back(b); net.adj[b].push_back(a); } }; for (int i = 1; i < n; i++) add(i, rng() % i); for (int k = 0; k < n / 2; k++) { int a = rng() % n, b = rng() % n; if (a != b) add(a, b); }
+        RT q = init(net); while (round(net, q, true)) {} for (int s = 0; s < n; s++) { auto d = bfs(net, s); for (int v = 0; v < n; v++) assert(q.dist[s][v] == std::min(d[v], INF)); } nets++; }
+    auto chainFail = [&](bool poison, int N) { Net ch{N, std::vector<std::vector<int>>(N)}; for (int i = 0; i + 1 < N; i++) { ch.adj[i].push_back(i + 1); ch.adj[i + 1].push_back(i); } RT x = init(ch); while (round(ch, x, poison)) {}
+        Net cut = ch; cut.adj[N - 2].erase(std::find(cut.adj[N - 2].begin(), cut.adj[N - 2].end(), N - 1)); cut.adj[N - 1].erase(std::find(cut.adj[N - 1].begin(), cut.adj[N - 1].end(), N - 2)); int rounds = 0; while (round(cut, x, poison)) { rounds++; assert(rounds < 200); }
+        for (int s = 0; s < N; s++) { auto d = bfs(cut, s); for (int v = 0; v < N; v++) { assert(x.dist[s][v] == std::min(d[v], INF)); int cur = s, hops = 0; while (cur != v && x.next[cur][v] >= 0) { cur = x.next[cur][v]; assert(++hops <= N); } assert(cur == v || x.dist[s][v] >= INF); } } return rounds; };      // ③ 끊긴 뒤 BFS 와 일치, 루프 없음
+    int withP = chainFail(true, 8), withoutP = chainFail(false, 8); assert(withP <= 7 && withoutP >= 12 && withP < withoutP);                                                                                 // ② 독 역전이 있으면 한 홉씩 전파되는 7 라운드, 없으면 무한 세기로 16 까지
+    std::cout << "RIP: 15-hop limit verified on a 20-router chain (convergence in " << rounds << " rounds, farther routers stay at 16); " << nets << " random networks match BFS hop counts; cutting the last link of an 8-router chain needs " << withP << " rounds with poison reverse versus " << withoutP << " without" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 라운드당 O(V² · deg), 수렴은 최대 16 라운드 근처
+// Space Complexity: O(V²)
 ```
 ## BGPPathSelection()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// BGP 경로 선택(RFC 4271 9.1): 같은 목적지 접두사에 대해 여러 경로(광고)를 받으면 정해진 순서의 단계로 하나를 고른다 — ① 가장 높은 LOCAL_PREF(정책) ② 가장 짧은 AS_PATH ③ 가장 낮은 ORIGIN(IGP < EGP < incomplete)
+// ④ 가장 낮은 MED(단, 같은 이웃 AS 에서 온 경로끼리만 비교) ⑤ eBGP 경로를 iBGP 보다 선호 ⑥ 다음 홉까지 IGP 비용이 가장 낮은 것 ⑦ 가장 낮은 라우터 ID(최종 타이브레이크). 자기 AS 번호가 AS_PATH 에 있는 경로는 루프이므로 버린다.
+// 함정: ④ MED 는 이웃 AS 가 같을 때만 비교하므로 "두 경로를 짝지어 이기는 쪽을 남기는" 반복 선택은 비이행적이라 광고가 도착한 순서에 결과가 달라진다. 순서에 의존하지 않는 방식은 각 단계마다 후보를 걸러내는 필터 열이다(결정적 MED). 
+// 두 번째 주제는 정책 충돌: LOCAL_PREF 를 각 AS 가 제멋대로 정하면 안정 해가 없는 BAD GADGET 이 생겨 라우팅이 영원히 진동한다(Griffin–Wilfong). 검증: ① 필터 열 선택이 무작위 광고 집합 500개의 모든 도착 순서(20 가지 순열)에서 같은 결과 ② 쌍별 반복 비교는 순서에 따라 달라지는 집합이 존재 ③ 필터 열 결과는 어떤 경로도 선택 후보에서 (정의상) 더 좋은 경로에 지배당하지 않음 ④ BAD GADGET 은 상태가 순환하고 GOOD GADGET 은 수렴
+struct Route { int localPref, asLen, origin, med, nbrAS, ebgp, igp, rid; std::vector<int> asPath; };
+bool loops(const Route& r, int myAS) { return std::find(r.asPath.begin(), r.asPath.end(), myAS) != r.asPath.end(); }
+const Route* selectFilter(const std::vector<Route>& rs, int myAS) {
+    std::vector<const Route*> c; for (const Route& r : rs) if (!loops(r, myAS)) c.push_back(&r); if (c.empty()) return nullptr;
+    auto keepMax = [&](auto f) { int m = -1e9; for (auto* r : c) m = std::max(m, f(*r)); std::vector<const Route*> k; for (auto* r : c) if (f(*r) == m) k.push_back(r); c = k; }; auto keepMin = [&](auto f) { keepMax([&](const Route& r) { return -f(r); }); };
+    keepMax([](const Route& r) { return r.localPref; }); keepMin([](const Route& r) { return r.asLen; }); keepMin([](const Route& r) { return r.origin; });
+    { std::map<int, int> minMed; for (auto* r : c) { auto it = minMed.find(r->nbrAS); if (it == minMed.end() || r->med < it->second) minMed[r->nbrAS] = r->med; } std::vector<const Route*> k; for (auto* r : c) if (r->med == minMed[r->nbrAS]) k.push_back(r); c = k; }              // MED: 이웃 AS 별로 최소만 남김
+    keepMax([](const Route& r) { return r.ebgp; }); keepMin([](const Route& r) { return r.igp; }); keepMin([](const Route& r) { return r.rid; }); return c[0]; }
+bool betterPair(const Route& a, const Route& b) {                                                                                      // 짝지어 비교(MED 는 같은 이웃 AS 일 때만)
+    if (a.localPref != b.localPref) return a.localPref > b.localPref; if (a.asLen != b.asLen) return a.asLen < b.asLen; if (a.origin != b.origin) return a.origin < b.origin; if (a.nbrAS == b.nbrAS && a.med != b.med) return a.med < b.med;
+    if (a.ebgp != b.ebgp) return a.ebgp > b.ebgp; if (a.igp != b.igp) return a.igp < b.igp; return a.rid < b.rid; }
+const Route* selectPairwise(const std::vector<Route>& rs, int myAS) { const Route* best = nullptr; for (const Route& r : rs) { if (loops(r, myAS)) continue; if (!best || betterPair(r, *best)) best = &r; } return best; }
+typedef std::vector<std::vector<std::vector<int>>> Prefs;                                                                               // prefs[v] = 선호 순서대로의 허용 경로들(각 경로는 v 에서 0 까지의 노드 열)
+std::vector<std::vector<int>> spvp(const Prefs& prefs, int n, bool& cycled) {                                                          // 동기식 SPVP: 매 라운드 각 노드가 이웃의 현재 경로를 보고 가장 선호하는 가능한 경로를 고름
+    std::vector<std::vector<int>> cur(n); cur[0] = {0}; std::set<std::vector<std::vector<int>>> seen; cycled = false; seen.insert(cur);
+    for (int step = 0; step < 100; step++) { auto nxt = cur; for (int v = 1; v < n; v++) { nxt[v].clear(); for (auto& p : prefs[v]) { int nb = p[1]; std::vector<int> tail(p.begin() + 1, p.end()); if (cur[nb] == tail) { nxt[v] = p; break; } } } if (nxt == cur) return cur; cur = nxt; if (!seen.insert(cur).second) { cycled = true; return cur; } } return cur; }
 int main() {
-    std::cout << "BGP chooses paths based on policies/contracts." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(41); int myAS = 100, orderDependent = 0, sets = 0;
+    for (int t = 0; t < 500; t++) {
+        int k = 3 + rng() % 4; std::vector<Route> rs; for (int i = 0; i < k; i++) { Route r; r.localPref = 100 + 10 * (rng() % 2); r.asLen = 2 + rng() % 2; r.origin = rng() % 2; r.nbrAS = 1 + rng() % 3; r.med = rng() % 4; r.ebgp = rng() % 2; r.igp = rng() % 3; r.rid = 100 + i; r.asPath.assign(r.asLen, 7); if (rng() % 10 == 0) r.asPath[0] = myAS; rs.push_back(r); }
+        const Route* ref = selectFilter(rs, myAS); bool pairDiffers = false; const Route* pr = selectPairwise(rs, myAS); std::vector<int> pairIds; for (int sh = 0; sh < 20; sh++) { std::vector<Route> p = rs; std::shuffle(p.begin(), p.end(), rng);
+            const Route* a = selectFilter(p, myAS); if (ref) { assert(a && a->rid == ref->rid); } else assert(!a); const Route* b = selectPairwise(p, myAS); if (pr && b && b->rid != pr->rid) pairDiffers = true; }       // ① 필터 열은 순서 무관
+        sets++; orderDependent += pairDiffers;
+        if (ref) { for (const Route& r : rs) if (!loops(r, myAS) && r.localPref > ref->localPref) assert(false); for (const Route& r : rs) if (!loops(r, myAS) && r.localPref == ref->localPref && r.asLen < ref->asLen) assert(false); } }          // ③ 정책·AS 길이 단계에서 지배당하지 않음
+    assert(orderDependent > 0);                                                                                                          // ② 쌍별 반복 선택은 순서에 따라 달라짐
+    Prefs bad(4), good(4);                                                                                                               // 노드 0 이 목적지. BAD GADGET: 1→(1 3 0) > (1 0), 2→(2 1 0) > (2 0), 3→(3 2 0) > (3 0)
+    bad[1] = {{1, 3, 0}, {1, 0}}; bad[2] = {{2, 1, 0}, {2, 0}}; bad[3] = {{3, 2, 0}, {3, 0}}; good[1] = {{1, 3, 0}, {1, 0}}; good[2] = {{2, 0}}; good[3] = {{3, 2, 0}, {3, 0}};
+    bool badCycle, goodCycle; auto sb = spvp(bad, 4, badCycle); auto sg = spvp(good, 4, goodCycle); assert(badCycle && !goodCycle && sg[2] == std::vector<int>({2, 0}) && sg[3] == std::vector<int>({3, 2, 0}) && sg[1] == std::vector<int>({1, 0}));
+    std::cout << "BGPPathSelection: " << sets << " route sets; the filter-sequence decision process gave one answer under all arrival orders, while pairwise comparison changed its answer for " << orderDependent << " sets (MED is only comparable within a neighbor AS); BAD GADGET oscillates forever, GOOD GADGET converges" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 선택 O(경로 수 × 단계 수), SPVP 한 라운드 O(노드 × 선호 경로 수)
+// Space Complexity: O(경로 수)
 ```
 
 # Part 14. 응용
