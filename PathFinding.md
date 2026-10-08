@@ -1934,72 +1934,299 @@ int main() {
 ## NavigationMesh()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 내비게이션 메시(NavMesh): 걸을 수 있는 영역을 볼록 다각형(여기서는 삼각형)들로 덮고, 다각형 사이의 공유 변(포털)으로 인접 그래프를 만든 지도 표현이다. 격자보다 노드가 적고 경로가 격자 방향에 얽매이지 않는다.
+// 길찾기는 두 단계다. ① 삼각형 그래프에서 A*/Dijkstra 로 "복도"(삼각형 열)를 구한다. ② 복도의 포털들을 따라 깔때기(funnel) 알고리즘(Lee & Preparata, 게임에서는 Mononen 의 "Simple Stupid Funnel")으로 줄을 팽팽히 당긴 최단 경로를 뽑는다 — 꺾이는 곳은 장애물 모서리뿐이다.
+// 검증(무작위 지터 격자 메시, 삼각형 약 32% 를 막고 핀치 제거): ① 깔때기 경로의 모든 선분이 걸을 수 있는 영역 안 ② 같은 메시에서 모서리 정점 가시성 그래프로 구한 "정확한 최단 경로" 이상 ③ 포털 중점을 잇는 경로 이하 ④ 정확 최단과 일치하는 비율과 평균 오차 보고
+typedef std::pair<double, double> V;
+double cross(V a, V b, V c) { return (b.first - a.first) * (c.second - a.second) - (b.second - a.second) * (c.first - a.first); }       // >0: c 는 a→b 의 왼쪽
+double dist(V a, V b) { return std::hypot(a.first - b.first, a.second - b.second); }
+struct Mesh {
+    std::vector<V> v; std::vector<std::array<int, 3>> tri, nb; std::vector<char> walk; std::vector<std::pair<int, int>> boundary;
+    void build(int G, std::mt19937& g, int blockPct) {
+        for (int j = 0; j <= G; j++) for (int i = 0; i <= G; i++) { double jx = (i == 0 || i == G) ? 0 : ((int)(g() % 61) - 30) / 100.0, jy = (j == 0 || j == G) ? 0 : ((int)(g() % 61) - 30) / 100.0; v.push_back({i + jx, j + jy}); }
+        auto id = [&](int i, int j) { return j * (G + 1) + i; };
+        for (int j = 0; j < G; j++) for (int i = 0; i < G; i++) { int a = id(i, j), b = id(i + 1, j), c = id(i + 1, j + 1), d = id(i, j + 1); if ((i + j) % 2) { tri.push_back({a, b, c}); tri.push_back({a, c, d}); } else { tri.push_back({a, b, d}); tri.push_back({b, c, d}); } }
+        walk.assign(tri.size(), 1); for (size_t t = 0; t < tri.size(); t++) if ((int)(g() % 100) < blockPct) walk[t] = 0;
+        for (bool changed = true; changed;) {                                                                                       // 핀치(꼭짓점으로만 맞닿는 걷는 삼각형 부채꼴 둘 이상)를 없앤다 — 폭 0 인 통로는 다닐 수 없다
+            changed = false; std::vector<std::vector<int>> inc(v.size()); for (size_t t = 0; t < tri.size(); t++) for (int x : tri[t]) inc[x].push_back(t);
+            for (size_t x = 0; x < v.size(); x++) { std::vector<int> ws; for (int t : inc[x]) if (walk[t]) ws.push_back(t); if (ws.size() < 2) continue; std::vector<int> comp(ws.size()); for (size_t i = 0; i < ws.size(); i++) comp[i] = i;
+                auto shares = [&](int a, int b) { int common = 0; for (int p : tri[a]) for (int q : tri[b]) common += p == q; return common >= 2; }; for (size_t i = 0; i < ws.size(); i++) for (size_t j = 0; j < i; j++) if (shares(ws[i], ws[j])) { int ci = comp[i], cj = comp[j]; for (auto& c : comp) if (c == ci) c = cj; }
+                bool pinch = false; for (int c : comp) pinch |= c != comp[0]; if (pinch) { for (int t : inc[x]) walk[t] = 1; changed = true; } } }
+        nb.assign(tri.size(), {-1, -1, -1}); std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> edges;
+        for (size_t t = 0; t < tri.size(); t++) if (walk[t]) for (int k = 0; k < 3; k++) { int p = tri[t][k], q = tri[t][(k + 1) % 3]; edges[{std::min(p, q), std::max(p, q)}].push_back({(int)t, k}); }
+        for (auto& [e, lst] : edges) { if (lst.size() == 2) { nb[lst[0].first][lst[0].second] = lst[1].first; nb[lst[1].first][lst[1].second] = lst[0].first; } else boundary.push_back(e); }
+    }
+    bool inTri(int t, V p) const { for (int k = 0; k < 3; k++) if (cross(v[tri[t][k]], v[tri[t][(k + 1) % 3]], p) < -1e-12) return false; return true; }
+    int locate(V p) const { for (size_t t = 0; t < tri.size(); t++) if (walk[t] && inTri(t, p)) return t; return -1; }
+    V centroid(int t) const { return {(v[tri[t][0]].first + v[tri[t][1]].first + v[tri[t][2]].first) / 3, (v[tri[t][0]].second + v[tri[t][1]].second + v[tri[t][2]].second) / 3}; }
+    bool visible(V a, V b) const {                                                                                                  // 선분이 어떤 경계 변도 진짜로 가로지르지 않고 영역 안에 머무는가
+        const double e = 1e-9; for (auto [pi, qi] : boundary) { V p = v[pi], q = v[qi]; double d1 = cross(a, b, p), d2 = cross(a, b, q), d3 = cross(p, q, a), d4 = cross(p, q, b); if (((d1 > e && d2 < -e) || (d1 < -e && d2 > e)) && ((d3 > e && d4 < -e) || (d3 < -e && d4 > e))) return false; }
+        for (int s = 1; s < 8; s++) { V m{a.first + (b.first - a.first) * s / 8, a.second + (b.second - a.second) * s / 8}; if (locate(m) < 0) return false; } return true; }
+};
+std::vector<V> funnel(V s, V t, const std::vector<std::pair<V, V>>& portals) {                                                       // portals[i] = (왼쪽, 오른쪽)
+    std::vector<std::pair<V, V>> P = {{s, s}}; P.insert(P.end(), portals.begin(), portals.end()); P.push_back({t, t});
+    std::vector<V> path = {s}; V apex = s, left = s, right = s; int leftI = 0, rightI = 0;
+    for (int i = 1; i < (int)P.size(); i++) {
+        V nl = P[i].first, nr = P[i].second;
+        if (cross(apex, right, nr) >= 0) { if (apex == right || cross(apex, left, nr) < 0) { right = nr; rightI = i; } else { path.push_back(left); apex = left; int ai = leftI; left = right = apex; leftI = rightI = ai; i = ai; continue; } }     // 오른쪽 변이 안쪽으로 좁아짐 / 왼쪽 변을 넘으면 왼쪽 점이 새 꼭짓점
+        if (cross(apex, left, nl) <= 0) { if (apex == left || cross(apex, right, nl) > 0) { left = nl; leftI = i; } else { path.push_back(right); apex = right; int ai = rightI; left = right = apex; leftI = rightI = ai; i = ai; continue; } }
+    }
+    if (path.back() != t) path.push_back(t); return path; }
 int main() {
-    std::cout << "NavMesh groups walkable areas into convex polygons." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(14); int queries = 0, exactMatch = 0; double ratioSum = 0, worst = 1;
+    for (int mesh = 0; mesh < 8; mesh++) {
+        Mesh M; M.build(7, g, 32); int T = M.tri.size(); std::vector<int> vid; std::vector<int> index(M.v.size(), -1); for (auto [p, q] : M.boundary) for (int x : {p, q}) if (index[x] < 0) { index[x] = vid.size(); vid.push_back(x); }
+        int nv = vid.size(); std::vector<std::vector<char>> vis(nv, std::vector<char>(nv, 0)); for (int i = 0; i < nv; i++) for (int j = i + 1; j < nv; j++) vis[i][j] = vis[j][i] = M.visible(M.v[vid[i]], M.v[vid[j]]);
+        for (int q = 0; q < 25; q++) {
+            auto randomPoint = [&](int& tri) { for (;;) { tri = g() % T; if (!M.walk[tri]) continue; double a = (g() % 1000) / 1000.0, b = (g() % 1000) / 1000.0; if (a + b > 1) { a = 1 - a; b = 1 - b; } V p0 = M.v[M.tri[tri][0]], p1 = M.v[M.tri[tri][1]], p2 = M.v[M.tri[tri][2]]; return V{p0.first + a * (p1.first - p0.first) + b * (p2.first - p0.first), p0.second + a * (p1.second - p0.second) + b * (p2.second - p0.second)}; } };
+            int ts, tt; V s = randomPoint(ts), e = randomPoint(tt);
+            std::vector<double> d(T, 1e18); std::vector<int> par(T, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[ts] = 0; pq.push({0, ts});                // ① 삼각형 그래프(중심 간 거리)
+            while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; if (u == tt) break; for (int k = 0; k < 3; k++) { int w = M.nb[u][k]; if (w < 0) continue; double nd = du + dist(M.centroid(u), M.centroid(w)); if (nd < d[w]) { d[w] = nd; par[w] = u; pq.push({nd, w}); } } }
+            if (d[tt] > 1e17) continue; std::vector<int> corridor; for (int x = tt; x >= 0; x = par[x]) corridor.push_back(x); std::reverse(corridor.begin(), corridor.end());
+            std::vector<std::pair<V, V>> portals; double mid = 0; V prev = s; for (size_t i = 0; i + 1 < corridor.size(); i++) { int u = corridor[i], k = 0; while (M.nb[u][k] != corridor[i + 1]) k++; V p = M.v[M.tri[u][k]], r = M.v[M.tri[u][(k + 1) % 3]]; portals.push_back({r, p}); V m{(p.first + r.first) / 2, (p.second + r.second) / 2}; mid += dist(prev, m); prev = m; } mid += dist(prev, e);
+            std::vector<V> path = funnel(s, e, portals); double len = 0; for (size_t i = 1; i < path.size(); i++) { len += dist(path[i - 1], path[i]); assert(M.visible(path[i - 1], path[i])); }       // ② 모든 선분이 영역 안
+            std::vector<double> best(nv + 2, 1e18); std::vector<V> pts; for (int x : vid) pts.push_back(M.v[x]); pts.push_back(s); pts.push_back(e); auto see = [&](int i, int j) { if (i < nv && j < nv) return (bool)vis[i][j]; return M.visible(pts[i], pts[j]); };
+            best[nv] = 0; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> p2; p2.push({0, nv}); while (!p2.empty()) { auto [du, u] = p2.top(); p2.pop(); if (du > best[u]) continue; for (int w = 0; w < nv + 2; w++) if (w != u && see(u, w) && du + dist(pts[u], pts[w]) < best[w] - 1e-12) { best[w] = du + dist(pts[u], pts[w]); p2.push({best[w], w}); } }
+            double exact = best[nv + 1]; assert(exact <= len + 1e-7 && len <= mid + 1e-7);                                                              // 정확한 최단 ≤ 깔때기 ≤ 포털 중점 경로
+            queries++; exactMatch += len <= exact + 1e-7; ratioSum += len / exact; worst = std::max(worst, len / exact);
+        }
+    }
+    assert(queries > 100 && ratioSum / queries < 1.05);
+    std::cout << "NavigationMesh: " << queries << " queries; funnel path inside the mesh and never longer than the portal-midpoint route; equals the exact visibility-graph optimum in " << exactMatch << ", mean ratio " << ratioSum / queries << " (worst " << worst << ")" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삼각형 그래프 탐색 O(T log T) + 깔때기 O(포털 수)
+// Space Complexity: O(T)
 ```
 ## WaypointGraph()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 웨이포인트 그래프: 지도 위에 소수의 "길목 점" 을 찍고 서로 이어진 점끼리 간선으로 두면, 수천 칸의 격자 대신 수백 개 노드로 길을 찾는다(게임 레벨의 수작업 웨이포인트가 같은 발상이다).
+// 여기서는 자동으로 만든다. ① 자유 칸을 무작위 순서로 훑으며 아직 어떤 웨이포인트에서도 보이지 않는(반경 R 안에서 시선이 닿지 않는) 칸을 새 웨이포인트로 삼는다 — 모든 자유 칸이 웨이포인트 하나 이상에서 보이게 된다(덮개 성질).
+// 각 칸의 "소유자" 는 자기를 볼 수 있는 가장 가까운 웨이포인트이다. ② 시선이 닿고 거리가 2R 이하인 웨이포인트 쌍을 잇는다. ③ 격자에서 이웃한 두 칸 x, y 의 소유자 a, b 가 다르면 a→x→y→b 라는 실제 경로가 있으므로 그 길이로 간선을 잇는다 —
+// 이 간선들 덕에 격자의 모든 길이 웨이포인트 간선으로 옮겨져 연결성이 격자와 같아지고 경로가 크게 돌아가지 않는다. 질의는 시작·목표에서 보이는 웨이포인트에 임시 간선을 붙여 Dijkstra, 마지막에 시선이 닿는 먼 점으로 건너뛰는 줄 당기기(string pulling)를 한다.
+// 검증: ① 모든 간선과 경로 선분이 시선 안 ② 질의 성공 여부가 격자 연결성과 정확히 일치 ③ 노드 수가 칸 수보다 훨씬 적음 ④ 경로 길이를 격자 최적(유클리드 비용 8방향)과 비교 — 웨이포인트를 그대로 따를 때와 줄 당기기 뒤의 평균 비율을 보고한다
+typedef std::pair<int, int> P;
+struct Grid { int R, C; std::vector<std::string> w; bool blocked(int r, int c) const { return r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#'; } };
+bool segBox(double x0, double y0, double x1, double y1, double bx0, double by0, double bx1, double by1) {                       // 닫힌 사각형과 선분이 만나는가(Liang–Barsky)
+    double t0 = 0, t1 = 1, dx = x1 - x0, dy = y1 - y0, p[4] = {-dx, dx, -dy, dy}, q[4] = {x0 - bx0, bx1 - x0, y0 - by0, by1 - y0};
+    for (int i = 0; i < 4; i++) { if (p[i] == 0) { if (q[i] < 0) return false; } else { double r = q[i] / p[i]; if (p[i] < 0) { if (r > t1) return false; t0 = std::max(t0, r); } else { if (r < t0) return false; t1 = std::min(t1, r); } } }
+    return t0 <= t1 + 1e-12; }
+bool los(const Grid& g, P a, P b) { double x0 = a.second + .5, y0 = a.first + .5, x1 = b.second + .5, y1 = b.first + .5; for (int r = std::min(a.first, b.first); r <= std::max(a.first, b.first); r++) for (int c = std::min(a.second, b.second); c <= std::max(a.second, b.second); c++) if (g.blocked(r, c) && segBox(x0, y0, x1, y1, c, r, c + 1, r + 1)) return false; return true; }
+double dist(P a, P b) { return std::hypot(a.first - b.first, a.second - b.second); }
+std::vector<int> components(const Grid& g) { std::vector<int> id(g.R * g.C, -1); int k = 0; for (int s = 0; s < g.R * g.C; s++) if (!g.blocked(s / g.C, s % g.C) && id[s] < 0) { std::vector<int> st = {s}; id[s] = k; while (!st.empty()) { int u = st.back(); st.pop_back(); const int dr[4] = {1, -1, 0, 0}, dc[4] = {0, 0, 1, -1}; for (int d = 0; d < 4; d++) { int r = u / g.C + dr[d], c = u % g.C + dc[d]; if (!g.blocked(r, c) && id[r * g.C + c] < 0) { id[r * g.C + c] = k; st.push_back(r * g.C + c); } } } k++; } return id; }
+double gridOptimum(const Grid& g, P s, P t) {                                                                                      // 비교 기준: 유클리드 비용 8방향 최단(모서리 자르기 금지)
+    std::vector<double> d(g.R * g.C, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s.first * g.C + s.second] = 0; pq.push({0, s.first * g.C + s.second});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; int ur = u / g.C, uc = u % g.C; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if (!dr && !dc) continue; int r = ur + dr, c = uc + dc; if (g.blocked(r, c) || (dr && dc && (g.blocked(ur + dr, uc) || g.blocked(ur, uc + dc)))) continue; double nd = du + std::hypot(dr, dc); if (nd < d[r * g.C + c]) { d[r * g.C + c] = nd; pq.push({nd, r * g.C + c}); } } }
+    return d[t.first * g.C + t.second]; }
+struct Edge { int to; double w; int vx, vy; };                                                                                       // vx, vy: 중간에 지나는 이웃한 두 칸(없으면 -1)
+struct WG {
+    const Grid& g; std::vector<P> wp; std::vector<std::vector<Edge>> adj; std::vector<int> owner; std::vector<double> ownerDist; const double RAD = 12;
+    WG(const Grid& g, std::mt19937& rng) : g(g), owner(g.R * g.C, -1), ownerDist(g.R * g.C, 1e18) {
+        std::vector<int> cells; for (int i = 0; i < g.R * g.C; i++) if (!g.blocked(i / g.C, i % g.C)) cells.push_back(i); std::shuffle(cells.begin(), cells.end(), rng);
+        for (int cell : cells) if (owner[cell] < 0) { P p{cell / g.C, cell % g.C}; int id = wp.size(); wp.push_back(p); for (int c : cells) { double d = dist(p, {c / g.C, c % g.C}); if (d <= RAD && d < ownerDist[c] && los(g, p, {c / g.C, c % g.C})) { ownerDist[c] = d; owner[c] = id; } } }
+        int n = wp.size(); adj.assign(n, {}); std::map<std::pair<int, int>, double> best;
+        auto connect = [&](int a, int b, double w, int x, int y) { if (a == b) return; auto key = std::make_pair(std::min(a, b), std::max(a, b)); auto it = best.find(key); if (it != best.end() && it->second <= w) return; best[key] = w; for (auto* lst : {&adj[a], &adj[b]}) lst->erase(std::remove_if(lst->begin(), lst->end(), [&](const Edge& e) { return e.to == a || e.to == b; }), lst->end()); adj[a].push_back({b, w, x, y}); adj[b].push_back({a, w, y, x}); };
+        for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (dist(wp[i], wp[j]) <= 2 * RAD && los(g, wp[i], wp[j])) connect(i, j, dist(wp[i], wp[j]), -1, -1);                                          // ②
+        for (int c : cells) { const int dr[2] = {1, 0}, dc[2] = {0, 1}; for (int k = 0; k < 2; k++) { int r2 = c / g.C + dr[k], c2 = c % g.C + dc[k]; if (g.blocked(r2, c2) || !los(g, {c / g.C, c % g.C}, {r2, c2})) continue; int y = r2 * g.C + c2, a = owner[c], b = owner[y];
+                connect(a, b, ownerDist[c] + 1 + ownerDist[y], c, y); } }                                                                                                                              // ③ 이웃 칸 경유 간선
+    }
+    double query(P s, P t, std::vector<P>& path) {
+        int n = wp.size(); std::vector<std::vector<Edge>> a = adj; a.resize(n + 2); std::vector<P> pts = wp; pts.push_back(s); pts.push_back(t);
+        for (int e : {n, n + 1}) for (int i = 0; i < n; i++) if (dist(pts[e], wp[i]) <= 2 * RAD && los(g, pts[e], wp[i])) { double w = dist(pts[e], wp[i]); a[e].push_back({i, w, -1, -1}); a[i].push_back({e, w, -1, -1}); }
+        if (los(g, s, t)) { double w = dist(s, t); a[n].push_back({n + 1, w, -1, -1}); a[n + 1].push_back({n, w, -1, -1}); }
+        std::vector<double> d(n + 2, 1e18); std::vector<int> par(n + 2, -1); std::vector<Edge> via(n + 2, Edge{-1, 0, -1, -1}); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[n] = 0; pq.push({0, n});
+        while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (const Edge& e : a[u]) if (du + e.w < d[e.to]) { d[e.to] = du + e.w; par[e.to] = u; via[e.to] = e; pq.push({d[e.to], e.to}); } }
+        if (d[n + 1] > 1e17) return -1; std::vector<P> rev; for (int v = n + 1; v >= 0; v = par[v]) { rev.push_back(pts[v]); if (par[v] >= 0 && via[v].vx >= 0) { rev.push_back({via[v].vy / g.C, via[v].vy % g.C}); rev.push_back({via[v].vx / g.C, via[v].vx % g.C}); } }     // 경유 칸 두 개(x, y)를 끼워 넣는다
+        path.assign(rev.rbegin(), rev.rend()); return d[n + 1]; }
+};
 int main() {
-    std::cout << "Waypoint Graph manually or procedurally connects key visible nodes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 rng(18); long cells = 0, nodes = 0; int queries = 0, connectedQ = 0; double ratio = 0, rawRatio = 0;
+    for (int m = 0; m < 6; m++) {
+        Grid g{36, 36, std::vector<std::string>(36, std::string(36, '.'))}; for (auto& row : g.w) for (auto& ch : row) if (rng() % 100 < 14) ch = '#'; WG wg(g, rng); std::vector<int> comp = components(g);
+        for (int i = 0; i < g.R * g.C; i++) if (!g.blocked(i / g.C, i % g.C)) cells++; nodes += wg.wp.size();
+        for (int q = 0; q < 40; q++) { P s{(int)(rng() % 36), (int)(rng() % 36)}, t{(int)(rng() % 36), (int)(rng() % 36)}; if (g.blocked(s.first, s.second) || g.blocked(t.first, t.second)) continue; std::vector<P> path; double len = wg.query(s, t, path);
+            bool conn = comp[s.first * 36 + s.second] == comp[t.first * 36 + t.second]; assert((len >= 0) == conn);                       // ② 성공 여부 == 격자 연결성
+            if (!conn) continue; double sum = 0; for (size_t i = 1; i < path.size(); i++) { assert(los(g, path[i - 1], path[i])); sum += dist(path[i - 1], path[i]); } assert(std::fabs(sum - len) < 1e-9 && path.front() == s && path.back() == t);   // ①
+            std::vector<P> sm = {path[0]}; for (size_t i = 0; i + 1 < path.size();) { size_t j = path.size() - 1; while (j > i + 1 && !los(g, path[i], path[j])) j--; sm.push_back(path[j]); i = j; }                     // 줄 당기기: 시선이 닿는 가장 먼 점으로 건너뜀
+            double smLen = 0; for (size_t i = 1; i < sm.size(); i++) { assert(los(g, sm[i - 1], sm[i])); smLen += dist(sm[i - 1], sm[i]); } assert(smLen <= len + 1e-9);
+            double opt = gridOptimum(g, s, t); if (opt > 0) { ratio += smLen / opt; rawRatio += len / opt; connectedQ++; } queries++; }
+    }
+    assert(queries > 100 && nodes * 6 < cells && ratio / connectedQ > 0.85 && ratio / connectedQ < 1.2 && ratio < rawRatio);
+    std::cout << "WaypointGraph: " << nodes << " waypoints cover " << cells << " free cells (" << 100.0 * nodes / cells << "%); " << queries << " queries valid, success == grid connectivity, mean length / grid optimum = " << rawRatio / connectedQ << " (" << ratio / connectedQ << " after string pulling)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 전처리 O(웨이포인트² × 시선 검사), 질의 O(W log W + W × 시선 검사)
+// Space Complexity: O(W + 간선)
 ```
 ## VisibilityGraph()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 가시성 그래프(visibility graph): 다각형 장애물 사이의 유클리드 최단 경로는 시작점·목표·장애물 꼭짓점을 잇는 꺾은선이다(꺾이는 곳은 반드시 장애물 꼭짓점). 그래서 이 점들 중 "서로 보이는" 쌍을 간선으로 잇고 Dijkstra 를 돌리면 연속 공간의 정확한 최단 경로가 나온다.
+// 순진하게 모든 쌍을 검사하면 간선 후보가 O(n²), 각 가시성 검사가 O(n) 이라 O(n³). 줄이기: 볼록 장애물에서 최단 경로가 쓰는 간선은 "양 끝점에서 접선" 이다 — 꼭짓점에서 이웃 두 꼭짓점이 간선과 같은 쪽에 있어야 한다. 이런 간선만 남긴 축소 가시성 그래프는 같은 최단 거리를 주면서 간선이 훨씬 적다.
+// 검증: 원에 내접하는(= 볼록한) 무작위 다각형 장애물 장면 150개에서 ① 전체 그래프와 축소 그래프의 최단 거리가 일치 ② 경로의 모든 선분이 어떤 다각형 내부도 지나지 않음 ③ 직접 보이면 직선 거리와 같음 ④ 독립 표본 로드맵(무작위 자유 점들의 시선 그래프)의 거리는 이 값보다 짧을 수 없음
+typedef std::pair<double, double> V;
+double cross(V a, V b, V c) { return (b.first - a.first) * (c.second - a.second) - (b.second - a.second) * (c.first - a.first); }
+double dist(V a, V b) { return std::hypot(a.first - b.first, a.second - b.second); }
+struct Poly { std::vector<V> p; V c; double r; };                                                                                    // 반시계 방향 볼록 다각형
+bool cutsInterior(const Poly& P, V a, V b) {                                                                                         // Cyrus–Beck: 선분이 열린 내부와 길이 있는 구간으로 만나는가
+    double lo = 0, hi = 1; int n = P.p.size(); for (int i = 0; i < n; i++) { V p = P.p[i], q = P.p[(i + 1) % n]; double f0 = cross(p, q, a), f1 = cross(p, q, b), df = f1 - f0;
+        if (std::fabs(df) < 1e-15) { if (f0 <= 1e-12) return false; continue; } double t = -f0 / df; if (df > 0) lo = std::max(lo, t); else hi = std::min(hi, t); if (lo >= hi - 1e-12) return false; }
+    return hi - lo > 1e-9; }
+bool visible(const std::vector<Poly>& ps, V a, V b) { for (const Poly& P : ps) if (cutsInterior(P, a, b)) return false; return true; }
+bool inside(const std::vector<Poly>& ps, V x) { for (const Poly& P : ps) if (dist(P.c, x) < P.r) return true; return false; }
+double shortest(int n, const std::vector<std::vector<std::pair<int, double>>>& adj, int s, int t) { std::vector<double> d(n, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (auto [v, w] : adj[u]) if (du + w < d[v]) { d[v] = du + w; pq.push({d[v], v}); } } return d[t]; }
 int main() {
-    std::cout << "Connects all mutually visible obstacle vertices." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(77); long fullEdges = 0, redEdges = 0; int scenes = 0, direct = 0, sampled = 0; double sampleRatio = 0;
+    for (int sc = 0; sc < 150; sc++) {
+        std::vector<Poly> ps; for (int tries = 0; tries < 200 && ps.size() < 7; tries++) { double r = 6 + g() % 80 / 10.0; V c{r + 1 + g() % (int)(98 - 2 * r), r + 1 + g() % (int)(98 - 2 * r)}; bool ok = true; for (const Poly& o : ps) ok = ok && dist(o.c, c) > o.r + r + 1; if (!ok) continue;
+            int k = 3 + g() % 4; std::vector<double> ang; for (;;) { ang.clear(); for (int i = 0; i < k; i++) ang.push_back((g() % 6283) / 1000.0); std::sort(ang.begin(), ang.end()); bool good = ang[0] + 6.283 - ang[k - 1] > 0.5; for (int i = 1; i < k; i++) good = good && ang[i] - ang[i - 1] > 0.5; if (good) break; }
+            Poly P; P.c = c; P.r = r; for (double a : ang) P.p.push_back({c.first + r * std::cos(a), c.second + r * std::sin(a)}); ps.push_back(P); }
+        V s, t; do { s = {(g() % 1000) / 10.0, (g() % 1000) / 10.0}; } while (inside(ps, s)); do { t = {(g() % 1000) / 10.0, (g() % 1000) / 10.0}; } while (inside(ps, t));
+        std::vector<V> pts; std::vector<int> poly, idxIn; for (size_t i = 0; i < ps.size(); i++) for (size_t j = 0; j < ps[i].p.size(); j++) { pts.push_back(ps[i].p[j]); poly.push_back(i); idxIn.push_back(j); } int nv = pts.size(); pts.push_back(s); pts.push_back(t); int n = pts.size(); poly.push_back(-1); poly.push_back(-1); idxIn.push_back(0); idxIn.push_back(0);
+        auto tangent = [&](int a, int b) { if (poly[a] < 0) return true; const Poly& P = ps[poly[a]]; int k = P.p.size(), j = idxIn[a]; double c1 = cross(pts[a], pts[b], P.p[(j + 1) % k]), c2 = cross(pts[a], pts[b], P.p[(j + k - 1) % k]); return !((c1 > 1e-9 && c2 < -1e-9) || (c1 < -1e-9 && c2 > 1e-9)); };
+        std::vector<std::vector<std::pair<int, double>>> full(n), red(n); for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) if (visible(ps, pts[a], pts[b])) { double w = dist(pts[a], pts[b]); full[a].push_back({b, w}); full[b].push_back({a, w}); fullEdges++; if (tangent(a, b) && tangent(b, a)) { red[a].push_back({b, w}); red[b].push_back({a, w}); redEdges++; } }
+        double df = shortest(n, full, nv, nv + 1), dr = shortest(n, red, nv, nv + 1); assert(std::fabs(df - dr) < 1e-9 && df >= dist(s, t) - 1e-9); scenes++;                                          // ① 전체 == 축소
+        if (visible(ps, s, t)) { assert(std::fabs(df - dist(s, t)) < 1e-9); direct++; }                                                                                                                           // ③
+        if (sc < 20) {                                                                                                                                                                                        // ④ 독립 표본 로드맵: 자유 점 150개 + s, t 의 시선 그래프
+            std::vector<V> sp; sp.push_back(s); sp.push_back(t); while (sp.size() < 152) { V x{(g() % 1000) / 10.0, (g() % 1000) / 10.0}; if (!inside(ps, x)) sp.push_back(x); } int m = sp.size(); std::vector<std::vector<std::pair<int, double>>> adj(m);
+            for (int a = 0; a < m; a++) for (int b = a + 1; b < m; b++) if (visible(ps, sp[a], sp[b])) { double w = dist(sp[a], sp[b]); adj[a].push_back({b, w}); adj[b].push_back({a, w}); }
+            double dsmp = shortest(m, adj, 0, 1); if (dsmp < 1e17) { assert(dsmp >= df - 1e-9); sampled++; sampleRatio += dsmp / df; } }
+    }
+    assert(scenes == 150 && redEdges * 4 < fullEdges * 3 && sampled > 10 && direct >= 0);
+    std::cout << "VisibilityGraph: " << scenes << " scenes; reduced graph keeps " << redEdges << " of " << fullEdges << " edges with identical shortest distances; sampled roadmaps are never shorter (mean " << sampleRatio / sampled << "x the exact optimum); " << direct << " scenes had direct line of sight" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 순진한 구성 O(n³), 회전 스위프 O(n² log n); Dijkstra O(E log V)
+// Space Complexity: O(n²)
 ```
 ## VoronoiDiagram()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// 일반화 보로노이 다이어그램(GVD) 로드맵: 장애물 칸들로부터 "가장 가까운 장애물" 이 둘 이상 같은 거리에 있는 점들의 집합(보로노이 변)은 장애물에서 가능한 한 멀리 떨어진 길이다. 최단이 아니라 "안전한" 길을 원할 때(로봇, 좁은 통로 회피) 쓴다.
+// 격자 구현: ① 장애물 칸에서 다중 출발 BFS(8방향 = 체비쇼프 거리)로 거리장 d 와 "가장 가까운 장애물 덩어리" 라벨을 만든다. ② 인접한 자유 칸의 라벨이 다르면 GVD 칸이다(서로 다른 두 장애물의 영향 영역 경계). ③ 시작·목표에서 d 가 커지는 쪽으로 올라가 GVD 에 붙고, GVD 위에서 BFS 로 이동한다.
+// 검증: ① d 가 모든 장애물 칸에 대한 체비쇼프 최솟값(완전 탐색)과 같음 ② GVD 칸은 이웃 중 다른 덩어리가 더 가까운 칸이 실제로 있음 ③ 로드맵 경로가 존재하고(자유 공간 연결성과 일치) 그 병목(경로의 최소 d)이 격자 전체에서 구한 최대-최소(widest) 경로의 병목에 근접(≥ 최적−1) ④ 최단 경로보다 길지만 병목은 평균적으로 더 큼
+typedef std::pair<int, int> P; int R = 34, C = 34; std::vector<std::string> w;
+bool blocked(int r, int c) { return r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#'; }
+bool moveOk(int r, int c, int dr, int dc) { if (blocked(r + dr, c + dc)) return false; return !(dr && dc && (blocked(r + dr, c) || blocked(r, c + dc))); }
 int main() {
-    std::cout << "Voronoi tracks safe paths maximizing distance from walls." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(25); int maps = 0, queries = 0, saferCount = 0; long lenR = 0, lenS = 0; double bnR = 0, bnS = 0; int worstGap = 0;
+    for (int m = 0; m < 25; m++) {
+        w.assign(R, std::string(C, '.')); for (int k = 0; k < 9; k++) { int r0 = g() % (R - 4), c0 = g() % (C - 4), h = 2 + g() % 6, wd = 2 + g() % 6; for (int r = r0; r < std::min(R, r0 + h); r++) for (int c = c0; c < std::min(C, c0 + wd); c++) w[r][c] = '#'; }
+        for (int r = 0; r < R; r++) w[r][0] = w[r][C - 1] = '#'; for (int c = 0; c < C; c++) w[0][c] = w[R - 1][c] = '#';                                                  // 바깥 테두리도 장애물
+        std::vector<int> label(R * C, -1); int nl = 0; for (int i = 0; i < R * C; i++) if (w[i / C][i % C] == '#' && label[i] < 0) { std::vector<int> st = {i}; label[i] = nl; while (!st.empty()) { int u = st.back(); st.pop_back(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / C + dr, c = u % C + dc; if (r >= 0 && c >= 0 && r < R && c < C && w[r][c] == '#' && label[r * C + c] < 0) { label[r * C + c] = nl; st.push_back(r * C + c); } } } nl++; }
+        std::vector<int> d(R * C, -1), lab = label; std::queue<int> q; for (int i = 0; i < R * C; i++) if (label[i] >= 0) { d[i] = 0; q.push(i); }
+        while (!q.empty()) { int u = q.front(); q.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = u / C + dr, c = u % C + dc; if (r >= 0 && c >= 0 && r < R && c < C && d[r * C + c] < 0) { d[r * C + c] = d[u] + 1; lab[r * C + c] = lab[u]; q.push(r * C + c); } } }
+        for (int i = 0; i < R * C; i += 7) { int best = INT_MAX; for (int j = 0; j < R * C; j++) if (w[j / C][j % C] == '#') best = std::min(best, std::max(std::abs(i / C - j / C), std::abs(i % C - j % C))); assert(d[i] == best); }       // ① 거리장 == 완전 탐색
+        std::vector<char> sk(R * C, 0); int skCount = 0; for (int i = 0; i < R * C; i++) if (!blocked(i / C, i % C)) { for (int dr = -1; dr <= 1 && !sk[i]; dr++) for (int dc = -1; dc <= 1; dc++) { int r = i / C + dr, c = i % C + dc; if (r >= 0 && c >= 0 && r < R && c < C && lab[r * C + c] != lab[i] && d[r * C + c] >= d[i] - 1 && d[r * C + c] <= d[i] + 1) { sk[i] = 1; break; } } if (sk[i]) { skCount++; bool other = false; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { int r = i / C + dr, c = i % C + dc; other |= r >= 0 && c >= 0 && r < R && c < C && lab[r * C + c] != lab[i]; } assert(other); } }       // ②
+        std::vector<int> comp(R * C, -1); int nc = 0; for (int i = 0; i < R * C; i++) if (!blocked(i / C, i % C) && comp[i] < 0) { std::vector<int> st = {i}; comp[i] = nc; while (!st.empty()) { int u = st.back(); st.pop_back(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) if ((dr || dc) && moveOk(u / C, u % C, dr, dc)) { int v = (u / C + dr) * C + u % C + dc; if (comp[v] < 0) { comp[v] = nc; st.push_back(v); } } } nc++; }
+        auto bfs = [&](int s, const std::vector<char>* allow, std::vector<int>& par) { std::vector<int> dd(R * C, -1); std::queue<int> qq; dd[s] = 0; qq.push(s); par.assign(R * C, -1); while (!qq.empty()) { int u = qq.front(); qq.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) if ((dr || dc) && moveOk(u / C, u % C, dr, dc)) { int v = (u / C + dr) * C + u % C + dc; if (dd[v] >= 0 || (allow && !(*allow)[v])) continue; dd[v] = dd[u] + 1; par[v] = u; qq.push(v); } } return dd; };
+        auto widest = [&](int s, int t, const std::vector<char>* allow) { std::vector<int> b(R * C, -1); typedef std::pair<int, int> Q; std::priority_queue<Q> pq; b[s] = d[s]; pq.push({d[s], s}); while (!pq.empty()) { auto [bu, u] = pq.top(); pq.pop(); if (bu < b[u]) continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) if ((dr || dc) && moveOk(u / C, u % C, dr, dc)) { int v = (u / C + dr) * C + u % C + dc; if (allow && !(*allow)[v]) continue; int nb = std::min(bu, d[v]); if (nb > b[v]) { b[v] = nb; pq.push({nb, v}); } } } return b[t]; };
+        auto attach = [&](int s) { int u = s; std::vector<int> trail = {u}; for (int guard = 0; guard < R * C && !sk[u]; guard++) { int best = u; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) if ((dr || dc) && moveOk(u / C, u % C, dr, dc)) { int v = (u / C + dr) * C + u % C + dc; if (d[v] > d[best]) best = v; } if (best == u) break; u = best; trail.push_back(u); } return trail; };
+        for (int qn = 0; qn < 12; qn++) { int s = g() % (R * C), t = g() % (R * C); if (blocked(s / C, s % C) || blocked(t / C, t % C) || comp[s] != comp[t] || s == t) continue;
+            std::vector<int> par; auto ds = bfs(s, nullptr, par); std::vector<int> shortest; for (int v = t; v >= 0; v = par[v]) shortest.push_back(v); int bS = INT_MAX; for (int v : shortest) bS = std::min(bS, d[v]);
+            std::vector<int> a1 = attach(s), a2 = attach(t); if (!sk[a1.back()] || !sk[a2.back()]) continue; int bsk = widest(a1.back(), a2.back(), &sk); if (bsk < 0) continue; std::vector<char> okc(R * C, 0); for (int i = 0; i < R * C; i++) okc[i] = sk[i] && d[i] >= bsk;               // GVD 위에서 연결되지 않으면 건너뜀; 연결되면 GVD 안의 최대-최소 병목 이상인 칸만 써서
+            std::vector<int> par2; auto d2 = bfs(a1.back(), &okc, par2); if (d2[a2.back()] < 0) continue;                                                                                   // 가장 짧은 GVD 경로를 고른다
+            std::vector<int> mid; for (int v = a2.back(); v >= 0; v = par2[v]) mid.push_back(v); std::reverse(mid.begin(), mid.end()); std::vector<int> road = a1; road.insert(road.end(), mid.begin() + 1, mid.end()); road.insert(road.end(), a2.rbegin() + 1, a2.rend());
+            int bR = INT_MAX; for (int v : road) bR = std::min(bR, d[v]); int wd = widest(s, t, nullptr); assert(bR >= wd - 1 && bR <= wd && (int)road.size() >= ds[t] + 1);                                       // ③ 병목이 최적에 근접, 길이는 최단 이상
+            worstGap = std::max(worstGap, wd - bR); lenR += road.size() - 1; lenS += ds[t]; bnR += bR; bnS += bS; saferCount += bR > bS; queries++; }
+        maps++;
+    }
+    assert(maps == 25 && queries > 100 && bnR > bnS && lenR >= lenS && worstGap <= 1);
+    std::cout << "VoronoiDiagram: " << queries << " queries on " << maps << " maps; GVD roadmap mean clearance " << bnR / queries << " vs " << bnS / queries << " on shortest paths (safer in " << saferCount << " queries), at a cost of " << (double)lenR / lenS << "x path length; bottleneck within " << worstGap << " of the widest path" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(RC) 거리장·스켈레톤, 질의 O(RC) BFS
+// Space Complexity: O(RC)
 ```
 ## RoadNetwork()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 도로망(RoadNetwork): 교차로(정점)와 도로 구간(방향 간선)으로 이루어진 실제 지도 그래프의 저장·탐색 구조. 핵심은 ① 메모리 효율적인 CSR(compressed sparse row) 인접 배열 — 정점별 첫 간선 번호 first[u] 와 간선 속성의 배열 구조(SoA) —
+// ② 일방통행(방향 간선)과 도로 등급별 속도 ③ 좌회전 금지 같은 "회전 제한" — 정점이 아니라 간선을 상태로 삼은 탐색(edge-based)이 필요하다 ④ 좌표를 도로에 붙이는 공간 색인(격자 해시) ⑤ 거리/최고속도로 허용적인 A* 휴리스틱.
+// 검증: 합성 도시(지터 격자, 일방통행·고속도로 격자선, 일부 구간 삭제, 회전 제한)에서 ① 정점 A* == 정점 Dijkstra 비용이고 확장 정점이 적음 ② 간선 기반 Dijkstra 는 금지 회전을 쓰지 않고 정점 기반 비용 이상이며 간선 상태 Bellman-Ford 와 일치 ③ 회전 제한으로 비용이 늘어난 질의가 존재 ④ 격자 색인의 최근접 도로가 완전 탐색과 일치
+struct Road { int u, v; double km, kmh; };
+struct Network {
+    int n; std::vector<double> x, y; std::vector<int> first, to, rid; std::vector<double> len, kmh, secs; double vmax = 0; std::set<std::pair<int, int>> banned;                // CSR: first[u]..first[u+1]-1 이 u 의 나가는 간선
+    void build(int N, const std::vector<Road>& roads) { n = N; first.assign(n + 2, 0); for (const Road& r : roads) first[r.u + 1]++; for (int i = 0; i <= n; i++) first[i + 1] += first[i]; std::vector<int> pos(first.begin(), first.begin() + n); int m = roads.size(); to.resize(m); len.resize(m); kmh.resize(m); secs.resize(m); rid.resize(m);
+        for (const Road& r : roads) { int e = pos[r.u]++; to[e] = r.v; len[e] = r.km; kmh[e] = r.kmh; secs[e] = 3600 * r.km / r.kmh; vmax = std::max(vmax, r.kmh); } }
+    int tail(int e) const { return std::upper_bound(first.begin(), first.begin() + n + 1, e) - first.begin() - 1; }
+};
+double dist(const Network& N, int a, int b) { return std::hypot(N.x[a] - N.x[b], N.y[a] - N.y[b]); }
 int main() {
-    std::cout << "GIS Road networks model intersections as nodes, roads as edges." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(33); int W = 18; Network net; net.n = W * W; for (int i = 0; i < W * W; i++) { net.x.push_back(i % W + ((int)(g() % 40) - 20) / 100.0); net.y.push_back(i / W + ((int)(g() % 40) - 20) / 100.0); }
+    std::vector<Road> roads; auto addRoad = [&](int a, int b, double kmh, bool oneWay, bool forward) { double km = std::hypot(net.x[a] - net.x[b], net.y[a] - net.y[b]); if (!oneWay) { roads.push_back({a, b, km, kmh}); roads.push_back({b, a, km, kmh}); } else if (forward) roads.push_back({a, b, km, kmh}); else roads.push_back({b, a, km, kmh}); };
+    for (int r = 0; r < W; r++) for (int c = 0; c < W; c++) { int u = r * W + c; for (int k = 0; k < 2; k++) { int v = k ? u + W : u + 1; if ((k == 0 && c + 1 >= W) || (k == 1 && r + 1 >= W)) continue; if (g() % 100 < 6) continue; bool hw = k == 0 ? r % 6 == 0 : c % 6 == 0; double speed = hw ? 90 : (g() % 100 < 25 ? 50 : 30); bool one = !hw && g() % 100 < 15; addRoad(u, v, speed, one, g() % 2); } }
+    net.build(W * W, roads); int m = net.to.size();
+    for (int e = 0; e < m; e++) { int u = net.tail(e), v = net.to[e]; for (int f = net.first[v]; f < net.first[v + 1]; f++) if (net.to[f] != u && g() % 100 < 4) net.banned.insert({e, f}); }                              // 회전 제한(e 다음에 f 금지); U턴은 막다른 길이 아니면 금지
+    for (int e = 0; e < m; e++) { int v = net.to[e], u = net.tail(e); if (net.first[v + 1] - net.first[v] > 1) for (int f = net.first[v]; f < net.first[v + 1]; f++) if (net.to[f] == u) net.banned.insert({e, f}); }
+    typedef std::pair<double, int> Q; long dExp = 0, aExp = 0; int checked = 0, worse = 0, unreachable = 0;
+    for (int qn = 0; qn < 120; qn++) {
+        int s = g() % net.n, t = g() % net.n; if (s == t) continue;
+        std::vector<double> d(net.n, 1e18); std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s}); long de = 0; while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; de++; if (u == t) break; for (int e = net.first[u]; e < net.first[u + 1]; e++) if (du + net.secs[e] < d[net.to[e]]) { d[net.to[e]] = du + net.secs[e]; pq.push({d[net.to[e]], net.to[e]}); } }
+        std::vector<double> a(net.n, 1e18); std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pa; a[s] = 0; pa.push({dist(net, s, t) / net.vmax * 3600, s}); long ae = 0; while (!pa.empty()) { auto [f, u] = pa.top(); pa.pop(); if (f > a[u] + dist(net, u, t) / net.vmax * 3600 + 1e-9) continue; ae++; if (u == t) break; for (int e = net.first[u]; e < net.first[u + 1]; e++) { int v = net.to[e]; if (a[u] + net.secs[e] < a[v]) { a[v] = a[u] + net.secs[e]; pa.push({a[v] + dist(net, v, t) / net.vmax * 3600, v}); } } }
+        if (d[t] > 1e17) { assert(a[t] > 1e17); unreachable++; continue; } assert(std::fabs(a[t] - d[t]) < 1e-6); dExp += de; aExp += ae;                                                                                  // ① A* == Dijkstra
+        std::vector<double> ed(m, 1e18); std::vector<int> epar(m, -1); std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pe; for (int e = net.first[s]; e < net.first[s + 1]; e++) { ed[e] = net.secs[e]; pe.push({ed[e], e}); }                // ② 간선 상태 Dijkstra
+        while (!pe.empty()) { auto [du, e] = pe.top(); pe.pop(); if (du > ed[e]) continue; int v = net.to[e]; for (int f = net.first[v]; f < net.first[v + 1]; f++) if (!net.banned.count({e, f}) && du + net.secs[f] < ed[f]) { ed[f] = du + net.secs[f]; epar[f] = e; pe.push({ed[f], f}); } }
+        double best = 1e18; int be = -1; for (int e = 0; e < m; e++) if (net.to[e] == t && ed[e] < best) { best = ed[e]; be = e; }
+        std::vector<double> bf(m, 1e18); for (int e = net.first[s]; e < net.first[s + 1]; e++) bf[e] = net.secs[e]; for (bool ch = true; ch;) { ch = false; for (int e = 0; e < m; e++) if (bf[e] < 1e17) { int v = net.to[e]; for (int f = net.first[v]; f < net.first[v + 1]; f++) if (!net.banned.count({e, f}) && bf[e] + net.secs[f] < bf[f] - 1e-12) { bf[f] = bf[e] + net.secs[f]; ch = true; } } }
+        double bfBest = 1e18; for (int e = 0; e < m; e++) if (net.to[e] == t) bfBest = std::min(bfBest, bf[e]); assert(std::fabs(bfBest - best) < 1e-6 || (bfBest > 1e17 && best > 1e17));                     // Bellman-Ford 와 일치
+        if (best > 1e17) { worse++; continue; } assert(best >= d[t] - 1e-9); for (int e = be; epar[e] >= 0; e = epar[e]) assert(!net.banned.count({epar[e], e}));                                            // 금지 회전 미사용
+        if (best > d[t] + 1e-9) worse++; checked++;
+    }
+    std::map<std::pair<int, int>, int> cellOf; double cs = 1.0; auto key = [&](double px, double py) { return std::make_pair((int)std::floor(px / cs), (int)std::floor(py / cs)); }; std::map<std::pair<int, int>, std::vector<int>> grid;       // ④ 공간 색인: 간선의 두 끝점이 걸친 칸마다 간선 번호 저장
+    for (int e = 0; e < m; e++) { int u = net.tail(e), v = net.to[e]; for (int s = 0; s <= 8; s++) { double px = net.x[u] + (net.x[v] - net.x[u]) * s / 8, py = net.y[u] + (net.y[v] - net.y[u]) * s / 8; auto& lst = grid[key(px, py)]; if (lst.empty() || lst.back() != e) lst.push_back(e); } }
+    auto segDist = [&](int e, double px, double py) { int u = net.tail(e), v = net.to[e]; double dx = net.x[v] - net.x[u], dy = net.y[v] - net.y[u], t = std::max(0.0, std::min(1.0, ((px - net.x[u]) * dx + (py - net.y[u]) * dy) / (dx * dx + dy * dy))); return std::hypot(px - net.x[u] - t * dx, py - net.y[u] - t * dy); };
+    int snapOk = 0; for (int i = 0; i < 400; i++) { double px = (g() % 1700) / 100.0, py = (g() % 1700) / 100.0; double bestD = 1e18; for (int e = 0; e < m; e++) bestD = std::min(bestD, segDist(e, px, py)); double gd = 1e18; auto k0 = key(px, py); for (int rr = 1; rr <= 3 && gd > 1e17; rr++) { for (int dx = -rr; dx <= rr; dx++) for (int dy = -rr; dy <= rr; dy++) { auto it = grid.find({k0.first + dx, k0.second + dy}); if (it != grid.end()) for (int e : it->second) gd = std::min(gd, segDist(e, px, py)); } if (gd <= rr * cs * 0.99) break; } if (std::fabs(gd - bestD) < 1e-9) snapOk++; }
+    assert(checked > 60 && aExp < dExp && worse > 0 && snapOk > 380);
+    std::cout << "RoadNetwork: " << net.n << " junctions, " << m << " directed segments in CSR; A* settled " << aExp << " vs Dijkstra " << dExp << "; " << worse << " routes got slower (or impossible) because of turn restrictions, " << unreachable << " unreachable; spatial snap exact in " << snapOk << "/400" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: CSR 순회 O(deg), 간선 기반 탐색 O(E · deg · log E), 색인 질의 O(주변 칸 × 간선)
+// Space Complexity: O(V + E)
 ```
 
 # Part 11. 로봇공학
