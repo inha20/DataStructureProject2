@@ -2,69 +2,110 @@
 ## CreateHashTable()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
-class HashTable {
-    std::vector<std::list<std::pair<std::string, int>>> buckets;
-    size_t count = 0;
-public:
-    explicit HashTable(size_t bucketCount = 8) : buckets(bucketCount) {}
-    size_t bucketCount() const { return buckets.size(); }
-    size_t size() const { return count; }
-    bool empty() const { return count == 0; }
+// 해시 테이블을 만드는 순간 정해지는 것: 버킷 수 m 과 "해시값 → 버킷 번호" 규칙. m 을 어떻게 고르느냐가 두 갈래다 — ① 소수 m: 번호 = h mod m. 해시값의 모든 비트가 번호에 섞여 들어가므로 키에 규칙적인 패턴(8의 배수 등)이 있어도 잘 퍼진다. ② 2의 거듭제곱 m: 번호 = h & (m − 1) (나눗셈 대신 비트 마스크, 훨씬 빠르다). 대신 해시값의 *낮은 비트* 만 쓰므로 해시 함수가 낮은 비트를 잘 섞어야 한다(항등 해시 + 8의 배수 키 = 버킷의 7/8 이 빈다).
+// 그래서 생성자는 요청 크기 n 을 받아 "n 이상인 가장 작은 소수" 또는 "n 이상인 가장 작은 2의 거듭제곱" 으로 올려 잡고, 터무니없이 큰 요청은 거절한다. 모든 버킷은 비어 있고 크기(저장된 원소 수)는 0 이다.
+// 검증: ① 1 ≤ n ≤ 100,000 모두에서 nextPrime(n) 이 체로 구한 "n 이상 최소 소수", nextPow2(n) 이 "n 이상 최소 2의 거듭제곱" ② 2의 거듭제곱 m 에서 (h & (m−1)) == h % m (무작위 5 만 개) ③ 어떤 해시값도 번호 < m (소수·2의 거듭제곱 둘 다) ④ 갓 만든 테이블은 버킷이 모두 비어 있고 크기 0, 너무 큰 요청은 예외 ⑤ 규칙적인 키(8의 배수 100 만 개)를 항등 해시로 넣으면 2의 거듭제곱 m 은 버킷의 1/8 만 쓰고 소수 m 은 모두 쓴다.
+enum class Mode { Prime, PowerOfTwo };
+bool isPrime(std::uint64_t n) { if (n < 2) return false; for (std::uint64_t d = 2; d * d <= n; ++d) if (n % d == 0) return false; return true; }
+std::size_t nextPrime(std::size_t n) { if (n < 2) n = 2; while (!isPrime(n)) ++n; return n; }
+std::size_t nextPow2(std::size_t n) { std::size_t m = 1; while (m < n) m <<= 1; return m; }
+struct HashTable {
+    static constexpr std::size_t kMaxBuckets = std::size_t(1) << 28;
+    Mode mode; std::size_t m; std::size_t count = 0; std::vector<std::vector<std::pair<std::uint64_t, int>>> buckets;
+    HashTable(std::size_t requested, Mode md) : mode(md), m(0) {
+        if (requested > kMaxBuckets) throw std::length_error("too many buckets");
+        m = md == Mode::Prime ? nextPrime(requested) : nextPow2(requested == 0 ? 1 : requested); buckets.resize(m);
+    }
+    std::size_t index(std::uint64_t h) const { return mode == Mode::PowerOfTwo ? (std::size_t)(h & (m - 1)) : (std::size_t)(h % m); }
 };
 
 int main() {
-    HashTable table(8);                 // 빈 버킷 8개로 시작한다
-    assert(table.bucketCount() == 8);
-    assert(table.empty());
-    std::cout << "CreateHashTable: " << table.bucketCount() << " buckets, size " << table.size() << std::endl;
+    // ① 체로 구한 소수 · 비트로 확인하는 2의 거듭제곱
+    {   const int N = 100000 + 200; std::vector<char> comp(N + 1, 0); for (int i = 2; (long)i * i <= N; ++i) if (!comp[i]) for (int j = i * i; j <= N; j += i) comp[j] = 1;
+        for (std::size_t n = 1; n <= 100000; ++n) {
+            std::size_t p = n < 2 ? 2 : n; while (comp[p]) ++p; assert(nextPrime(n) == p && !comp[nextPrime(n)] && nextPrime(n) >= n);
+            std::size_t q = nextPow2(n); assert(q >= n && (q & (q - 1)) == 0 && (q == 1 || q / 2 < n));
+        }
+    }
+    // ②③ 비트 마스크 = 나머지, 번호는 항상 m 미만
+    std::mt19937_64 rng(5);
+    for (std::size_t req : {1u, 2u, 3u, 7u, 8u, 100u, 1000u, 4096u}) {
+        HashTable a(req, Mode::PowerOfTwo), b(req, Mode::Prime);
+        for (int i = 0; i < 50000; ++i) { std::uint64_t h = rng(); assert(a.index(h) == h % a.m && a.index(h) < a.m && b.index(h) < b.m); }
+        assert(a.m >= req && b.m >= req && a.buckets.size() == a.m && b.buckets.size() == b.m);
+        for (auto& bucket : a.buckets) assert(bucket.empty()); for (auto& bucket : b.buckets) assert(bucket.empty());       // ④ 모든 버킷이 비어 있다
+        assert(a.count == 0 && b.count == 0);
+    }
+    bool threw = false; try { HashTable huge(HashTable::kMaxBuckets + 1, Mode::Prime); } catch (const std::length_error&) { threw = true; } assert(threw);
+    HashTable zero(0, Mode::PowerOfTwo); assert(zero.m == 1 && zero.index(12345) == 0);
+    // ⑤ 규칙적인 키: 8 의 배수 100 만 개를 항등 해시로
+    {   HashTable p2(1u << 10, Mode::PowerOfTwo), pr(1031, Mode::Prime); std::vector<int> used2(p2.m, 0), usedP(pr.m, 0);
+        for (std::uint64_t k = 0; k < 1000000; ++k) { used2[p2.index(k * 8)] = 1; usedP[pr.index(k * 8)] = 1; }
+        int u2 = 0, uP = 0; for (int x : used2) u2 += x; for (int x : usedP) uP += x;
+        assert(u2 == (int)p2.m / 8 && uP == (int)pr.m);
+        std::cout << "CreateHashTable: nextPrime and nextPow2 were exactly the smallest prime / power of two >= n for every n up to 100,000, the mask equalled the remainder for power-of-two sizes, indices stayed below m, fresh tables were empty, an oversized request threw, and 1,000,000 multiples of 8 hashed by the identity function used " << u2 << " of " << p2.m << " power-of-two buckets but all " << uP << " prime buckets" << std::endl; }
     return 0;
 }
-// Time Complexity: O(m)  (버킷 m개 초기화)
+// Time Complexity: O(m)  (버킷 m개 초기화, 소수 찾기 O(√m) 반복)
 // Space Complexity: O(m)
 ```
 ## Insert()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-class HashTable {
-    std::vector<std::list<std::pair<std::string, int>>> b;
-    size_t n = 0;
-    size_t idx(const std::string& k) const { return std::hash<std::string>{}(k) % b.size(); }
-public:
-    explicit HashTable(size_t m = 8) : b(m) {}
-    // 새 키면 true, 기존 키의 값을 갱신하면 false
-    bool insert(const std::string& k, int v) {
-        for (auto& kv : b[idx(k)]) if (kv.first == k) { kv.second = v; return false; }
-        b[idx(k)].emplace_back(k, v);
-        ++n;
-        return true;
+// 체이닝 해시 테이블의 삽입: 키를 해시해 버킷을 정하고, 그 버킷의 연결 리스트(여기서는 벡터)를 훑어 같은 키가 있으면 *값을 갱신*, 없으면 *새 항목을 추가*한다. 반환값은 "새로 추가됐는가". 충돌(서로 다른 키가 같은 버킷)은 같은 리스트에 이어 붙을 뿐이라 정확성에는 영향이 없고 비용만 늘린다 — 모든 키가 한 버킷에 몰려도(최악) 정답은 같고 삽입이 O(n) 이 된다.
+// 비용 분석(검증 대상): i 번째 삽입이 훑는 항목 수의 기댓값은 그때의 평균 체인 길이 (i−1)/m 이므로 n 번 삽입의 총 비교 수 ≈ n(n−1)/(2m) = n·α/2 — 평균 삽입 비용 O(1 + α). 또 모든 체인 길이의 합은 항상 원소 수 n 과 같다(손실·중복 없음).
+// 검증: ① 무작위 연산 20 만 번(삽입·갱신 섞음)을 std::unordered_map 과 비교 — 반환값(새로움 여부), 크기, 모든 키의 값 ② 모든 키가 같은 버킷에 몰리는 최악(m 의 배수 키)에서도 같은 결과, 체인 길이 = n ③ 서로 다른 무작위 키 n 개의 총 비교 수가 n(n−1)/(2m) 의 ±5% ④ 체인 길이의 합 = n.
+struct Table {
+    using Entry = std::pair<std::uint64_t, int>;
+    std::vector<std::vector<Entry>> b; std::size_t n = 0; long comparisons = 0;
+    explicit Table(std::size_t m) : b(m) {}
+    static std::uint64_t mix(std::uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+    std::size_t bucket(std::uint64_t k, bool identity) const { return (identity ? k : mix(k)) % b.size(); }
+    bool insert(std::uint64_t k, int v, bool identity = false) {                          // true: 새 항목, false: 기존 키의 값 갱신
+        auto& chain = b[bucket(k, identity)];
+        for (Entry& e : chain) { ++comparisons; if (e.first == k) { e.second = v; return false; } }
+        chain.push_back({k, v}); ++n; return true;
     }
-    size_t size() const { return n; }
-    int get(const std::string& k) const {
-        for (auto& kv : b[idx(k)]) if (kv.first == k) return kv.second;
-        return -1;
-    }
+    const int* find(std::uint64_t k, bool identity = false) const { for (const Entry& e : b[bucket(k, identity)]) if (e.first == k) return &e.second; return nullptr; }
+    std::size_t totalChain() const { std::size_t s = 0; for (auto& c : b) s += c.size(); return s; }
 };
 
 int main() {
-    HashTable t;
-    assert(t.insert("apple", 1));
-    assert(t.insert("banana", 2));
-    assert(!t.insert("apple", 10));     // 같은 키는 갱신: 크기는 그대로
-    assert(t.size() == 2 && t.get("apple") == 10);
-    std::cout << "Insert: size=" << t.size() << std::endl;
-    return 0;
+    std::mt19937_64 rng(2);
+    // ① 무작위 연산 20 만 번 (키 범위 5,000 → 많은 갱신): unordered_map 과 같은 동작
+    {   Table t(257); std::unordered_map<std::uint64_t, int> ref; long newCount = 0;
+        for (int i = 0; i < 200000; ++i) { std::uint64_t k = rng() % 5000; int v = (int)(rng() % 1000); bool fresh = t.insert(k, v); bool refFresh = ref.find(k) == ref.end(); ref[k] = v; assert(fresh == refFresh); newCount += fresh; }
+        assert(t.n == ref.size() && (long)t.n == newCount && t.totalChain() == t.n);
+        for (auto& [k, v] : ref) { const int* p = t.find(k); assert(p && *p == v); } assert(t.find(99999) == nullptr);
+    }
+    // ② 최악: 키가 모두 m 의 배수이고 항등 해시 → 한 버킷. 정답은 같고 체인 길이 = n
+    {   const std::size_t m = 101; Table t(m); std::unordered_map<std::uint64_t, int> ref;
+        for (int i = 0; i < 3000; ++i) { std::uint64_t k = (rng() % 400) * m; int v = (int)(rng() % 100); bool fresh = t.insert(k, v, true); assert(fresh == (ref.find(k) == ref.end())); ref[k] = v; }
+        std::size_t longest = 0; for (auto& c : t.b) longest = std::max(longest, c.size()); assert(longest == ref.size() && t.n == ref.size() && t.totalChain() == t.n);
+        for (auto& [k, v] : ref) assert(*t.find(k, true) == v);
+    }
+    // ③ 서로 다른 무작위 키 n 개를 넣을 때의 총 비교 수 ≈ n(n−1)/(2m), 여러 α 에서
+    for (std::size_t n : {5000u, 20000u, 80000u}) {
+        Table t(10007); std::unordered_map<std::uint64_t, int> seen; while (seen.size() < n) { std::uint64_t k = rng(); if (seen.emplace(k, 0).second) t.insert(k, 0); }
+        double expected = (double)n * (double)(n - 1) / (2.0 * 10007); double ratio = (double)t.comparisons / expected; assert(ratio > 0.95 && ratio < 1.05 && t.totalChain() == n);
+    }
+    std::cout << "Insert: 200,000 random insert/update operations on a chaining table returned the same 'was it new' flags, size and values as std::unordered_map, 3000 operations with every key colliding into one bucket still agreed (chain length = n), the sum of chain lengths always equalled n, and the total comparison count for n distinct random keys stayed within 5% of n(n-1)/(2m) at three load factors" << std::endl; return 0;
 }
 // Time Complexity: 평균 O(1 + α), 최악 O(n)
 // Space Complexity: O(n)
@@ -72,32 +113,52 @@ int main() {
 ## Search()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
-class HashTable {
-    std::vector<std::list<std::pair<std::string, int>>> b;
-    size_t idx(const std::string& k) const { return std::hash<std::string>{}(k) % b.size(); }
-public:
-    explicit HashTable(size_t m = 8) : b(m) {}
-    void insert(const std::string& k, int v) { b[idx(k)].emplace_back(k, v); }
-    // 찾으면 값의 주소, 없으면 nullptr
-    const int* search(const std::string& k) const {
-        for (auto& kv : b[idx(k)]) if (kv.first == k) return &kv.second;
+// 체이닝 해시 테이블의 검색: 버킷을 정하고 그 리스트를 처음부터 훑는다. *실패한* 검색은 리스트 전체를 훑으므로 평균 비교 수가 정확히 평균 체인 길이 α = n/m 이고, *성공한* 검색은 찾는 항목이 리스트의 몇 번째에 있느냐 만큼 비교하므로 평균 1 + (n − 1)/(2m) ≈ 1 + α/2 이다(리스트 안 위치가 균등하다고 보면). 두 값을 표 전체를 훑어 *정확히* 계산한 값과, 실제 무작위 검색에서 센 값 둘 다 확인한다.
+// 정확한 값: 실패 검색의 기댓값(무작위 버킷) = Σ(체인 길이) / m = n/m 정확히. 성공 검색의 기댓값(저장된 키를 균등하게 골랐을 때) = (Σ 체인마다 Σ_{j=1..len} j) / n = (Σ len(len+1)/2) / n.
+// 검증: ① 무작위 삽입·검색 20 만 번을 std::unordered_map 과 비교(찾음/못 찾음, 값) ② 표 전체에서 계산한 정확한 평균 비교 수가 위의 공식과 같고, 실제 검색 10 만 번에서 센 평균이 ±3% 이내 ③ 해시 함수 입력에 따라 못 찾는 키가 찾는 키와 같은 버킷일 수 있음 — 그래도 거짓 양성은 없다(비교는 키 전체 값으로) ④ 빈 표와 경계.
+struct Table {
+    using Entry = std::pair<std::uint64_t, int>;
+    std::vector<std::vector<Entry>> b; std::size_t n = 0;
+    explicit Table(std::size_t m) : b(m) {}
+    static std::uint64_t mix(std::uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+    void put(std::uint64_t k, int v) { auto& c = b[mix(k) % b.size()]; for (Entry& e : c) if (e.first == k) { e.second = v; return; } c.push_back({k, v}); ++n; }
+    const int* find(std::uint64_t k, long* comparisons = nullptr) const {
+        for (const Entry& e : b[mix(k) % b.size()]) { if (comparisons) ++*comparisons; if (e.first == k) return &e.second; }
         return nullptr;
     }
+    double exactUnsuccessful() const { std::size_t s = 0; for (auto& c : b) s += c.size(); return (double)s / (double)b.size(); }              // 무작위 버킷을 훑는 평균 = n/m
+    double exactSuccessful() const { double s = 0; for (auto& c : b) s += (double)c.size() * (double)(c.size() + 1) / 2.0; return n ? s / (double)n : 0.0; }   // 저장된 키 하나를 고를 때 평균 비교 수
 };
 
 int main() {
-    HashTable t;
-    t.insert("one", 1); t.insert("two", 2); t.insert("three", 3);
-    assert(t.search("two") && *t.search("two") == 2);
-    assert(t.search("four") == nullptr);
-    std::cout << "Search: two -> " << *t.search("two") << std::endl;
-    return 0;
+    std::mt19937_64 rng(3);
+    // ① 빈 표 · 경계 · 무작위 삽입/검색 20 만 번 (unordered_map 과 비교)
+    {   Table t(509); assert(t.find(7) == nullptr && t.exactUnsuccessful() == 0.0 && t.exactSuccessful() == 0.0);
+        std::unordered_map<std::uint64_t, int> ref;
+        for (int i = 0; i < 200000; ++i) {
+            std::uint64_t k = rng() % 3000; if (rng() % 2) { int v = (int)(rng() % 100); t.put(k, v); ref[k] = v; } else { const int* p = t.find(k); auto it = ref.find(k); assert((p != nullptr) == (it != ref.end())); if (p) assert(*p == it->second); }
+        }
+        assert(t.n == ref.size());
+    }
+    // ② 정확한 평균 비교 수 = 공식, 실제 검색의 평균 ≈ 공식
+    for (auto [n, m] : std::vector<std::pair<std::size_t, std::size_t>>{{2000, 4001}, {20000, 20011}, {60000, 20011}}) {
+        Table t(m); std::unordered_set<std::uint64_t> keys; while (keys.size() < n) { std::uint64_t k = rng(); if (keys.insert(k).second) t.put(k, 1); }
+        double alpha = (double)n / (double)m; assert(std::abs(t.exactUnsuccessful() - alpha) < 1e-12);                                   // 실패 검색의 평균 비교 수는 정확히 α
+        double succ = t.exactSuccessful(); assert(succ >= 1.0 && std::abs(succ - (1 + alpha / 2)) < 0.03 * (1 + alpha / 2));            // 성공 검색은 ≈ 1 + α/2
+        long cmp = 0; std::vector<std::uint64_t> stored(keys.begin(), keys.end());
+        for (int i = 0; i < 100000; ++i) { const int* p = t.find(stored[rng() % stored.size()], &cmp); assert(p); } double avgSucc = (double)cmp / 100000; assert(std::abs(avgSucc - succ) < 0.03 * succ);
+        long cmp2 = 0; int misses = 0; for (int i = 0; i < 100000; ++i) { std::uint64_t k = rng(); if (keys.count(k)) continue; ++misses; assert(t.find(k, &cmp2) == nullptr); } assert(std::abs((double)cmp2 / misses - alpha) < 0.03 * alpha + 0.01);
+    }
+    std::cout << "Search: 200,000 random put/get operations matched std::unordered_map, the exact mean comparison count of an unsuccessful search equalled n/m, a successful one stayed within 3% of 1 + alpha/2, measured averages over 100,000 random searches matched those exact values, and no absent key was ever reported present" << std::endl; return 0;
 }
 // Time Complexity: 평균 O(1 + α), 최악 O(n)
 // Space Complexity: O(1)
@@ -105,41 +166,81 @@ int main() {
 ## Delete()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <string>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-class HashTable {
-    std::vector<std::list<std::pair<std::string, int>>> b;
-    size_t n = 0;
-    size_t idx(const std::string& k) const { return std::hash<std::string>{}(k) % b.size(); }
-public:
-    explicit HashTable(size_t m = 8) : b(m) {}
-    void insert(const std::string& k, int v) { b[idx(k)].emplace_back(k, v); ++n; }
-    bool contains(const std::string& k) const {
-        for (auto& kv : b[idx(k)]) if (kv.first == k) return true;
-        return false;
+// 삭제는 삽입·검색보다 까다롭다. 체이닝은 리스트에서 항목을 빼면 끝이지만, *개방 주소법(선형 탐사)* 에서는 "검색은 빈 칸을 만나면 멈춘다" 는 규칙 때문에 칸을 그냥 비우면 그 칸을 *지나쳐 저장된* 키들이 검색에서 사라진다(아래 시연: 잃어버린 키가 실제로 생긴다). 해법 둘 — ① 묘비(tombstone): 지운 칸에 표시를 남기고 검색은 계속 지나가며 삽입은 재사용한다. 단점: 묘비가 쌓이면 검색이 길어져 주기적인 재구성이 필요. ② *뒤로 당기기(backward shift, Knuth 알고리즘 R)*: 지운 칸 뒤의 군집을 훑으며 "원래 자리(home)가 빈 칸 이전이라 빈 칸을 건너 있어야 하는" 키를 빈 칸으로 끌어와 불변식(모든 키는 home 에서 자기 칸까지 빈 칸 없이 이어진다)을 지킨다 — 묘비가 필요 없다.
+// 검증: ① 체이닝 삭제를 무작위 연산 10 만 번으로 std::unordered_map 과 비교(삭제 반환값 포함) ② 선형 탐사 표에서 뒤로 당기기 삭제를 무작위 삽입·삭제·검색 20 만 번으로 비교하고 *매 100 번마다* 불변식(각 키가 home 에서 자기 칸까지 빈 칸 없이 닿음) 검사 ③ 묘비 방식도 같은 결과 ④ 단순히 비우기만 하면 검색이 틀린다는 반례(잃어버린 키 > 0).
+struct Open {                                                                  // 선형 탐사, 키 0 은 쓰지 않는다 (빈 칸 = 0)
+    std::vector<std::uint64_t> slot; std::size_t n = 0;
+    explicit Open(std::size_t m) : slot(m, 0) {}
+    std::size_t home(std::uint64_t k) const { k += 0x9e3779b97f4a7c15ULL; k = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL; k = (k ^ (k >> 27)) * 0x94d049bb133111ebULL; return (std::size_t)((k ^ (k >> 31)) % slot.size()); }
+    bool insert(std::uint64_t k) { std::size_t i = home(k); while (slot[i]) { if (slot[i] == k) return false; i = (i + 1) % slot.size(); } slot[i] = k; ++n; return true; }
+    bool contains(std::uint64_t k) const { std::size_t i = home(k); while (slot[i]) { if (slot[i] == k) return true; i = (i + 1) % slot.size(); } return false; }
+    bool erase(std::uint64_t k) {                                              // 뒤로 당기기 (알고리즘 R)
+        std::size_t m = slot.size(), i = home(k); while (slot[i] && slot[i] != k) i = (i + 1) % m; if (!slot[i]) return false;
+        slot[i] = 0; --n; std::size_t j = i;
+        while (true) {
+            j = (j + 1) % m; if (!slot[j]) break; std::size_t h = home(slot[j]);
+            bool between = i <= j ? (i < h && h <= j) : (i < h || h <= j);      // h 가 (i, j] 안이면 slot[j] 는 그대로 있어도 도달 가능
+            if (!between) { slot[i] = slot[j]; slot[j] = 0; i = j; }
+        }
+        return true;
     }
-    // 체이닝에서는 해당 노드만 리스트에서 떼어내면 된다
-    bool erase(const std::string& k) {
-        auto& chain = b[idx(k)];
-        for (auto it = chain.begin(); it != chain.end(); ++it)
-            if (it->first == k) { chain.erase(it); --n; return true; }
-        return false;
-    }
-    size_t size() const { return n; }
+    bool eraseNaive(std::uint64_t k) { std::size_t m = slot.size(), i = home(k); while (slot[i] && slot[i] != k) i = (i + 1) % m; if (!slot[i]) return false; slot[i] = 0; --n; return true; }   // 잘못된 삭제
+    bool invariant() const { for (std::size_t i = 0; i < slot.size(); ++i) if (slot[i]) { std::size_t j = home(slot[i]); while (j != i) { if (!slot[j]) return false; j = (j + 1) % slot.size(); } } return true; }
+};
+struct Tomb {                                                                  // 묘비 방식: 0 = 빈 칸, 1 = 묘비(키 값으로 쓰지 않음)
+    std::vector<std::uint64_t> slot; std::size_t live = 0;
+    explicit Tomb(std::size_t m) : slot(m, 0) {}
+    std::size_t home(std::uint64_t k) const { Open o(slot.size()); return o.home(k); }
+    bool insert(std::uint64_t k) { if (contains(k)) return false; std::size_t i = home(k); while (slot[i] && slot[i] != 1) i = (i + 1) % slot.size(); slot[i] = k; ++live; return true; }
+    bool contains(std::uint64_t k) const { std::size_t i = home(k), steps = 0; while (slot[i] && steps++ < slot.size()) { if (slot[i] == k) return true; i = (i + 1) % slot.size(); } return false; }
+    bool erase(std::uint64_t k) { std::size_t i = home(k), steps = 0; while (slot[i] && steps++ < slot.size()) { if (slot[i] == k) { slot[i] = 1; --live; return true; } i = (i + 1) % slot.size(); } return false; }
+};
+struct Chain {
+    std::vector<std::vector<std::uint64_t>> b; explicit Chain(std::size_t m) : b(m) {}
+    bool insert(std::uint64_t k) { auto& c = b[k % b.size()]; if (std::find(c.begin(), c.end(), k) != c.end()) return false; c.push_back(k); return true; }
+    bool erase(std::uint64_t k) { auto& c = b[k % b.size()]; auto it = std::find(c.begin(), c.end(), k); if (it == c.end()) return false; *it = c.back(); c.pop_back(); return true; }
+    bool contains(std::uint64_t k) const { auto& c = b[k % b.size()]; return std::find(c.begin(), c.end(), k) != c.end(); }
 };
 
 int main() {
-    HashTable t;
-    t.insert("a", 1); t.insert("b", 2); t.insert("c", 3);
-    assert(t.erase("b"));
-    assert(!t.contains("b") && t.contains("a") && t.contains("c"));
-    assert(!t.erase("zzz"));
-    assert(t.size() == 2);
-    std::cout << "Delete: size=" << t.size() << std::endl;
+    std::mt19937_64 rng(4);
+    // ① 체이닝: 무작위 삽입·삭제·검색 10 만 번
+    {   Chain c(53); std::unordered_map<std::uint64_t, int> ref;
+        for (int i = 0; i < 100000; ++i) { std::uint64_t k = 1 + rng() % 400; int op = (int)(rng() % 3);
+            if (op == 0) { bool r = ref.emplace(k, 1).second; assert(c.insert(k) == r); } else if (op == 1) { bool r = ref.erase(k) > 0; assert(c.erase(k) == r); } else assert(c.contains(k) == (ref.count(k) > 0)); }
+    }
+    // ② 선형 탐사 + 뒤로 당기기: 표가 꽤 차 있는 상태(α ≈ 0.7)를 유지하며 20 만 번, 매 100 번마다 불변식 검사
+    {   Open t(1009); std::unordered_map<std::uint64_t, int> ref; long erased = 0;
+        for (int i = 0; i < 200000; ++i) {
+            std::uint64_t k = 1 + rng() % 1500; int op = (int)(rng() % 3);
+            if (op == 0 && ref.size() < 700) { bool r = ref.emplace(k, 1).second; assert(t.insert(k) == r); } else if (op == 1) { bool r = ref.erase(k) > 0; erased += r; assert(t.erase(k) == r); } else assert(t.contains(k) == (ref.count(k) > 0));
+            if (i % 100 == 0) assert(t.invariant() && t.n == ref.size());
+        }
+        for (auto& kv : ref) assert(t.contains(kv.first)); assert(erased > 20000);
+    }
+    // ③ 묘비 방식도 같은 결과
+    {   Tomb t(1009); std::unordered_map<std::uint64_t, int> ref;
+        for (int i = 0; i < 100000; ++i) { std::uint64_t k = 2 + rng() % 1500; int op = (int)(rng() % 3);
+            if (op == 0 && ref.size() < 600) { bool r = ref.emplace(k, 1).second; assert(t.insert(k) == r); } else if (op == 1) { bool r = ref.erase(k) > 0; assert(t.erase(k) == r); } else assert(t.contains(k) == (ref.count(k) > 0)); }
+    }
+    // ④ 반례: 칸을 그냥 비우면 그 칸을 지나쳐 저장된 키가 검색에서 사라진다
+    {   long lostTotal = 0;
+        for (int trial = 0; trial < 200; ++trial) {
+            Open t(101); std::vector<std::uint64_t> keys; while (keys.size() < 80) { std::uint64_t k = 1 + rng() % 100000; if (t.insert(k)) keys.push_back(k); }
+            for (int d = 0; d < 20; ++d) { std::size_t idx = rng() % keys.size(); t.eraseNaive(keys[idx]); keys.erase(keys.begin() + (long)idx); }
+            for (std::uint64_t k : keys) lostTotal += !t.contains(k);
+        }
+        assert(lostTotal > 100);
+        std::cout << "Delete: chaining deletion and linear-probing backward-shift deletion (Knuth's Algorithm R) matched std::unordered_map over hundreds of thousands of random operations while the cluster invariant held every 100 steps, tombstone deletion agreed too, and simply blanking a slot lost " << lostTotal << " stored keys in 200 trials" << std::endl; }
     return 0;
 }
 // Time Complexity: 평균 O(1 + α), 최악 O(n)
@@ -148,42 +249,83 @@ int main() {
 ## Resize()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-class HashTable {
-    std::vector<std::list<std::pair<std::string, int>>> b;
-    size_t n = 0;
-    size_t idx(const std::string& k) const { return std::hash<std::string>{}(k) % b.size(); }
-    void grow() {                         // 버킷 수를 2배로 늘리고 모든 노드를 재배치
-        std::vector<std::list<std::pair<std::string, int>>> nb(b.size() * 2);
-        for (auto& chain : b)
-            for (auto& kv : chain) nb[std::hash<std::string>{}(kv.first) % nb.size()].push_back(kv);
-        b.swap(nb);
+// 크기 조정(Resize): 적재율 α = n/m 이 문턱을 넘으면 버킷 수를 늘리고 모든 항목을 새 표에 다시 넣는다(rehash). 한 번의 확장은 O(n) 이지만 *늘리는 비율이 일정(예: 2 배)* 이면 n 번 삽입하는 동안 옮긴 항목의 총합이 2n 미만이라 삽입 하나당 분할상환 O(1) 이다 — 확장 시점의 크기가 n₀·2^k 이므로 합이 등비급수 (1 + 2 + 4 + … ) < 2n. *일정한 크기만큼* 더하는 방식(+16)은 합이 n²/32 라 이차 시간이다.
+// 한 번에 O(n) 이 일어나는 꼬리 지연이 문제라면 *점진적 재구성(incremental rehash)* — 옛 표와 새 표를 함께 두고 연산마다 옛 버킷 k 개를 새 표로 옮긴다(Redis 가 이 방식). 검색은 두 표를 모두 보고, 삽입은 새 표에만 한다. 연산당 일이 상수로 묶이면서 최종 내용은 같다.
+// 검증: ① 증가 비율별 총 이동 수 — 2 배: 정확히 마지막 확장 전까지의 크기 합 < 2n, 1.5 배: < 3n, +16: n²/32 근처(100 배 이상 큼) ② 확장 중에도 모든 내용 보존(무작위 삽입 10 만 번을 unordered_map 과 비교) ③ 점진적 재구성에서 연산당 이동한 버킷 수가 k 를 넘지 않고 각 시점에 검색이 맞음, 끝나면 옛 표가 비어 있음 ④ 적재율은 확장 직후 문턱의 절반 이하로 떨어졌다가 다시 오른다.
+struct Growing {
+    using Entry = std::pair<std::uint64_t, int>;
+    std::vector<std::vector<Entry>> b; std::size_t n = 0; double threshold; double factor; long add; long moved = 0; int resizes = 0; double minAlphaAfter = 1e9;
+    Growing(std::size_t m, double thr, double f, long a) : b(m), threshold(thr), factor(f), add(a) {}
+    static std::size_t h(std::uint64_t k, std::size_t m) { k += 0x9e3779b97f4a7c15ULL; k = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL; k = (k ^ (k >> 27)) * 0x94d049bb133111ebULL; return (std::size_t)((k ^ (k >> 31)) % m); }
+    void rehash(std::size_t newM) { std::vector<std::vector<Entry>> nb(newM); for (auto& c : b) for (Entry& e : c) { nb[h(e.first, newM)].push_back(e); ++moved; } b.swap(nb); ++resizes; minAlphaAfter = std::min(minAlphaAfter, (double)n / (double)newM); }
+    void put(std::uint64_t k, int v) {
+        for (Entry& e : b[h(k, b.size())]) if (e.first == k) { e.second = v; return; }
+        b[h(k, b.size())].push_back({k, v}); ++n;
+        if ((double)n / (double)b.size() > threshold) rehash(add ? b.size() + (std::size_t)add : (std::size_t)((double)b.size() * factor) + 1);
     }
-public:
-    explicit HashTable(size_t m = 4) : b(m) {}
-    void insert(const std::string& k, int v) {
-        if (double(n + 1) / b.size() > 0.75) grow();   // 적재율이 0.75를 넘으면 확장
-        b[idx(k)].emplace_back(k, v);
-        ++n;
+    const int* get(std::uint64_t k) const { for (const Entry& e : b[h(k, b.size())]) if (e.first == k) return &e.second; return nullptr; }
+};
+// 점진적 재구성: 옛 표 old 와 새 표 cur 를 함께 둔다
+struct Incremental {
+    using Entry = std::pair<std::uint64_t, int>;
+    std::vector<std::vector<Entry>> cur, old; std::size_t n = 0, nextOld = 0; int stepsPerOp; long maxMovedPerOp = 0;
+    explicit Incremental(std::size_t m, int k) : cur(m), stepsPerOp(k) {}
+    static std::size_t h(std::uint64_t k, std::size_t m) { return Growing::h(k, m); }
+    bool migrating() const { return !old.empty(); }
+    void migrateSome() {
+        long moved = 0;
+        for (int s = 0; s < stepsPerOp && migrating(); ++s) {
+            for (Entry& e : old[nextOld]) { cur[h(e.first, cur.size())].push_back(e); ++moved; } old[nextOld].clear();
+            if (++nextOld == old.size()) { old.clear(); old.shrink_to_fit(); nextOld = 0; }
+        }
+        maxMovedPerOp = std::max(maxMovedPerOp, moved);
     }
-    size_t buckets() const { return b.size(); }
-    bool contains(const std::string& k) const {
-        for (auto& kv : b[idx(k)]) if (kv.first == k) return true;
-        return false;
+    const int* get(std::uint64_t k) const {
+        for (const Entry& e : cur[h(k, cur.size())]) if (e.first == k) return &e.second;
+        if (migrating()) { for (const Entry& e : old[h(k, old.size())]) if (e.first == k) return &e.second; }
+        return nullptr;
+    }
+    void put(std::uint64_t k, int v) {
+        migrateSome();
+        if (migrating()) { auto& oc = old[h(k, old.size())]; for (Entry& e : oc) if (e.first == k) { e.second = v; return; } }           // 아직 옛 표에 있으면 거기서 갱신
+        auto& c = cur[h(k, cur.size())]; for (Entry& e : c) if (e.first == k) { e.second = v; return; }
+        c.push_back({k, v}); ++n;
+        if (!migrating() && (double)n / (double)cur.size() > 0.75) { old.swap(cur); cur.assign(old.size() * 2, {}); nextOld = 0; }      // 2 배 새 표를 만들고 옛 표를 서서히 비운다
     }
 };
 
 int main() {
-    HashTable t(4);
-    for (int i = 0; i < 100; i++) t.insert("key" + std::to_string(i), i);
-    assert(t.buckets() == 256);            // 4 -> 8 -> ... -> 256 (적재율 <= 0.75 유지)
-    for (int i = 0; i < 100; i++) assert(t.contains("key" + std::to_string(i)));
-    std::cout << "Resize: buckets=" << t.buckets() << std::endl;
+    const std::size_t N = 8000; std::mt19937_64 rng(7);
+    // ① 증가 방식별 총 이동 수 (상수 증가 +16 은 이차라 n = 8,000 으로도 충분히 크게 드러난다)
+    auto run = [&](double f, long add) { Growing g(8, 0.75, f, add); for (std::size_t i = 0; i < N; ++i) g.put(i * 7919 + 1, 1); return g; };
+    Growing dbl = run(2.0, 0), mid = run(1.5, 0), lin = run(0.0, 16);
+    assert(dbl.moved < 2 * (long)N && mid.moved < 3 * (long)N && lin.moved > 100 * dbl.moved);      // 등비 증가는 분할상환 O(1), 상수 증가는 이차
+    assert(dbl.n == N && mid.n == N && lin.n == N && dbl.resizes < 20);
+    // 2 배의 정확한 합: 확장 시점마다 그때의 원소 수가 이동 → 합은 등비수열
+    {   Growing g(8, 0.75, 2.0, 0); long expect = 0; std::size_t m = 8; std::size_t nn = 0; for (std::size_t i = 0; i < N; ++i) { g.put(i + 1, 1); ++nn; if ((double)nn / (double)m > 0.75) { expect += (long)nn; m = (std::size_t)((double)m * 2.0) + 1; } } assert(g.moved == expect); }
+    // ② 확장 중에도 내용 보존: 무작위 삽입(갱신 포함) 10 만 번을 unordered_map 과 비교, 확장 직후 적재율은 문턱보다 훨씬 낮다
+    {   Growing g(4, 0.75, 2.0, 0); std::unordered_map<std::uint64_t, int> ref;
+        for (int i = 0; i < 100000; ++i) { std::uint64_t k = rng() % 60000; int v = (int)(rng() % 1000); g.put(k, v); ref[k] = v; }
+        assert(g.n == ref.size()); for (auto& [k, v] : ref) { const int* p = g.get(k); assert(p && *p == v); } assert(g.minAlphaAfter < 0.4 && (double)g.n / (double)g.b.size() <= 0.75 + 1e-9); }
+    // ③ 점진적 재구성: 연산당 이동한 버킷은 stepsPerOp 개 이하(→ 한 연산이 훑는 항목 수가 한 번에 O(n) 이 되지 않는다), 모든 시점에서 검색이 맞음
+    {   Incremental t(8, 2); std::unordered_map<std::uint64_t, int> ref; int sawMigrating = 0;
+        for (int i = 0; i < 100000; ++i) {
+            std::uint64_t k = rng() % 40000; int v = (int)(rng() % 1000); t.put(k, v); ref[k] = v; sawMigrating += t.migrating();
+            if (i % 997 == 0) for (int probe = 0; probe < 50; ++probe) { std::uint64_t q = rng() % 40000; const int* p = t.get(q); auto it = ref.find(q); assert((p != nullptr) == (it != ref.end())); if (p) assert(*p == it->second); }
+        }
+        while (t.migrating()) t.migrateSome();
+        assert(t.old.empty() && t.n == ref.size() && sawMigrating > 1000);
+        for (auto& [k, v] : ref) { const int* p = t.get(k); assert(p && *p == v); }
+        assert(t.maxMovedPerOp < 200);                                                                      // 버킷 2 개 분량 (적재율 ≤ 0.75 라 평균 두세 개씩)
+        std::cout << "Resize: total moved entries for 8,000 inserts were " << dbl.moved << " when doubling (< 2n), " << mid.moved << " at x1.5 (< 3n) and " << lin.moved << " when growing by a constant 16 (over 100 times worse); growth preserved every entry through " << dbl.resizes << " rehashes, and incremental rehashing kept the per-operation migration to at most " << t.maxMovedPerOp << " entries while lookups stayed correct throughout" << std::endl; }
     return 0;
 }
 // Time Complexity: 삽입 분할상환 O(1), 확장 1회는 O(n)
@@ -240,25 +382,49 @@ int main() {
 ## LoadFactor()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cmath>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
-// 적재율 α = n / m 에 따른 평균 탐색 횟수(이론값)
-double chainingHit(double a)  { return 1 + a / 2; }                 // 체이닝, 성공 탐색
-double chainingMiss(double a) { return 1 + a; }                     // 체이닝, 실패 탐색
-double linearHit(double a)    { return 0.5 * (1 + 1 / (1 - a)); }   // 선형 탐사, 성공 탐색
-double linearMiss(double a)   { return 0.5 * (1 + 1 / ((1 - a) * (1 - a))); }  // 선형 탐사, 실패 탐색
+// 적재율 α = n / m 이 해시 테이블의 성능을 거의 전부 결정한다. 키가 균등하게 흩어진다는 가정에서 평균 탐사(probe) 횟수의 이론값 — 체이닝: 성공 1 + α/2, 실패 α(+1 버킷 확인). 선형 탐사: 성공 ½(1 + 1/(1−α)), 실패 ½(1 + 1/(1−α)²) — α → 1 에서 제곱으로 폭발. 균등 해싱(이중 해싱의 이상형): 성공 (1/α)·ln(1/(1−α)), 실패 1/(1−α).
+// 그래서 개방 주소법은 α 를 0.5~0.75 로 묶고 체이닝도 1 안팎에서 확장한다. 아래 시뮬레이션은 소수 크기 m = 100,003 에서 α 를 0.3, 0.5, 0.7, 0.9 로 채워 *실제 평균 탐사 수를 세어* 이론값과 비교한다(결정적 시드). 선형 탐사의 이론값은 m → ∞ 에서의 근사식이라 α = 0.9 에서는 표가 한 번 만들어질 때의 변동이 커서 ±15%, 나머지는 ±4% 이내여야 통과(실측: 0.9 에서 실패 43.95 대 이론 50.5, 성공 5.18 대 5.5).
+// 추가로 이론식의 성질도 확인한다: 단조 증가, 선형 탐사의 실패 비용 > 성공 비용, 균등 해싱 < 선형 탐사(군집 때문), α = 0.5 에서 선형 탐사 실패 비용 2.5 번, α = 0.9 에서 50.5 번.
+struct Theory {
+    static double chainSuccess(double a) { return 1 + a / 2; }
+    static double chainFail(double a) { return a; }
+    static double linearSuccess(double a) { return 0.5 * (1 + 1 / (1 - a)); }
+    static double linearFail(double a) { return 0.5 * (1 + 1 / ((1 - a) * (1 - a))); }
+    static double uniformSuccess(double a) { return std::log(1 / (1 - a)) / a; }
+    static double uniformFail(double a) { return 1 / (1 - a); }
+};
+std::uint64_t mix(std::uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
 
 int main() {
-    // α가 커질수록 개방 주소법의 비용은 급격히 커지고, 체이닝은 완만하게 커진다
-    assert(std::fabs(linearMiss(0.5) - 2.5) < 1e-9);
-    assert(std::fabs(linearMiss(0.9) - 50.5) < 1e-9);
-    assert(chainingMiss(0.9) < 2);
-    assert(linearMiss(0.9) > 20 * chainingMiss(0.9));
-    for (double a : {0.25, 0.5, 0.75, 0.9})
-        std::cout << "alpha=" << a << " chain(hit/miss)=" << chainingHit(a) << "/" << chainingMiss(a)
-                  << " linear(hit/miss)=" << linearHit(a) << "/" << linearMiss(a) << std::endl;
+    // ① 이론식의 성질
+    assert(std::abs(Theory::linearFail(0.5) - 2.5) < 1e-12 && std::abs(Theory::linearFail(0.9) - 50.5) < 1e-9 && std::abs(Theory::linearSuccess(0.5) - 1.5) < 1e-12);
+    for (double a = 0.05; a < 0.95; a += 0.05) {
+        assert(Theory::linearFail(a) > Theory::linearSuccess(a) && Theory::linearSuccess(a) > Theory::uniformSuccess(a) && Theory::linearFail(a) > Theory::uniformFail(a));          // 실패가 더 비싸고, 군집 때문에 선형이 균등보다 나쁘다
+        assert(Theory::linearFail(a + 0.04) > Theory::linearFail(a) && Theory::uniformFail(a + 0.04) > Theory::uniformFail(a) && Theory::chainSuccess(a + 0.04) > Theory::chainSuccess(a));    // 단조 증가
+    }
+    // ② 시뮬레이션: 선형 탐사 표를 α 까지 채우고 성공/실패 탐사 수를 센다
+    const std::size_t m = 100003; std::mt19937_64 rng(8);
+    for (double alpha : {0.3, 0.5, 0.7, 0.9}) {
+        std::size_t n = (std::size_t)(alpha * (double)m); std::vector<std::uint64_t> slot(m, 0), stored; stored.reserve(n); std::unordered_set<std::uint64_t> seen;
+        while (stored.size() < n) { std::uint64_t k = rng() | 1; if (!seen.insert(k).second) continue; std::size_t i = mix(k) % m; while (slot[i]) i = (i + 1) % m; slot[i] = k; stored.push_back(k); }
+        long succProbes = 0; for (std::uint64_t k : stored) { std::size_t i = mix(k) % m; long p = 1; while (slot[i] != k) { i = (i + 1) % m; ++p; } succProbes += p; }
+        long failProbes = 0; const int trials = 200000; for (int t = 0; t < trials; ++t) { std::uint64_t k = rng() & ~1ULL; std::size_t i = mix(k) % m; long p = 1; while (slot[i]) { i = (i + 1) % m; ++p; } failProbes += p; }       // 짝수 키는 저장된 적 없음 → 실패 탐색
+        double succ = (double)succProbes / (double)n, fail = (double)failProbes / trials; double tol = alpha > 0.85 ? 0.15 : 0.04;
+        assert(std::abs(succ - Theory::linearSuccess(alpha)) < tol * Theory::linearSuccess(alpha) && std::abs(fail - Theory::linearFail(alpha)) < tol * Theory::linearFail(alpha));
+        // 체이닝: 평균 체인 길이 = α, 성공 검색 평균 비교 수 ≈ 1 + α/2
+        std::vector<int> len(m, 0); for (std::uint64_t k : stored) ++len[mix(k) % m]; double totalLen = 0, sumPairs = 0; for (int l : len) { totalLen += l; sumPairs += (double)l * (l + 1) / 2.0; }
+        assert(std::abs(totalLen / (double)m - alpha) < 1e-3 && std::abs(sumPairs / (double)n - Theory::chainSuccess(alpha)) < 0.03 * Theory::chainSuccess(alpha));
+        std::cout << "LoadFactor alpha=" << alpha << ": linear probing successful " << succ << " (theory " << Theory::linearSuccess(alpha) << "), unsuccessful " << fail << " (theory " << Theory::linearFail(alpha) << ")" << std::endl;
+    }
     return 0;
 }
 // Time Complexity: O(1)
@@ -268,25 +434,39 @@ int main() {
 ## DivisionMethod()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <climits>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-// h(k) = k mod m : m 선택이 분포를 좌우한다
-size_t spread(unsigned m, const std::vector<unsigned>& keys) {
-    std::set<unsigned> used;
-    for (unsigned k : keys) used.insert(k % m);
-    return used.size();
-}
+// 나눗셈법: h(k) = k mod m. 가장 단순하지만 *m 을 어떻게 고르느냐* 가 분포를 좌우한다. 정리(아래에서 모든 m ≤ 200, d ≤ 64 로 확인): 키가 모두 d 의 배수이면 사용되는 버킷은 정확히 m / gcd(m, d) 개다 — m 이 2의 거듭제곱이고 키가 8의 배수면 버킷의 7/8 이 비고, m 이 d 와 서로소(특히 소수)면 모든 버킷이 쓰인다. 그래서 소수 m 을 권장한다. 단, 2의 거듭제곱에 *가까운* 수도 피한다: m = 2^p − 1 이면 k mod m 은 k 의 2^p 진 자릿수의 *합* mod m 이라(2^p ≡ 1) 자릿수를 섞은 키(바이트 순서를 바꾼 것)가 전부 충돌한다.
+// 음수 키: C++ 의 % 는 부호를 따라가므로 -7 % 5 == -2 → 버킷 번호로 쓰면 범위 밖. ((k % m) + m) % m 로 보정한다(INT_MIN 도 안전하게 64비트로 올려서). 연속한 키는 라운드 로빈으로 퍼져 버킷 수가 정확히 균등(차이 ≤ 1).
+// 검증: ① 키가 d 의 배수일 때 사용 버킷 수 = m / gcd(m, d), 모든 m ≤ 200 · d ≤ 64 ② 바이트 쌍 (a, b) 에서 바이트를 바꾼 키와의 충돌: m = 255 는 a ≠ b 인 65,280 쌍이 전부, 소수 m = 251 은 거의 없음 ③ 음수를 포함한 무작위 키의 번호가 [0, m) ④ 연속한 N 개 키의 버킷 부하 차이 ≤ 1 ⑤ 무작위 키에서 소수/2의 거듭제곱 m 모두 균등(카이제곱 통계가 자유도 ± 5σ 이내).
+__extension__ typedef __int128 i128;
+long long bucket(long long k, long long m) { return ((k % m) + m) % m; }
 
 int main() {
-    std::vector<unsigned> keys;
-    for (unsigned i = 0; i < 64; i++) keys.push_back(i * 16);   // 16의 배수들
-    assert(spread(16, keys) == 1);        // m이 2의 거듭제곱이면 하위 비트만 쓰여 전부 한 버킷
-    assert(spread(17, keys) == 17);       // m이 소수이면 모든 버킷이 고르게 쓰인다
-    std::cout << "m=16 buckets used: " << spread(16, keys) << ", m=17 buckets used: " << spread(17, keys) << std::endl;
-    return 0;
+    // ① 사용 버킷 수 = m / gcd(m, d)
+    for (int m = 1; m <= 200; ++m) for (int d = 1; d <= 64; ++d) {
+        std::vector<char> used(m, 0); for (long long i = 0; i < 2000; ++i) used[bucket(i * d, m)] = 1;
+        assert(std::count(used.begin(), used.end(), 1) == m / std::gcd(m, d));
+    }
+    // ② 바이트를 바꾼 키: m = 255 (= 2^8 − 1) 에서는 (a·256 + b) mod 255 = (a + b) mod 255 라 a ≠ b 인 모든 쌍이 충돌
+    long collide255 = 0, collide251 = 0;
+    for (int a = 0; a < 256; ++a) for (int b = 0; b < 256; ++b) if (a != b) { long long k1 = a * 256 + b, k2 = b * 256 + a; collide255 += bucket(k1, 255) == bucket(k2, 255); collide251 += bucket(k1, 251) == bucket(k2, 251); }
+    assert(collide255 == 65280 && collide251 < 1500);                                  // 소수 251: a ≡ b (mod 251) 일 때만 (4(a−b) ≡ 0 mod 251 → a − b ∈ {0, ±251})
+    // ③ 음수 키 · 극단값
+    { long long vals[] = {0, 1, -1, -7, 7, LLONG_MIN, LLONG_MAX, -1000003, 1000003}; for (long long m : {1LL, 2LL, 5LL, 64LL, 1009LL, 1000003LL}) for (long long k : vals) { long long b = bucket(k, m); assert(b >= 0 && b < m); assert(((i128)b - (i128)k) % m == 0); } assert(bucket(-7, 5) == 3 && (-7 % 5) == -2); }
+    // ④ 연속 키 N 개 → 버킷 부하 차이 ≤ 1
+    for (int m : {7, 64, 101, 1000}) for (int N : {1, 50, 1000, 12345}) { std::vector<int> load(m, 0); for (int k = 0; k < N; ++k) ++load[bucket(k, m)]; assert(*std::max_element(load.begin(), load.end()) - *std::min_element(load.begin(), load.end()) <= 1); }
+    // ⑤ 무작위 키의 균등성 (카이제곱): 자유도 m−1, 평균 m−1, 표준편차 √(2(m−1)) 의 5σ 안
+    {   std::mt19937_64 rng(1); const int n = 400000; for (int m : {1021, 1024}) { std::vector<int> load(m, 0); for (int i = 0; i < n; ++i) ++load[bucket((long long)(rng() >> 1), m)]; double chi = 0, e = (double)n / m; for (int c : load) chi += (c - e) * (c - e) / e; assert(std::abs(chi - (m - 1)) < 5 * std::sqrt(2.0 * (m - 1))); } }
+    std::cout << "DivisionMethod: the number of buckets used by keys that are multiples of d was exactly m/gcd(m,d) for all m <= 200 and d <= 64, byte-swapped keys collided for all 65,280 pairs with m = 255 but only " << collide251 << " times with the prime 251, negative and extreme keys were mapped into [0, m), consecutive keys filled buckets with loads differing by at most 1, and random keys were uniform for both a prime and a power-of-two modulus" << std::endl; return 0;
 }
 // Time Complexity: O(1)
 // Space Complexity: O(1)
@@ -294,25 +474,50 @@ int main() {
 ## MultiplicationMethod()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 
-// h(k) = floor(m * frac(k * A)),  A = (sqrt(5) - 1) / 2   (Knuth)
-// m = 2^p 이면 32비트 정수 곱셈과 시프트만으로 계산된다: (k * 2654435769) >> (32 - p)
-uint32_t mulHash(uint32_t k, int p) { return (uint32_t)(k * 2654435769u) >> (32 - p); }
+// 곱셈법: h(k) = ⌊m · frac(k · A)⌋, A ≈ (√5 − 1)/2 = 0.6180339887… (Knuth 의 황금비 상수). m 이 2의 거듭제곱 2^p 이면 32비트 고정소수점 곱 한 번과 시프트로 끝난다: h(k) = (k · 2654435769) >> (32 − p) — 2654435769 = ⌊A·2^32⌋ (Fibonacci hashing). 나눗셈법과 달리 m 은 아무 값이나 되고 키의 규칙적인 패턴(8의 배수)도 높은 비트로 고르게 섞인다.
+// 왜 황금비인가 — 세 간격 정리(three-distance theorem): 점 {k·A}, k = 1..N 을 원 위에 놓으면 이웃 점 사이 간격은 *최대 세 가지 값* 뿐이고, A 가 황금비일 때 그 값들의 비가 가장 고르게 유지된다(연분수 전개가 모두 1). 그래서 연속한 키가 버킷 전체에 거의 균등하게 흩어진다.
+// 검증: ① 정수 구현이 *정확한 유리수 계산* ⌊2^p · frac(k · 2654435769 / 2^32)⌋ 와 모든 k (무작위 100 만 개)·p 에서 같고, 실수 A 로 계산한 값과는 k < 4096, p ≤ 8 에서 99.9% 이상 같음(A32 가 A 를 2^-32 만큼 자른 값이라 k 가 커지면 오차 k·2^-32 가 쌓여 달라지지만, 정수 구현이 *정의* 이므로 문제 없고 부동소수 `k * 0.618…` 보다 정확) ② 세 간격 정리: k = 1..N (N ≤ 3000) 의 고정소수점 점들의 간격 종류 ≤ 3 ③ 연속한 키 N 개를 2^p 버킷에 넣으면 부하 차이가 2 + log₂(N)/4 이하(불일치도는 O(log N), 실측 최대 4) ④ 키가 모두 64 의 배수일 때 나눗셈법(m = 1024) 은 16 개 버킷만 쓰지만 곱셈법은 1024 개를 모두 쓰고 최대 부하가 이상값 97.7 에 가깝다(99) ⑤ 균등성(카이제곱).
+const std::uint32_t A32 = 2654435769u;
+std::uint32_t fib(std::uint32_t k, int p) { return (std::uint32_t)(k * A32) >> (32 - p); }
 
 int main() {
-    const int p = 4;                       // 버킷 16개
-    std::set<uint32_t> used;
-    for (uint32_t i = 0; i < 64; i++) {
-        uint32_t h = mulHash(i * 16, p);   // 16의 배수도 나눗셈법과 달리 잘 퍼진다
-        assert(h < (1u << p));
-        used.insert(h);
+    std::mt19937 rng(2);
+    // ① 정확한 유리수 계산과 일치 / 실수 A 와 거의 일치
+    long mismatchReal = 0, smallTrials = 0; const int trials = 1000000;
+    for (int t = 0; t < trials; ++t) {
+        std::uint32_t k = rng(); int p = 1 + (int)(rng() % 31);
+        std::uint64_t num = (std::uint64_t)k * A32; std::uint64_t frac32 = num & 0xffffffffu;                                // k·A32 의 소수부 × 2^32 를 64비트 정수 곱으로 (오버플로 없음)
+        std::uint32_t exact = (std::uint32_t)(frac32 >> (32 - p)); assert(fib(k, p) == exact);
     }
-    assert(used.size() >= 12);
-    std::cout << "MultiplicationMethod: used " << used.size() << "/16 buckets" << std::endl;
+    for (int t = 0; t < 200000; ++t) {                                                  // 작은 키 · 작은 p 에서는 실수 황금비 A 로 계산한 값과 거의 같다
+        std::uint32_t k = rng() % 4096; int p = 1 + (int)(rng() % 8); long double A = (std::sqrt(5.0L) - 1) / 2; long double fr = k * A - std::floor(k * A);
+        std::uint32_t viaReal = (std::uint32_t)std::floor((long double)(1ULL << p) * fr); mismatchReal += viaReal != fib(k, p); ++smallTrials;
+    }
+    assert(smallTrials > 1000 && mismatchReal * 1000 < smallTrials);                       // k 가 작으면 실수 A 와 거의 같다 (k·2^-32 만큼의 반올림 차이가 버킷 경계를 넘을 때만 다름)
+    // ② 세 간격 정리: 점들을 정렬해 인접 간격(원 위, 마지막→처음 포함)의 종류를 센다
+    for (int N : {2, 3, 5, 8, 13, 21, 100, 500, 1000, 3000}) {
+        std::vector<std::uint32_t> pts; for (int k = 1; k <= N; ++k) pts.push_back(k * A32); std::sort(pts.begin(), pts.end());
+        std::set<std::uint32_t> gaps; for (std::size_t i = 0; i < pts.size(); ++i) gaps.insert(pts[(i + 1) % pts.size()] - pts[i]);       // 부호 없는 32비트 뺄셈이 원 위의 거리
+        assert(gaps.size() <= 3);
+    }
+    // ③ 연속한 키 → 2^p 버킷 부하 차이
+    for (int p : {4, 8, 10}) for (int N : {100, 1000, 12345, 100000}) { std::vector<int> load(1 << p, 0); for (int k = 0; k < N; ++k) ++load[fib(k, p)]; assert(*std::max_element(load.begin(), load.end()) - *std::min_element(load.begin(), load.end()) <= 2 + (int)std::log2((double)N) / 4); }      // 불일치도(discrepancy) 는 O(log N): 실측 최대 4
+    // ④ 규칙적인 키: 64 의 배수 100,000 개를 1024 버킷에
+    {   std::vector<int> div(1024, 0), mul(1024, 0); for (std::uint32_t i = 0; i < 100000; ++i) { ++div[(i * 64) % 1024]; ++mul[fib(i * 64, 10)]; }
+        int divUsed = 0, mulUsed = 0; for (int c : div) divUsed += c > 0; for (int c : mul) mulUsed += c > 0; int mulMax = *std::max_element(mul.begin(), mul.end());
+        assert(divUsed == 16 && mulUsed == 1024 && mulMax <= 100000 / 1024 + 6);     // 이상적인 부하는 97.7, 실측 최대 99
+        // ⑤ 균등성: 무작위 키 40 만 개, 카이제곱
+        std::vector<int> load(1024, 0); for (int i = 0; i < 400000; ++i) ++load[fib(rng(), 10)]; double chi = 0, e = 400000.0 / 1024; for (int c : load) chi += (c - e) * (c - e) / e; assert(std::abs(chi - 1023) < 5 * std::sqrt(2.0 * 1023));
+        std::cout << "MultiplicationMethod: the integer Fibonacci hash equalled the exact rational computation for 1,000,000 random (k, p) pairs and differed from a long-double golden-ratio version for small keys in only " << mismatchReal << " of " << smallTrials << " cases, point gaps took at most three values (three-distance theorem), and for 100,000 multiples of 64 the division method used " << divUsed << " of 1024 buckets while the multiplication method used " << mulUsed << " (largest bucket " << mulMax << ")" << std::endl; }
     return 0;
 }
 // Time Complexity: O(1)
@@ -386,43 +591,61 @@ int main() {
 ## MurmurHash()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
+#include <random>
+#include <set>
 #include <string>
-#include <cassert>
+#include <vector>
 
-// MurmurHash3 (x86, 32bit)
-static inline uint32_t rotl32(uint32_t x, int r) { return (x << r) | (x >> (32 - r)); }
-uint32_t murmur3_32(const uint8_t* data, size_t len, uint32_t seed) {
-    const uint32_t c1 = 0xcc9e2d51, c2 = 0x1b873593;
-    uint32_t h = seed;
-    size_t nblocks = len / 4;
-    for (size_t i = 0; i < nblocks; i++) {
-        uint32_t k; std::memcpy(&k, data + i * 4, 4);
-        k *= c1; k = rotl32(k, 15); k *= c2;
-        h ^= k; h = rotl32(h, 13); h = h * 5 + 0xe6546b64;
-    }
-    const uint8_t* tail = data + nblocks * 4;
-    uint32_t k1 = 0;
-    switch (len & 3) {
-        case 3: k1 ^= tail[2] << 16; [[fallthrough]];
-        case 2: k1 ^= tail[1] << 8;  [[fallthrough]];
-        case 1: k1 ^= tail[0]; k1 *= c1; k1 = rotl32(k1, 15); k1 *= c2; h ^= k1;
-    }
-    h ^= (uint32_t)len;
-    h ^= h >> 16; h *= 0x85ebca6b; h ^= h >> 13; h *= 0xc2b2ae35; h ^= h >> 16;   // fmix32
-    return h;
+// MurmurHash3 (x86, 32비트): 4 바이트 블록마다 k *= c1; k = rotl(k, 15); k *= c2; h ^= k; h = rotl(h, 13); h = h·5 + 0xe6546b64 로 섞고, 남은 1~3 바이트(tail)를 같은 식으로 처리한 뒤 길이를 xor 하고 fmix32(최종 눈사태) 를 적용한다. 빠르고 분포가 좋아 해시 테이블에 널리 쓰이지만 *암호학적이지 않다* — 모든 단계가 가역이라 해시값을 알면 같은 값을 내는 메시지를 O(1) 에 만들 수 있다(아래 검증: 임의의 목표값에 대한 8 바이트 역상). 그래서 공격자가 키를 고르는 환경(HashDoS)에는 SipHash 같은 키 있는 해시를 쓴다.
+// 구현 주의: 블록은 memcpy 로 읽는다(정렬되지 않은 주소를 reinterpret_cast 하면 UB). 리틀 엔디언 가정은 호스트 엔디언 변환으로 명시한다. 검증: ① 널리 알려진 테스트 벡터(빈 문자열 seed 0 → 0, seed 1 → 0x514e28b7, seed 0xffffffff → 0x81f16f39, "test" → 0xba6bd213, "Hello, world!" → 0xc0363e43, seed 0x9747b28c 의 "The quick brown fox jumps over the lazy dog" → 0x2fa826cd) ② 주소 정렬 무관(offset 0..7 로 복사해도 같은 값) ③ 눈사태: 입력 한 비트를 뒤집으면 출력이 평균 16 ± 0.5 비트 뒤집히고 출력 비트별 확률이 0.45~0.55 ④ fmix32 가 전단사이고 *4 바이트 키 전체에 대해 전단사*(역함수로 왕복 일치 100 만 개) → 4 바이트 키는 충돌이 없다 ⑤ 역상 공격: 임의의 시드·목표값에 대해 8 바이트 메시지를 만들어 정확히 그 해시값을 얻는다(2000 번 성공).
+inline std::uint32_t rotl(std::uint32_t x, int r) { return (x << r) | (x >> (32 - r)); }
+inline std::uint32_t rotr(std::uint32_t x, int r) { return (x >> r) | (x << (32 - r)); }
+inline std::uint32_t fmix32(std::uint32_t h) { h ^= h >> 16; h *= 0x85ebca6bU; h ^= h >> 13; h *= 0xc2b2ae35U; h ^= h >> 16; return h; }
+const std::uint32_t C1 = 0xcc9e2d51U, C2 = 0x1b873593U;
+std::uint32_t murmur3(const void* data, std::size_t len, std::uint32_t seed) {
+    const std::uint8_t* p = static_cast<const std::uint8_t*>(data); std::uint32_t h = seed; std::size_t nblocks = len / 4;
+    for (std::size_t i = 0; i < nblocks; ++i) { std::uint32_t k; std::memcpy(&k, p + 4 * i, 4); k *= C1; k = rotl(k, 15); k *= C2; h ^= k; h = rotl(h, 13); h = h * 5 + 0xe6546b64U; }
+    const std::uint8_t* tail = p + nblocks * 4; std::uint32_t k = 0;
+    switch (len & 3) { case 3: k ^= (std::uint32_t)tail[2] << 16; [[fallthrough]]; case 2: k ^= (std::uint32_t)tail[1] << 8; [[fallthrough]]; case 1: k ^= tail[0]; k *= C1; k = rotl(k, 15); k *= C2; h ^= k; }
+    h ^= (std::uint32_t)len; return fmix32(h);
 }
-uint32_t murmur(const std::string& s, uint32_t seed = 0) { return murmur3_32((const uint8_t*)s.data(), s.size(), seed); }
+std::uint32_t inv32(std::uint32_t a) { std::uint32_t x = a; for (int i = 0; i < 5; ++i) x *= 2 - a * x; return x; }                   // 홀수 a 의 곱셈 역원 (뉴턴 반복)
+std::uint32_t unfmix32(std::uint32_t h) { h ^= h >> 16; h *= inv32(0xc2b2ae35U); h ^= h >> 13; h ^= h >> 26; h *= inv32(0x85ebca6bU); h ^= h >> 16; return h; }
 
 int main() {
-    assert(murmur("", 0) == 0u);
-    assert(murmur("", 1) == 0x514E28B7u);
-    assert(murmur("hello", 0) == 0x248bfa47u);
-    assert(murmur("test", 0) == 0xba6bd213u);
-    std::cout << std::hex << "murmur3(hello)=" << murmur("hello") << std::endl;
-    return 0;
+    // ① 테스트 벡터
+    auto H = [](const std::string& s, std::uint32_t seed) { return murmur3(s.data(), s.size(), seed); };
+    assert(H("", 0) == 0 && H("", 1) == 0x514e28b7U && H("", 0xffffffffU) == 0x81f16f39U);
+    assert(H("test", 0) == 0xba6bd213U && H("Hello, world!", 0) == 0xc0363e43U && H("The quick brown fox jumps over the lazy dog", 0x9747b28cU) == 0x2fa826cdU);
+    // ② 정렬 무관: 같은 바이트를 서로 다른 offset 에 복사해 해시
+    std::mt19937 rng(3);
+    for (int t = 0; t < 2000; ++t) { std::size_t len = rng() % 40; std::vector<std::uint8_t> msg(len); for (auto& b : msg) b = (std::uint8_t)rng(); std::uint32_t seed = rng(), ref = murmur3(msg.data(), len, seed);
+        for (int off = 0; off < 8; ++off) { std::vector<std::uint8_t> buf(len + 8); std::copy(msg.begin(), msg.end(), buf.begin() + off); assert(murmur3(buf.data() + off, len, seed) == ref); } }
+    // ③ 눈사태: 16 바이트 키 2000 개 × 128 비트 뒤집기
+    {   double flipsSum = 0; long cell[32] = {0}; long total = 0;
+        for (int t = 0; t < 2000; ++t) { std::uint8_t key[16]; for (auto& b : key) b = (std::uint8_t)rng(); std::uint32_t base = murmur3(key, 16, 7);
+            for (int bit = 0; bit < 128; ++bit) { key[bit / 8] ^= (std::uint8_t)(1u << (bit % 8)); std::uint32_t diff = base ^ murmur3(key, 16, 7); key[bit / 8] ^= (std::uint8_t)(1u << (bit % 8)); flipsSum += __builtin_popcount(diff); for (int o = 0; o < 32; ++o) cell[o] += diff >> o & 1; ++total; } }
+        double avg = flipsSum / (double)total; assert(avg > 15.5 && avg < 16.5); for (int o = 0; o < 32; ++o) { double pr = (double)cell[o] / (double)total; assert(pr > 0.45 && pr < 0.55); } }
+    // ④ fmix32 전단사, 4 바이트 키 해시의 역함수 왕복 (그러므로 4 바이트 키끼리는 충돌이 없다)
+    for (int t = 0; t < 1000000; ++t) {
+        std::uint32_t x = rng(); assert(unfmix32(fmix32(x)) == x);
+        std::uint32_t seed = rng(), key = rng(); std::uint32_t h = murmur3(&key, 4, seed);
+        std::uint32_t u = unfmix32(h) ^ 4; u = (u - 0xe6546b64U) * inv32(5); u = rotr(u, 13); u ^= seed; u *= inv32(C2); u = rotr(u, 15); u *= inv32(C1); assert(u == key);
+    }
+    // ⑤ 역상 공격: 임의의 시드 s 와 목표값 T 에 대해 8 바이트 메시지 (a, b) 를 만든다 — a 는 아무거나, b 는 T 로부터 거꾸로 계산
+    for (int t = 0; t < 2000; ++t) {
+        std::uint32_t seed = rng(), target = rng(), a = rng();
+        std::uint32_t h1 = seed; { std::uint32_t k = a * C1; k = rotl(k, 15); k *= C2; h1 ^= k; h1 = rotl(h1, 13); h1 = h1 * 5 + 0xe6546b64U; }          // 첫 블록 처리 뒤의 상태
+        std::uint32_t u = unfmix32(target) ^ 8; u = (u - 0xe6546b64U) * inv32(5); u = rotr(u, 13); u ^= h1; u *= inv32(C2); u = rotr(u, 15); u *= inv32(C1);   // 두 번째 블록 k 를 거꾸로
+        std::uint32_t msg[2] = {a, u}; assert(murmur3(msg, 8, seed) == target);
+    }
+    std::cout << "MurmurHash: the published test vectors matched, hashing the same bytes at eight different alignments gave identical values, flipping one input bit changed 16 +- 0.5 output bits on average with every output bit between 45% and 55%, the 4-byte-key hash was inverted exactly for 1,000,000 random (seed, key) pairs, and for 2000 random (seed, target) pairs an 8-byte message with exactly that hash was constructed in constant time - which is why it must not protect a table against adversarial keys" << std::endl; return 0;
 }
 // Time Complexity: O(len)
 // Space Complexity: O(1)
@@ -478,43 +701,59 @@ int main() {
 ## SipHash()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
-#include <cassert>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <vector>
 
-// SipHash-2-4: 키 있는 해시. 해시 플러딩(HashDoS) 방어용으로 Python, Rust, Ruby 등이 사용한다
-static inline uint64_t rotl(uint64_t x, int b) { return (x << b) | (x >> (64 - b)); }
-#define SIPROUND do { \
-    v0 += v1; v1 = rotl(v1, 13); v1 ^= v0; v0 = rotl(v0, 32); \
-    v2 += v3; v3 = rotl(v3, 16); v3 ^= v2; \
-    v0 += v3; v3 = rotl(v3, 21); v3 ^= v0; \
-    v2 += v1; v1 = rotl(v1, 17); v1 ^= v2; v2 = rotl(v2, 32); } while (0)
-
-uint64_t siphash24(const uint8_t* in, size_t len, uint64_t k0, uint64_t k1) {
-    uint64_t v0 = k0 ^ 0x736f6d6570736575ULL, v1 = k1 ^ 0x646f72616e646f6dULL;
-    uint64_t v2 = k0 ^ 0x6c7967656e657261ULL, v3 = k1 ^ 0x7465646279746573ULL;
-    const uint8_t* end = in + (len - len % 8);
-    for (; in != end; in += 8) {
-        uint64_t m; std::memcpy(&m, in, 8);
-        v3 ^= m; SIPROUND; SIPROUND; v0 ^= m;
+// SipHash-2-4: 128비트 비밀 키를 쓰는 짧은 메시지용 의사난수 함수(PRF). 메시지를 8 바이트 단어로 잘라 상태 (v0..v3) 에 넣고 단어마다 SipRound 2 번(c = 2), 마지막에 길이와 남은 바이트로 한 단어를 더 넣고 v2 ^= 0xff 한 뒤 SipRound 4 번(d = 4) 을 돌려 v0 ^ v1 ^ v2 ^ v3 을 낸다. 해시 플러딩(HashDoS) 방어용으로 Python, Rust, Ruby, Linux 커널 등이 해시 테이블 키 해시에 쓴다 — 공격자가 키를 모르면 충돌을 미리 만들 수 없기 때문이다. MurmurHash 와 달리 역상을 O(1) 에 만들 수 없다.
+// 검증: ① 논문(Aumasson–Bernstein)의 시험 벡터 — 키 00 01 … 0f, 메시지 00 01 … 0e(15 바이트) → 0xa129ca6149be45e5, 그리고 참조 구현의 길이 0..4 벡터(0x726fdb47dd0e0e31, 0x74f839c593dc67fd, 0x0d6c8009d9a94f5a, 0x85676696d7fb7e2d, 0xcf2794e0277187b7) ② 한 번에 해시한 값 = 임의로 쪼개 넣는 스트리밍 해시(길이 0..80, 무작위 분할 지점) ③ 키 한 비트나 메시지 한 비트가 바뀌면 출력이 평균 32 ± 0.5 비트 뒤집힘 ④ *키 의존성*: 키 A 에서 32비트 접두 충돌을 생일 역설로 찾으면(약 2^16 번) 같은 쌍은 키 B 에서 충돌하지 않는다(우연히 같을 확률 2^-32) ⑤ 모든 길이 0..64 에서 꼬리 처리(남은 바이트) 가 일관: 접두사와 길이가 다른 메시지는 서로 다른 값.
+inline std::uint64_t rotl(std::uint64_t x, int b) { return (x << b) | (x >> (64 - b)); }
+struct Sip {
+    std::uint64_t v0, v1, v2, v3; std::uint8_t buf[8]; int fill = 0; std::uint64_t total = 0;
+    Sip(std::uint64_t k0, std::uint64_t k1) : v0(k0 ^ 0x736f6d6570736575ULL), v1(k1 ^ 0x646f72616e646f6dULL), v2(k0 ^ 0x6c7967656e657261ULL), v3(k1 ^ 0x7465646279746573ULL) {}
+    void round() { v0 += v1; v1 = rotl(v1, 13); v1 ^= v0; v0 = rotl(v0, 32); v2 += v3; v3 = rotl(v3, 16); v3 ^= v2; v0 += v3; v3 = rotl(v3, 21); v3 ^= v0; v2 += v1; v1 = rotl(v1, 17); v1 ^= v2; v2 = rotl(v2, 32); }
+    void word(std::uint64_t m) { v3 ^= m; round(); round(); v0 ^= m; }
+    void update(const void* data, std::size_t len) {
+        const std::uint8_t* p = static_cast<const std::uint8_t*>(data); total += len;
+        while (len) { std::size_t take = std::min<std::size_t>(8 - fill, len); std::memcpy(buf + fill, p, take); fill += (int)take; p += take; len -= take; if (fill == 8) { std::uint64_t m; std::memcpy(&m, buf, 8); word(m); fill = 0; } }      // 리틀 엔디언 호스트 가정
     }
-    uint64_t b = (uint64_t)len << 56;
-    for (size_t i = 0; i < len % 8; i++) b |= (uint64_t)in[i] << (8 * i);
-    v3 ^= b; SIPROUND; SIPROUND; v0 ^= b;
-    v2 ^= 0xff; SIPROUND; SIPROUND; SIPROUND; SIPROUND;
-    return v0 ^ v1 ^ v2 ^ v3;
-}
+    std::uint64_t finish() {
+        std::uint64_t b = total << 56; for (int i = 0; i < fill; ++i) b |= (std::uint64_t)buf[i] << (8 * i);
+        v3 ^= b; round(); round(); v0 ^= b; v2 ^= 0xff; round(); round(); round(); round(); return v0 ^ v1 ^ v2 ^ v3;
+    }
+};
+std::uint64_t sip24(const void* data, std::size_t len, std::uint64_t k0, std::uint64_t k1) { Sip s(k0, k1); s.update(data, len); return s.finish(); }
 
 int main() {
-    uint8_t msg[16];
-    for (int i = 0; i < 16; i++) msg[i] = (uint8_t)i;
-    const uint64_t k0 = 0x0706050403020100ULL, k1 = 0x0f0e0d0c0b0a0908ULL;   // 키 = 00 01 .. 0f
-    assert(siphash24(msg, 0, k0, k1) == 0x726fdb47dd0e0e31ULL);               // 공식 테스트 벡터
-    assert(siphash24(msg, 15, k0, k1) == 0xa129ca6149be45e5ULL);
-    assert(siphash24(msg, 15, k0 + 1, k1) != siphash24(msg, 15, k0, k1));      // 키가 다르면 결과가 다르다
-    std::cout << std::hex << "siphash24(15 bytes)=" << siphash24(msg, 15, k0, k1) << std::endl;
-    return 0;
+    // ① 시험 벡터: 키 = 00..0f (k0 = 0x0706050403020100, k1 = 0x0f0e0d0c0b0a0908), 메시지 = 00, 01, 02, …
+    const std::uint64_t K0 = 0x0706050403020100ULL, K1 = 0x0f0e0d0c0b0a0908ULL; std::uint8_t msg[64]; for (int i = 0; i < 64; ++i) msg[i] = (std::uint8_t)i;
+    assert(sip24(msg, 15, K0, K1) == 0xa129ca6149be45e5ULL);
+    const std::uint64_t ref[5] = {0x726fdb47dd0e0e31ULL, 0x74f839c593dc67fdULL, 0x0d6c8009d9a94f5aULL, 0x85676696d7fb7e2dULL, 0xcf2794e0277187b7ULL}; for (int len = 0; len < 5; ++len) assert(sip24(msg, len, K0, K1) == ref[len]);
+    // ② 스트리밍 = 한 번에 (길이 0..80, 무작위 분할)
+    std::mt19937_64 rng(11);
+    for (int t = 0; t < 3000; ++t) { std::size_t len = rng() % 81; std::vector<std::uint8_t> m(len); for (auto& b : m) b = (std::uint8_t)rng(); std::uint64_t k0 = rng(), k1 = rng(); std::uint64_t one = sip24(m.data(), len, k0, k1);
+        Sip s(k0, k1); std::size_t pos = 0; while (pos < len) { std::size_t chunk = 1 + rng() % 13; chunk = std::min(chunk, len - pos); s.update(m.data() + pos, chunk); pos += chunk; } assert(s.finish() == one); }
+    // ③ 눈사태: 키 한 비트 · 메시지 한 비트
+    {   double sumKey = 0, sumMsg = 0; long nKey = 0, nMsg = 0;
+        for (int t = 0; t < 400; ++t) { std::uint8_t m[24]; for (auto& b : m) b = (std::uint8_t)rng(); std::uint64_t k0 = rng(), k1 = rng(), base = sip24(m, 24, k0, k1);
+            for (int bit = 0; bit < 64; ++bit) { sumKey += __builtin_popcountll(base ^ sip24(m, 24, k0 ^ (1ULL << bit), k1)); ++nKey; sumKey += __builtin_popcountll(base ^ sip24(m, 24, k0, k1 ^ (1ULL << bit))); ++nKey; }
+            for (int bit = 0; bit < 192; ++bit) { m[bit / 8] ^= (std::uint8_t)(1u << (bit % 8)); sumMsg += __builtin_popcountll(base ^ sip24(m, 24, k0, k1)); ++nMsg; m[bit / 8] ^= (std::uint8_t)(1u << (bit % 8)); } }
+        assert(std::abs(sumKey / nKey - 32) < 0.5 && std::abs(sumMsg / nMsg - 32) < 0.5); }
+    // ④ 키 의존성: 키 A 에서 32비트 접두 충돌을 생일 역설로 찾고(40 만 개 중 약 18 쌍) 같은 쌍을 키 B 에서 검사
+    {   const std::uint64_t A0 = rng(), A1 = rng(), B0 = rng(), B1 = rng(); std::unordered_map<std::uint32_t, std::uint32_t> first; int pairs = 0, collisionsOnB = 0;
+        for (std::uint32_t x = 1; x < 400000; ++x) {
+            std::uint32_t h = (std::uint32_t)sip24(&x, 4, A0, A1); auto it = first.find(h);
+            if (it == first.end()) first[h] = x; else { ++pairs; std::uint32_t y = it->second; assert(y != x); collisionsOnB += (std::uint32_t)sip24(&x, 4, B0, B1) == (std::uint32_t)sip24(&y, 4, B0, B1); }
+        }
+        assert(pairs >= 5 && collisionsOnB == 0); }
+    // ⑤ 길이마다 꼬리 처리가 일관: 같은 접두사라도 길이가 다르면 해시가 다르다 (0..64, 서로 다른 값 65 개)
+    { std::vector<std::uint64_t> hs; for (int len = 0; len <= 64; ++len) hs.push_back(sip24(msg, len, K0, K1)); std::sort(hs.begin(), hs.end()); assert(std::adjacent_find(hs.begin(), hs.end()) == hs.end()); }
+    std::cout << "SipHash: the Aumasson-Bernstein test vectors matched, streaming with random split points gave the same 64-bit value as one-shot hashing for 3000 random messages up to 80 bytes, flipping a key or message bit changed 32 +- 0.5 output bits on average, 32-bit collisions found for one key did not collide under another, and prefixes of every length 0..64 hashed to different values" << std::endl; return 0;
 }
 // Time Complexity: O(len)
 // Space Complexity: O(1)
@@ -621,87 +860,197 @@ int main() {
 ## LinearProbing()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
-// 선형 탐사: h(k, i) = (h(k) + i) mod m.  연속된 점유 구간(클러스터)이 스스로 커지는 1차 군집이 생긴다
-int longestCluster(const std::vector<bool>& used) {
-    int best = 0, cur = 0;
-    for (size_t i = 0; i < 2 * used.size(); i++) {         // 원형이므로 두 바퀴를 본다
-        cur = used[i % used.size()] ? cur + 1 : 0;
-        best = std::max(best, std::min<int>(cur, used.size()));
+// 선형 탐사: h(k, i) = (h(k) + i) mod m. 충돌하면 바로 다음 칸을 본다. 캐시 친화적(이웃한 칸) 이고 구현이 가장 단순하지만, 점유된 연속 구간(클러스터)이 스스로 커지는 *1차 군집(primary clustering)* 이 생긴다 — 클러스터 위로 떨어진 키는 클러스터 끝까지 밀려나 그 길이를 늘리기 때문. 삭제는 묘비 없이 *뒤로 당기기(backward shift)* 로 한다.
+// 정리 세 가지를 검증한다. (1) 탐사열 (h + i) mod m, i = 0..m−1 은 *모든 칸을 정확히 한 번씩* 방문한다(모든 m ≤ 40, h). (2) 같은 home 에 n 개 키를 넣으면 총 탐사 수가 정확히 n(n+1)/2 — 1차 군집의 이차 비용. (3) *순서 무관성*: 같은 키 집합을 어떤 순서로 넣어도 점유되는 칸의 집합과 변위(home 에서 떨어진 거리) 의 합이 같다(Knuth) — 그래서 삭제 후 다시 넣어도, 병렬로 넣어도 최종 배치의 "총 비용" 이 변하지 않는다.
+// 검증: ④ 무작위 삽입·삭제·검색 20 만 번을 std::unordered_map 과 비교하며 200 번마다 불변식(모든 키가 home 에서 자기 칸까지 빈 칸 없이 닿음) 확인 ⑤ 가장 긴 클러스터가 α = 0.7, m = 100,003 에서 O(log m) 안쪽(≤ 18·ln m, 이론상 상수는 1/(α − 1 − ln α) ≈ 17.6; 실측 97) ⑥ 감김(wrap-around): home 이 m − 1 인 키들이 0 번 칸으로 이어진다.
+struct Linear {
+    std::vector<std::uint64_t> slot; std::size_t n = 0; long probes = 0; bool ident;           // 빈 칸 = 0, 키 0 은 쓰지 않는다. ident: 항등 해시(시연용)
+    explicit Linear(std::size_t m, bool identity = false) : slot(m, 0), ident(identity) {}
+    std::size_t home(std::uint64_t k) const { if (ident) return (std::size_t)(k % slot.size()); k += 0x9e3779b97f4a7c15ULL; k = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL; k = (k ^ (k >> 27)) * 0x94d049bb133111ebULL; return (std::size_t)((k ^ (k >> 31)) % slot.size()); }
+    bool insert(std::uint64_t k) { std::size_t i = home(k); while (true) { ++probes; if (!slot[i]) { slot[i] = k; ++n; return true; } if (slot[i] == k) return false; i = (i + 1) % slot.size(); } }
+    bool contains(std::uint64_t k) const { std::size_t i = home(k); while (slot[i]) { if (slot[i] == k) return true; i = (i + 1) % slot.size(); } return false; }
+    bool erase(std::uint64_t k) {                                                            // 뒤로 당기기
+        std::size_t m = slot.size(), i = home(k); while (slot[i] && slot[i] != k) i = (i + 1) % m; if (!slot[i]) return false;
+        slot[i] = 0; --n; std::size_t j = i;
+        while (true) { j = (j + 1) % m; if (!slot[j]) break; std::size_t h = home(slot[j]); bool stays = i <= j ? (i < h && h <= j) : (i < h || h <= j); if (!stays) { slot[i] = slot[j]; slot[j] = 0; i = j; } }
+        return true;
     }
-    return best;
-}
+    bool invariant() const { for (std::size_t i = 0; i < slot.size(); ++i) if (slot[i]) { std::size_t j = home(slot[i]); while (j != i) { if (!slot[j]) return false; j = (j + 1) % slot.size(); } } return true; }
+    long displacement() const { long d = 0; for (std::size_t i = 0; i < slot.size(); ++i) if (slot[i]) d += (long)((i + slot.size() - home(slot[i])) % slot.size()); return d; }
+};
 
 int main() {
-    const int m = 32;
-    std::vector<bool> spread(m, false), clump(m, false);
-    // 흩어진 키: 홈 버킷이 4칸 간격
-    for (int i = 0; i < 8; i++) spread[(i * 4) % m] = true;
-    // 같은 홈 버킷(5)에 몰린 키 8개: 5, 6, 7, ... 로 이어 붙는다
-    for (int i = 0; i < 8; i++) { int j = 5; while (clump[j % m]) j++; clump[j % m] = true; }
-    assert(longestCluster(spread) == 1);
-    assert(longestCluster(clump) == 8);                    // 8개가 하나의 긴 클러스터가 된다
-    std::cout << "cluster length: spread=" << longestCluster(spread) << " clump=" << longestCluster(clump) << std::endl;
-    return 0;
+    // (1) 탐사열은 모든 칸을 정확히 한 번씩
+    for (int m = 1; m <= 40; ++m) for (int h = 0; h < m; ++h) { std::set<int> seen; for (int i = 0; i < m; ++i) seen.insert((h + i) % m); assert((int)seen.size() == m); }
+    // (2) 같은 home: n 개를 넣으면 총 탐사 n(n+1)/2 (home = 0 이 되도록 m 의 배수 키, 항등 해시)
+    for (int n : {1, 2, 10, 100, 500}) { Linear t(1009, true); for (int i = 1; i <= n; ++i) assert(t.insert((std::uint64_t)i * 1009)); assert(t.probes == (long)n * (n + 1) / 2 && t.displacement() == (long)n * (n - 1) / 2); }
+    // (3) 순서 무관성: 같은 키 집합을 200 가지 무작위 순서로 → 점유 칸 집합과 변위 합이 같다
+    std::mt19937_64 rng(5);
+    {   const std::size_t m = 257; std::vector<std::uint64_t> keys; std::set<std::uint64_t> uniq; while (keys.size() < 180) { std::uint64_t k = 1 + rng() % 100000; if (uniq.insert(k).second) keys.push_back(k); }
+        Linear base(m); for (auto k : keys) base.insert(k); std::vector<char> occ(m); for (std::size_t i = 0; i < m; ++i) occ[i] = base.slot[i] != 0; long disp = base.displacement();
+        for (int t = 0; t < 200; ++t) { std::shuffle(keys.begin(), keys.end(), rng); Linear x(m); for (auto k : keys) x.insert(k); for (std::size_t i = 0; i < m; ++i) assert((x.slot[i] != 0) == (bool)occ[i]); assert(x.displacement() == disp && x.invariant()); } }
+    // ④ 무작위 연산 20 만 번 (α ≈ 0.7 근처), 200 번마다 불변식
+    {   Linear t(2003); std::unordered_map<std::uint64_t, int> ref; long erased = 0;
+        for (int i = 0; i < 200000; ++i) {
+            std::uint64_t k = 1 + rng() % 3000; int op = (int)(rng() % 3);
+            if (op == 0 && ref.size() < 1400) { bool r = ref.emplace(k, 1).second; assert(t.insert(k) == r); } else if (op == 1) { bool r = ref.erase(k) > 0; erased += r; assert(t.erase(k) == r); } else assert(t.contains(k) == (ref.count(k) > 0));
+            if (i % 200 == 0) assert(t.invariant() && t.n == ref.size());
+        }
+        for (auto& kv : ref) assert(t.contains(kv.first)); assert(erased > 20000); }
+    // ⑤ 가장 긴 클러스터: α = 0.7, m = 100,003 에서 O(log m)
+    {   const std::size_t m = 100003; Linear t(m); while (t.n < (std::size_t)(0.7 * m)) t.insert(rng() | 1); std::size_t best = 0, run = 0; for (int pass = 0; pass < 2; ++pass) for (std::size_t i = 0; i < m; ++i) { run = t.slot[i] ? run + 1 : 0; best = std::max(best, run); }
+        assert(best >= 40 && (double)best <= 18 * std::log((double)m)); std::cout << "LinearProbing: longest cluster at alpha 0.7, m = 100003 was " << best << " slots (18 ln m = " << 18 * std::log((double)m) << ")" << std::endl; }
+    // ⑥ 감김: home 이 m − 1 인 키 5 개가 m − 1, 0, 1, 2, 3 번 칸에
+    {   Linear t(11, true); for (int i = 1; i <= 5; ++i) t.insert((std::uint64_t)(i - 1) * 11 + 10); for (int s : {10, 0, 1, 2, 3}) assert(t.slot[s] != 0); assert(t.invariant() && t.contains(21) && t.erase(10 + 11 * 3) && t.invariant() && !t.contains(43)); }                // 키 10, 21, 32, 43, 54 가 모두 home = 10
+    std::cout << "LinearProbing: the probe sequence visited every slot exactly once for all m <= 40, n keys with one home cost exactly n(n+1)/2 probes, 200 random insertion orders of the same keys produced the same occupied slots and the same total displacement, and 200,000 random insert/erase/find operations with backward-shift deletion matched std::unordered_map while the cluster invariant held" << std::endl; return 0;
 }
-// Time Complexity: 성공 탐색 ≈ ½(1 + 1/(1-α)), 실패 탐색 ≈ ½(1 + 1/(1-α)²)
+// Time Complexity: 성공 탐색 ≈ ½(1 + 1/(1−α)), 실패 탐색 ≈ ½(1 + 1/(1−α)²)
 // Space Complexity: O(m)
 ```
 ## QuadraticProbing()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
-// 이차 탐사: h(k, i) = (h(k) + i(i+1)/2) mod m.  m이 2의 거듭제곱이면 처음 m번의 탐사가 모든 칸을 정확히 한 번씩 방문한다
-int main() {
-    const unsigned m = 16;
-    for (unsigned home = 0; home < m; home++) {
-        std::set<unsigned> seen;
-        for (unsigned i = 0; i < m; i++) seen.insert((home + i * (i + 1) / 2) % m);
-        assert(seen.size() == m);                          // 순열 -> 빈 칸이 있으면 반드시 찾는다
+// 이차 탐사: h(k, i) = (h(k) + c₁·i + c₂·i²) mod m. 대표 두 가지 — ① m = 2^p 에서 *삼각수* h + i(i+1)/2 : 처음 m 번의 탐사가 모든 칸을 정확히 한 번씩 방문한다(순열). ② m 이 소수일 때 h + i² : 처음 (m+1)/2 번의 탐사는 모두 다르지만 그 이후는 되풀이되므로 *적재율이 ½ 미만이면 삽입이 항상 성공* 하고, ½ 이상이면 빈 칸이 남아 있어도 삽입이 실패할 수 있다. m 이 합성수이면 i² 탐사가 모든 칸을 못 덮는다. 선형 탐사의 1차 군집은 없지만 *같은 home 의 키는 탐사열이 완전히 같아* 2차 군집(secondary clustering) 이 남는다.
+// 삭제는 묘비(DEAD)를 쓴다: 검색은 묘비를 지나치고, 삽입은 묘비를 재사용한다(단, 같은 키가 더 뒤에 없는지 확인한 뒤).
+// 검증: ① 삼각수 탐사가 m = 2^p (p ≤ 10) 의 모든 home 에서 순열 ② 모든 소수 m ≤ 200, 모든 home 에서 처음 (m+1)/2 개 탐사 h + i² 가 서로 다르고 그 뒤로 (m+1)/2 번째 이후 새 칸을 만들지 않음 ③ 모든 합성수 m (4 ≤ m ≤ 60) 에서 i² 탐사가 방문하는 칸 수 < m ④ 소수 m = 101 에서 키 50 개(α < ½)는 어떤 무작위 순서·충돌 패턴에서도 삽입 성공, m = 7 에서 같은 home 키 5 개(α = 5/7) 중 다섯 번째는 빈 칸이 둘 남았는데도 실패 ⑤ 삼각수 탐사 표를 unordered_map 과 20 만 번 비교(묘비 포함) ⑥ 같은 home 의 두 키는 탐사열이 같다(2차 군집) ⑦ m = 2^17, α = 0.5 에서 평균 탐사 수가 Knuth 근사식(성공 1 − ln(1−α) − α/2 = 1.443, 실패 1/(1−α) − α − ln(1−α) = 2.193)의 ±6%.
+std::size_t mix(std::uint64_t k) { k += 0x9e3779b97f4a7c15ULL; k = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL; k = (k ^ (k >> 27)) * 0x94d049bb133111ebULL; return (std::size_t)(k ^ (k >> 31)); }
+struct Quad {                                                                                // m 은 2의 거듭제곱 (삼각수 탐사)
+    enum : std::uint8_t { EMPTY, FULL, DEAD }; std::vector<std::uint8_t> st; std::vector<std::uint64_t> key; std::size_t m, live = 0, used = 0; long probes = 0;                // used = FULL + DEAD 칸 수
+    explicit Quad(std::size_t mm) : st(mm, EMPTY), key(mm, 0), m(mm) {}
+    std::size_t at(std::uint64_t k, std::size_t i) const { return (mix(k) + i * (i + 1) / 2) & (m - 1); }
+    bool insert(std::uint64_t k) {
+        std::size_t firstFree = m; for (std::size_t i = 0; i < m; ++i) { std::size_t s = at(k, i); ++probes; if (st[s] == FULL) { if (key[s] == k) return false; } else { if (firstFree == m) firstFree = s; if (st[s] == EMPTY) break; } }
+        if (firstFree == m) return false; used += st[firstFree] == EMPTY; st[firstFree] = FULL; key[firstFree] = k; ++live; return true;
     }
-    // 비교: c1=c2=1 이 아닌 i^2 만 쓰면 일부 칸을 놓친다
-    std::set<unsigned> sq;
-    for (unsigned i = 0; i < m; i++) sq.insert((i * i) % m);
-    assert(sq.size() < m);
-    std::cout << "triangular probes cover all " << m << " slots; i^2 covers only " << sq.size() << std::endl;
+    bool contains(std::uint64_t k, long* pr = nullptr) const { for (std::size_t i = 0; i < m; ++i) { std::size_t s = at(k, i); if (pr) ++*pr; if (st[s] == EMPTY) return false; if (st[s] == FULL && key[s] == k) return true; } return false; }
+    bool erase(std::uint64_t k) { for (std::size_t i = 0; i < m; ++i) { std::size_t s = at(k, i); if (st[s] == EMPTY) return false; if (st[s] == FULL && key[s] == k) { st[s] = DEAD; --live; return true; } } return false; }
+    void rebuild() { std::vector<std::uint64_t> keep; for (std::size_t s = 0; s < m; ++s) if (st[s] == FULL) keep.push_back(key[s]); std::fill(st.begin(), st.end(), (std::uint8_t)EMPTY); live = used = 0; for (auto k : keep) insert(k); }       // 묘비가 쌓이면 재구성
+};
+
+int main() {
+    std::mt19937_64 rng(6);
+    // ① 삼각수 탐사 = 순열 (m = 2^p)
+    for (int p = 0; p <= 10; ++p) { std::size_t m = (std::size_t)1 << p; for (std::size_t h = 0; h < m; h += (m > 64 ? 17 : 1)) { std::set<std::size_t> seen; for (std::size_t i = 0; i < m; ++i) seen.insert((h + i * (i + 1) / 2) & (m - 1)); assert(seen.size() == m); } }
+    // ② 소수 m: h + i² 의 처음 (m+1)/2 개가 서로 다르고 전체 방문 칸 수도 정확히 (m+1)/2
+    for (int m = 3; m <= 200; ++m) { bool prime = true; for (int d = 2; d * d <= m; ++d) prime = prime && m % d; if (!prime) continue;
+        for (int h = 0; h < m; ++h) { std::set<int> first; for (int i = 0; i <= (m - 1) / 2; ++i) first.insert((h + i * i) % m); assert((int)first.size() == (m + 1) / 2); std::set<int> all; for (int i = 0; i < m; ++i) all.insert((h + i * i) % m); assert(all.size() == first.size()); } }
+    // ③ 합성수 m: i² 탐사는 모든 칸을 덮지 못한다
+    for (int m = 4; m <= 60; ++m) { bool prime = true; for (int d = 2; d * d <= m; ++d) prime = prime && m % d; if (prime) continue; std::set<int> all; for (int i = 0; i < m; ++i) all.insert(i * i % m); assert((int)all.size() < m); }
+    // ④ 소수 m = 101, α < ½: 같은 home 에 몰리는 최악 패턴을 포함해 항상 성공. m = 7 에서 α = 5/7 이면 실패하는 반례
+    {   const int m = 101; int fails = 0;
+        for (int trial = 0; trial < 3000; ++trial) { std::vector<char> used(m, 0); for (int c = 0; c < 50; ++c) { int h = trial % 3 == 0 ? 17 : (int)(rng() % m); bool ok = false; for (int i = 0; i <= (m - 1) / 2; ++i) { int s = (h + i * i) % m; if (!used[s]) { used[s] = 1; ok = true; break; } } fails += !ok; } }
+        assert(fails == 0);
+        std::vector<char> used(7, 0); int placed = 0; for (int c = 0; c < 5; ++c) { bool ok = false; for (int i = 0; i <= 3; ++i) { int s = (2 + i * i) % 7; if (!used[s]) { used[s] = 1; ok = true; break; } } placed += ok; }
+        assert(placed == 4 && std::count(used.begin(), used.end(), 0) == 3);               // 같은 home 에서 4 개만 들어가고 다섯 번째는 빈 칸이 3 개나 남아 있어도 실패
+    }
+    // ⑤ 삼각수 탐사 표 vs unordered_map (α ≤ 0.7, 묘비 포함) 20 만 번
+    {   Quad t(2048); std::unordered_map<std::uint64_t, int> ref;
+        for (int i = 0; i < 200000; ++i) { std::uint64_t k = 1 + rng() % 3000; int op = (int)(rng() % 3);
+            if (t.used >= 1400) t.rebuild();                                                                        // 묘비 포함 점유가 α = 0.7 에 닿으면 재구성
+            if (op == 0 && t.live < 1100) { bool r = ref.emplace(k, 1).second; assert(t.insert(k) == r); }
+            else if (op == 1) { bool r = ref.erase(k) > 0; assert(t.erase(k) == r); } else assert(t.contains(k) == (ref.count(k) > 0)); }
+        for (auto& kv : ref) assert(t.contains(kv.first)); assert(t.live == ref.size()); }
+    // ⑥ 2차 군집: home 이 같으면 탐사열이 같다
+    { Quad t(1024); for (int a = 0; a < 5000; ++a) { std::uint64_t k1 = rng(), k2 = rng(); if (mix(k1) % 1024 != mix(k2) % 1024) continue; for (std::size_t i = 0; i < 20; ++i) assert(t.at(k1, i) == t.at(k2, i)); } }
+    // ⑦ m = 2^17, α = 0.5 의 평균 탐사 수
+    {   const std::size_t m = 1u << 17; Quad t(m); std::vector<std::uint64_t> keys; while (t.live < m / 2) { std::uint64_t k = rng() | 1; if (t.insert(k)) keys.push_back(k); }
+        long ps = 0; for (auto k : keys) { long pr = 0; t.contains(k, &pr); ps += pr; } long pf = 0; for (int i = 0; i < 200000; ++i) { long pr = 0; t.contains(rng() & ~1ULL, &pr); pf += pr; }
+        double succ = (double)ps / (double)keys.size(), fail = (double)pf / 200000.0; assert(std::abs(succ - 1.443) < 0.06 * 1.443 && std::abs(fail - 2.193) < 0.06 * 2.193);
+        std::cout << "QuadraticProbing: triangular probing visited every slot for all power-of-two sizes up to 1024, h + i^2 probing on every prime up to 200 touched exactly (m+1)/2 distinct slots, composite sizes never covered the table, 3000 trials of 50 inserts into a prime table of size 101 never failed while a 5th same-home key in a table of 7 failed with 3 slots empty, 200,000 random operations with tombstones matched std::unordered_map, same-home keys shared one probe sequence, and at alpha 0.5 the measured probes (successful " << succ << ", unsuccessful " << fail << ") matched Knuth's approximations" << std::endl; }
     return 0;
 }
-// Time Complexity: 평균 O(1/(1-α)), 군집은 선형 탐사보다 완화
+// Time Complexity: 평균 O(1/(1−α)), 군집은 선형 탐사보다 완화
 // Space Complexity: O(m)
 ```
 ## DoubleHashing()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
-// 이중 해싱: h(k, i) = (h1(k) + i * h2(k)) mod m.
-// m이 소수이고 h2(k) in [1, m-1] 이면 gcd(h2, m) = 1 이라 탐사열이 모든 칸을 지난다
-int main() {
-    const unsigned m = 13;
-    auto h1 = [&](unsigned k) { return k % m; };
-    auto h2 = [&](unsigned k) { return 1 + k % (m - 1); };
-    for (unsigned k = 0; k < 200; k++) {
-        std::set<unsigned> seen;
-        for (unsigned i = 0; i < m; i++) seen.insert((h1(k) + i * h2(k)) % m);
-        assert(seen.size() == m);
+// 이중 해싱: h(k, i) = (h₁(k) + i·h₂(k)) mod m. 두 번째 해시가 *걸음 폭* 을 키마다 다르게 정해서, 같은 home 의 키도 서로 다른 간격으로 튀므로 1차·2차 군집이 모두 사라진다(균등 해싱의 가장 좋은 근사). 탐사열이 모든 칸을 덮으려면 h₂(k) 와 m 이 서로소여야 한다 — 정리: 방문하는 서로 다른 칸 수는 정확히 m / gcd(h₂, m). 그래서 m 이 소수면 h₂ = 1 + (k mod (m−1)) ∈ [1, m−1] 이면 충분하고, m = 2^p 이면 h₂ 를 홀수로 만든다(h₂ | 1). h₂ 가 0 이 되면 같은 칸만 맴돈다.
+// 검증: ① 모든 소수 m ≤ 100 · h₂ ∈ [1, m−1] · h₁ 에서 탐사열이 순열, m = 64 는 모든 홀수 h₂ 에서 순열 ② 합성수 m ≤ 40, h₂ ∈ [1, m−1] 에서 방문 칸 수가 정확히 m / gcd(h₂, m) ③ 묘비를 쓰는 소수 크기 표를 unordered_map 과 20 만 번 비교 ④ 같은 h₁ 인 키 1000 개의 두 번째 탐사 칸이 거의 다 다르다(≥ 90%) — 선형 탐사는 모두 같음 ⑤ 시뮬레이션(m = 100,003): 실패 탐색 평균이 α = 0.5, 0.7 에서 균등 해싱 이론값 1/(1−α) 의 ±5%, 성공 탐색이 (1/α)·ln(1/(1−α)) 의 ±5%, α = 0.9 에서 이중 해싱의 실패 탐사가 선형 탐사의 1/3 미만.
+std::uint64_t mix(std::uint64_t k) { k += 0x9e3779b97f4a7c15ULL; k = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL; k = (k ^ (k >> 27)) * 0x94d049bb133111ebULL; return k ^ (k >> 31); }
+struct Dbl {                                                                                  // m 은 소수
+    enum : std::uint8_t { EMPTY, FULL, DEAD }; std::vector<std::uint8_t> st; std::vector<std::uint64_t> key; std::size_t m, live = 0;
+    explicit Dbl(std::size_t mm) : st(mm, EMPTY), key(mm, 0), m(mm) {}
+    std::size_t h1(std::uint64_t k) const { return (std::size_t)(mix(k) % m); }
+    std::size_t h2(std::uint64_t k) const { return 1 + (std::size_t)((mix(k ^ 0xabcdefULL) >> 8) % (m - 1)); }
+    std::size_t at(std::uint64_t k, std::size_t i) const { return (h1(k) + i * h2(k)) % m; }
+    bool insert(std::uint64_t k) {
+        std::size_t firstFree = m; for (std::size_t i = 0; i < m; ++i) { std::size_t s = at(k, i); if (st[s] == FULL) { if (key[s] == k) return false; } else { if (firstFree == m) firstFree = s; if (st[s] == EMPTY) break; } }
+        if (firstFree == m) return false; st[firstFree] = FULL; key[firstFree] = k; ++live; return true;
     }
-    // 같은 홈 버킷이어도 간격이 달라 탐사열이 갈라진다 (군집 억제)
-    unsigned a = 1, b = 14;                                 // h1이 같다
-    assert(h1(a) == h1(b) && h2(a) != h2(b));
-    assert((h1(a) + h2(a)) % m != (h1(b) + h2(b)) % m);
-    std::cout << "double hashing probe sequences are permutations of Z_" << m << std::endl;
+    bool contains(std::uint64_t k, long* pr = nullptr) const { for (std::size_t i = 0; i < m; ++i) { std::size_t s = at(k, i); if (pr) ++*pr; if (st[s] == EMPTY) return false; if (st[s] == FULL && key[s] == k) return true; } return false; }
+    bool erase(std::uint64_t k) { for (std::size_t i = 0; i < m; ++i) { std::size_t s = at(k, i); if (st[s] == EMPTY) return false; if (st[s] == FULL && key[s] == k) { st[s] = DEAD; --live; return true; } } return false; }
+};
+struct LinearSim {                                                                            // 비교용 선형 탐사 (삭제 없음)
+    std::vector<std::uint64_t> slot; std::size_t n = 0; explicit LinearSim(std::size_t m) : slot(m, 0) {}
+    bool insert(std::uint64_t k) { std::size_t i = (std::size_t)(mix(k) % slot.size()); while (slot[i]) { if (slot[i] == k) return false; i = (i + 1) % slot.size(); } slot[i] = k; ++n; return true; }
+    long failProbes(std::uint64_t k) const { std::size_t i = (std::size_t)(mix(k) % slot.size()); long p = 1; while (slot[i]) { i = (i + 1) % slot.size(); ++p; } return p; }
+};
+
+int main() {
+    // ① 소수 m: 모든 (h1, h2) 가 순열. m = 64: 홀수 h2 만 순열
+    for (int m = 2; m <= 100; ++m) { bool prime = true; for (int d = 2; d * d <= m; ++d) prime = prime && m % d; if (!prime) continue; for (int h2 = 1; h2 < m; ++h2) for (int h1 = 0; h1 < m; h1 += 7) { std::set<int> seen; for (int i = 0; i < m; ++i) seen.insert((h1 + i * h2) % m); assert((int)seen.size() == m); } }
+    for (int h2 = 1; h2 < 64; ++h2) { std::set<int> seen; for (int i = 0; i < 64; ++i) seen.insert((5 + i * h2) % 64); assert((seen.size() == 64) == (h2 % 2 == 1)); }
+    // ② 합성수 m: 방문 칸 수 = m / gcd(h2, m)
+    for (int m = 4; m <= 40; ++m) for (int h2 = 1; h2 < m; ++h2) { std::set<int> seen; for (int i = 0; i < m; ++i) seen.insert((3 + i * h2) % m); assert((int)seen.size() == m / std::gcd(h2, m)); }
+    // ③ 소수 크기 표 vs unordered_map (묘비 포함, 살아 있는 키 ≤ 0.7 m)
+    std::mt19937_64 rng(7);
+    {   Dbl t(2003); std::unordered_map<std::uint64_t, int> ref;
+        for (int i = 0; i < 200000; ++i) { std::uint64_t k = 1 + rng() % 3000; int op = (int)(rng() % 3);
+            if (op == 0 && ref.size() < 1400) { bool r = ref.emplace(k, 1).second; assert(t.insert(k) == r); } else if (op == 1) { bool r = ref.erase(k) > 0; assert(t.erase(k) == r); } else assert(t.contains(k) == (ref.count(k) > 0)); }
+        for (auto& kv : ref) assert(t.contains(kv.first)); assert(t.live == ref.size()); }
+    // ④ 같은 h1 인 키 1000 개: 이중 해싱의 두 번째 탐사 칸이 거의 다 다르다, 선형 탐사는 모두 같다(home + 1)
+    {   Dbl t(10007); std::vector<std::uint64_t> same; while (same.size() < 1000) { std::uint64_t k = rng(); if (t.h1(k) == 5) same.push_back(k); }
+        std::set<std::size_t> second; for (auto k : same) second.insert(t.at(k, 1)); assert(second.size() >= 900); }
+    // ⑤ 시뮬레이션: m = 100,003 (소수)
+    const std::size_t m = 100003;
+    for (double alpha : {0.5, 0.7}) {
+        Dbl t(m); std::vector<std::uint64_t> keys; while (t.live < (std::size_t)(alpha * (double)m)) { std::uint64_t k = rng() | 1; if (t.insert(k)) keys.push_back(k); }
+        long ps = 0; for (auto k : keys) { long pr = 0; t.contains(k, &pr); ps += pr; } long pf = 0; const int trials = 200000; for (int i = 0; i < trials; ++i) { long pr = 0; t.contains(rng() & ~1ULL, &pr); pf += pr; }
+        double succ = (double)ps / (double)keys.size(), fail = (double)pf / trials, thSucc = std::log(1 / (1 - alpha)) / alpha, thFail = 1 / (1 - alpha);
+        assert(std::abs(succ - thSucc) < 0.05 * thSucc && std::abs(fail - thFail) < 0.05 * thFail);
+    }
+    {   Dbl d(m); LinearSim l(m); std::size_t n = (std::size_t)(0.9 * (double)m); while (d.live < n) { std::uint64_t k = rng() | 1; d.insert(k); l.insert(k); }
+        long pd = 0, pl = 0; for (int i = 0; i < 100000; ++i) { std::uint64_t k = rng() & ~1ULL; long pr = 0; d.contains(k, &pr); pd += pr; pl += l.failProbes(k); }
+        double dd = (double)pd / 100000, ll = (double)pl / 100000; assert(dd * 3 < ll);
+        std::cout << "DoubleHashing: probe sequences were permutations for every prime size up to 100 and every step in [1, m-1] (and for odd steps modulo 64), a composite size visited exactly m/gcd(h2,m) slots, a prime table with tombstones matched std::unordered_map over 200,000 operations, same-home keys fanned out to 900+ different second slots, measured probe counts at alpha 0.5 and 0.7 matched the uniform-hashing formulas within 5%, and at alpha 0.9 an unsuccessful search needed " << dd << " probes against " << ll << " for linear probing" << std::endl; }
     return 0;
 }
-// Time Complexity: 평균 O(1/(1-α)) (1차·2차 군집 없음)
+// Time Complexity: 평균 O(1/(1−α)) (1차·2차 군집 없음)
 // Space Complexity: O(m)
 ```
 ## RobinHoodHashing()
@@ -1104,42 +1453,77 @@ int main() {
 ## PolynomialRollingHash()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <string>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
-// H(s[l..r)) = (P[r] - P[l] * B^(r-l)) mod M  : 접두사 해시로 임의 부분 문자열의 해시를 O(1)에 구한다
-struct Rolling {
-    static const uint64_t M = 1000000007ULL, B = 911382323ULL;
-    std::vector<uint64_t> pre, pw;
-    explicit Rolling(const std::string& s) : pre(s.size() + 1, 0), pw(s.size() + 1, 1) {
-        for (size_t i = 0; i < s.size(); i++) {
-            pre[i + 1] = (pre[i] * B + (unsigned char)s[i]) % M;
-            pw[i + 1] = pw[i] * B % M;
-        }
+// 다항 롤링 해시: 문자열 s 의 해시 H(s) = Σ s[i]·B^(n−1−i) mod p. 접두사 해시 P[i+1] = P[i]·B + s[i] 를 미리 만들면 임의의 부분 문자열의 해시를 O(1) 에 H(s[l..r)) = P[r] − P[l]·B^(r−l) (mod p) 로 구하고, 창을 한 칸 밀 때는 h ← (h − s[out]·B^(w−1))·B + s[in] 로 O(1) 에 갱신한다(라빈–카프 문자열 검색의 핵심). 이 책에서 롤링 해시의 정본은 이 항목이다(String.md 의 라빈–카프는 이것을 쓴다).
+// 파라미터 선택이 전부다. p = 2^61 − 1 (메르센 소수; 곱은 128비트로 한 뒤 비트 연산으로 줄인다) 와 *실행 시 무작위로 고른* 밑 B 를 쓴다. 두 서로 다른 길이 ≤ L 문자열이 충돌하려면 B 가 차수 ≤ L − 1 인 다항식(두 해시의 차)의 근이어야 하므로 확률 ≤ (L − 1)/p — 아래에서 작은 소수로 *모든 밑을 시도해* 이 정리를 정확히 확인한다. 나쁜 선택: ① 2^64 로 자연 오버플로(mod 2^64) — Thue–Morse 문자열 쌍이 *어떤 밑에서도* 충돌(아래 시연), ② 고정 밑 + 작은 p(~10^9) — 생일 역설로 20 만 개 문자열 안에서 충돌이 나온다.
+// 검증: ① 이진 알파벳 문자열 2000 개에서 모든 부분 문자열 쌍의 해시 동치 ⇔ 실제 동치 ② 롤링 갱신 = 재계산, 롤링으로 센 패턴 등장 횟수 = 순진한 검색 ③ 소수 p = 10007 에서 서로 다른 길이 8 문자열 쌍 500 개: 충돌하는 밑의 수 ≤ 7 (= L − 1) ④ Thue–Morse (길이 2^11, 2^12) 는 mod 2^64 해시가 *무작위 밑 50 개 모두* 에서 충돌하지만 mod 2^61 − 1 에서는 안 함 ⑤ mod ~10^9 는 무작위 12 글자 문자열 20 만 개에서 충돌이 나오고 mod 2^61 − 1 은 안 나옴 ⑥ 해시 이분 탐색으로 구한 가장 긴 반복 부분 문자열 길이 = 완전 탐색.
+__extension__ typedef unsigned __int128 u128;
+typedef std::uint64_t u64;
+const u64 MOD61 = (1ULL << 61) - 1;
+u64 mulmod61(u64 a, u64 b) { u128 t = (u128)a * b; u64 r = (u64)(t & MOD61) + (u64)(t >> 61); if (r >= MOD61) r -= MOD61; return r >= MOD61 ? r - MOD61 : r; }
+struct Roll {
+    u64 B; std::vector<u64> P, pw;
+    Roll(const std::string& s, u64 base) : B(base), P(s.size() + 1, 0), pw(s.size() + 1, 1) {
+        for (std::size_t i = 0; i < s.size(); ++i) { P[i + 1] = mulmod61(P[i], B) + (u64)(unsigned char)s[i]; if (P[i + 1] >= MOD61) P[i + 1] -= MOD61; pw[i + 1] = mulmod61(pw[i], B); }
     }
-    uint64_t get(size_t l, size_t r) const { return (pre[r] + M - pre[l] * pw[r - l] % M) % M; }
+    u64 sub(std::size_t l, std::size_t r) const { u64 x = mulmod61(P[l], pw[r - l]); return P[r] >= x ? P[r] - x : P[r] + MOD61 - x; }
 };
-
-std::vector<size_t> findAll(const std::string& text, const std::string& pat) {
-    std::vector<size_t> res;
-    Rolling t(text), p(pat);
-    uint64_t hp = p.get(0, pat.size());
-    for (size_t i = 0; i + pat.size() <= text.size(); i++)
-        if (t.get(i, i + pat.size()) == hp && text.compare(i, pat.size(), pat) == 0) res.push_back(i);   // 해시 일치 후 실제 비교
-    return res;
-}
+u64 roll(u64 h, unsigned char out, unsigned char in, u64 B, u64 powWm1) { u64 x = mulmod61(out, powWm1); h = h >= x ? h - x : h + MOD61 - x; h = mulmod61(h, B) + in; return h >= MOD61 ? h - MOD61 : h; }
+u64 hashPlain(const std::string& s, u64 B, u64 mod) { u64 h = 0; for (unsigned char c : s) h = (u64)(((u128)h * B + c) % mod); return h; }
 
 int main() {
-    Rolling r("abracadabra");
-    assert(r.get(0, 4) == r.get(7, 11));                           // "abra" == "abra"
-    assert(r.get(0, 4) != r.get(1, 5));
-    auto pos = findAll("abracadabra", "abra");
-    assert((pos == std::vector<size_t>{0, 7}));
-    std::cout << "PolynomialRollingHash matches at 0 and 7" << std::endl;
-    return 0;
+    std::mt19937_64 rng(12);
+    // ① 부분 문자열 해시 동치 ⇔ 실제 동치 (이진 알파벳이라 같은 부분 문자열이 많다)
+    long equalPairs = 0;
+    for (int it = 0; it < 2000; ++it) {
+        std::size_t n = 1 + rng() % 40; std::string s(n, 'a'); for (char& c : s) c = "ab"[rng() % 2]; Roll r(s, 256 + rng() % (MOD61 - 256));
+        for (int q = 0; q < 40; ++q) { std::size_t len = 1 + rng() % n, l1 = rng() % (n - len + 1), l2 = rng() % (n - len + 1); bool same = s.compare(l1, len, s, l2, len) == 0; assert((r.sub(l1, l1 + len) == r.sub(l2, l2 + len)) == same); equalPairs += same; }
+    }
+    assert(equalPairs > 5000);
+    // ② 롤링 갱신 = 재계산, 패턴 등장 횟수 = 순진한 검색
+    for (int it = 0; it < 500; ++it) {
+        std::size_t n = 10 + rng() % 200, w = 1 + rng() % 6; std::string s(n, 'a'); for (char& c : s) c = "abc"[rng() % 3]; std::string pat(w, 'a'); for (char& c : pat) c = "abc"[rng() % 3]; u64 B = 300 + rng() % 1000000;
+        std::vector<u64> pw(w, 1); for (std::size_t i = 1; i < w; ++i) pw[i] = mulmod61(pw[i - 1], B); u64 hp = 0; for (unsigned char c : pat) { hp = mulmod61(hp, B) + c; if (hp >= MOD61) hp -= MOD61; }
+        u64 h = 0; for (std::size_t i = 0; i < w; ++i) { h = mulmod61(h, B) + (unsigned char)s[i]; if (h >= MOD61) h -= MOD61; } long found = 0, naive = 0;
+        for (std::size_t i = 0; i + w <= n; ++i) { if (i) h = roll(h, (unsigned char)s[i - 1], (unsigned char)s[i + w - 1], B, pw[w - 1]); assert(h == Roll(s.substr(i, w), B).sub(0, w)); found += h == hp && s.compare(i, w, pat) == 0; naive += s.compare(i, w, pat) == 0; }
+        assert(found == naive);
+    }
+    // ③ 정리: 서로 다른 길이 L 문자열이 충돌하는 밑은 L − 1 개 이하 (p = 10007 의 모든 밑을 시도)
+    {   const u64 p = 10007; int worst = 0;
+        for (int it = 0; it < 500; ++it) { std::string a(8, 'a'), b(8, 'a'); for (char& c : a) c = (char)('a' + rng() % 26); b = a; b[rng() % 8] = (char)('a' + rng() % 26); if (a == b) continue; int roots = 0; for (u64 B = 0; B < p; ++B) roots += hashPlain(a, B, p) == hashPlain(b, B, p); worst = std::max(worst, roots); assert(roots <= 7); }
+        assert(worst >= 1); }
+    // ④ Thue–Morse: mod 2^64 (자연 오버플로) 는 어떤 홀수 밑에서도 충돌 (짝수 밑은 B^64 = 0 이라 마지막 64 글자만 본다), mod 2^61 − 1 은 충돌 안 함
+    for (int k : {11, 12}) {
+        std::string a(1u << k, 'a'), b(1u << k, 'b'); for (std::size_t i = 0; i < a.size(); ++i) { bool bit = __builtin_popcountll(i) & 1; a[i] = bit ? 'b' : 'a'; b[i] = bit ? 'a' : 'b'; }
+        int collide64 = 0, collide61 = 0;
+        for (int t = 0; t < 50; ++t) { u64 B = rng() | 1; u64 ha = 0, hb = 0; for (unsigned char c : a) ha = ha * B + c; for (unsigned char c : b) hb = hb * B + c; collide64 += ha == hb; collide61 += Roll(a, 256 + rng() % (MOD61 - 256)).sub(0, a.size()) == Roll(b, 256 + rng() % (MOD61 - 256)).sub(0, b.size()); }
+        assert(a != b && collide64 == 50 && collide61 == 0);
+    }
+    // ⑤ 작은 모듈러스는 생일 역설로 깨진다: 무작위 12 글자 문자열 20 만 개 (p = 10^9+7, 고정 밑 31)
+    {   std::unordered_set<u64> seen32, seen61; std::set<std::string> distinct; long coll32 = 0, coll61 = 0; Roll dummy("a", 12345);
+        for (int i = 0; i < 200000; ++i) { std::string s(12, 'a'); for (char& c : s) c = (char)('a' + rng() % 26); if (!distinct.insert(s).second) continue; if (!seen32.insert(hashPlain(s, 31, 1000000007ULL)).second) ++coll32; if (!seen61.insert(Roll(s, 987654321987ULL).sub(0, 12)).second) ++coll61; }
+        assert(coll32 >= 5 && coll61 == 0); std::cout << "PolynomialRollingHash: distinct 12-letter strings colliding under p = 10^9+7: " << coll32 << ", under 2^61-1: " << coll61 << std::endl; }
+    // ⑥ 가장 긴 반복 부분 문자열: 길이 L 이 가능한지 해시 집합으로 판정 (단조) + 이분 탐색 vs 완전 탐색
+    for (int it = 0; it < 300; ++it) {
+        std::size_t n = 2 + rng() % 40; std::string s(n, 'a'); for (char& c : s) c = "ab"[rng() % 2]; Roll r(s, 1000 + rng() % 100000);
+        auto has = [&](std::size_t L) { std::unordered_set<u64> seen; for (std::size_t i = 0; i + L <= n; ++i) if (!seen.insert(r.sub(i, i + L)).second) return true; return false; };
+        std::size_t lo = 0, hi = n - 1; while (lo < hi) { std::size_t mid = (lo + hi + 1) / 2; if (has(mid)) lo = mid; else hi = mid - 1; }
+        std::size_t brute = 0; for (std::size_t L = 1; L < n; ++L) { std::set<std::string> seen; bool dup = false; for (std::size_t i = 0; i + L <= n && !dup; ++i) dup = !seen.insert(s.substr(i, L)).second; if (dup) brute = L; }
+        assert(lo == brute);
+    }
+    // 큰 입력: 길이 100 만 문자열에서 무작위 부분 문자열 쌍 2000 개
+    {   std::string s(1000000, 'a'); for (char& c : s) c = "ab"[rng() % 2]; Roll r(s, 1234567891011ULL);
+        for (int q = 0; q < 2000; ++q) { std::size_t len = 1 + rng() % 40; std::size_t l1 = rng() % (s.size() - len), l2 = rng() % (s.size() - len); if (q % 2) l2 = (l1 + len * 3) % (s.size() - len); assert((r.sub(l1, l1 + len) == r.sub(l2, l2 + len)) == (s.compare(l1, len, s, l2, len) == 0)); } }
+    std::cout << "PolynomialRollingHash: substring hashes (mod 2^61-1, random base) were equal exactly when the substrings were on " << equalPairs << " equal pairs, rolling updates equalled recomputation and pattern counts equalled naive search, the number of bases colliding for two distinct length-8 strings never exceeded L-1 = 7 over all bases of a 10007 modulus, Thue-Morse strings of length 2048 and 4096 collided for all 50 random bases modulo 2^64 but never modulo 2^61-1, and hash-based binary search found the longest repeated substring of 300 random binary strings" << std::endl; return 0;
 }
 // Time Complexity: 전처리 O(n), 부분 문자열 해시 O(1)
 // Space Complexity: O(n)
@@ -1206,7 +1590,7 @@ int main() {
 #include <cassert>
 
 // 두 문자열의 최장 공통 부분 문자열: 길이 L 에 대해 "공통 부분 문자열이 있는가" 는 단조 -> 이분 탐색 + 롤링 해시
-typedef unsigned __int128 u128;
+__extension__ typedef unsigned __int128 u128;
 const uint64_t MOD = (1ULL << 61) - 1;
 uint64_t mulmod(uint64_t a, uint64_t b) { return (uint64_t)((u128)a * b % MOD); }
 
@@ -1367,38 +1751,61 @@ int main() {
 ## Multimap()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-// 멀티맵: 하나의 키에 여러 값을 허용한다. 해시 버전은 key -> 값 목록으로 구현한다
-template <class K, class V>
-class Multimap {
-    std::unordered_map<K, std::vector<V>> m;
-    size_t total = 0;
-public:
-    void insert(const K& k, const V& v) { m[k].push_back(v); ++total; }
-    size_t count(const K& k) const { auto it = m.find(k); return it == m.end() ? 0 : it->second.size(); }
-    const std::vector<V>& equalRange(const K& k) const {
-        static const std::vector<V> empty;
-        auto it = m.find(k); return it == m.end() ? empty : it->second;
-    }
-    size_t erase(const K& k) {                                           // 키 하나의 모든 값을 지운다
-        auto it = m.find(k); if (it == m.end()) return 0;
-        size_t c = it->second.size(); total -= c; m.erase(it); return c;
-    }
-    size_t size() const { return total; }
+// 멀티맵: 하나의 키에 여러 값을 허용한다. 해시 버전은 두 가지로 만든다 — ① 키 → 값 목록(여기서는 키마다 벡터): count(k) 와 equal_range(k) 가 O(값 개수), erase(k) 가 O(값 개수) ② 같은 키 항목을 같은 버킷 안에서 이웃하게 두는 방식(std::unordered_multimap). ①로 만들어 std::unordered_multimap 과 비교한다. 값의 *삽입 순서* 는 ①에서 보존되지만 표준 컨테이너는 보장하지 않으므로 비교는 키별 값의 멀티집합으로 한다.
+// 연산 의미(검증 대상): insert 는 항상 새 항목을 추가(키 중복 허용), count(k) 는 k 의 값 개수, erase(k) 는 k 의 모든 값을 지우고 개수를 반환, erase(k, v) 는 (k, v) 한 개만 지우고 지웠는지 반환(같은 값이 여럿이면 하나만), size() 는 전체 항목 수, contains(k, v) 는 쌍의 존재. 키가 사라지면 빈 목록을 남기지 않는다(메모리 누수·size 오류 방지).
+// 검증: 무작위 연산 20 만 번(삽입·키 삭제·쌍 삭제·조회·개수) 을 unordered_multimap 과 비교 — 반환값, 크기, 키별 값 멀티집합; 같은 쌍을 여러 번 넣고 하나씩 지우기; 100 만 항목 삽입 뒤 크기·키 개수; 키별 삽입 순서 보존.
+struct Multimap {
+    using Key = std::uint64_t;
+    std::vector<std::vector<std::pair<Key, std::vector<int>>>> b; std::size_t total = 0, keys = 0;
+    explicit Multimap(std::size_t m = 1024) : b(m) {}
+    std::size_t idx(Key k) const { k += 0x9e3779b97f4a7c15ULL; k = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL; k = (k ^ (k >> 27)) * 0x94d049bb133111ebULL; return (std::size_t)((k ^ (k >> 31)) % b.size()); }
+    std::vector<int>* find(Key k) { for (auto& e : b[idx(k)]) if (e.first == k) return &e.second; return nullptr; }
+    const std::vector<int>* find(Key k) const { for (auto& e : b[idx(k)]) if (e.first == k) return &e.second; return nullptr; }
+    void insert(Key k, int v) { if (auto* l = find(k)) l->push_back(v); else { b[idx(k)].push_back({k, {v}}); ++keys; } ++total; }
+    std::size_t count(Key k) const { auto* l = find(k); return l ? l->size() : 0; }
+    const std::vector<int>& equalRange(Key k) const { static const std::vector<int> none; auto* l = find(k); return l ? *l : none; }
+    std::size_t erase(Key k) { auto& chain = b[idx(k)]; for (std::size_t i = 0; i < chain.size(); ++i) if (chain[i].first == k) { std::size_t n = chain[i].second.size(); chain[i] = chain.back(); chain.pop_back(); total -= n; --keys; return n; } return 0; }
+    bool erasePair(Key k, int v) { auto& chain = b[idx(k)]; for (std::size_t i = 0; i < chain.size(); ++i) if (chain[i].first == k) { auto& l = chain[i].second; auto it = std::find(l.begin(), l.end(), v); if (it == l.end()) return false; l.erase(it); --total; if (l.empty()) { chain[i] = chain.back(); chain.pop_back(); --keys; } return true; } return false; }
+    bool contains(Key k, int v) const { auto* l = find(k); return l && std::find(l->begin(), l->end(), v) != l->end(); }
 };
+std::vector<int> sortedValues(const std::unordered_multimap<std::uint64_t, int>& ref, std::uint64_t k) { std::vector<int> v; auto r = ref.equal_range(k); for (auto it = r.first; it != r.second; ++it) v.push_back(it->second); std::sort(v.begin(), v.end()); return v; }
 
 int main() {
-    Multimap<std::string, int> mm;
-    mm.insert("fruit", 1); mm.insert("fruit", 2); mm.insert("veg", 3); mm.insert("fruit", 4);
-    assert(mm.size() == 4 && mm.count("fruit") == 3 && mm.count("none") == 0);
-    assert((mm.equalRange("fruit") == std::vector<int>{1, 2, 4}));
-    assert(mm.erase("fruit") == 3 && mm.size() == 1);
-    std::cout << "Multimap verified." << std::endl;
+    std::mt19937_64 rng(13);
+    // ① 무작위 연산 20 만 번 (키 범위 300, 값 범위 6 → 같은 쌍이 자주 겹침)
+    {   Multimap mm(97); std::unordered_multimap<std::uint64_t, int> ref; long pairErases = 0;
+        for (int i = 0; i < 200000; ++i) {
+            std::uint64_t k = rng() % 300; int v = (int)(rng() % 6); int op = (int)(rng() % 10);
+            if (op < 4) { mm.insert(k, v); ref.emplace(k, v); }
+            else if (op == 4) { std::size_t a = mm.erase(k); std::size_t c = ref.erase(k); assert(a == c); }
+            else if (op < 7) { bool had = false; auto r = ref.equal_range(k); for (auto it = r.first; it != r.second; ++it) if (it->second == v) { ref.erase(it); had = true; break; } assert(mm.erasePair(k, v) == had); pairErases += had; }
+            else if (op == 7) assert(mm.count(k) == ref.count(k));
+            else if (op == 8) { std::vector<int> a = mm.equalRange(k); std::sort(a.begin(), a.end()); assert(a == sortedValues(ref, k)); }
+            else assert(mm.contains(k, v) == (std::count_if(ref.equal_range(k).first, ref.equal_range(k).second, [&](const std::pair<const std::uint64_t, int>& e) { return e.second == v; }) > 0));
+            assert(mm.total == ref.size());
+        }
+        std::size_t distinct = 0; for (std::uint64_t k = 0; k < 300; ++k) distinct += ref.count(k) > 0; assert(mm.keys == distinct && pairErases > 10000);
+        for (std::uint64_t k = 0; k < 300; ++k) { std::vector<int> a = mm.equalRange(k); std::sort(a.begin(), a.end()); assert(a == sortedValues(ref, k)); }
+        for (auto& chain : mm.b) for (auto& e : chain) assert(!e.second.empty()); }                       // 빈 목록이 남지 않는다
+    // ② 같은 쌍을 여러 번 넣고 하나씩 지우기, 삽입 순서 보존
+    {   Multimap mm; for (int i = 0; i < 5; ++i) mm.insert(7, 42); mm.insert(7, 1); mm.insert(7, 42); assert(mm.count(7) == 7 && mm.keys == 1 && mm.total == 7);
+        for (int i = 0; i < 6; ++i) assert(mm.erasePair(7, 42)); assert(!mm.erasePair(7, 42) && mm.count(7) == 1 && mm.equalRange(7) == std::vector<int>({1}));
+        assert(mm.erasePair(7, 1) && mm.keys == 0 && mm.total == 0 && mm.equalRange(7).empty() && mm.erase(7) == 0);
+        Multimap order; for (int v : {5, 3, 9, 1, 3}) order.insert(8, v); assert(order.equalRange(8) == std::vector<int>({5, 3, 9, 1, 3})); }
+    // ③ 100 만 항목: 크기 · 키 개수 · 임의 조회
+    {   Multimap mm(1 << 16); std::map<std::uint64_t, long> cnt; for (int i = 0; i < 1000000; ++i) { std::uint64_t k = rng() % 50000; mm.insert(k, i); ++cnt[k]; }
+        assert(mm.total == 1000000 && mm.keys == cnt.size()); for (int q = 0; q < 2000; ++q) { std::uint64_t k = rng() % 50000; assert((long)mm.count(k) == (cnt.count(k) ? cnt[k] : 0)); }
+        std::cout << "Multimap: 200,000 random insert / erase-key / erase-pair / count / equal-range / contains operations matched std::unordered_multimap (return values, sizes and per-key value multisets), no empty value lists were left behind, duplicates of one pair were removed one at a time, insertion order was preserved per key, and a 1,000,000-entry map reported the right size and key count" << std::endl; }
     return 0;
 }
 // Time Complexity: insert 분할상환 O(1), erase(key) O(값 개수)
@@ -1458,83 +1865,104 @@ int main() {
 ## VirtualNode()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
-#include <cstdint>
-#include <map>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
-// 가상 노드: 물리 노드 하나를 링 위의 여러 지점(node#0, node#1, ...)에 배치해 부하를 고르게 만든다
-uint32_t h32(const std::string& s) {
-    uint32_t h = 2166136261u;
-    for (unsigned char c : s) { h ^= c; h *= 16777619u; }
-    h ^= h >> 16; h *= 0x85ebca6b; h ^= h >> 13; h *= 0xc2b2ae35; h ^= h >> 16;
-    return h;
-}
-
-double imbalance(int vnodes) {                               // 최대 부하 / 평균 부하
-    std::map<uint32_t, int> ring;
-    const int N = 5;
-    for (int n = 0; n < N; n++)
-        for (int v = 0; v < vnodes; v++) ring[h32("node" + std::to_string(n) + "#" + std::to_string(v))] = n;
-    std::vector<int> load(N, 0);
-    const int K = 20000;
-    for (int i = 0; i < K; i++) {
-        auto it = ring.lower_bound(h32("key" + std::to_string(i)));
-        if (it == ring.end()) it = ring.begin();
-        load[it->second]++;
-    }
-    return double(*std::max_element(load.begin(), load.end())) / (double(K) / N);
+// 가상 노드(virtual node): 일관된 해싱(consistent hashing) 링에서 물리 노드 하나를 링 위의 여러 지점(node#0, node#1, …)에 배치해 부하를 고르게 만든다. 노드가 링에 1 개 점이면 점 사이 구간 길이가 지수 분포처럼 들쭉날쭉해서 가장 큰 구간의 노드가 평균의 O(log N) 배를 떠안는다; 노드마다 v 개의 점을 두면 부하의 변동계수가 1/√v 로 줄어든다(독립 구간 v 개의 합). 가중치가 다른 노드는 가상 노드 수를 가중치에 비례시킨다.
+// 키의 담당 노드 = 링에서 키 해시 이상인 첫 점(시계 방향 후계자, 끝이면 처음으로 감김)의 노드. 노드 추가·제거 시 이동하는 키는 *바로 그 노드의 구간에 속한 키뿐* 이다 — 추가하면 새 노드로만 가고, 제거하면 그 노드의 키만 이웃들로 흩어진다(정확히 검증).
+// 검증: ① 링 조회가 정렬 배열 선형 탐색(후계자 정의 그대로) 과 10 만 키에서 일치 ② v = 1, 10, 100, 1000 에서 최대/평균 부하와 변동계수가 단조 감소, cv(v)·√v 가 거의 상수(≈ 1) ③ 노드 추가: 이동한 키가 모두 새 노드로 가고 비율이 1/(N+1) 근처, 제거: 제거된 노드의 키만 이동 ④ 가중 노드: 가상 노드 수 2 배 → 부하 약 2 배 ⑤ 복제본 선택: 시계 방향으로 *서로 다른 물리 노드* R 개 ⑥ 모듈로 해싱(h mod N)은 N → N + 1 에서 N/(N+1) 의 키가 이동.
+std::uint64_t mix(std::uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+std::uint64_t pointHash(int node, int replica) { return mix(((std::uint64_t)node << 32) ^ (std::uint64_t)replica ^ 0xfeedfaceULL); }
+struct Ring {
+    std::map<std::uint64_t, int> ring;                                                         // 해시 → 물리 노드
+    void add(int node, int vnodes) { for (int r = 0; r < vnodes; ++r) ring[pointHash(node, r)] = node; }
+    void remove(int node, int vnodes) { for (int r = 0; r < vnodes; ++r) ring.erase(pointHash(node, r)); }
+    int lookup(std::uint64_t keyHash) const { auto it = ring.lower_bound(keyHash); if (it == ring.end()) it = ring.begin(); return it->second; }
+    std::vector<int> replicas(std::uint64_t keyHash, int r) const { std::vector<int> out; auto it = ring.lower_bound(keyHash); for (std::size_t seen = 0; seen < ring.size() && (int)out.size() < r; ++seen) { if (it == ring.end()) it = ring.begin(); if (std::find(out.begin(), out.end(), it->second) == out.end()) out.push_back(it->second); ++it; } return out; }
+};
+struct Load { double maxOverMean, cv; };
+Load loadOf(const Ring& ring, int nodes, int keys, std::uint64_t seed) {
+    std::vector<long> load(nodes, 0); for (int i = 0; i < keys; ++i) ++load[ring.lookup(mix(seed + i))]; double mean = (double)keys / nodes, var = 0; long mx = 0; for (long l : load) { var += (l - mean) * (l - mean); mx = std::max(mx, l); } return {(double)mx / mean, std::sqrt(var / nodes) / mean};
 }
 
 int main() {
-    double one = imbalance(1), many = imbalance(200);
-    assert(many < one);                                      // 가상 노드가 많을수록 균형이 좋다
-    assert(many < 1.25);
-    std::cout << "imbalance (max/mean): 1 vnode = " << one << ", 200 vnodes = " << many << std::endl;
+    std::mt19937_64 rng(14);
+    // ① 링 조회 = 정렬 배열 선형 탐색 (후계자의 정의 그대로)
+    {   Ring r; for (int n = 0; n < 7; ++n) r.add(n, 20); std::vector<std::pair<std::uint64_t, int>> pts(r.ring.begin(), r.ring.end());
+        for (int i = 0; i < 100000; ++i) { std::uint64_t h = rng(); int expect = pts.front().second; for (auto& p : pts) if (p.first >= h) { expect = p.second; break; } assert(r.lookup(h) == expect); } }
+    // ② 부하 균형: 노드 10 개, 키 20 만 개
+    double prevCv = 1e9, prevMax = 1e9; double cvTimesSqrt[4]; int idx = 0;
+    for (int v : {1, 10, 100, 1000}) { Ring r; for (int n = 0; n < 10; ++n) r.add(n, v); Load l = loadOf(r, 10, 200000, 99); assert(l.cv < prevCv && l.maxOverMean < prevMax); prevCv = l.cv; prevMax = l.maxOverMean; cvTimesSqrt[idx++] = l.cv * std::sqrt((double)v); if (v == 1000) assert(l.maxOverMean < 1.15); if (v == 1) assert(l.maxOverMean > 1.5); }
+    assert(cvTimesSqrt[1] > 0.5 && cvTimesSqrt[1] < 1.6 && cvTimesSqrt[2] > 0.5 && cvTimesSqrt[2] < 1.6 && cvTimesSqrt[3] > 0.4 && cvTimesSqrt[3] < 1.7);                 // 변동계수 ∝ 1/√v
+    // ③ 노드 추가 · 제거 시 이동하는 키
+    {   const int N = 10, V = 200, K = 100000; Ring r; for (int n = 0; n < N; ++n) r.add(n, V); std::vector<int> before(K); for (int i = 0; i < K; ++i) before[i] = r.lookup(mix(1000 + i));
+        r.add(N, V); int moved = 0; for (int i = 0; i < K; ++i) { int now = r.lookup(mix(1000 + i)); if (now != before[i]) { assert(now == N); ++moved; } }                                  // 이동한 키는 모두 새 노드로
+        double frac = (double)moved / K; assert(frac > 0.07 && frac < 0.115);                                                                                                       // ≈ 1/11 = 0.0909
+        std::vector<int> mid(K); for (int i = 0; i < K; ++i) mid[i] = r.lookup(mix(1000 + i)); r.remove(3, V); int movedOut = 0, owned = 0;
+        for (int i = 0; i < K; ++i) { int now = r.lookup(mix(1000 + i)); if (mid[i] == 3) { ++owned; assert(now != 3); } else assert(now == mid[i]); movedOut += now != mid[i]; } assert(movedOut == owned && owned > 0);        // 제거: 그 노드의 키만 이동
+        // ⑥ 모듈로 해싱 비교
+        int modMoved = 0; for (int i = 0; i < K; ++i) modMoved += mix(1000 + i) % N != mix(1000 + i) % (N + 1); double modFrac = (double)modMoved / K; assert(modFrac > 0.88 && modFrac < 0.93);
+        std::cout << "VirtualNode: adding an 11th node moved " << frac << " of the keys (1/11 = 0.0909), all to the new node, whereas modulo hashing moved " << modFrac << " (N/(N+1) = 0.909)" << std::endl; }
+    // ④ 가중 노드: 노드 0 은 가상 노드 200 개, 나머지 4 개는 100 개 → 노드 0 의 부하 ≈ 200/600 = 1/3 = 다른 노드 평균(1/6)의 2 배
+    {   Ring r; r.add(0, 400); for (int n = 1; n <= 4; ++n) r.add(n, 200); std::vector<long> load(5, 0); const int K = 300000; for (int i = 0; i < K; ++i) ++load[r.lookup(mix(555 + i))];
+        double w0 = (double)load[0] / K, expect = 400.0 / 1200.0; assert(std::abs(w0 - expect) < 0.03); }
+    // ⑤ 복제본: 시계 방향으로 서로 다른 물리 노드 R 개 (가상 노드가 연속으로 같은 물리 노드여도 건너뜀)
+    {   Ring r; for (int n = 0; n < 6; ++n) r.add(n, 50); for (int i = 0; i < 20000; ++i) for (int R : {1, 2, 3, 5, 6}) { auto reps = r.replicas(mix(77 + i), R); assert((int)reps.size() == R && std::set<int>(reps.begin(), reps.end()).size() == (std::size_t)R && reps[0] == r.lookup(mix(77 + i))); } assert(r.replicas(1, 9).size() == 6); }
     return 0;
 }
-// Time Complexity: 조회 O(log(N·V))
+// Time Complexity: 조회 O(log(N·V)), 노드 추가·제거 O(V log(N·V))
 // Space Complexity: O(N·V)
 ```
 ## RendezvousHash()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <string>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
-// 랑데부(HRW) 해싱: 키마다 모든 노드의 점수 hash(key, node) 를 계산해 가장 높은 노드를 고른다.
-// 링 구조 없이도 노드 제거 시 그 노드의 키만 이동한다 (조회는 O(N))
-uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
-uint64_t score(const std::string& key, const std::string& node) {
-    uint64_t h = 1469598103934665603ULL;
-    for (unsigned char c : key + "|" + node) { h ^= c; h *= 1099511628211ULL; }
-    return mix(h);
+// 랑데부 해싱(HRW, Highest Random Weight): 키마다 *모든 노드* 의 점수 score(key, node) = hash(key, node) 를 계산해 가장 높은 노드를 담당으로 정한다. 링 구조·가상 노드가 필요 없고 균형이 자동으로 좋으며, 노드를 제거하면 *그 노드의 키만* 이동하고(점수 순위는 다른 노드끼리 변하지 않는다), 추가하면 *새 노드가 최고가 된 키만* 새 노드로 간다 — 이동 비율 정확히 기대값 1/(N+1). 조회는 O(N) (링은 O(log N)) 이므로 노드 수가 수십 개 이하일 때 단순함이 이점이다.
+// 가중치: score = −w / ln(U) (U = hash 를 (0, 1] 로 정규화) 로 하면 노드가 이길 확률이 정확히 w / Σw 다(지수 분포의 최솟값 성질). 상위 R 개 점수의 노드 = 복제본 집합이며 순서도 일관된다(R 개 선택은 최고 점수 선택의 접두사).
+// 검증: ① 조회가 결정적이고 점수 최댓값 정의와 같음 ② 노드 제거 → 제거된 노드의 키만 이동(정확), 추가 → 이동한 키는 모두 새 노드로, 이동 비율이 1/(N+1) 의 ±15% ③ 노드 10 개 · 키 20 만 개의 부하가 균등(카이제곱: 자유도 9 ± 5σ) ④ 가중치 1:2:3 → 승률 1/6, 1/3, 1/2 (±0.01) ⑤ 복제본 상위 R 개는 R−1 개의 접두사 확장 ⑥ 노드 수가 달라도 모듈로 해싱(N/(N+1) 이동)보다 훨씬 적게 이동.
+std::uint64_t mix(std::uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+std::uint64_t score(std::uint64_t key, int node) { return mix(key * 0x2545f4914f6cdd1dULL ^ mix((std::uint64_t)node + 1)); }
+int owner(std::uint64_t key, const std::vector<int>& nodes) { int best = -1; std::uint64_t bs = 0; for (int n : nodes) { std::uint64_t s = score(key, n); if (best < 0 || s > bs || (s == bs && n < best)) { best = n; bs = s; } } return best; }
+int weightedOwner(std::uint64_t key, const std::vector<int>& nodes, const std::vector<double>& w) {
+    int best = -1; double bs = -1; for (std::size_t i = 0; i < nodes.size(); ++i) { double u = ((double)(score(key, nodes[i]) >> 11) + 1.0) / 9007199254740993.0; double s = -w[i] / std::log(u); if (s > bs) { bs = s; best = nodes[i]; } } return best;
 }
-std::string pick(const std::string& key, const std::vector<std::string>& nodes) {
-    std::string best; uint64_t bs = 0;
-    for (auto& n : nodes) { uint64_t s = score(key, n); if (best.empty() || s > bs) { bs = s; best = n; } }
-    return best;
-}
+std::vector<int> topR(std::uint64_t key, const std::vector<int>& nodes, int R) { std::vector<int> v = nodes; std::sort(v.begin(), v.end(), [&](int a, int b) { std::uint64_t sa = score(key, a), sb = score(key, b); return sa != sb ? sa > sb : a < b; }); v.resize(std::min<std::size_t>(R, v.size())); return v; }
 
 int main() {
-    std::vector<std::string> nodes = {"A", "B", "C", "D", "E"};
-    const int K = 5000;
-    std::vector<std::string> before(K);
-    for (int i = 0; i < K; i++) before[i] = pick("key" + std::to_string(i), nodes);
-    std::vector<std::string> fewer = {"A", "B", "C", "E"};          // D 제거
-    int moved = 0;
-    for (int i = 0; i < K; i++) {
-        std::string now = pick("key" + std::to_string(i), fewer);
-        if (now != before[i]) { moved++; assert(before[i] == "D"); }  // 이동한 키는 전부 D 가 갖고 있던 키
-    }
-    assert(moved > 0 && moved < K / 3);
-    std::cout << "removed D: moved " << moved << " keys, all previously owned by D" << std::endl;
+    // ①② 결정성 · 제거 · 추가
+    const int K = 100000; std::vector<int> nodes; for (int i = 0; i < 10; ++i) nodes.push_back(i);
+    std::vector<int> before(K); for (int i = 0; i < K; ++i) { before[i] = owner(mix(i), nodes); assert(before[i] == owner(mix(i), nodes)); }
+    {   std::vector<int> fewer; for (int n : nodes) if (n != 4) fewer.push_back(n); int moved = 0, owned = 0;
+        for (int i = 0; i < K; ++i) { int now = owner(mix(i), fewer); if (before[i] == 4) { ++owned; assert(now != 4); } else assert(now == before[i]); moved += now != before[i]; } assert(moved == owned && owned > 0);
+        std::vector<int> more = nodes; more.push_back(10); int movedIn = 0; for (int i = 0; i < K; ++i) { int now = owner(mix(i), more); if (now != before[i]) { assert(now == 10); ++movedIn; } }
+        double frac = (double)movedIn / K; assert(frac > 0.0909 * 0.85 && frac < 0.0909 * 1.15);
+        int modMoved = 0; for (int i = 0; i < K; ++i) modMoved += mix(i) % 10 != mix(i) % 11; assert(modMoved > 8 * movedIn);
+        std::cout << "RendezvousHash: removing a node moved exactly its own " << owned << " keys; adding an 11th node moved " << frac << " of the keys, all to the new node, against " << (double)modMoved / K << " for modulo hashing" << std::endl; }
+    // ③ 균등성: 노드 10 개, 키 20 만 개의 카이제곱
+    {   std::vector<long> load(10, 0); const int KK = 200000; for (int i = 0; i < KK; ++i) ++load[owner(mix(5000000 + i), nodes)]; double e = KK / 10.0, chi = 0; for (long l : load) chi += (l - e) * (l - e) / e; assert(std::abs(chi - 9) < 5 * std::sqrt(18.0)); }
+    // ④ 가중치 1:2:3 → 승률 1/6, 1/3, 1/2
+    {   std::vector<int> ns = {0, 1, 2}; std::vector<double> w = {1, 2, 3}; std::vector<long> win(3, 0); const int KK = 300000; for (int i = 0; i < KK; ++i) ++win[weightedOwner(mix(9000000 + i), ns, w)];
+        assert(std::abs((double)win[0] / KK - 1.0 / 6) < 0.01 && std::abs((double)win[1] / KK - 1.0 / 3) < 0.01 && std::abs((double)win[2] / KK - 0.5) < 0.01); }
+    // ⑤ 복제본: 상위 R 개는 상위 R−1 개의 접두사 확장, 첫 번째는 owner
+    for (int i = 0; i < 20000; ++i) { std::uint64_t key = mix(777 + i); auto t1 = topR(key, nodes, 1), t3 = topR(key, nodes, 3), t5 = topR(key, nodes, 5); assert(t1[0] == owner(key, nodes) && std::equal(t1.begin(), t1.end(), t3.begin()) && std::equal(t3.begin(), t3.end(), t5.begin())); }
+    // ⑥ 노드 수 N 이 커지는 경우의 이동 비율: 1/(N+1) (N = 2..30)
+    for (int N = 2; N <= 30; N += 4) { std::vector<int> a, b; for (int i = 0; i < N; ++i) a.push_back(i); b = a; b.push_back(N); int moved = 0; const int KK = 40000; for (int i = 0; i < KK; ++i) moved += owner(mix(31337 + i), a) != owner(mix(31337 + i), b); double frac = (double)moved / KK, expect = 1.0 / (N + 1); assert(std::abs(frac - expect) < 0.3 * expect + 0.005); }
     return 0;
 }
 // Time Complexity: 조회 O(N)
@@ -1671,44 +2099,53 @@ int main() {
 ## Consistent Hashing이 분산 시스템에서 중요한 이유
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <map>
-#include <string>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <vector>
 
-// 단순 모듈러 분배(hash % N)는 N 이 바뀌면 거의 모든 키가 이동한다 -> 캐시 서버 한 대만 늘려도 캐시가 통째로 무효화된다
-uint32_t h32(const std::string& s) {
-    uint32_t h = 2166136261u;
-    for (unsigned char c : s) { h ^= c; h *= 16777619u; }
-    h ^= h >> 16; h *= 0x85ebca6b; h ^= h >> 13; h *= 0xc2b2ae35; h ^= h >> 16;
-    return h;
-}
+// 분산 캐시·DB 에서 키를 N 대 서버에 나누는 가장 쉬운 방법은 server = hash(key) mod N 이다. 문제는 N 이 바뀔 때다 — 서버를 한 대 늘리면 *거의 모든 키(N/(N+1))의 담당이 바뀌어* 캐시가 한꺼번에 비는 "캐시 폭풍" 이 일어나고 원본 DB 가 쓰러진다. 일관된 해싱(링)과 랑데부 해싱은 노드 추가·제거 시 *평균 1/(N+1) 의 키만* 옮긴다 — 이동하는 키는 새로 생긴/없어진 서버의 몫뿐이다.
+// 이 항목은 세 방식의 차이를 숫자로 보인다: ① N → N + 1 에서 이동한 키 비율 (N = 2..30) ② 서버를 10 대에서 20 대로 한 대씩 늘릴 때 누적 이동 횟수 ③ 캐시 서버 10 대 + 새 서버 투입 직후의 적중률(캐시가 채워진 상태에서 새 서버를 넣을 때 기존 캐시에 계속 적중하는 키의 비율). 모두 결정적 시드로 계산하고 이론값(모듈로 N/(N+1), 이상적 해싱 1/(N+1))과 비교한다.
+std::uint64_t mix(std::uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
+struct Ring {                                                                                 // v 개의 가상 노드를 가진 일관된 해싱 링
+    std::map<std::uint64_t, int> pts; int v;
+    explicit Ring(int vnodes) : v(vnodes) {}
+    void add(int node) { for (int r = 0; r < v; ++r) pts[mix(((std::uint64_t)node << 32) ^ (std::uint64_t)r ^ 0xfeedULL)] = node; }
+    int lookup(std::uint64_t h) const { auto it = pts.lower_bound(h); if (it == pts.end()) it = pts.begin(); return it->second; }
+};
+int rendezvous(std::uint64_t key, int N) { int best = 0; std::uint64_t bs = 0; for (int n = 0; n < N; ++n) { std::uint64_t s = mix(key * 0x2545f4914f6cdd1dULL ^ mix((std::uint64_t)n + 1)); if (n == 0 || s > bs) { bs = s; best = n; } } return best; }
 
 int main() {
-    const int K = 20000;
-    int modMoved = 0, ringMoved = 0;
-    std::map<uint32_t, int> ring4, ring5;
-    for (int n = 0; n < 5; n++) {
-        for (int v = 0; v < 100; v++) {
-            uint32_t p = h32("n" + std::to_string(n) + "#" + std::to_string(v));
-            if (n < 4) ring4[p] = n;
-            ring5[p] = n;
-        }
+    const int K = 60000;
+    // ① N → N + 1 에서 이동한 키 비율
+    double sumMod = 0, sumRing = 0, sumHrw = 0; int cases = 0;
+    for (int N = 2; N <= 30; N += 4) {
+        Ring ring(150); for (int n = 0; n < N; ++n) ring.add(n); std::vector<int> r0(K), h0(K); for (int i = 0; i < K; ++i) { r0[i] = ring.lookup(mix(i)); h0[i] = rendezvous(mix(i), N); }
+        ring.add(N); int mod = 0, rg = 0, hr = 0;
+        for (int i = 0; i < K; ++i) { mod += mix(i) % N != mix(i) % (N + 1); rg += ring.lookup(mix(i)) != r0[i]; hr += rendezvous(mix(i), N + 1) != h0[i]; }
+        double fm = (double)mod / K, fr = (double)rg / K, fh = (double)hr / K, ideal = 1.0 / (N + 1);
+        assert(std::abs(fm - (double)N / (N + 1)) < 0.03);                                           // 모듈로: N/(N+1)
+        assert(std::abs(fr - ideal) < 0.45 * ideal + 0.01 && std::abs(fh - ideal) < 0.25 * ideal + 0.005);   // 링·랑데부: ≈ 1/(N+1) (링은 가상 노드가 유한해 변동이 더 크다)
+        sumMod += fm; sumRing += fr; sumHrw += fh; ++cases;
     }
-    auto own = [](std::map<uint32_t, int>& r, uint32_t h) { auto it = r.lower_bound(h); return (it == r.end() ? r.begin() : it)->second; };
-    for (int i = 0; i < K; i++) {
-        uint32_t h = h32("k" + std::to_string(i));
-        if (h % 4 != h % 5) modMoved++;
-        if (own(ring4, h) != own(ring5, h)) ringMoved++;
-    }
-    double modFrac = double(modMoved) / K, ringFrac = double(ringMoved) / K;
-    assert(modFrac > 0.7);                                      // 이론값 1 - 1/5 에 가깝다 (N 이 4 -> 5)
-    assert(ringFrac < 0.3);                                     // 이론값 1/5
-    std::cout << "servers 4 -> 5: hash%N moves " << modFrac * 100 << "%, consistent hashing moves " << ringFrac * 100 << "%" << std::endl;
+    // ② 서버를 10 대에서 20 대로 한 대씩 늘릴 때 (키 3 만 개) 누적 이동 횟수: 모듈로는 키당 거의 10 번 가까이 옮겨 다니고, 링은 키당 평균 Σ 1/(N+1) ≈ 0.69 번
+    {   const int KK = 30000; std::vector<int> mod(KK), rg(KK); Ring ring(150); for (int n = 0; n < 10; ++n) ring.add(n); for (int i = 0; i < KK; ++i) { mod[i] = (int)(mix(i) % 10); rg[i] = ring.lookup(mix(i)); }
+        long movesMod = 0, movesRing = 0; for (int N = 10; N < 20; ++N) { ring.add(N); for (int i = 0; i < KK; ++i) { int m2 = (int)(mix(i) % (N + 1)), r2 = ring.lookup(mix(i)); movesMod += m2 != mod[i]; movesRing += r2 != rg[i]; mod[i] = m2; rg[i] = r2; } }
+        double perKeyMod = (double)movesMod / KK, perKeyRing = (double)movesRing / KK; double idealRing = 0; for (int N = 10; N < 20; ++N) idealRing += 1.0 / (N + 1);
+        assert(perKeyMod > 6 && std::abs(perKeyRing - idealRing) < 0.3 * idealRing);
+        std::cout << "ConsistentHashing(motivation): across N = 2..30 adding one server moved " << sumMod / cases << " of the keys with modulo hashing, " << sumRing / cases << " with a 150-virtual-node ring and " << sumHrw / cases << " with rendezvous hashing; growing from 10 to 20 servers one at a time remapped each key " << perKeyMod << " times with modulo but only " << perKeyRing << " times (ideal " << idealRing << ") with the ring" << std::endl; }
+    // ③ 캐시 적중률: 서버 10 대에 키 10 만 개가 모두 캐시되어 있을 때 새 서버를 넣은 직후 같은 키를 다시 읽으면 → 기존 서버에서 계속 적중하는 비율
+    {   const int KK = 100000; Ring ring(150); for (int n = 0; n < 10; ++n) ring.add(n); std::vector<int> owner0(KK), ownerRing(KK); for (int i = 0; i < KK; ++i) ownerRing[i] = ring.lookup(mix(i)); ring.add(10);
+        long hitMod = 0, hitRing = 0; for (int i = 0; i < KK; ++i) { hitMod += mix(i) % 10 == mix(i) % 11; hitRing += ring.lookup(mix(i)) == ownerRing[i]; }
+        double hm = (double)hitMod / KK, hr = (double)hitRing / KK; assert(hm < 0.15 && hr > 0.8);                                   // 모듈로: 적중률 ≈ 1/11 로 폭락, 링: ≈ 10/11
+        std::cout << "ConsistentHashing(motivation): cache hit rate right after adding the 11th server was " << hm << " with modulo hashing and " << hr << " with the ring" << std::endl; }
     return 0;
 }
-// Time Complexity: O(K log N)
+// Time Complexity: 링 조회 O(log(N·V)), 랑데부 O(N), 모듈로 O(1)
 // Space Complexity: O(N·V)
 ```
 # Part 8. 암호학적 해시
@@ -1944,119 +2381,413 @@ int main() {
 ## 암호학적 해시와 일반 해시의 차이
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <random>
 #include <string>
+#include <unordered_map>
 #include <vector>
-#include <cassert>
 
-// 일반 해시(해시 테이블용)는 빠르고 분포가 좋으면 충분하지만 "되돌릴 수 있다".
-// 예) MurmurHash3 의 마지막 섞기 fmix32 는 전단사이며, 역함수를 바로 구성할 수 있다 -> 원상(preimage)을 즉시 계산
-uint32_t fmix32(uint32_t h) { h ^= h >> 16; h *= 0x85ebca6b; h ^= h >> 13; h *= 0xc2b2ae35; h ^= h >> 16; return h; }
-uint32_t modInverse(uint32_t a) { uint32_t x = a; for (int i = 0; i < 5; i++) x *= 2 - a * x; return x; }   // 홀수 a 의 2^32 역원 (뉴턴 반복)
-uint32_t unxorshift(uint32_t y, int s) { uint32_t x = y; for (int i = 0; i < 32 / s + 1; i++) x = y ^ (x >> s); return x; }
-uint32_t unfmix32(uint32_t h) {
-    h = unxorshift(h, 16); h *= modInverse(0xc2b2ae35); h = unxorshift(h, 13); h *= modInverse(0x85ebca6b); h = unxorshift(h, 16);
-    return h;
+// 일반 해시(해시 테이블용)와 암호학적 해시의 차이를 실제 코드로 가른다.
+//  ① 암호학적 해시 SHA-256 을 스트리밍으로 직접 구현하고 표준 시험값(NIST·RFC 4231·패딩 경계 55/56/63/64/65 바이트·100 만 개의 'a')과 대조한다.
+//  ② 일반 해시의 finalizer fmix32 는 전단사라 해시값에서 입력이 한 번에 복원된다. SHA-256 은 잘라 써도 충돌은 2^(n/2), 원상은 2^n 번의 시도가 든다.
+//  ③ 눈사태 행렬(입력 비트 i 를 뒤집을 때 출력 비트 j 가 뒤집힐 확률): SHA-256 은 모든 칸이 1/2 근처이지만 FNV-1a 에는 정확히 0 인 칸이 있다.
+//  ④ 길이 확장 공격: H(key‖m) 을 MAC 으로 쓰면 key 없이 위조되지만 HMAC 은 막는다.
+typedef std::uint8_t u8; typedef std::uint32_t u32; typedef std::uint64_t u64;
+static inline u32 rotr(u32 x, int n) { return (x >> n) | (x << (32 - n)); }
+
+struct Sha256 {
+    struct Consts {                                                  // 초기값 = 소수 제곱근의 소수부, 라운드 상수 = 소수 세제곱근의 소수부 (상위 32 비트)
+        u32 K[64], IV[8];
+        Consts() { std::vector<u32> pr; for (u32 p = 2; pr.size() < 64; ++p) { bool ok = true; for (u32 q : pr) if (p % q == 0) { ok = false; break; } if (ok) pr.push_back(p); }
+            for (int i = 0; i < 64; ++i) { long double c = cbrtl((long double)pr[i]); K[i] = (u32)((c - floorl(c)) * 4294967296.0L); }
+            for (int i = 0; i < 8; ++i) { long double s = sqrtl((long double)pr[i]); IV[i] = (u32)((s - floorl(s)) * 4294967296.0L); } }
+    };
+    static const Consts& C() { static const Consts c; return c; }
+    u32 H[8]; u8 buf[64]; std::size_t blen; u64 total;
+    Sha256() : blen(0), total(0) { std::memcpy(H, C().IV, sizeof H); }
+    Sha256(const u8* digest, u64 processed) : blen(0), total(processed) {            // 다이제스트 = 내부 상태: 여기서부터 이어서 해시할 수 있다 (길이 확장)
+        for (int i = 0; i < 8; ++i) H[i] = (u32)digest[4 * i] << 24 | (u32)digest[4 * i + 1] << 16 | (u32)digest[4 * i + 2] << 8 | digest[4 * i + 3]; }
+    void block(const u8* p) {
+        u32 w[64]; for (int i = 0; i < 16; ++i) w[i] = (u32)p[4 * i] << 24 | (u32)p[4 * i + 1] << 16 | (u32)p[4 * i + 2] << 8 | p[4 * i + 3];
+        for (int i = 16; i < 64; ++i) { u32 s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3), s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10); w[i] = w[i - 16] + s0 + w[i - 7] + s1; }
+        u32 a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7]; const u32* K = C().K;
+        for (int i = 0; i < 64; ++i) {
+            u32 t1 = h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i], t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+            h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2; }
+        H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    }
+    void update(const void* data, std::size_t n) {
+        const u8* p = (const u8*)data; total += n;
+        while (n) { std::size_t t = std::min(n, 64 - blen); std::memcpy(buf + blen, p, t); blen += t; p += t; n -= t; if (blen == 64) { block(buf); blen = 0; } }
+    }
+    std::string finish() {
+        u64 bits = total * 8; buf[blen++] = 0x80;
+        if (blen > 56) { std::memset(buf + blen, 0, 64 - blen); block(buf); blen = 0; }
+        std::memset(buf + blen, 0, 56 - blen); for (int i = 0; i < 8; ++i) buf[56 + i] = (u8)(bits >> (56 - 8 * i)); block(buf);
+        std::string out; for (int i = 0; i < 8; ++i) for (int j = 3; j >= 0; --j) out.push_back((char)(H[i] >> (8 * j))); return out;
+    }
+};
+std::string sha256(const std::string& m) { Sha256 s; s.update(m.data(), m.size()); return s.finish(); }
+std::string hex(const std::string& s) { static const char* d = "0123456789abcdef"; std::string r; for (unsigned char c : s) { r += d[c >> 4]; r += d[c & 15]; } return r; }
+std::string hmac(std::string key, const std::string& msg) {
+    if (key.size() > 64) key = sha256(key);
+    key.resize(64, '\0'); std::string ip(64, 0), op(64, 0); for (int i = 0; i < 64; ++i) { ip[i] = key[i] ^ 0x36; op[i] = key[i] ^ 0x5c; }
+    return sha256(op + sha256(ip + msg));
+}
+std::string padFor(u64 len) { std::string p(1, (char)0x80); while ((len + p.size()) % 64 != 56) p += '\0'; u64 bits = len * 8; for (int i = 7; i >= 0; --i) p += (char)(bits >> (8 * i)); return p; }
+
+u32 fmix32(u32 h) { h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16; return h; }          // MurmurHash3 의 마지막 섞기
+u32 modInverse(u32 a) { u32 x = a; for (int i = 0; i < 5; ++i) x *= 2 - a * x; return x; }                           // 홀수 a 의 2^32 역원 (뉴턴 반복)
+u32 unxorshift(u32 y, int s) { u32 x = y; for (int i = 0; i < 32 / s + 1; ++i) x = y ^ (x >> s); return x; }
+u32 unfmix32(u32 h) { h = unxorshift(h, 16); h *= modInverse(0xc2b2ae35u); h = unxorshift(h, 13); h *= modInverse(0x85ebca6bu); return unxorshift(h, 16); }
+u32 truncBits(const std::string& d, int bits) { u32 v = (u32)(u8)d[0] << 24 | (u32)(u8)d[1] << 16 | (u32)(u8)d[2] << 8 | (u8)d[3]; return v >> (32 - bits); }
+
+std::vector<u8> shaBytes(const std::string& s) { std::string d = sha256(s); return std::vector<u8>(d.begin(), d.end()); }
+std::vector<u8> fnvBytes(const std::string& s) { u32 h = 2166136261u; for (u8 c : s) { h ^= c; h *= 16777619u; } return {(u8)(h >> 24), (u8)(h >> 16), (u8)(h >> 8), (u8)h}; }
+std::vector<u8> fmixBytes(const std::string& s) { u32 x; std::memcpy(&x, s.data(), 4); u32 h = fmix32(x); return {(u8)(h >> 24), (u8)(h >> 16), (u8)(h >> 8), (u8)h}; }
+struct Av { double lo, hi; int zero; };
+Av avalanche(std::vector<u8> (*f)(const std::string&), int trials, std::mt19937_64& rng) {           // 4 바이트 입력의 32 개 비트를 하나씩 뒤집는다
+    int outBits = (int)f(std::string(4, 'a')).size() * 8; std::vector<int> cnt(32 * outBits, 0);
+    for (int t = 0; t < trials; ++t) {
+        std::string x(4, 0); u32 r = (u32)rng(); std::memcpy(&x[0], &r, 4); std::vector<u8> h0 = f(x);
+        for (int b = 0; b < 32; ++b) { std::string y = x; y[b / 8] ^= (char)(1 << (b % 8)); std::vector<u8> h1 = f(y); for (int o = 0; o < outBits; ++o) cnt[b * outBits + o] += ((h0[o / 8] ^ h1[o / 8]) >> (o % 8)) & 1; }
+    }
+    Av a{1, 0, 0}; for (int c : cnt) { double p = (double)c / trials; a.lo = std::min(a.lo, p); a.hi = std::max(a.hi, p); a.zero += c == 0; } return a;
+}
+u64 collisionTries(int bits, u64 salt) {                                                                // 잘린 다이제스트에서 처음 겹칠 때까지의 해시 횟수
+    std::unordered_map<u32, u64> seen; std::string pre = std::to_string(salt) + ":";
+    for (u64 i = 0;; ++i) { auto r = seen.emplace(truncBits(sha256(pre + std::to_string(i)), bits), i);
+        if (!r.second) { assert(sha256(pre + std::to_string(i)) != sha256(pre + std::to_string(r.first->second))); return i + 1; } }   // 잘린 값만 같고 전체 다이제스트는 다르다
+}
+u64 preimageTries(int bits, u64 t) {                                                                    // 주어진 잘린 값을 맞히는 입력을 찾을 때까지의 해시 횟수
+    u32 target = truncBits(sha256("target:" + std::to_string(t)), bits);
+    for (u64 i = 1;; ++i) if (truncBits(sha256("try:" + std::to_string(i)), bits) == target) return i;
 }
 
 int main() {
-    for (uint32_t x : {0u, 1u, 12345u, 0xdeadbeefu, 0xffffffffu}) {
-        uint32_t h = fmix32(x);
-        assert(unfmix32(h) == x);                                  // 해시값만 보고 입력을 그대로 복원
+    // ① 표준 시험값 + 패딩 경계 + 100 만 개의 'a'
+    assert(hex(sha256("")) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert(hex(sha256("abc")) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert(hex(sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+    const struct { int n; const char* d; } edge[] = {
+        {55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"}, {56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"},
+        {63, "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34"}, {64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"},
+        {65, "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0"}, {119, "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb"},
+        {120, "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c"}, {1000000, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"}};
+    for (auto& e : edge) assert(hex(sha256(std::string(e.n, 'a'))) == e.d);
+    std::mt19937_64 rng(2024);
+    for (int it = 0; it < 300; ++it) {                                                                  // 임의 조각으로 나눠 먹여도 한 번에 먹인 것과 같다
+        std::string m(rng() % 300, 'x'); for (char& c : m) c = (char)rng(); Sha256 s; std::size_t pos = 0;
+        while (pos < m.size()) { std::size_t t = std::min<std::size_t>(1 + rng() % 70, m.size() - pos); s.update(m.data() + pos, t); pos += t; }
+        assert(s.finish() == sha256(m));
     }
-    // 암호학적 해시는 원상 저항성(preimage resistance)·충돌 저항성·눈사태 효과(입력 1비트 -> 출력 절반이 뒤집힘)를 요구한다.
-    // 일반 해시도 눈사태는 좋을 수 있으나, 위 예처럼 역산·충돌 구성이 쉬워 보안 용도로는 부적합하다.
-    int flipped = 0, total = 0;
-    for (uint32_t x = 0; x < 2000; x++) for (int b = 0; b < 32; b++) { flipped += __builtin_popcount(fmix32(x) ^ fmix32(x ^ (1u << b))); total += 32; }
-    double ratio = double(flipped) / total;
-    assert(ratio > 0.45 && ratio < 0.55);                          // 눈사태는 좋지만...
-    std::cout << "fmix32 avalanche ratio " << ratio << " but invertible; a cryptographic hash must not be." << std::endl;
+    // RFC 4231 의 HMAC-SHA-256 시험값 (키가 블록보다 긴 경우 포함)
+    assert(hex(hmac(std::string(20, '\x0b'), "Hi There")) == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+    assert(hex(hmac("Jefe", "what do ya want for nothing?")) == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+    assert(hex(hmac(std::string(131, '\xaa'), "Test Using Larger Than Block-Size Key - Hash Key First")) == "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+    // ② 일반 해시의 finalizer 는 전단사라 원상이 즉시 복원된다
+    for (int it = 0; it < 1000000; ++it) { u32 x = (u32)rng(); assert(unfmix32(fmix32(x)) == x && fmix32(unfmix32(x)) == x); }
+    // 암호학적 해시를 n 비트로 자르면: 충돌 ≈ 1.25·2^(n/2) 번, 원상 ≈ 2^n 번의 시도 (생일 역설)
+    double col[3], pre[3]; const int cb[3] = {16, 20, 24}, pb[3] = {8, 10, 12};
+    for (int k = 0; k < 3; ++k) {
+        double sc = 0, sp = 0; for (int r = 0; r < 16; ++r) sc += (double)collisionTries(cb[k], r); for (int r = 0; r < 60; ++r) sp += (double)preimageTries(pb[k], r);
+        col[k] = sc / 16; pre[k] = sp / 60;
+        double ec = 1.2533 * std::pow(2.0, cb[k] / 2.0), ep = std::pow(2.0, pb[k]);
+        assert(col[k] > 0.6 * ec && col[k] < 1.6 * ec && pre[k] > 0.6 * ep && pre[k] < 1.6 * ep);
+    }
+    assert(col[1] / col[0] > 2.5 && col[1] / col[0] < 6 && col[2] / col[1] > 2.5 && col[2] / col[1] < 6);       // 비트 4 개 늘 때마다 충돌 비용 ×4 (= 2^(4/2))
+    assert(pre[1] / pre[0] > 2.5 && pre[2] / pre[1] > 2.5);                                             // 비트 2 개 늘 때마다 원상 비용 ×4
+    // ③ 눈사태 행렬
+    Av sha = avalanche(shaBytes, 3000, rng), fnv = avalanche(fnvBytes, 3000, rng), fmx = avalanche(fmixBytes, 20000, rng);
+    assert(sha.zero == 0 && sha.lo > 0.43 && sha.hi < 0.57);                                            // 256 × 32 칸 모두 1/2 근처
+    assert(fmx.zero == 0 && fmx.lo > 0.4 && fmx.hi < 0.6);                                              // fmix32 도 눈사태는 좋다 (다만 역산이 쉽다)
+    assert(fnv.zero >= 28 && fnv.lo == 0.0);                                                            // FNV-1a: 출력 0 번 비트는 입력 각 바이트의 0 번 비트의 XOR → 나머지 28 개 입력 비트는 영향 0
+    // ④ 길이 확장 공격: key 를 모른 채 H(key‖m) 의 태그에서 이어 붙여 위조
+    for (int it = 0; it < 200; ++it) {
+        std::string key(1 + rng() % 100, 'k'), m(rng() % 80, 'm'), ext(1 + rng() % 60, 'e'); for (char& c : key) c = (char)rng(); for (char& c : m) c = (char)rng(); for (char& c : ext) c = (char)rng();
+        std::string tag = sha256(key + m);                                                              // 서버가 발급한 태그
+        std::string glue = padFor(key.size() + m.size());                                               // 공격자는 |key|, m, tag, ext 만 안다
+        Sha256 s((const u8*)tag.data(), key.size() + m.size() + glue.size()); s.update(ext.data(), ext.size());
+        std::string forged = s.finish(), fm = m + glue + ext;
+        assert(sha256(key + fm) == forged && fm != m);                                                  // 서버의 검증을 통과한다
+        assert(hmac(key, fm) != forged && hmac(key, m) != tag && hmac(key, m) != hmac(key, fm));        // HMAC 은 같은 수법이 통하지 않는다
+    }
+    std::cout << "crypto vs general hash: SHA-256 matched all standard vectors (incl. 10^6 'a'); fmix32 inverted on 10^6 inputs; truncated SHA-256 needed " << col[0] << "/" << col[1] << "/" << col[2] << " hashes for a 16/20/24-bit collision but " << pre[0] << "/" << pre[1] << "/" << pre[2] << " for an 8/10/12-bit preimage; avalanche cells SHA-256 [" << sha.lo << "," << sha.hi << "], fmix32 [" << fmx.lo << "," << fmx.hi << "], FNV-1a [" << fnv.lo << ",...] with " << fnv.zero << " dead cells; length-extension forgery worked 200/200 against H(key||m) and 0/200 against HMAC" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: SHA-256 O(n), 충돌 탐색 O(2^(b/2)), 원상 탐색 O(2^b) (b = 자른 비트 수)
+// Space Complexity: O(2^(b/2)) (충돌 탐색의 표)
 ```
 # Part 9. DB 해시
 ## HashIndex()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
-// 해시 인덱스: 열 값 -> 행 번호 목록. 등치(=) 조회는 O(1)이지만 범위(<, BETWEEN)·정렬에는 쓸 수 없다 (그때는 B+Tree)
-struct Row { int id; std::string city; };
-class HashIndex {
-    std::unordered_map<std::string, std::vector<size_t>> idx;
+// 해시 인덱스 = "열 값 → 행 번호(RID)". DB 인덱스는 디스크 페이지 단위로 읽으므로 비용은 비교 횟수가 아니라 읽은 페이지 수다.
+// 해시 인덱스: 키를 해시한 버킷의 페이지 체인만 읽는다 → 등치(=) 조회는 페이지 약 1 개, 그러나 범위(BETWEEN)·정렬에는 쓸 수 없어 전체 페이지를 읽는다.
+// 정렬 인덱스(B+트리의 리프 층을 흉내 낸 정렬 페이지): 등치 1 페이지, 범위는 겹치는 페이지만 읽는다.
+const int PAGE = 8;                                                    // 페이지 한 장에 들어가는 항목 수
+static inline std::uint64_t mix(std::uint64_t z) { z += 0x9e3779b97f4a7c15ULL; z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL; z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL; return z ^ (z >> 31); }
+
+template <class K> class HashIndex {
+    struct Page { std::vector<std::pair<K, int>> e; int next = -1; };
+    std::vector<Page> pages; std::vector<int> freePages; std::size_t buckets, n = 0;
+    std::size_t bucketOf(const K& k) const { return mix(std::hash<K>()(k)) % buckets; }
+    int newPage() { if (!freePages.empty()) { int p = freePages.back(); freePages.pop_back(); return p; } pages.emplace_back(); return (int)pages.size() - 1; }
 public:
-    void build(const std::vector<Row>& rows) { for (size_t i = 0; i < rows.size(); i++) idx[rows[i].city].push_back(i); }
-    const std::vector<size_t>& equal(const std::string& city) const {
-        static const std::vector<size_t> none;
-        auto it = idx.find(city); return it == idx.end() ? none : it->second;
+    mutable long pageReads = 0;                                        // 읽은 페이지 수 (비용 모델)
+    explicit HashIndex(std::size_t b = 4) : pages(b), buckets(b) {}
+    std::size_t size() const { return n; }
+    std::size_t bucketCount() const { return buckets; }
+    std::size_t pageCount() const { return pages.size() - freePages.size(); }
+    std::size_t chainPages(const K& k) const { std::size_t c = 0; for (int p = (int)bucketOf(k); p != -1; p = pages[p].next) ++c; return c; }
+    void insert(const K& k, int rid) {
+        if (n + 1 > buckets * PAGE * 3 / 4) grow();                    // 평균 적재율이 0.75 페이지를 넘으면 버킷 수를 두 배로
+        int p = (int)bucketOf(k), last = p;
+        for (; p != -1; last = p, p = pages[p].next) if ((int)pages[p].e.size() < PAGE) { pages[p].e.emplace_back(k, rid); ++n; return; }
+        int q = newPage(); pages[last].next = q; pages[q].e.emplace_back(k, rid); ++n;       // 오버플로 페이지
+    }
+    std::vector<int> equal(const K& k) const {
+        std::vector<int> out; for (int p = (int)bucketOf(k); p != -1; p = pages[p].next) { ++pageReads; for (auto& x : pages[p].e) if (x.first == k) out.push_back(x.second); }
+        return out;
+    }
+    bool erase(const K& k, int rid) {                                  // 체인의 마지막 항목으로 구멍을 메우고, 비어 버린 오버플로 페이지는 반환
+        int prev = -1;
+        for (int p = (int)bucketOf(k); p != -1; prev = p, p = pages[p].next) for (auto& x : pages[p].e) if (x.first == k && x.second == rid) {
+            int lp = p, lprev = prev; while (pages[lp].next != -1) { lprev = lp; lp = pages[lp].next; }
+            x = pages[lp].e.back(); pages[lp].e.pop_back(); --n;
+            if (pages[lp].e.empty() && lprev != -1) { pages[lprev].next = -1; freePages.push_back(lp); }
+            return true;
+        }
+        return false;
+    }
+    std::vector<std::pair<K, int>> range(const K& lo, const K& hi) const {   // 해시는 순서를 모른다: 모든 페이지를 읽는다
+        std::vector<std::pair<K, int>> out;
+        for (std::size_t b = 0; b < buckets; ++b) for (int p = (int)b; p != -1; p = pages[p].next) { ++pageReads; for (auto& x : pages[p].e) if (!(x.first < lo) && x.first < hi) out.push_back(x); }
+        return out;
+    }
+    void grow() { std::vector<std::pair<K, int>> all; for (std::size_t b = 0; b < buckets; ++b) for (int p = (int)b; p != -1; p = pages[p].next) for (auto& x : pages[p].e) all.push_back(x);
+        pages.assign(buckets * 2, Page()); freePages.clear(); buckets *= 2; n = 0; for (auto& x : all) insert(x.first, x.second); }
+    bool check() const {                                               // 불변식: 체인의 마지막을 뺀 페이지는 가득 차 있고, 마지막 오버플로 페이지는 비어 있지 않다
+        std::size_t cnt = 0, used = 0;
+        for (std::size_t b = 0; b < buckets; ++b) for (int p = (int)b; p != -1; p = pages[p].next) {
+            ++used; cnt += pages[p].e.size(); if ((int)pages[p].e.size() > PAGE) return false;
+            if (pages[p].next != -1 && (int)pages[p].e.size() != PAGE) return false;
+            if (pages[p].next == -1 && p != (int)b && pages[p].e.empty()) return false;
+            for (auto& x : pages[p].e) if (bucketOf(x.first) != b) return false;
+        }
+        return cnt == n && used == pageCount();
     }
 };
 
+template <class K> class OrderedIndex {                                // 정렬된 리프 페이지 (B+트리의 위 층은 메모리에 있다고 본다)
+    std::vector<std::pair<K, int>> e;
+    std::size_t lowerIdx(const K& k) const { return std::lower_bound(e.begin(), e.end(), k, [](const std::pair<K, int>& x, const K& v) { return x.first < v; }) - e.begin(); }
+    std::size_t upperIdx(const K& k) const { return std::upper_bound(e.begin(), e.end(), k, [](const K& v, const std::pair<K, int>& x) { return v < x.first; }) - e.begin(); }
+    std::vector<std::pair<K, int>> slice(std::size_t i, std::size_t j) const { pageReads += i < j ? (j - 1) / PAGE - i / PAGE + 1 : 1; return std::vector<std::pair<K, int>>(e.begin() + i, e.begin() + j); }
+public:
+    mutable long pageReads = 0;
+    void build(std::vector<std::pair<K, int>> v) { std::sort(v.begin(), v.end()); e.swap(v); }
+    std::size_t pageCount() const { return (e.size() + PAGE - 1) / PAGE; }
+    std::vector<std::pair<K, int>> range(const K& lo, const K& hi) const { return slice(lowerIdx(lo), std::max(lowerIdx(lo), lowerIdx(hi))); }   // lo <= key < hi
+    std::vector<int> equal(const K& k) const { std::vector<int> r; for (auto& x : slice(lowerIdx(k), upperIdx(k))) r.push_back(x.second); return r; }
+};
+
 int main() {
-    std::vector<Row> rows = {{1, "Seoul"}, {2, "Busan"}, {3, "Seoul"}, {4, "Daegu"}, {5, "Seoul"}};
-    HashIndex ix; ix.build(rows);
-    assert((ix.equal("Seoul") == std::vector<size_t>{0, 2, 4}));
-    assert(ix.equal("Jeju").empty());
-    // 범위 조건은 인덱스를 못 쓰고 전체 스캔이 필요하다: city BETWEEN 'B' AND 'D'
-    int scanned = 0, hit = 0;
-    for (auto& r : rows) { scanned++; if (r.city >= "B" && r.city < "E") hit++; }
-    assert(scanned == 5 && hit == 2);
-    std::cout << "HashIndex: equality O(1); range query scanned " << scanned << " rows" << std::endl;
+    // ① 원래 예: city 열
+    {   std::vector<std::string> city = {"Seoul", "Busan", "Seoul", "Daegu", "Seoul"}; HashIndex<std::string> h; OrderedIndex<std::string> o; std::vector<std::pair<std::string, int>> rows;
+        for (std::size_t i = 0; i < city.size(); ++i) { h.insert(city[i], (int)i); rows.emplace_back(city[i], (int)i); } o.build(rows);
+        std::vector<int> r = h.equal("Seoul"); std::sort(r.begin(), r.end()); assert((r == std::vector<int>{0, 2, 4}) && h.equal("Jeju").empty());
+        assert((o.equal("Seoul") == std::vector<int>{0, 2, 4}) && o.equal("Jeju").empty());
+        std::vector<std::pair<std::string, int>> a = h.range("B", "E"), b = o.range("B", "E"); std::sort(a.begin(), a.end());
+        assert(a == b && a.size() == 2);                                // Busan, Daegu
+    }
+    // ② 무작위 작업열 vs std::multimap: 중복 키가 많은 좁은 도메인 (체인·삭제·재해시를 모두 거친다)
+    std::mt19937 rng(11);
+    {   HashIndex<int> h; std::multimap<int, int> ref; std::vector<std::pair<int, int>> live; int nextRid = 0;
+        for (int op = 0; op < 60000; ++op) {
+            int t = rng() % 10;
+            if (t < 5) { int k = rng() % 300; h.insert(k, nextRid); ref.emplace(k, nextRid); live.emplace_back(k, nextRid); ++nextRid; }
+            else if (t < 8 && !live.empty()) { std::size_t i = rng() % live.size(); auto kv = live[i]; live[i] = live.back(); live.pop_back(); bool ok = h.erase(kv.first, kv.second); assert(ok); (void)ok; for (auto it = ref.find(kv.first); ; ++it) if (it->second == kv.second) { ref.erase(it); break; } }
+            else if (t == 8) { bool ok = h.erase((int)(rng() % 300), -1); assert(!ok); (void)ok; }                                     // 없는 항목의 삭제는 false
+            else { int k = rng() % 320; std::vector<int> got = h.equal(k), want; auto er = ref.equal_range(k); for (auto it = er.first; it != er.second; ++it) want.push_back(it->second); std::sort(got.begin(), got.end()); std::sort(want.begin(), want.end()); assert(got == want); }
+            if (op % 1000 == 0) {
+                assert(h.size() == ref.size() && h.check());
+                OrderedIndex<int> o; o.build(live); int lo = rng() % 300, hi = lo + rng() % 80; std::vector<std::pair<int, int>> a = h.range(lo, hi), b = o.range(lo, hi), c; for (auto it = ref.lower_bound(lo); it != ref.lower_bound(hi); ++it) c.push_back(*it);
+                std::sort(a.begin(), a.end()); std::sort(c.begin(), c.end()); assert(a == b && a == c);
+            }
+        }
+    }
+    // ③ 비용 모델: 고유 키 10 만 개 — 등치 조회는 두 인덱스 모두 페이지 약 1 장, 범위 조회는 해시가 전 페이지를 읽는다
+    {   const int N = 100000; std::vector<int> keys(N); for (int i = 0; i < N; ++i) keys[i] = i * 7 + 3; std::shuffle(keys.begin(), keys.end(), rng);
+        HashIndex<int> h; OrderedIndex<int> o; std::vector<std::pair<int, int>> rows; for (int i = 0; i < N; ++i) { h.insert(keys[i], i); rows.emplace_back(keys[i], i); } o.build(rows); assert(h.check());
+        for (int q = 0; q < 20000; ++q) { int i = rng() % N; assert(h.equal(keys[i]) == std::vector<int>{i} && o.equal(keys[i]) == std::vector<int>{i}); }
+        double hashAvg = h.pageReads / 20000.0, ordAvg = o.pageReads / 20000.0; assert(ordAvg == 1.0 && hashAvg >= 1.0 && hashAvg < 1.6);
+        h.pageReads = o.pageReads = 0; std::vector<std::pair<int, int>> a = h.range(70000, 70280), b = o.range(70000, 70280); std::sort(a.begin(), a.end()); assert(a == b && a.size() == 40);   // 키 간격 7 → 40 개
+        assert(o.pageReads <= 40 / PAGE + 2 && h.pageReads == (long)h.pageCount() && h.pageReads > 100 * o.pageReads);
+        std::cout << "HashIndex: " << N << " unique keys, equality reads " << hashAvg << " pages (hash) vs " << ordAvg << " (ordered); a 40-row range read " << h.pageReads << " pages (hash) vs " << o.pageReads << " (ordered)" << std::endl;
+    }
+    // ④ 치우친 분포: 한 키에 5000 행 — 그 키의 체인은 길어지고, 같은 버킷의 다른 키도 그 체인을 읽는다
+    {   HashIndex<int> h; for (int i = 0; i < 5000; ++i) h.insert(-1, i); for (int k = 0; k < 20000; ++k) h.insert(k, 5000 + k);
+        std::size_t hot = h.chainPages(-1); assert(hot >= 5000 / PAGE && h.equal(-1).size() == 5000);
+        int victim = -2; for (int k = 0; k < 2000000 && victim == -2; ++k) if (k != -1 && h.chainPages(k) == hot) victim = k;      // 같은 버킷으로 해시되는 다른 키
+        assert(victim != -2); long before = h.pageReads; h.equal(victim); assert(h.pageReads - before == (long)hot);               // 엉뚱한 키의 조회도 그 긴 체인을 전부 읽는다
+        long total = 0; for (int k = 0; k < 20000; ++k) total += (long)h.chainPages(k);
+        assert((double)total / 20000 < 1.6 && h.check());                                                                          // 하지만 나머지 키 대부분은 영향이 없다
+    }
+    // ⑤ 큰 입력: 행 100 만 개 (고유 키 10 만 개 × 10 회) 를 넣고 표본 조회를 정렬 배열과 대조한 뒤 전부 지운다
+    {   const int N = 1000000; HashIndex<int> h; std::vector<std::pair<int, int>> rows(N); for (int i = 0; i < N; ++i) { rows[i] = {(int)(mix(i) % 100000), i}; h.insert(rows[i].first, i); }
+        assert(h.size() == (std::size_t)N && h.check()); std::vector<std::pair<int, int>> sorted = rows; std::sort(sorted.begin(), sorted.end());
+        for (int q = 0; q < 10000; ++q) { int k = rng() % 100000; std::vector<int> got = h.equal(k), want; auto lo = std::lower_bound(sorted.begin(), sorted.end(), std::make_pair(k, -1)); for (; lo != sorted.end() && lo->first == k; ++lo) want.push_back(lo->second); std::sort(got.begin(), got.end()); assert(got == want && want.size() >= 1); }
+        std::shuffle(rows.begin(), rows.end(), rng); for (auto& r : rows) { bool ok = h.erase(r.first, r.second); assert(ok); (void)ok; }
+        assert(h.size() == 0 && h.pageCount() == h.bucketCount() && h.check());          // 오버플로 페이지는 모두 반환된다
+    }
     return 0;
 }
-// Time Complexity: 등치 조회 O(1), 범위 조회 O(n)
-// Space Complexity: O(n)
+// Time Complexity: 등치 조회 기대 O(1) 페이지, 범위 조회 O(전체 페이지) (정렬 인덱스는 O(log n + 결과/페이지))
+// Space Complexity: O(n / PAGE) 페이지
 ```
 ## HashJoin()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
-#include <string>
-#include <unordered_map>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <tuple>
+#include <vector>
 
-// 해시 조인: (1) 작은 테이블로 해시 테이블을 만들고(build) (2) 큰 테이블을 훑으며 탐색(probe). 중첩 루프 O(n·m) -> O(n+m)
-struct R { int id; std::string name; };
-struct S { int id; int score; };
-typedef std::pair<std::string, int> Out;
+// 해시 조인: (1) 작은 쪽으로 해시 테이블을 만들고(build) (2) 큰 쪽을 훑으며 탐색(probe). 중첩 루프 O(n·m) → O(n+m).
+// build 쪽이 메모리(M 튜플)에 안 들어가면 Grace 해시 조인: 두 테이블을 같은 해시로 F 조각에 나눠 디스크에 내려쓰고(spill) 같은 번호끼리 조인한다.
+// 한 키가 M 보다 많이 중복되면 해시로 쪼갤 수 없으므로 블록 중첩 루프로 후퇴한다. 조인 종류: 내부(INNER)·왼쪽 외부(LEFT)·세미(SEMI)·안티(ANTI).
+typedef std::uint64_t u64;
+struct Tup { int key, val; };
+typedef std::tuple<int, int, int> Out;                                  // (key, 왼쪽 val, 오른쪽 val), 짝이 없으면 오른쪽 = NONE
+const int NONE = -1;
+enum Kind { INNER, LEFT, SEMI, ANTI };
+struct Stats { long probes = 0, spilled = 0, blockLoops = 0; std::size_t maxTable = 0; int maxDepth = 0; };
+static inline u64 mix(u64 z) { z += 0x9e3779b97f4a7c15ULL; z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL; z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL; return z ^ (z >> 31); }
 
-std::vector<Out> hashJoin(const std::vector<R>& r, const std::vector<S>& s) {
-    std::unordered_multimap<int, const R*> build;
-    for (auto& x : r) build.emplace(x.id, &x);                       // build 단계
-    std::vector<Out> out;
-    for (auto& y : s) {                                              // probe 단계
-        auto range = build.equal_range(y.id);
-        for (auto it = range.first; it != range.second; ++it) out.push_back({it->second->name, y.score});
+struct BuildTable {                                                     // 체인 방식 해시 테이블: head[버킷] → 튜플 번호 → nxt[튜플 번호]
+    const std::vector<Tup>& s; std::vector<int> head, nxt; std::size_t mask; u64 seed;
+    BuildTable(const std::vector<Tup>& S, u64 sd) : s(S), nxt(S.size(), -1), seed(sd) {
+        std::size_t b = 1; while (b < 2 * S.size()) b <<= 1; head.assign(b, -1); mask = b - 1;
+        for (std::size_t i = 0; i < S.size(); ++i) { std::size_t h = mix((u64)S[i].key ^ seed) & mask; nxt[i] = head[h]; head[h] = (int)i; }
     }
-    return out;
+    int first(int key) const { return head[mix((u64)key ^ seed) & mask]; }
+};
+// B 로 테이블을 만들고 P 를 훑는다. 키가 같은 짝마다 hit(p, b), p 하나의 탐색이 끝날 때마다 done(p, 짝이 있었는가) 를 부른다.
+template <class Hit, class Done> void buildProbe(const std::vector<Tup>& B, const std::vector<Tup>& P, u64 seed, Stats& st, Hit hit, Done done) {
+    BuildTable t(B, seed); st.maxTable = std::max(st.maxTable, B.size());
+    for (const Tup& p : P) { bool any = false; for (int i = t.first(p.key); i != -1; i = t.nxt[i]) { ++st.probes; if (B[i].key == p.key) { any = true; hit(p, B[i]); } } done(p, any); }
 }
-std::vector<Out> nestedLoop(const std::vector<R>& r, const std::vector<S>& s) {
+void inMemory(const std::vector<Tup>& R, const std::vector<Tup>& S, Kind k, u64 seed, Stats& st, std::vector<Out>& out) {
+    if (k == INNER) {                                                   // 내부 조인은 작은 쪽을 build 로 쓴다 (출력의 열 순서는 (R, S) 그대로)
+        if (S.size() <= R.size()) buildProbe(S, R, seed, st, [&](const Tup& r, const Tup& s) { out.emplace_back(r.key, r.val, s.val); }, [](const Tup&, bool) {});
+        else buildProbe(R, S, seed, st, [&](const Tup& s, const Tup& r) { out.emplace_back(r.key, r.val, s.val); }, [](const Tup&, bool) {});
+        return;
+    }
+    buildProbe(S, R, seed, st, [&](const Tup& r, const Tup& s) { if (k == LEFT) out.emplace_back(r.key, r.val, s.val); },
+               [&](const Tup& r, bool any) { if ((k == LEFT && !any) || (k == SEMI && any) || (k == ANTI && !any)) out.emplace_back(r.key, r.val, NONE); });
+}
+void blockJoin(const std::vector<Tup>& R, const std::vector<Tup>& S, Kind k, std::size_t M, u64 seed, Stats& st, std::vector<Out>& out) {
+    ++st.blockLoops; std::vector<char> matched(R.size(), 0);            // S 를 M 개씩 끊어 테이블을 만들고 R 전체를 매번 훑는다
+    for (std::size_t lo = 0; lo < S.size(); lo += M) {
+        std::vector<Tup> blk(S.begin() + lo, S.begin() + std::min(S.size(), lo + M)); BuildTable t(blk, seed); st.maxTable = std::max(st.maxTable, blk.size());
+        for (std::size_t i = 0; i < R.size(); ++i) for (int j = t.first(R[i].key); j != -1; j = t.nxt[j]) { ++st.probes; if (blk[j].key == R[i].key) { matched[i] = 1; if (k == INNER || k == LEFT) out.emplace_back(R[i].key, R[i].val, blk[j].val); } }
+    }
+    for (std::size_t i = 0; i < R.size(); ++i) if ((k == LEFT && !matched[i]) || (k == SEMI && matched[i]) || (k == ANTI && !matched[i])) out.emplace_back(R[i].key, R[i].val, NONE);
+}
+void grace(const std::vector<Tup>& R, const std::vector<Tup>& S, Kind k, std::size_t M, int depth, Stats& st, std::vector<Out>& out) {
+    st.maxDepth = std::max(st.maxDepth, depth); if (R.empty()) return;
+    u64 seed = 0x9e3779b97f4a7c15ULL * (u64)(depth + 1);                // 단계마다 다른 해시 → 조각이 다시 쪼개진다
+    if ((k == INNER ? std::min(R.size(), S.size()) : S.size()) <= M) { inMemory(R, S, k, seed, st, out); return; }
+    const int F = 8; std::vector<std::vector<Tup>> pr(F), ps(F);
+    for (const Tup& t : R) pr[(mix((u64)t.key ^ seed) >> 40) % F].push_back(t);
+    for (const Tup& t : S) ps[(mix((u64)t.key ^ seed) >> 40) % F].push_back(t);
+    st.spilled += (long)(R.size() + S.size());                          // 조각을 디스크에 내려쓴 튜플 수
+    for (int p = 0; p < F; ++p) {
+        if ((pr[p].size() + ps[p].size()) * 4 >= 3 * (R.size() + S.size())) blockJoin(pr[p], ps[p], k, M, seed, st, out);   // 거의 안 쪼개졌다: 한 키가 대부분 → 해시로는 못 나눈다
+        else grace(pr[p], ps[p], k, M, depth + 1, st, out);
+    }
+}
+std::vector<Out> hashJoin(const std::vector<Tup>& R, const std::vector<Tup>& S, Kind k, std::size_t M, Stats& st) { std::vector<Out> out; grace(R, S, k, std::max<std::size_t>(M, 1), 0, st, out); return out; }
+std::vector<Out> nestedLoop(const std::vector<Tup>& R, const std::vector<Tup>& S, Kind k) {
     std::vector<Out> out;
-    for (auto& y : s) for (auto& x : r) if (x.id == y.id) out.push_back({x.name, y.score});
+    for (const Tup& r : R) { int m = 0; for (const Tup& s : S) if (r.key == s.key) { ++m; if (k == INNER || k == LEFT) out.emplace_back(r.key, r.val, s.val); }
+        if ((k == LEFT && !m) || (k == SEMI && m) || (k == ANTI && !m)) out.emplace_back(r.key, r.val, NONE); }
     return out;
 }
+std::vector<Out> sorted(std::vector<Out> v) { std::sort(v.begin(), v.end()); return v; }
 
 int main() {
-    std::vector<R> r = {{1, "kim"}, {2, "lee"}, {3, "park"}, {3, "park2"}};
-    std::vector<S> s = {{3, 90}, {1, 70}, {4, 50}, {3, 85}};
-    auto a = hashJoin(r, s), b = nestedLoop(r, s);
-    std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end());
-    assert(a == b && a.size() == 5);                                 // 두 방식의 결과가 같다 (id=3 은 2x2 중 매칭)
-    std::cout << "HashJoin produced " << a.size() << " rows" << std::endl;
+    // ① 원래 예: id=3 은 2×2 중 매칭
+    {   std::vector<Tup> R = {{1, 10}, {2, 20}, {3, 30}, {3, 31}}, S = {{3, 90}, {1, 70}, {4, 50}, {3, 85}}; Stats st;
+        const std::size_t want[4] = {5, 6, 3, 1};                       // INNER, LEFT, SEMI, ANTI
+        for (int k = 0; k < 4; ++k) { std::vector<Out> a = sorted(hashJoin(R, S, (Kind)k, 1000, st)), b = sorted(nestedLoop(R, S, (Kind)k)); assert(a == b && a.size() == want[k]); }
+    }
+    // ② 무작위 작은 입력 × 키 도메인(중복 많음) × 메모리 한도 × 조인 종류 vs 중첩 루프
+    std::mt19937 rng(5);
+    for (int it = 0; it < 4000; ++it) {
+        int dom[4] = {1, 2, 6, 60}; int d = dom[rng() % 4]; std::vector<Tup> R(rng() % 41), S(rng() % 41);
+        for (std::size_t i = 0; i < R.size(); ++i) R[i] = {(int)(rng() % d), (int)i}; for (std::size_t i = 0; i < S.size(); ++i) S[i] = {(int)(rng() % d), 1000 + (int)i};
+        std::size_t Ms[5] = {1, 2, 3, 8, 1000}, M = Ms[rng() % 5]; Kind k = (Kind)(rng() % 4); Stats st;
+        assert(sorted(hashJoin(R, S, k, M, st)) == sorted(nestedLoop(R, S, k)));
+        assert(st.maxTable <= M);                                       // 메모리 한도를 한 번도 넘지 않았다
+    }
+    // 독립 오라클: 키별 개수·합만으로 결과 크기와 체크섬을 센다
+    auto oracle = [](const std::vector<Tup>& R, const std::vector<Tup>& S, int dom, Kind k, long long& cnt, long long& sum) {
+        std::vector<long long> cl(dom), cr(dom), sl(dom), sr(dom); for (auto& t : R) { ++cl[t.key]; sl[t.key] += t.val; } for (auto& t : S) { ++cr[t.key]; sr[t.key] += t.val; }
+        cnt = sum = 0; for (int x = 0; x < dom; ++x) {
+            if (k == INNER) { cnt += cl[x] * cr[x]; sum += sl[x] * cr[x] + sr[x] * cl[x]; }
+            else if (k == LEFT) { cnt += cl[x] * std::max(cr[x], 1LL); sum += cr[x] ? sl[x] * cr[x] + sr[x] * cl[x] : sl[x] + cl[x] * NONE; }
+            else if (k == SEMI) { if (cr[x]) { cnt += cl[x]; sum += sl[x] + cl[x] * NONE; } }
+            else { if (!cr[x]) { cnt += cl[x]; sum += sl[x] + cl[x] * NONE; } }
+        }
+    };
+    auto checksum = [](const std::vector<Out>& v) { long long s = 0; for (auto& o : v) s += std::get<1>(o) + std::get<2>(o); return s; };
+    // ③ 메모리 한도를 줄이면 Grace 단계가 늘고 spill 이 늘지만 결과는 같다
+    const int N = 20000, DOM = 5000; std::vector<Tup> R(N), S(N); for (int i = 0; i < N; ++i) { R[i] = {(int)(rng() % DOM), i}; S[i] = {(int)(rng() % DOM), 100000 + i}; }
+    std::vector<Out> ref; long spill[3]; int depth[3]; std::size_t Ms[3] = {(std::size_t)N, (std::size_t)N / 4, (std::size_t)N / 64};
+    for (int j = 0; j < 3; ++j) {
+        Stats st; std::vector<Out> out = sorted(hashJoin(R, S, INNER, Ms[j], st)); long long cnt, sum; oracle(R, S, DOM, INNER, cnt, sum);
+        assert((long long)out.size() == cnt && checksum(out) == sum && st.maxTable <= Ms[j]); if (j == 0) ref = out; else assert(out == ref);
+        spill[j] = st.spilled; depth[j] = st.maxDepth;
+    }
+    assert(spill[0] == 0 && spill[1] == 2L * N && spill[2] > spill[1] && spill[2] <= 4L * 2 * N && depth[0] == 0 && depth[1] == 1 && depth[2] >= 2);
+    // ④ 치우친 분포: S 에 한 키가 3000 번, R 에도 50 번 → 해시로 쪼갤 수 없어 블록 중첩 루프로 후퇴하지만 메모리 한도는 지킨다
+    {   std::vector<Tup> R2, S2; for (int i = 0; i < 3000; ++i) S2.push_back({7, i}); for (int i = 0; i < 2000; ++i) S2.push_back({(int)(rng() % DOM), 5000 + i});
+        for (int i = 0; i < 50; ++i) R2.push_back({7, i}); for (int i = 0; i < 3000; ++i) R2.push_back({(int)(rng() % DOM), 100 + i}); std::shuffle(S2.begin(), S2.end(), rng);
+        for (int k = 0; k < 4; ++k) { Stats st; std::vector<Out> out = hashJoin(R2, S2, (Kind)k, 100, st); long long cnt, sum; oracle(R2, S2, DOM, (Kind)k, cnt, sum);
+            assert((long long)out.size() == cnt && checksum(out) == sum && st.maxTable <= 100 && st.blockLoops >= 1); }
+    }
+    // ⑤ 큰 입력: 각 20 만 행, 키 20 만 종류 — 탐색 비교 횟수는 O(n + m) 이고 중첩 루프라면 n·m = 4·10^10 번
+    {   const int n = 200000; std::vector<Tup> A(n), B(n); for (int i = 0; i < n; ++i) { A[i] = {(int)(rng() % n), i}; B[i] = {(int)(rng() % n), i}; }
+        long long cnt, sum; Stats st; std::vector<Out> out = hashJoin(A, B, INNER, n, st); oracle(A, B, n, INNER, cnt, sum);
+        assert((long long)out.size() == cnt && checksum(out) == sum && st.probes < 2L * (2 * n) && st.spilled == 0);
+        for (int k = 1; k < 4; ++k) { Stats s2; std::vector<Out> o2 = hashJoin(A, B, (Kind)k, n, s2); oracle(A, B, n, (Kind)k, cnt, sum); assert((long long)o2.size() == cnt && checksum(o2) == sum); }
+        std::cout << "HashJoin: " << out.size() << " result rows from " << n << " x " << n << " tuples with " << st.probes << " chain probes (nested loop: " << (long long)n * n << " comparisons); Grace spilled " << spill[1] << " / " << spill[2] << " tuples with memory N/4 / N/64 and fell back to block nested loop on the heavy key" << std::endl;
+    }
     return 0;
 }
-// Time Complexity: O(n + m + 결과)
-// Space Complexity: O(작은 쪽 테이블)
+// Time Complexity: O(n + m + 결과) (Grace: 디스크 I/O 약 3(n + m), 한 키가 M 보다 많으면 블록 중첩 루프로 O(n·m/M))
+// Space Complexity: O(작은 쪽 테이블) (Grace 는 O(M) 튜플)
 ```
 ## ExtendibleHashing()
 ### 대표코드
@@ -2413,45 +3144,122 @@ int main() {
 ## LRUCache()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <list>
-#include <unordered_map>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <deque>
+#include <functional>
+#include <iostream>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-// LRU 캐시: 해시맵(키 -> 리스트 노드) + 이중 연결 리스트(최근 사용 순). get/put 모두 O(1)
-class LRUCache {
-    size_t cap;
-    std::list<std::pair<int, int>> order;                          // 앞 = 가장 최근
-    std::unordered_map<int, std::list<std::pair<int, int>>::iterator> pos;
+// LRU 캐시: 해시맵(키 → 노드) + 이중 연결 리스트(최근 사용 순). get/put/erase 모두 O(1). 노드는 배열에 두고 인덱스로 잇는다(할당 없는 재사용).
+template <class K, class V> class LRUCache {
+    struct Node { K key; V val; int prev, next; };
+    std::vector<Node> nodes; std::vector<int> freeList; std::unordered_map<K, int> pos; int head = -1, tail = -1; std::size_t cap;   // head = 가장 최근, tail = 가장 오래
+    void unlink(int i) { Node& n = nodes[i]; (n.prev == -1 ? head : nodes[n.prev].next) = n.next; (n.next == -1 ? tail : nodes[n.next].prev) = n.prev; }
+    void pushFront(int i) { Node& n = nodes[i]; n.prev = -1; n.next = head; if (head != -1) nodes[head].prev = i; head = i; if (tail == -1) tail = i; }
+    void evictOne() { int i = tail; if (onEvict) onEvict(nodes[i].key, nodes[i].val); unlink(i); pos.erase(nodes[i].key); freeList.push_back(i); }
 public:
-    explicit LRUCache(size_t c) : cap(c) {}
-    int get(int k) {
-        auto it = pos.find(k);
-        if (it == pos.end()) return -1;
-        order.splice(order.begin(), order, it->second);            // 맨 앞으로 이동
-        return it->second->second;
+    std::function<void(const K&, const V&)> onEvict;                    // 용량 때문에 퇴출될 때만 불린다 (erase 로 지운 항목은 아님)
+    explicit LRUCache(std::size_t c) : cap(c) {}
+    std::size_t size() const { return pos.size(); }
+    V* get(const K& k) { auto it = pos.find(k); if (it == pos.end()) return nullptr; unlink(it->second); pushFront(it->second); return &nodes[it->second].val; }
+    const V* peek(const K& k) const { auto it = pos.find(k); return it == pos.end() ? nullptr : &nodes[it->second].val; }     // 순서를 바꾸지 않는 조회
+    void put(const K& k, const V& v) {
+        if (cap == 0) return;                                           // 용량 0: 아무것도 저장하지 않는다
+        auto it = pos.find(k); if (it != pos.end()) { nodes[it->second].val = v; unlink(it->second); pushFront(it->second); return; }
+        if (pos.size() == cap) evictOne();
+        int i; if (!freeList.empty()) { i = freeList.back(); freeList.pop_back(); nodes[i].key = k; nodes[i].val = v; } else { nodes.push_back({k, v, -1, -1}); i = (int)nodes.size() - 1; }
+        pushFront(i); pos[k] = i;
     }
-    void put(int k, int v) {
-        auto it = pos.find(k);
-        if (it != pos.end()) { it->second->second = v; order.splice(order.begin(), order, it->second); return; }
-        if (order.size() == cap) { pos.erase(order.back().first); order.pop_back(); }   // 가장 오래 쓰이지 않은 항목 제거
-        order.emplace_front(k, v);
-        pos[k] = order.begin();
+    bool erase(const K& k) { auto it = pos.find(k); if (it == pos.end()) return false; int i = it->second; unlink(i); freeList.push_back(i); pos.erase(it); return true; }
+    void resize(std::size_t c) { cap = c; while (pos.size() > cap) evictOne(); }
+    std::vector<K> order() const { std::vector<K> r; for (int i = head; i != -1; i = nodes[i].next) r.push_back(nodes[i].key); return r; }     // 최근 → 오래
+    bool check() const {
+        std::size_t c = 0; int prev = -1; for (int i = head; i != -1; prev = i, i = nodes[i].next) { if (nodes[i].prev != prev) return false; auto it = pos.find(nodes[i].key); if (it == pos.end() || it->second != i) return false; if (++c > pos.size()) return false; }
+        return c == pos.size() && prev == tail && pos.size() <= cap && freeList.size() + pos.size() == nodes.size();
     }
 };
 
+struct Naive {                                                          // 오라클: 벡터를 통째로 훑는 O(n) LRU
+    std::vector<std::pair<int, int>> v; std::size_t cap; std::vector<int> evicted;                // v.front() = 가장 최근
+    explicit Naive(std::size_t c) : cap(c) {}
+    int idx(int k) const { for (std::size_t i = 0; i < v.size(); ++i) if (v[i].first == k) return (int)i; return -1; }
+    int* get(int k) { int i = idx(k); if (i < 0) return nullptr; auto e = v[i]; v.erase(v.begin() + i); v.insert(v.begin(), e); return &v[0].second; }
+    void put(int k, int x) { if (cap == 0) return; int i = idx(k); if (i >= 0) v.erase(v.begin() + i); else if (v.size() == cap) { evicted.push_back(v.back().first); v.pop_back(); } v.insert(v.begin(), {k, x}); }
+    bool erase(int k) { int i = idx(k); if (i < 0) return false; v.erase(v.begin() + i); return true; }
+    void resize(std::size_t c) { cap = c; while (v.size() > cap) { evicted.push_back(v.back().first); v.pop_back(); } }
+};
+
+// 정책 비교용: 적중 횟수를 세는 시뮬레이터들
+long lruHits(const std::vector<int>& t, std::size_t cap) { LRUCache<int, int> c(cap); long h = 0; for (std::size_t i = 0; i < t.size(); ++i) { if (c.get(t[i])) ++h; else c.put(t[i], (int)i); } return h; }
+long fifoHits(const std::vector<int>& t, std::size_t cap) { std::deque<int> q; std::set<int> in; long h = 0; for (int k : t) { if (in.count(k)) { ++h; continue; } if (q.size() == cap) { in.erase(q.front()); q.pop_front(); } q.push_back(k); in.insert(k); } return h; }
+long optHits(const std::vector<int>& t, std::size_t cap) {              // Belady: 다음 사용이 가장 먼 것을 퇴출 (오프라인 최적)
+    const int n = (int)t.size(); std::vector<int> nxt(n); std::unordered_map<int, int> last; for (int i = n - 1; i >= 0; --i) { auto it = last.find(t[i]); nxt[i] = it == last.end() ? n + i : it->second; last[t[i]] = i; }
+    std::set<std::pair<int, int>> byNext; std::unordered_map<int, int> cur; long h = 0;
+    for (int i = 0; i < n; ++i) {
+        auto it = cur.find(t[i]);
+        if (it != cur.end()) { ++h; byNext.erase({it->second, t[i]}); }
+        else if (cur.size() == cap) { auto far = std::prev(byNext.end()); cur.erase(far->second); byNext.erase(far); }
+        cur[t[i]] = nxt[i]; byNext.insert({nxt[i], t[i]});
+    }
+    return h;
+}
+// 마타슨 스택 거리: 한 번의 패스로 모든 용량의 LRU 적중 수를 구한다 (펜윅 트리)
+std::vector<long> stackDistanceHist(const std::vector<int>& t) {
+    int n = (int)t.size(); std::vector<int> bit(n + 2, 0); auto add = [&](int i, int d) { for (++i; i <= n + 1; i += i & -i) bit[i] += d; }; auto sum = [&](int i) { int s = 0; for (++i; i > 0; i -= i & -i) s += bit[i]; return s; };
+    std::unordered_map<int, int> last; std::vector<long> hist(n + 2, 0);
+    for (int i = 0; i < n; ++i) { auto it = last.find(t[i]); if (it != last.end()) { ++hist[sum(i) - sum(it->second) + 1]; add(it->second, -1); } add(i, 1); last[t[i]] = i; }
+    return hist;                                                         // hist[d] = 스택 거리가 d 인 재접근 수 (d 는 1 이상)
+}
+
 int main() {
-    LRUCache c(2);
-    c.put(1, 1); c.put(2, 2);
-    assert(c.get(1) == 1);
-    c.put(3, 3);                                                   // 2 가 퇴출된다
-    assert(c.get(2) == -1);
-    c.put(4, 4);                                                   // 1 이 퇴출된다
-    assert(c.get(1) == -1 && c.get(3) == 3 && c.get(4) == 4);
-    std::cout << "LRUCache verified." << std::endl;
+    // ① 원래 예
+    {   LRUCache<int, int> c(2); c.put(1, 1); c.put(2, 2); assert(*c.get(1) == 1); c.put(3, 3); assert(!c.get(2)); c.put(4, 4); assert(!c.get(1) && *c.get(3) == 3 && *c.get(4) == 4); }
+    // ② 무작위 작업열 vs 순진한 모델: get / put / erase / peek / resize, 용량 0·1 포함, 퇴출 순서까지 대조
+    std::mt19937 rng(21);
+    for (int round = 0; round < 40; ++round) {
+        std::size_t cap = rng() % 12; LRUCache<int, int> c(cap); Naive m(cap); std::vector<int> ev; c.onEvict = [&](const int& k, const int&) { ev.push_back(k); };
+        for (int op = 0; op < 3000; ++op) {
+            int k = rng() % 30, t = rng() % 10;
+            if (t < 4) { int* a = c.get(k); int* b = m.get(k); assert((a == nullptr) == (b == nullptr) && (!a || *a == *b)); }
+            else if (t < 7) { c.put(k, op); m.put(k, op); }
+            else if (t == 7) { assert(c.erase(k) == m.erase(k)); }
+            else if (t == 8) { const int* a = c.peek(k); int i = m.idx(k); assert((a != nullptr) == (i >= 0) && (!a || *a == m.v[i].second)); }
+            else { std::size_t nc = rng() % 14; c.resize(nc); m.resize(nc); }
+            std::vector<int> want; for (auto& e : m.v) want.push_back(e.first); assert(c.order() == want && c.check() && ev == m.evicted);
+        }
+    }
+    // ③ 정책 비교: 스택 거리 오라클 = 직접 시뮬레이션, OPT ≥ LRU, FIFO 의 Belady 이상 현상
+    auto zipfTrace = [&](int n, int keys) { std::vector<int> t(n); for (int& x : t) x = (int)std::exp(std::uniform_real_distribution<double>(0, std::log((double)keys))(rng)); return t; };   // 순위 r 의 확률 ∝ 1/r
+    for (int rep = 0; rep < 6; ++rep) {
+        std::vector<int> t = zipfTrace(20000, 300 + 200 * rep); std::vector<long> hist = stackDistanceHist(t); long prefix = 0; std::size_t c = 0;
+        for (std::size_t cap : {1u, 2u, 5u, 10u, 40u, 100u, 300u}) { while (c < cap) prefix += hist[++c]; assert(lruHits(t, cap) == prefix); assert(optHits(t, cap) >= lruHits(t, cap)); }
+    }
+    {   std::vector<int> t = {1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5};                       // 교과서의 FIFO 이상 현상 예
+        assert((long)t.size() - fifoHits(t, 3) == 9 && (long)t.size() - fifoHits(t, 4) == 10);            // 프레임을 늘렸더니 오히려 폴트가 늘었다
+        assert((long)t.size() - lruHits(t, 3) == 10 && (long)t.size() - lruHits(t, 4) == 8);              // LRU 는 스택 알고리즘이라 이런 일이 없다
+        for (int rep = 0; rep < 30; ++rep) { std::vector<int> r(400); for (int& x : r) x = rng() % 12; long prev = -1; for (std::size_t cap = 1; cap <= 12; ++cap) { long h = lruHits(r, cap); assert(h >= prev); prev = h; } }   // 용량이 늘면 적중은 줄지 않는다
+    }
+    {   const int cap = 100; std::vector<int> loop; for (int i = 0; i < 20000; ++i) loop.push_back(i % (cap + 1));     // 용량보다 1 큰 순환: LRU 는 영원히 직전에 쫓아낸 것을 다시 찾는다
+        long lru = lruHits(loop, cap), opt = optHits(loop, cap); assert(lru == 0 && opt > 19000);
+        std::vector<int> scan; for (int round = 0; round < 3; ++round) { for (int pass = 0; pass < 20; ++pass) for (int h = 0; h < 50; ++h) scan.push_back(h); for (int x = 0; x < 1000; ++x) scan.push_back(100000 + round * 1000 + x); }   // 핫셋 50 개 20 바퀴 + 일회성 스캔 1000 개
+        LRUCache<int, int> c(cap); long firstPass = 0, secondPass = 0, total = 0;
+        for (std::size_t i = 0; i < scan.size(); ++i) { bool hit = c.get(scan[i]) != nullptr; if (!hit) c.put(scan[i], 0); total += hit; std::size_t off = i % 2000; if (off < 50) firstPass += hit; else if (off < 100) secondPass += hit; }
+        assert(firstPass == 0 && secondPass == 3 * 50 && total == 3 * 950);          // 스캔이 지나가면 핫셋이 통째로 밀려나 첫 바퀴는 전부 미스 (스캔 오염), 이후 바퀴는 전부 적중
+        std::cout << "LRUCache: loop of 101 pages with 100 slots: LRU " << lru << " hits vs OPT " << opt << " of " << loop.size() << std::endl;
+    }
+    // ④ 큰 입력: 100 만 번 접근, 용량 1 만 — 직접 시뮬레이션 적중 수 == 스택 거리 오라클
+    {   std::vector<int> t = zipfTrace(1000000, 200000); std::vector<long> hist = stackDistanceHist(t); long expect = 0; for (int d = 1; d <= 10000; ++d) expect += hist[d];
+        assert(lruHits(t, 10000) == expect);
+    }
     return 0;
 }
-// Time Complexity: get/put O(1)
+// Time Complexity: get/put/erase O(1) 기대, 스택 거리 오라클은 O(n log n)
 // Space Complexity: O(capacity)
 ```
 ## LFUCache()
@@ -2513,47 +3321,130 @@ int main() {
 ## HashDoS()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
-#include <cstdint>
-#include <list>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <set>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
-// 해시 플러딩(HashDoS): 해시 함수와 테이블 크기를 아는 공격자가 같은 버킷에 몰리는 키만 보내 O(1)을 O(n)으로 만든다.
-// Java 의 String.hashCode 에서 "Aa" 와 "BB" 는 해시가 같다 (65*31+97 == 66*31+66) -> 두 블록을 이어 붙이면 2^k 개의 충돌 문자열
-uint32_t weak(const std::string& s) { uint32_t h = 0; for (unsigned char c : s) h = h * 31 + c; return h; }
-uint32_t keyed(const std::string& s, uint64_t secret) {            // 비밀 키가 섞인 해시: 공격자는 충돌을 미리 만들 수 없다
-    uint64_t h = secret ^ 1469598103934665603ULL;
-    for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; h ^= h >> 29; }
-    h *= 0x9e3779b97f4a7c15ULL; return (uint32_t)(h >> 32);
-}
+// 해시 플러딩(HashDoS): 해시 함수를 아는 공격자가 전부 같은 해시값(또는 같은 버킷)을 갖는 키만 보내 해시 테이블의 O(1) 을 O(n) 으로, n 번 삽입을 O(n²) 으로 만든다.
+// 이 항목은 ① 다항 해시(Java String.hashCode 의 31, djb2 의 33 …)의 충돌 문자열 2^k 개를 만드는 법 ② 그 키로 체인 테이블의 비교 횟수가 정확히 n(n−1)/2 가 됨
+// ③ 밑(base)만 무작위로 바꾸는 방어가 Thue–Morse 문자열에 뚫림 ④ 비밀 키 PRF(SipHash)·트리화(Java 8 TreeBin)가 어떻게 막는지를 비교 횟수로 보인다.
+typedef std::uint32_t u32; typedef std::uint64_t u64;
+struct Poly {                                                           // h = h·B + c  (mod 2^32).  B = 31 이 Java 의 String.hashCode, 33 이 djb2
+    u32 B; u32 operator()(const std::string& s) const { u32 h = 0; for (unsigned char c : s) h = h * B + c; return h; }
+};
+struct Sip {                                                            // SipHash-2-4: 비밀 키 (k0, k1) 를 모르면 충돌을 미리 만들 수 없다
+    u64 k0, k1;
+    static u64 rotl(u64 x, int b) { return (x << b) | (x >> (64 - b)); }
+    u64 hash(const unsigned char* p, std::size_t len) const {
+        u64 v0 = k0 ^ 0x736f6d6570736575ULL, v1 = k1 ^ 0x646f72616e646f6dULL, v2 = k0 ^ 0x6c7967656e657261ULL, v3 = k1 ^ 0x7465646279746573ULL;
+        auto round = [&] { v0 += v1; v1 = rotl(v1, 13); v1 ^= v0; v0 = rotl(v0, 32); v2 += v3; v3 = rotl(v3, 16); v3 ^= v2; v0 += v3; v3 = rotl(v3, 21); v3 ^= v0; v2 += v1; v1 = rotl(v1, 17); v1 ^= v2; v2 = rotl(v2, 32); };
+        std::size_t i = 0; for (; i + 8 <= len; i += 8) { u64 m; std::memcpy(&m, p + i, 8); v3 ^= m; round(); round(); v0 ^= m; }       // 리틀 엔디언 호스트 가정
+        u64 b = (u64)len << 56; for (std::size_t j = 0; i + j < len; ++j) b |= (u64)p[i + j] << (8 * j);
+        v3 ^= b; round(); round(); v0 ^= b; v2 ^= 0xff; round(); round(); round(); round(); return v0 ^ v1 ^ v2 ^ v3;
+    }
+    u32 operator()(const std::string& s) const { return (u32)hash((const unsigned char*)s.data(), s.size()); }
+};
+template <class H> class ChainTable {                                   // 체인 방식 해시 집합 (적재율 1 에서 두 배로 확장). 키 비교 횟수를 센다
+    std::vector<std::vector<std::string>> b; std::size_t n = 0; H h;
+    void grow() { std::vector<std::vector<std::string>> nb(b.size() * 2); for (auto& c : b) for (auto& s : c) nb[h(s) % nb.size()].push_back(std::move(s)); b.swap(nb); }
+public:
+    long cmps = 0;
+    explicit ChainTable(H hh) : b(16), h(hh) {}
+    bool insert(const std::string& s) { auto& c = b[h(s) % b.size()]; for (auto& x : c) { ++cmps; if (x == s) return false; } c.push_back(s); if (++n > b.size()) grow(); return true; }
+    bool contains(const std::string& s) { for (auto& x : b[h(s) % b.size()]) { ++cmps; if (x == s) return true; } return false; }
+    std::size_t size() const { return n; }
+    std::size_t maxChain() const { std::size_t m = 0; for (auto& c : b) m = std::max(m, c.size()); return m; }
+};
+template <class H> class TreeBinTable {                                 // Java 8 의 TreeBin: 체인이 8 을 넘으면 그 버킷만 균형 트리(비교 가능한 키)로 바꾼다
+    struct Cmp { long* c; bool operator()(const std::string& a, const std::string& b) const { ++*c; return a < b; } };
+    struct Bin { std::vector<std::string> list; std::unique_ptr<std::set<std::string, Cmp>> tree; };
+    std::vector<Bin> b; std::size_t n = 0; H h;
+    void grow() { std::vector<Bin> nb(b.size() * 2);
+        for (auto& bin : b) { auto move = [&](const std::string& s) { Bin& d = nb[h(s) % nb.size()]; if (d.tree) d.tree->insert(s); else d.list.push_back(s); };
+            if (bin.tree) for (auto& s : *bin.tree) move(s); else for (auto& s : bin.list) move(s); }
+        for (auto& bin : nb) if (!bin.tree && bin.list.size() > 8) { bin.tree.reset(new std::set<std::string, Cmp>(Cmp{&cmps})); for (auto& s : bin.list) bin.tree->insert(s); bin.list.clear(); }
+        b.swap(nb); }
+public:
+    long cmps = 0;
+    explicit TreeBinTable(H hh, std::size_t buckets = 16) : b(buckets), h(hh) {}                   // 버킷 수를 미리 정하면 재해시 비용이 섞이지 않는다
+    bool insert(const std::string& s) {
+        Bin& bin = b[h(s) % b.size()]; bool added;
+        if (bin.tree) added = bin.tree->insert(s).second;
+        else { added = true; for (auto& x : bin.list) { ++cmps; if (x == s) { added = false; break; } } if (added) { bin.list.push_back(s); if (bin.list.size() > 8) { bin.tree.reset(new std::set<std::string, Cmp>(Cmp{&cmps})); for (auto& x : bin.list) bin.tree->insert(x); bin.list.clear(); } } }
+        if (added && ++n > b.size()) grow(); return added;
+    }
+    std::size_t size() const { return n; }
+};
 
-template <class H>
-size_t maxChain(const std::vector<std::string>& keys, H h, size_t m) {
-    std::vector<size_t> len(m, 0);
-    for (auto& k : keys) len[h(k) % m]++;
-    return *std::max_element(len.begin(), len.end());
+// 같은 길이 두 블록 (c1, c2) 와 (c1+1, c2−B) 는 c1·B + c2 = (c1+1)·B + (c2−B) 라 해시 기여가 같다 → 블록마다 둘 중 하나를 고르면 2^k 개의 문자열이 모두 같은 해시
+std::vector<std::string> collisions(u32 B, int k) {
+    char c1 = 'A', c2 = (char)(B + 66);                                 // 블록 0 = (65, B+66), 블록 1 = (66, 66)
+    std::vector<std::string> keys = {""};
+    for (int i = 0; i < k; ++i) { std::vector<std::string> next; next.reserve(keys.size() * 2); for (auto& s : keys) { next.push_back(s + c1 + c2); next.push_back(s + (char)(c1 + 1) + (char)66); } keys.swap(next); }
+    return keys;
 }
+std::string thueMorse(int len, bool flip) { std::string s(len, 'a'); for (int i = 0; i < len; ++i) s[i] = (__builtin_popcount(i) & 1) != flip ? 'b' : 'a'; return s; }
 
 int main() {
-    std::vector<std::string> keys = {""};
-    for (int block = 0; block < 10; block++) {                      // 2^10 = 1024 개의 충돌 문자열
-        std::vector<std::string> next;
-        for (auto& s : keys) { next.push_back(s + "Aa"); next.push_back(s + "BB"); }
-        keys.swap(next);
+    std::mt19937_64 rng(2025);
+    // ① 충돌 문자열: 밑 31(Java)·33(djb2)·37·131 모두 2^10 개가 전부 같은 해시값, 서로 다른 문자열
+    for (u32 B : {31u, 33u, 37u, 131u}) { std::vector<std::string> keys = collisions(B, 10); Poly h{B}; std::set<std::string> uniq(keys.begin(), keys.end()); assert(keys.size() == 1024 && uniq.size() == 1024); for (auto& s : keys) assert(h(s) == h(keys[0])); }
+    assert(collisions(31, 1)[0] == "Aa" && collisions(31, 1)[1] == "BB");                   // 유명한 "Aa" == "BB"
+    // ② 복잡도 공격: 같은 개수의 무작위 키는 비교 약 n 번, 충돌 키는 정확히 n(n−1)/2 번 (테이블 크기를 몰라도 된다)
+    long lastAttack = 0;
+    for (int k = 8; k <= 13; ++k) {
+        long n = 1L << k; std::vector<std::string> bad = collisions(31, k); ChainTable<Poly> atk{Poly{31}}, rnd{Poly{31}};
+        for (auto& s : bad) atk.insert(s);
+        for (long i = 0; i < n; ++i) { std::string s(12, 'a'); for (char& c : s) c = (char)('a' + rng() % 26); rnd.insert(s); }
+        assert(atk.cmps == n * (n - 1) / 2 && atk.maxChain() == (std::size_t)n && rnd.cmps < 2 * n && rnd.maxChain() < 12);
+        lastAttack = atk.cmps;
     }
-    assert(keys.size() == 1024);
-    for (auto& k : keys) assert(weak(k) == weak(keys[0]));           // 전부 같은 해시값
-    size_t attacked = maxChain(keys, weak, 1024);
-    size_t defended = maxChain(keys, [](const std::string& s) { return keyed(s, 0x1234abcdULL); }, 1024);
-    assert(attacked == 1024);                                       // 한 체인에 전부 -> 삽입 n개에 비교 O(n^2)
-    assert(defended < 16);                                          // 키 있는 해시는 고르게 퍼진다
-    std::cout << "longest chain: weak hash " << attacked << ", keyed hash " << defended << std::endl;
+    // ③ 밑만 무작위로 고르는 방어: 충돌 쌍은 밑에 의존하므로 B=31 용 키들은 흩어지지만, Thue–Morse 문자열은 홀수 밑 어느 것에서도 (mod 2^32) 충돌한다
+    {   std::vector<std::string> keys = collisions(31, 10); int worst = 0;
+        for (int t = 0; t < 20; ++t) { u32 B = (u32)rng() | 1; if (B == 31) continue; std::unordered_set<u32> distinct; Poly h{B}; for (auto& s : keys) distinct.insert(h(s)); worst = std::max(worst, (int)(1024 - distinct.size())); }
+        assert(worst < 600);                                            // 대부분 흩어진다 (한 밑이 우연히 많이 겹치는 일은 드물다)
+        std::string a = thueMorse(128, false), b = thueMorse(128, true); assert(a != b && a.size() == 128);
+        for (int t = 0; t < 200; ++t) { u32 B = (u32)rng() | 1; Poly h{B}; assert(h(a) == h(b)); }   // 길이 2^7 이면 ∏(B^(2^j) − 1) 이 2^32 로 나뉜다
+        std::vector<std::string> tm = {""}; for (int i = 0; i < 10; ++i) { std::vector<std::string> next; for (auto& s : tm) { next.push_back(s + a); next.push_back(s + b); } tm.swap(next); }   // 128 글자 블록 2^10 개 조합 = 1024 개
+        for (int t = 0; t < 20; ++t) { u32 B = (u32)rng() | 1; Poly h{B}; for (auto& s : tm) assert(h(s) == h(tm[0])); }
+        // 비밀 키 PRF 는 이 키들을 흩어 놓는다 (서로 다른 문자열 1024 개가 거의 모두 다른 해시값)
+        Sip sip{rng(), rng()}; std::unordered_set<u32> distinct; for (auto& s : tm) distinct.insert(sip(s)); assert(distinct.size() > 1000);
+        ChainTable<Sip> t1{sip}; for (auto& s : tm) t1.insert(s); assert(t1.maxChain() < 12);
+    }
+    // ④ 방어 1: 비밀 키 SipHash — 먼저 시험 벡터로 구현을 확인한 뒤, 같은 충돌 키 2^13 개를 넣어 비교 횟수를 잰다
+    {   unsigned char msg[15]; for (int i = 0; i < 15; ++i) msg[i] = (unsigned char)i; Sip ref{0x0706050403020100ULL, 0x0f0e0d0c0b0a0908ULL}; assert(ref.hash(msg, 15) == 0xa129ca6149be45e5ULL && ref.hash(msg, 0) == 0x726fdb47dd0e0e31ULL);
+        std::vector<std::string> bad = collisions(31, 13); ChainTable<Sip> keyed{Sip{rng(), rng()}}; for (auto& s : bad) keyed.insert(s);
+        long n = 1L << 13; assert(keyed.cmps < 2 * n && keyed.maxChain() < 14 && keyed.size() == (std::size_t)n);
+        std::cout << "HashDoS: 2^13 colliding keys cost " << lastAttack << " comparisons in a polynomial-hash table (n(n-1)/2) but " << keyed.cmps << " in a SipHash table; ";
+    }
+    // ⑤ 방어 2: Java 8 식 트리화 — 해시가 뚫려도 최악이 O(n log n): 충돌 키 2^17 개
+    {   long n = 1L << 17; std::vector<std::string> bad = collisions(31, 17); TreeBinTable<Poly> tree(Poly{31}, n); for (auto& s : bad) tree.insert(s);
+        assert(tree.size() == (std::size_t)n && tree.cmps < 2 * n * 17 && tree.cmps > n * 10);
+        TreeBinTable<Sip> sip(Sip{rng(), rng()}, n); for (auto& s : bad) sip.insert(s); assert(sip.cmps < 2 * n);
+        std::cout << "with 2^17 colliding keys the treeified Poly31 table needed " << tree.cmps << " comparisons (n log2 n = " << n * 17 << ") and the SipHash table " << sip.cmps << std::endl;
+    }
+    // 차분 테스트: 충돌 키와 일반 키를 섞은 무작위 삽입·조회가 std::unordered_set 과 같은 답을 낸다 (세 가지 테이블)
+    {   std::vector<std::string> pool = collisions(31, 6); for (int i = 0; i < 100; ++i) pool.push_back("key" + std::to_string(i)); pool.push_back(""); pool.push_back("\xff\xfe");
+        ChainTable<Poly> a{Poly{31}}; ChainTable<Sip> b{Sip{rng(), rng()}}; TreeBinTable<Poly> c{Poly{31}}; std::unordered_set<std::string> ref;
+        for (int op = 0; op < 20000; ++op) { const std::string& s = pool[rng() % pool.size()];
+            if (rng() % 3) { bool r = ref.insert(s).second; assert(a.insert(s) == r && b.insert(s) == r && c.insert(s) == r); } else { bool r = ref.count(s) > 0; assert(a.contains(s) == r && b.contains(s) == r); } }
+        assert(a.size() == ref.size() && b.size() == ref.size() && c.size() == ref.size());
+    }
+    // 테이블 크기를 아는 공격 (키가 정수이고 h(k) = k): 크기의 배수만 보내면 전부 한 버킷
+    {   const int m = 1024; std::vector<int> byIdent(m), bySpread(m); for (int i = 0; i < m; ++i) { u32 k = (u32)i * m; ++byIdent[k % m]; ++bySpread[(u32)(Sip{7, 9}.hash((const unsigned char*)&k, 4)) % m]; }
+        assert(*std::max_element(byIdent.begin(), byIdent.end()) == m && *std::max_element(bySpread.begin(), bySpread.end()) < 12); }
     return 0;
 }
-// Time Complexity: 공격 시 삽입 n개 O(n^2), 방어 시 O(n)
+// Time Complexity: 공격 시 삽입 n 개 O(n²), 키 있는 해시 O(n) 기대, 트리화 O(n log n)
 // Space Complexity: O(n)
 ```
 ## Salting()
@@ -2603,45 +3494,113 @@ int main() {
 ## ConcurrentHashMap()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <cstdint>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
-#include <string>
+#include <random>
+#include <shared_mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// 락 스트라이핑: 테이블 전체에 락 하나를 두면 직렬화되므로 해시로 나눈 구역(shard)마다 락을 둔다.
-// 서로 다른 구역에 접근하는 스레드는 서로 기다리지 않는다
-class ConcurrentMap {
-    static const int SHARDS = 16;
-    struct Shard { std::mutex mu; std::unordered_map<std::string, long> m; };
-    Shard shard[SHARDS];
-    Shard& pick(const std::string& k) { return shard[std::hash<std::string>{}(k) % SHARDS]; }
+// 락 스트라이핑 동시성 해시맵: 테이블 전체에 락 하나를 두면 모든 스레드가 직렬화되므로 해시로 나눈 구역(shard)마다 읽기-쓰기 락을 둔다.
+//  · 서로 다른 구역에 접근하는 스레드는 기다리지 않고, 같은 구역의 읽기(get)는 동시에 진행한다.  구역 안의 테이블은 구역 락 아래에서 직접 확장한다.
+//  · 한 키의 갱신은 compute(k, f) 로 락을 쥔 채 읽고-고치고-쓴다 (get 뒤에 put 을 따로 하면 갱신을 잃는다).
+//  · 두 키를 함께 바꾸는 transfer(a, b) 는 구역을 번호 순서로 잠가 교착을 피하고, snapshot 은 모든 구역을 번호 순서로 잠가 일관된 순간을 본다.
+static inline std::uint64_t mix(std::uint64_t z) { z += 0x9e3779b97f4a7c15ULL; z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL; z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL; return z ^ (z >> 31); }
+template <class K, class V> class ConcurrentMap {
+    struct Shard {
+        mutable std::shared_mutex mu; std::vector<std::vector<std::pair<K, V>>> b; std::size_t n = 0;                 // 구역마다 체인 테이블 (4 칸에서 시작해 적재율 1 에서 두 배)
+        Shard() : b(4) {}
+        std::pair<K, V>* find(const K& k, std::uint64_t h) { for (auto& e : b[h % b.size()]) if (e.first == k) return &e; return nullptr; }
+        const std::pair<K, V>* find(const K& k, std::uint64_t h) const { for (auto& e : b[h % b.size()]) if (e.first == k) return &e; return nullptr; }
+        void add(const K& k, const V& v, std::uint64_t h) { b[h % b.size()].emplace_back(k, v); if (++n > b.size()) grow(); }
+        void grow() { std::vector<std::vector<std::pair<K, V>>> nb(b.size() * 2); for (auto& c : b) for (auto& e : c) nb[mix(std::hash<K>()(e.first)) % nb.size()].push_back(std::move(e)); b.swap(nb); }
+    };
+    std::vector<std::unique_ptr<Shard>> shards;
+    static std::uint64_t hashOf(const K& k) { return mix(std::hash<K>()(k)); }
 public:
-    void add(const std::string& k, long delta) { Shard& s = pick(k); std::lock_guard<std::mutex> g(s.mu); s.m[k] += delta; }   // 원자적 갱신
-    long get(const std::string& k) { Shard& s = pick(k); std::lock_guard<std::mutex> g(s.mu); auto it = s.m.find(k); return it == s.m.end() ? 0 : it->second; }
-    size_t size() { size_t n = 0; for (auto& s : shard) { std::lock_guard<std::mutex> g(s.mu); n += s.m.size(); } return n; }
+    explicit ConcurrentMap(std::size_t S = 16) { for (std::size_t i = 0; i < S; ++i) shards.emplace_back(new Shard); }
+    std::size_t shardOf(const K& k) const { return (hashOf(k) >> 40) % shards.size(); }          // 구역은 높은 비트, 구역 안 버킷은 낮은 비트
+    bool get(const K& k, V& out) const { std::uint64_t h = hashOf(k); const Shard& s = *shards[(h >> 40) % shards.size()]; std::shared_lock<std::shared_mutex> g(s.mu); auto* e = s.find(k, h); if (!e) return false; out = e->second; return true; }
+    void put(const K& k, const V& v) { std::uint64_t h = hashOf(k); Shard& s = *shards[(h >> 40) % shards.size()]; std::unique_lock<std::shared_mutex> g(s.mu); if (auto* e = s.find(k, h)) e->second = v; else s.add(k, v, h); }
+    bool putIfAbsent(const K& k, const V& v) { std::uint64_t h = hashOf(k); Shard& s = *shards[(h >> 40) % shards.size()]; std::unique_lock<std::shared_mutex> g(s.mu); if (s.find(k, h)) return false; s.add(k, v, h); return true; }
+    bool erase(const K& k) {
+        std::uint64_t h = hashOf(k); Shard& s = *shards[(h >> 40) % shards.size()]; std::unique_lock<std::shared_mutex> g(s.mu); auto& c = s.b[h % s.b.size()];
+        for (std::size_t i = 0; i < c.size(); ++i) if (c[i].first == k) { c[i] = std::move(c.back()); c.pop_back(); --s.n; return true; }
+        return false;
+    }
+    template <class F> V compute(const K& k, F f) {                       // 없으면 V() 에서 시작해 f(V&) 로 고친다. 읽기·수정·쓰기가 한 덩어리
+        std::uint64_t h = hashOf(k); Shard& s = *shards[(h >> 40) % shards.size()]; std::unique_lock<std::shared_mutex> g(s.mu);
+        auto* e = s.find(k, h); if (!e) { s.add(k, V(), h); e = s.find(k, h); } f(e->second); return e->second;
+    }
+    bool transfer(const K& a, const K& b, V amount) {                     // a 의 잔액이 충분하면 a → b 로 옮긴다 (두 키 모두 이미 있어야 한다)
+        std::uint64_t ha = hashOf(a), hb = hashOf(b); std::size_t ia = (ha >> 40) % shards.size(), ib = (hb >> 40) % shards.size();
+        std::unique_lock<std::shared_mutex> g1(shards[std::min(ia, ib)]->mu), g2; if (ia != ib) g2 = std::unique_lock<std::shared_mutex>(shards[std::max(ia, ib)]->mu);   // 항상 번호가 작은 구역 먼저
+        auto* ea = shards[ia]->find(a, ha); auto* eb = shards[ib]->find(b, hb); if (!ea || !eb || a == b || ea->second < amount) return false;
+        ea->second -= amount; eb->second += amount; return true;
+    }
+    std::size_t size() const { std::size_t n = 0; for (auto& s : shards) { std::shared_lock<std::shared_mutex> g(s->mu); n += s->n; } return n; }     // 동시 수정 중에는 근사값
+    template <class F> void snapshot(F f) const {                          // 모든 구역을 번호 순서로 잠근 일관된 순간의 전체 항목
+        std::vector<std::shared_lock<std::shared_mutex>> locks; for (auto& s : shards) locks.emplace_back(s->mu);
+        for (auto& s : shards) for (auto& c : s->b) for (auto& e : c) f(e.first, e.second);
+    }
 };
 
 int main() {
-    ConcurrentMap cm;
-    const int T = 8, N = 5000;
-    std::vector<std::thread> th;
-    for (int t = 0; t < T; t++)
-        th.emplace_back([&, t] {
-            for (int i = 0; i < N; i++) {
-                cm.add("shared", 1);                                // 모든 스레드가 같은 키를 갱신
-                cm.add("own" + std::to_string(t) + "_" + std::to_string(i), 1);
-            }
-        });
-    for (auto& x : th) x.join();
-    assert(cm.get("shared") == (long)T * N);                        // 갱신 손실 없음
-    assert(cm.size() == (size_t)T * N + 1);
-    std::cout << "ConcurrentMap shared=" << cm.get("shared") << " size=" << cm.size() << std::endl;
+    std::mt19937_64 rng(77);
+    // ① 단일 스레드 차분 테스트 (확장·삭제·putIfAbsent·compute 를 모두 거친다)
+    {   ConcurrentMap<int, long> m(5); std::unordered_map<int, long> ref;
+        for (int op = 0; op < 100000; ++op) {
+            int k = rng() % 500, t = rng() % 5; long v = (long)(rng() % 1000);
+            if (t == 0) { m.put(k, v); ref[k] = v; } else if (t == 1) { assert(m.putIfAbsent(k, v) == ref.emplace(k, v).second); }
+            else if (t == 2) { assert(m.erase(k) == (ref.erase(k) > 0)); } else if (t == 3) { long r = m.compute(k, [&](long& x) { x += v; }); ref[k] += v; assert(r == ref[k]); }
+            else { long out = -1; bool f = m.get(k, out); auto it = ref.find(k); assert(f == (it != ref.end()) && (!f || out == it->second)); }
+        }
+        assert(m.size() == ref.size()); std::size_t seen = 0; m.snapshot([&](const int& k, const long& v) { assert(ref.at(k) == v); ++seen; }); assert(seen == ref.size());
+    }
+    const int T = 8; auto run = [&](std::function<void(int)> body) { std::vector<std::thread> th; for (int t = 0; t < T; ++t) th.emplace_back(body, t); for (auto& x : th) x.join(); };
+    // ② 갱신 손실 없음: 모든 스레드가 같은 64 개 키를 compute 로 증가
+    {   ConcurrentMap<int, long> m(16); const int N = 20000; run([&](int t) { for (int i = 0; i < N; ++i) m.compute((i * 7 + t) % 64, [](long& x) { ++x; }); });
+        long sum = 0; m.snapshot([&](const int&, const long& v) { sum += v; }); assert(sum == (long)T * N && m.size() == 64);
+    }
+    // ③ 확장 중에도 안전: 미리 넣은 1000 개 키는 다른 스레드가 20 만 개를 넣어 구역이 계속 커지는 동안에도 항상 읽힌다
+    {   ConcurrentMap<int, long> m(8); for (int i = 0; i < 1000; ++i) m.put(-1 - i, i * 3L);
+        std::atomic<bool> done{false}; std::atomic<long> reads{0}, misses{0};
+        std::vector<std::thread> readers; for (int r = 0; r < 3; ++r) readers.emplace_back([&, r] { std::mt19937 g(r); long n = 0; while (!done) { int i = g() % 1000; long v; if (!m.get(-1 - i, v) || v != i * 3L) ++misses; ++n; } reads += n; });
+        const int W = 5, per = 40000; std::vector<std::thread> writers; for (int w = 0; w < W; ++w) writers.emplace_back([&, w] { for (int i = 0; i < per; ++i) m.put(w * per + i, i); });
+        for (auto& x : writers) x.join(); done = true; for (auto& x : readers) x.join();
+        assert(misses == 0 && reads > 0 && m.size() == 1000 + (std::size_t)W * per);
+        for (int w = 0; w < W; ++w) for (int i = 0; i < per; i += 997) { long v; assert(m.get(w * per + i, v) && v == i); }
+    }
+    // ④ 여러 키를 함께 바꾸는 연산: 계좌 100 개에 1000 씩, 8 스레드가 무작위 이체(같은 계좌·잔액 부족 포함), 감사 스레드는 일관된 스냅샷의 합을 확인
+    {   ConcurrentMap<int, long> bank(7); for (int i = 0; i < 100; ++i) bank.put(i, 1000);
+        std::atomic<bool> done{false}; std::atomic<long> audits{0}, bad{0}, ok{0}, refused{0};
+        std::thread auditor([&] { while (!done) { long total = 0, minBal = 0; bank.snapshot([&](const int&, const long& v) { total += v; minBal = std::min(minBal, v); }); if (total != 100000 || minBal < 0) ++bad; ++audits; } });
+        run([&](int t) { std::mt19937 g(t + 1); for (int i = 0; i < 20000; ++i) { if (bank.transfer(g() % 100, g() % 100, 1 + g() % 600)) ++ok; else ++refused; } });
+        done = true; auditor.join(); long total = 0; bank.snapshot([&](const int&, const long& v) { total += v; });
+        assert(total == 100000 && bad == 0 && audits > 0 && ok > 0 && refused > 0);                 // 교착 없이 끝났고, 어떤 순간에도 합이 보존됐다
+    }
+    // ⑤ 스트라이핑의 효과: 키마다 느린 콜백(1 ms)을 돌릴 때 동시에 실행 중인 콜백의 최대 개수 — 구역 1 개면 1, 16 개면 여러 개
+    auto maxOverlap = [&](std::size_t shards) {
+        ConcurrentMap<int, long> m(shards); std::atomic<int> active{0}, peak{0}; std::vector<int> keyOf; std::vector<char> used(shards, 0);
+        for (int k = 0; (int)keyOf.size() < T; ++k) { std::size_t sh = m.shardOf(k); if (shards == 1 || !used[sh]) { used[sh] = 1; keyOf.push_back(k); } }        // 스레드마다 서로 다른 구역에 떨어지는 키 (구역이 1 개면 모두 같은 구역)
+        run([&](int t) { for (int i = 0; i < 15; ++i) m.compute(keyOf[t], [&](long& x) { int a = ++active; int p = peak.load(); while (a > p && !peak.compare_exchange_weak(p, a)) {} std::this_thread::sleep_for(std::chrono::milliseconds(1)); ++x; --active; }); });
+        return peak.load();
+    };
+    int one = maxOverlap(1), many = maxOverlap(64);
+    assert(one == 1 && many >= 2);
+    std::cout << "ConcurrentMap: no lost updates, no lost keys while shards resized, bank total conserved across " << T * 20000 << " concurrent transfers; slow callbacks overlapped at most " << one << " at a time with 1 shard but " << many << " with 64 shards" << std::endl;
     return 0;
 }
-// Time Complexity: 평균 O(1) (구역 간 병렬)
+// Time Complexity: 평균 O(1) (서로 다른 구역은 병렬, 같은 구역의 읽기도 병렬), snapshot 은 O(n) 에 전 구역 잠금
 // Space Complexity: O(n)
 ```
 ## LockFreeHashTable()
@@ -2700,130 +3659,240 @@ int main() {
 ## BloomFilter()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <cstdint>
+#include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 블룸 필터(해시 관점의 요약, 정본은 AdvancedDataStructures.md Part 3): 비트 배열 m 개와 해시 k 개.
-// 이중 해싱 h_i = h1 + i·h2 로 k 개의 위치를 만든다.  "없다"는 확실하고 "있다"는 틀릴 수 있다 (거짓 양성)
+// 블룸 필터(해시 관점의 요약, 정본은 AdvancedDataStructures.md Part 3): 비트 m 개와 해시 k 개. add 는 k 개 비트를 1 로 만들고 mayContain 은 k 개가 모두 1 인지 본다.
+// "없다"는 확실하고(거짓 음성 없음) "있다"는 틀릴 수 있다(거짓 양성). 이론 거짓 양성률 (1 − e^(−kn/m))^k 는 k = (m/n)·ln 2 에서 최소(≈ 0.6185^(m/n)).
+// 이중 해싱 h_i = h1 + i·h2 (Kirsch–Mitzenmacher) 로 해시 한 번 값만으로 k 개 위치를 만든다.
+typedef std::uint64_t u64;
+static inline u64 mix(u64 x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+static u64 base(const std::string& s) { u64 h = 1469598103934665603ULL; for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; } return h; }
 class Bloom {
-    std::vector<bool> bits; int k;
-    static uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
-    static uint64_t base(const std::string& s) { uint64_t h = 1469598103934665603ULL; for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; } return h; }
+    std::vector<u64> w; std::size_t m; int k; bool dbl;
+    std::size_t pos(u64 h, int i) const { if (dbl) { u64 h1 = mix(h), h2 = mix(h1) | 1; return (h1 + (u64)i * h2) % m; } return mix(h + 0x9e3779b97f4a7c15ULL * (u64)(i + 1)) % m; }     // dbl=false: 서로 다른 k 개의 해시
 public:
-    Bloom(size_t m, int hashes) : bits(m), k(hashes) {}
-    void add(const std::string& s) { uint64_t h1 = mix(base(s)), h2 = mix(h1) | 1; for (int i = 0; i < k; i++) bits[(h1 + i * h2) % bits.size()] = true; }
-    bool mayContain(const std::string& s) const {
-        uint64_t h1 = mix(base(s)), h2 = mix(h1) | 1;
-        for (int i = 0; i < k; i++) if (!bits[(h1 + i * h2) % bits.size()]) return false;
-        return true;
-    }
+    Bloom(std::size_t bits, int hashes, bool doubleHashing = true) : w((bits + 63) / 64), m(bits), k(hashes), dbl(doubleHashing) {}
+    void add(const std::string& s) { u64 h = base(s); for (int i = 0; i < k; ++i) { std::size_t p = pos(h, i); w[p >> 6] |= 1ULL << (p & 63); } }
+    bool mayContain(const std::string& s) const { u64 h = base(s); for (int i = 0; i < k; ++i) { std::size_t p = pos(h, i); if (!(w[p >> 6] >> (p & 63) & 1)) return false; } return true; }
+    std::size_t ones() const { std::size_t c = 0; for (u64 x : w) c += (std::size_t)__builtin_popcountll(x); return c; }
+    void merge(const Bloom& o) { assert(m == o.m && k == o.k && dbl == o.dbl); for (std::size_t i = 0; i < w.size(); ++i) w[i] |= o.w[i]; }      // 합집합 = 비트 OR
+    bool operator==(const Bloom& o) const { return w == o.w; }
+    double estimateCount() const { return -(double)m / k * std::log(1.0 - (double)ones() / (double)m); }                                    // 켜진 비트 수로 원소 수를 거꾸로 추정
 };
+double theoryFp(double m, double n, double k) { return std::pow(1 - std::exp(-k * n / m), k); }
+double measuredFp(const Bloom& f, int queries) { int fp = 0; for (int i = 0; i < queries; ++i) fp += f.mayContain("neg" + std::to_string(i)); return (double)fp / queries; }
 
 int main() {
-    const int n = 10000;
-    Bloom f(10 * n, 7);                                           // 원소당 10비트, 해시 7개 -> 이론 오탐률 약 0.8%
-    for (int i = 0; i < n; i++) f.add("member" + std::to_string(i));
-    for (int i = 0; i < n; i++) assert(f.mayContain("member" + std::to_string(i)));     // 거짓 음성은 없다
-    int fp = 0;
-    for (int i = 0; i < n; i++) if (f.mayContain("other" + std::to_string(i))) fp++;
-    assert(fp < n * 3 / 100);
-    std::cout << "false positive rate: " << 100.0 * fp / n << "% (theory ~0.8%)" << std::endl;
+    // ① 원래 예: 원소당 10 비트, 해시 7 개 → 이론 거짓 양성률 ≈ 0.82 %
+    {   const int n = 10000; Bloom f(10 * n, 7); for (int i = 0; i < n; ++i) f.add("mem" + std::to_string(i));
+        for (int i = 0; i < n; ++i) assert(f.mayContain("mem" + std::to_string(i)));                  // 거짓 음성은 없다
+        double fp = measuredFp(f, 200000), th = theoryFp(10 * n, n, 7); assert(std::abs(fp - th) < 4 * std::sqrt(th / 200000) + 0.1 * th);
+    }
+    // ② 격자 (원소당 비트 수 × k): 측정한 거짓 양성률이 이론식을 따르고, 최소는 k ≈ (m/n)·ln 2 근처
+    const int n = 20000; const int Q = 200000; std::size_t cnt = 0; double worstRel = 0;
+    for (int c : {4, 8, 12, 16}) {
+        double best = 2; int bestK = 0;
+        for (int k = 1; k <= 12; ++k) {
+            Bloom f((std::size_t)c * n, k); for (int i = 0; i < n; ++i) f.add("mem" + std::to_string(i));
+            double fp = measuredFp(f, Q), th = theoryFp((double)c * n, n, k), sd = std::sqrt(th * (1 - th) / Q);
+            assert(std::abs(fp - th) <= 5 * sd + 0.06 * th); if (th > 0.005) worstRel = std::max(worstRel, std::abs(fp - th) / th); ++cnt;
+            if (fp < best) { best = fp; bestK = k; }
+            if (k == (int)std::lround(c * std::log(2.0))) { double dens = (double)f.ones() / ((double)c * n); assert(dens > 0.45 && dens < 0.55); }          // 최적 k 에서 켜진 비트는 절반
+        }
+        assert(std::abs(bestK - c * std::log(2.0)) <= 2.5);
+    }
+    // ③ 이중 해싱 ≈ 독립 해시 k 개 (거짓 양성률 차이 작음), ④ 합집합 = OR, ⑤ 켜진 비트 수로 원소 수 추정
+    {   Bloom a(10 * n, 7, true), b(10 * n, 7, false); for (int i = 0; i < n; ++i) { a.add("mem" + std::to_string(i)); b.add("mem" + std::to_string(i)); }
+        double fa = measuredFp(a, Q), fb = measuredFp(b, Q); assert(fa / fb > 0.8 && fa / fb < 1.25);
+        Bloom x(8 * n, 6), y(8 * n, 6), both(8 * n, 6); for (int i = 0; i < n; ++i) { (i % 3 ? x : y).add("mem" + std::to_string(i)); both.add("mem" + std::to_string(i)); }
+        x.merge(y); assert(x == both); for (int i = 0; i < n; ++i) assert(x.mayContain("mem" + std::to_string(i)));
+        for (int m : {1000, 5000, 20000, 60000}) { Bloom f(10 * 60000, 7); for (int i = 0; i < m; ++i) f.add("mem" + std::to_string(i)); assert(std::abs(f.estimateCount() - m) < 0.03 * m); }
+    }
+    // ⑥ 큰 입력: 원소 100 만 개, 비트 1000 만 개, k = 7
+    {   const int N = 1000000; Bloom f(10 * (std::size_t)N, 7); for (int i = 0; i < N; ++i) f.add("mem" + std::to_string(i));
+        for (int i = 0; i < N; i += 7) assert(f.mayContain("mem" + std::to_string(i)));
+        double fp = measuredFp(f, Q), th = theoryFp(10.0 * N, N, 7); assert(std::abs(fp - th) < 4 * std::sqrt(th / Q) + 0.1 * th);
+        std::cout << "BloomFilter: " << cnt << " (bits/element, k) settings matched (1-e^(-kn/m))^k (worst relative deviation " << 100 * worstRel << "% where the rate exceeds 0.5%); at 10 bits per element and k = 7 the measured false-positive rate was " << 100 * fp << "% (theory " << 100 * th << "%) for 10^6 elements" << std::endl;
+    }
     return 0;
 }
-// Time Complexity: add / mayContain O(k)
+// Time Complexity: add / mayContain O(k), 합집합 O(m/64)
 // Space Complexity: O(m) 비트
 ```
 ## CountMinSketch()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <string>
+#include <iostream>
+#include <map>
+#include <random>
 #include <unordered_map>
 #include <vector>
-#include <cassert>
 
-// Count-Min Sketch(정본은 AdvancedDataStructures.md Part 3): 빈도 추정. d 행 × w 열의 카운터, 행마다 다른 해시.
-// 추정값 = 행별 카운터의 최솟값 -> 항상 실제 이상 (과대 추정만 한다).  w = ceil(e/ε), d = ceil(ln(1/δ)) 이면
-// 확률 1-δ 로 오차가 ε·N 이하
+// Count-Min Sketch(정본은 AdvancedDataStructures.md Part 3): 빈도 추정. d 행 × w 열의 카운터, 행마다 다른 해시. 추정값 = 행별 카운터의 최솟값.
+//  · 항상 실제 이상(과대 추정만 한다, 삭제가 있어도 최종 빈도가 0 이상이면 그대로).  w = ⌈e/ε⌉, d = ⌈ln(1/δ)⌉ 이면 확률 1−δ 로 오차 ≤ ε·N.
+//  · 합치기: 두 스케치의 카운터를 칸마다 더하면 두 스트림을 이어 붙인 스케치와 같다. 보수적 갱신(conservative update)은 오차를 줄인다.
+typedef std::uint64_t u64; typedef std::int64_t i64;
+static inline u64 mix(u64 x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
 class CMS {
-    size_t w, d; std::vector<std::vector<uint32_t>> c;
-    static uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
-    size_t idx(uint64_t key, size_t row) const { return mix(key + 0x9e3779b97f4a7c15ULL * (row + 1)) % w; }
+    std::size_t w, d; std::vector<i64> c; bool conservative;
+    std::size_t idx(u64 key, std::size_t row) const { return row * w + mix(key + 0x9e3779b97f4a7c15ULL * (row + 1)) % w; }
 public:
-    CMS(double eps, double delta) : w((size_t)std::ceil(std::exp(1.0) / eps)), d((size_t)std::ceil(std::log(1.0 / delta))), c(d, std::vector<uint32_t>(w, 0)) {}
-    void add(uint64_t key, uint32_t n = 1) { for (size_t r = 0; r < d; r++) c[r][idx(key, r)] += n; }
-    uint32_t estimate(uint64_t key) const { uint32_t m = UINT32_MAX; for (size_t r = 0; r < d; r++) m = std::min(m, c[r][idx(key, r)]); return m; }
+    CMS(double eps, double delta, bool cons = false) : w((std::size_t)std::ceil(std::exp(1.0) / eps)), d((std::size_t)std::ceil(std::log(1.0 / delta))), c(w * d, 0), conservative(cons) {}
+    void add(u64 key, i64 n = 1) {
+        if (conservative && n > 0) { i64 target = estimate(key) + n; for (std::size_t r = 0; r < d; ++r) c[idx(key, r)] = std::max(c[idx(key, r)], target); }   // 최솟값 칸만 올린다
+        else for (std::size_t r = 0; r < d; ++r) c[idx(key, r)] += n;
+    }
+    i64 estimate(u64 key) const { i64 m = INT64_MAX; for (std::size_t r = 0; r < d; ++r) m = std::min(m, c[idx(key, r)]); return m; }
+    void merge(const CMS& o) { assert(w == o.w && d == o.d); for (std::size_t i = 0; i < c.size(); ++i) c[i] += o.c[i]; }
+    bool sameCells(const CMS& o) const { return c == o.c; }
+    std::size_t cells() const { return c.size(); }
 };
+std::vector<u64> zipfStream(std::size_t n, double universe, std::mt19937_64& rng) {      // 키 k 의 확률 ∝ 1/k
+    std::vector<u64> s(n); std::uniform_real_distribution<double> u(0, std::log(universe)); for (u64& x : s) x = (u64)std::exp(u(rng)); return s;
+}
 
 int main() {
-    CMS cms(0.01, 0.01);
-    std::unordered_map<uint64_t, uint32_t> truth;
-    uint64_t N = 0;
-    for (uint64_t k = 1; k <= 2000; k++) {                         // 빈도가 1/k 에 비례하는 치우친 분포
-        uint32_t freq = 20000 / k + 1;
-        cms.add(k, freq); truth[k] = freq; N += freq;
+    std::mt19937_64 rng(31);
+    // ① 보장: 과소 추정 없음, 오차 > ε·N 인 키의 비율 ≤ δ  (여러 (ε, δ))
+    double worstViol = 0; int settings = 0;
+    for (double eps : {0.02, 0.01, 0.005}) for (double delta : {0.1, 0.01}) {
+        std::vector<u64> s = zipfStream(300000, 1e6, rng); CMS cms(eps, delta); std::unordered_map<u64, i64> truth; for (u64 k : s) { cms.add(k); ++truth[k]; }
+        std::size_t viol = 0; for (auto& kv : truth) { i64 e = cms.estimate(kv.first); assert(e >= kv.second); viol += (double)(e - kv.second) > eps * (double)s.size(); }
+        double frac = (double)viol / truth.size(); assert(frac <= delta); worstViol = std::max(worstViol, frac / delta); ++settings;
     }
-    int within = 0;
-    for (auto& kv : truth) {
-        uint32_t est = cms.estimate(kv.first);
-        assert(est >= kv.second);                                  // 과소 추정은 없다
-        if (est - kv.second <= 0.01 * N) within++;
+    // ② 보수적 갱신: 여전히 과소 추정은 없고 총 오차는 더 작다
+    {   std::vector<u64> s = zipfStream(300000, 1e6, rng); CMS plain(0.01, 0.01), cons(0.01, 0.01, true); std::unordered_map<u64, i64> truth;
+        for (u64 k : s) { plain.add(k); cons.add(k); ++truth[k]; }
+        i64 errPlain = 0, errCons = 0; for (auto& kv : truth) { i64 a = plain.estimate(kv.first) - kv.second, b = cons.estimate(kv.first) - kv.second; assert(a >= 0 && b >= 0 && b <= a); errPlain += a; errCons += b; }
+        assert(errCons * 10 < errPlain * 9);                                                    // 총 오차가 10 % 이상 줄었다
     }
-    assert(within >= 0.99 * truth.size());                         // 99% 이상이 오차 ε·N 이내
-    std::cout << "CountMinSketch: " << within << "/" << truth.size() << " estimates within eps*N" << std::endl;
+    // ③ 합치기: 스트림을 두 조각으로 나눠 만든 스케치를 더하면 통짜 스케치와 칸마다 같다
+    {   std::vector<u64> s = zipfStream(200000, 1e5, rng); CMS whole(0.01, 0.01), a(0.01, 0.01), b(0.01, 0.01); for (std::size_t i = 0; i < s.size(); ++i) { whole.add(s[i]); (i < 70000 ? a : b).add(s[i]); }
+        a.merge(b); assert(a.sameCells(whole)); }
+    // ④ 빈도 높은 항목(heavy hitters): 빈도 ≥ φN 인 키는 하나도 놓치지 않고(재현율 100 %), 보고된 키의 실제 빈도는 (φ−ε)N 이상
+    {   const double phi = 0.01, eps = 0.002; std::vector<u64> s = zipfStream(500000, 1e5, rng); CMS cms(eps, 0.001); std::unordered_map<u64, i64> truth, cand;
+        for (std::size_t i = 0; i < s.size(); ++i) { cms.add(s[i]); ++truth[s[i]]; i64 e = cms.estimate(s[i]); if ((double)e >= phi * (double)(i + 1)) cand[s[i]] = e; }
+        double N = (double)s.size(); std::size_t trueHeavy = 0, found = 0;
+        for (auto& kv : truth) if ((double)kv.second >= phi * N) { ++trueHeavy; found += cand.count(kv.first); }
+        assert(trueHeavy > 0 && found == trueHeavy);
+        std::size_t reported = 0; for (auto& kv : cand) if ((double)cms.estimate(kv.first) >= phi * N) { ++reported; assert((double)truth[kv.first] >= (phi - eps) * N); }     // 보고된 키의 실제 빈도 ≥ (φ − ε)N
+        assert(reported >= trueHeavy && reported <= trueHeavy + 5);
+    }
+    // ⑤ 삭제(터스타일): 음수 갱신 후에도 최종 빈도가 0 이상이면 과소 추정은 없다
+    {   CMS cms(0.01, 0.01); std::map<u64, i64> truth; for (int op = 0; op < 200000; ++op) { u64 k = rng() % 500; if (truth[k] > 0 && rng() % 3 == 0) { cms.add(k, -1); --truth[k]; } else { cms.add(k, 1); ++truth[k]; } }
+        for (auto& kv : truth) assert(cms.estimate(kv.first) >= kv.second); }
+    // ⑥ 크기는 키 종류 수와 무관: 서로 다른 키 약 200 만 개를 넣어도 카운터는 d·w 개 그대로, 큰 빈도 키는 정확하게 잡는다
+    {   CMS cms(0.001, 0.01); std::size_t cells = cms.cells(); for (u64 k = 1; k <= 2000000; ++k) cms.add(k); for (int i = 0; i < 100000; ++i) cms.add(7);
+        assert(cms.cells() == cells && cms.estimate(7) >= 100001 && cms.estimate(7) <= 100001 + 0.001 * 2100000 + 1);
+        std::cout << "CountMinSketch: guarantee held for " << settings << " (eps, delta) settings (worst violation fraction was " << worstViol << " of the allowed delta); the " << cells << "-counter sketch estimated a key seen 100001 times as " << cms.estimate(7) << " after 2.1*10^6 updates" << std::endl; }
     return 0;
 }
-// Time Complexity: add / estimate O(d)
-// Space Complexity: O(d·w)
+// Time Complexity: add / estimate O(d), 합치기 O(d·w)
+// Space Complexity: O(d·w) = O((1/ε)·ln(1/δ))
 ```
 ## Bloom Filter는 왜 오탐(False Positive)만 발생하는가?
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <string>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
-// 이유: 비트는 0 -> 1 로만 바뀐다. 한 원소를 넣으면 그 원소의 k 개 비트가 반드시 1 이 되고 이후 아무도 0 으로 되돌리지 않으므로
-//       "넣은 원소는 항상 있다고 답한다" (거짓 음성 없음).  반면 다른 원소들이 우연히 모든 k 개 비트를 1 로 만들어 놓았다면 오탐이 생긴다.
-// 삭제하려고 비트를 0 으로 내리면 이 불변식이 깨져 다른 원소가 거짓 음성이 된다 -> 카운팅 블룸 필터(비트 대신 카운터)가 필요한 이유
-struct Filter {
-    std::vector<uint8_t> cnt; int k; bool counting;
-    Filter(size_t m, int hashes, bool c) : cnt(m, 0), k(hashes), counting(c) {}
-    size_t pos(const std::string& s, int i) const { uint64_t h = 1469598103934665603ULL ^ (i * 0x9e3779b97f4a7c15ULL); for (unsigned char ch : s) { h ^= ch; h *= 1099511628211ULL; h ^= h >> 29; } return h % cnt.size(); }
-    void add(const std::string& s) { for (int i = 0; i < k; i++) { size_t p = pos(s, i); if (counting) cnt[p]++; else cnt[p] = 1; } }
-    bool has(const std::string& s) const { for (int i = 0; i < k; i++) if (!cnt[pos(s, i)]) return false; return true; }
-    void remove(const std::string& s) { for (int i = 0; i < k; i++) { size_t p = pos(s, i); if (counting) cnt[p]--; else cnt[p] = 0; } }
+// 이유: 비트는 0 → 1 로만 바뀐다. 원소를 넣으면 그 원소의 k 개 비트가 반드시 1 이 되고 아무도 되돌리지 않으므로 "넣은 원소는 항상 있다고 답한다"(거짓 음성 없음).
+// 반면 다른 원소들이 우연히 그 k 개 비트를 모두 1 로 만들어 놓았다면 오탐이 생긴다.  이 항목은 이를 작은 필터에서 *모든* 부분집합을 열거해 확인한다.
+//  ① 12 개 원소의 모든 부분집합(4096 개): 넣은 원소는 전부 "있음", 넣지 않은 원소의 답은 독립 계산(각 위치를 덮는 원소가 있는가)과 같다.
+//  ② 단조성: S ⊆ T 이면 S 에서 "있음"인 원소는 T 에서도 "있음" (모든 쌍 3^12 = 531441 개).
+//  ③ 비트를 0 으로 내려 삭제하면 다른 원소가 거짓 음성이 되는 경우의 수, 카운터를 쓰면 삭제 뒤 필터가 "처음부터 그 원소 없이 만든 것"과 정확히 같다.
+//  ④ 거짓 양성률의 *정확한* 값은 점유 분포 DP 로 구한 E[ρ^k] 이고, 교과서 식 (E[ρ])^k 는 이보다 약간 작다 (옌센 부등식) — 시뮬레이션으로 확인.
+//  ⑤ 카운터 폭: 2 비트 래핑 카운터는 거짓 음성을 만들고, 포화(saturating) 카운터는 거짓 음성은 없지만 삭제 뒤에도 흔적이 남으며, 4 비트면 보통 설계에서 넘치지 않는다.
+const int U = 12, M = 20, K = 3;                                         // 원소 12 개, 비트 20 개, 해시 3 개
+struct Hashes {
+    int pos[U][K]; std::uint32_t bits[U];
+    explicit Hashes(std::mt19937& rng) { for (int x = 0; x < U; ++x) { bits[x] = 0; for (int i = 0; i < K; ++i) { pos[x][i] = (int)(rng() % M); bits[x] |= 1u << pos[x][i]; } } }
+    std::uint32_t filterOf(unsigned subset) const { std::uint32_t f = 0; for (int x = 0; x < U; ++x) if (subset >> x & 1) f |= bits[x]; return f; }
+    bool has(std::uint32_t f, int x) const { return (f & bits[x]) == bits[x]; }
+    bool coveredBySet(unsigned subset, int x) const {                    // 독립 오라클: x 의 모든 위치를 덮는 원소가 집합 안에 있는가
+        for (int i = 0; i < K; ++i) { bool covered = false; for (int y = 0; y < U && !covered; ++y) if (subset >> y & 1) for (int j = 0; j < K; ++j) if (pos[y][j] == pos[x][i]) covered = true; if (!covered) return false; }
+        return true;
+    }
 };
+double exactFp(int m, int n, int k) {                                    // n·k 번 던져 켜진 칸 수 j 의 분포 → E[(j/m)^k]
+    std::vector<double> d(m + 1, 0.0); d[0] = 1; for (int t = 0; t < n * k; ++t) { std::vector<double> nd(m + 1, 0.0); for (int j = 0; j <= m; ++j) { nd[j] += d[j] * j / m; if (j < m) nd[j + 1] += d[j] * (m - j) / m; } d.swap(nd); }
+    double p = 0; for (int j = 0; j <= m; ++j) p += d[j] * std::pow((double)j / m, k); return p;
+}
 
 int main() {
-    const int n = 300;
-    // (1) 일반 블룸 필터: 삭제 없이 쓰면 거짓 음성이 절대 없다
-    Filter plain(2000, 4, false);
-    for (int i = 0; i < n; i++) plain.add("m" + std::to_string(i));
-    for (int i = 0; i < n; i++) assert(plain.has("m" + std::to_string(i)));
-    // (2) 일반 필터에서 비트를 내려 삭제하면 다른 원소가 거짓 음성으로 바뀐다
-    Filter broken(200, 4, false);                                   // 작게 만들어 비트 공유를 늘린다
-    for (int i = 0; i < 60; i++) broken.add("m" + std::to_string(i));
-    for (int i = 0; i < 30; i++) broken.remove("m" + std::to_string(i));
-    int falseNeg = 0;
-    for (int i = 30; i < 60; i++) if (!broken.has("m" + std::to_string(i))) falseNeg++;
-    assert(falseNeg > 0);
-    // (3) 카운팅 필터: 같은 상황에서도 남은 원소는 모두 보존된다
-    Filter counting(200, 4, true);
-    for (int i = 0; i < 60; i++) counting.add("m" + std::to_string(i));
-    for (int i = 0; i < 30; i++) counting.remove("m" + std::to_string(i));
-    for (int i = 30; i < 60; i++) assert(counting.has("m" + std::to_string(i)));
-    std::cout << "plain delete created " << falseNeg << " false negatives; counting filter created 0" << std::endl;
+    std::mt19937 rng(9);
+    long fpTotal = 0, nonMembers = 0, removalBreaks = 0, removalCases = 0;
+    for (int trial = 0; trial < 20; ++trial) {
+        Hashes h(rng);
+        for (unsigned S = 0; S < (1u << U); ++S) {                      // ① 모든 부분집합
+            std::uint32_t f = h.filterOf(S);
+            for (int x = 0; x < U; ++x) { if (S >> x & 1) assert(h.has(f, x)); else { assert(h.has(f, x) == h.coveredBySet(S, x)); fpTotal += h.has(f, x); ++nonMembers; } }
+            // ③ 비트를 내려 삭제하면 다른 원소가 사라질 수 있다 / 카운터는 정확히 되돌린다
+            for (int y = 0; y < U; ++y) if (S >> y & 1) {
+                std::uint32_t g = f & ~h.bits[y]; bool broke = false; for (int z = 0; z < U; ++z) if ((S >> z & 1) && z != y && !h.has(g, z)) broke = true; removalBreaks += broke; ++removalCases;
+                int cnt[M] = {}, ref[M] = {}; for (int z = 0; z < U; ++z) if (S >> z & 1) for (int i = 0; i < K; ++i) ++cnt[h.pos[z][i]];
+                for (int i = 0; i < K; ++i) --cnt[h.pos[y][i]];
+                for (int z = 0; z < U; ++z) if ((S >> z & 1) && z != y) for (int i = 0; i < K; ++i) ++ref[h.pos[z][i]];
+                for (int p = 0; p < M; ++p) assert(cnt[p] == ref[p]);
+            }
+        }
+        if (trial == 0) for (unsigned T = 0; T < (1u << U); ++T) {       // ② 단조성: 모든 (S ⊆ T) — 3^12 쌍 전체 검사는 첫 필터에서만 (나머지 필터는 ①·③)
+            std::uint32_t ft = h.filterOf(T);
+            for (unsigned S = T;; S = (S - 1) & T) { std::uint32_t fs = h.filterOf(S); for (int x = 0; x < U; ++x) if (h.has(fs, x)) assert(h.has(ft, x)); if (S == 0) break; }
+        }
+    }
+    assert(removalBreaks > 0 && removalBreaks < removalCases && fpTotal > 0 && fpTotal < nonMembers);
+    // ④ 정확한 거짓 양성률 vs 교과서 식 vs 시뮬레이션
+    const int m = 64, n = 8, k = 3; double exact = exactFp(m, n, k), textbook = std::pow(1 - std::exp(-(double)k * n / m), k);
+    {   std::mt19937_64 g(5); const int R = 600000; long fp = 0;
+        for (int r = 0; r < R; ++r) { std::uint64_t f = 0; for (int t = 0; t < n * k; ++t) f |= 1ULL << (g() % m); bool all = true; for (int i = 0; i < k; ++i) all = all && (f >> (g() % m) & 1); fp += all; }
+        double sim = (double)fp / R, sd = std::sqrt(exact * (1 - exact) / R);
+        assert(std::abs(sim - exact) < 4 * sd && exact > textbook * 1.02 && std::abs(sim - textbook) > 3 * sd);          // 교과서 식은 약 5 % 작다
+        std::cout << "BloomFilter(why false positives only): m=" << m << ", n=" << n << ", k=" << k << ": exact " << exact << ", simulated " << sim << ", textbook formula " << textbook << "; zeroing bits on delete broke " << removalBreaks << " of " << removalCases << " (set, deleted element) cases per 20 hash tables";
+    }
+    // ⑤ 카운터 폭: 과부하 필터(m=32, k=3, 원소 30 개 = 90 번 던짐)에서 2 비트 카운터 세 가지 + 넉넉한 카운터
+    long wrapFalseNeg = 0, satFalseNeg = 0, satResidue = 0, wideFalseNeg = 0, wideResidue = 0;
+    {   std::mt19937 g(17); const int mm = 32, kk = 3, items = 30;
+        for (int trial = 0; trial < 2000; ++trial) {
+            std::vector<std::vector<int>> pos(items, std::vector<int>(kk)); for (auto& p : pos) for (int& x : p) x = (int)(g() % mm);
+            std::vector<int> wide(mm, 0), wrap(mm, 0), sat(mm, 0);
+            for (auto& p : pos) for (int x : p) { ++wide[x]; wrap[x] = (wrap[x] + 1) & 3; if (sat[x] < 3) ++sat[x]; }
+            std::vector<int> order(items); for (int i = 0; i < items; ++i) order[i] = i; std::shuffle(order.begin(), order.end(), g);
+            auto present = [&](const std::vector<int>& c, int it) { for (int x : pos[it]) if (!c[x]) return false; return true; };
+            bool wrapBad = false, satBad = false, wideBad = false;
+            for (int step = 0; step <= items; ++step) {
+                for (int s = step; s < items; ++s) { int it = order[s]; wrapBad |= !present(wrap, it); satBad |= !present(sat, it); wideBad |= !present(wide, it); }      // 아직 안 지운 원소
+                if (step == items) break;
+                for (int x : pos[order[step]]) { --wide[x]; wrap[x] = (wrap[x] + 3) & 3; if (sat[x] < 3) --sat[x]; }                   // 포화한 카운터는 내리지 않는다
+            }
+            wrapFalseNeg += wrapBad; satFalseNeg += satBad; wideFalseNeg += wideBad;
+            bool residue = false; for (int c : sat) residue |= c != 0; satResidue += residue; bool wres = false; for (int c : wide) wres |= c != 0; wideResidue += wres;
+        }
+        assert(wrapFalseNeg > 0 && satFalseNeg == 0 && wideFalseNeg == 0 && satResidue > 0 && wideResidue == 0);
+        // 표준 설계(원소당 10 비트, k=7): 칸당 개수는 푸아송(0.7) 이라 4 비트 카운터(최대 15)로 충분하다
+        const int N = 100000; std::vector<unsigned char> c(10 * N, 0); std::mt19937_64 g2(3); int mx = 0; for (long t = 0; t < 7L * N; ++t) { int p = (int)(g2() % c.size()); mx = std::max(mx, (int)++c[p]); }
+        assert(mx < 15);
+        std::cout << "; with 2-bit counters in an overloaded filter: wrapping gave false negatives in " << wrapFalseNeg << "/2000 runs, saturating in " << satFalseNeg << " (but left residue in " << satResidue << "), wide counters in " << wideFalseNeg << "; at 10 bits/element the largest cell count was " << mx << std::endl;
+    }
     return 0;
 }
-// Time Complexity: add / has / remove O(k)
+// Time Complexity: add / has / remove O(k), 열거 검증 O(3^U · U)
 // Space Complexity: O(m)
 ```
 # Part 14. 유사도 해시
@@ -2877,80 +3946,171 @@ int main() {
 ## SimHash()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <sstream>
-#include <string>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <vector>
 
-// SimHash: 단어마다 64비트 해시를 만들어 비트별로 +1/-1 을 누적하고 부호로 64비트 지문을 만든다.
-// 비슷한 문서는 지문의 해밍 거리가 작다 (구글의 중복 웹페이지 탐지에 쓰인 방식)
-uint64_t fnv64(const std::string& s) {
-    uint64_t h = 14695981039346656037ULL;
-    for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; }
-    h ^= h >> 32; h *= 0x9e3779b97f4a7c15ULL; h ^= h >> 29;        // 비트가 고르게 섞이도록 마무리
-    return h;
-}
-uint64_t simhash(const std::string& doc) {
-    int v[64] = {0};
-    std::istringstream in(doc); std::string w;
-    while (in >> w) { uint64_t h = fnv64(w); for (int i = 0; i < 64; i++) v[i] += (h >> i & 1) ? 1 : -1; }
-    uint64_t f = 0;
-    for (int i = 0; i < 64; i++) if (v[i] > 0) f |= 1ULL << i;
-    return f;
-}
-int hamming(uint64_t a, uint64_t b) { return __builtin_popcountll(a ^ b); }
+// SimHash: 문서의 특징(단어)마다 64 비트 해시를 만들고, 비트별로 가중치를 +w / −w 로 누적해 부호로 64 비트 지문을 만든다.
+// 두 문서의 비트가 다를 확률 ≈ θ/π (θ = 두 tf 벡터 사이 각) → 해밍 거리 ≈ 64·arccos(cos)/π 이므로 비슷한 문서는 지문이 가깝다 (구글의 중복 웹페이지 탐지).
+//  ① 코사인과 해밍 거리의 관계를 여러 유사도에서 측정. ② 해밍 거리 ≤ k 를 모두 찾는 색인: 64 비트를 k+1 조각으로 나누면 비둘기집 원리로 최소 한 조각은 정확히 같다.
+//  ③ 그 색인이 거리 ≤ 3 의 모든 변형(C(64,≤3) = 43745 가지)을 놓치지 않는지 전수 확인, 무작위·계획된 중복쌍에서 무차별 탐색과 대조.
+//  ④ 가족(원본+약간 고친 변형) 문서 모음에서 가족 내 거리와 가족 간 거리가 분리되는지 확인.
+typedef std::uint64_t u64; typedef std::uint32_t u32; typedef std::int64_t i64;
+static inline u64 mix(u64 x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+typedef std::map<int, int> Doc;                                          // 단어 번호 → 빈도(tf)
+u64 simhash(const Doc& d, int stopRanks = 0) {                         // 가중치 = tf. stopRanks > 0 이면 흔한 단어(번호 < stopRanks)는 버리고 나머지는 1 + 2·ln(tf) (부분선형 tf)
+    i64 v[64] = {0};
+    for (auto& kv : d) { u64 h = mix((u64)kv.first + 0x1234567ULL); i64 w = stopRanks == 0 ? kv.second : kv.first < stopRanks ? 0 : 1 + std::llround(2 * std::log((double)kv.second)); for (int i = 0; i < 64; ++i) v[i] += (h >> i & 1) ? w : -w; }
+    u64 f = 0; for (int i = 0; i < 64; ++i) if (v[i] > 0) f |= 1ULL << i; return f; }
+int hamming(u64 a, u64 b) { return __builtin_popcountll(a ^ b); }
+double cosine(const Doc& a, const Doc& b) { double dot = 0, na = 0, nb = 0; for (auto& kv : a) { na += (double)kv.second * kv.second; auto it = b.find(kv.first); if (it != b.end()) dot += (double)kv.second * it->second; } for (auto& kv : b) nb += (double)kv.second * kv.second; return dot / std::sqrt(na * nb); }
+
+class NearDupIndex {                                                     // 해밍 거리 ≤ k 질의: k+1 개의 비트 조각 각각을 키로 한 정렬 배열
+    int k, blocks; std::vector<int> lo, width; std::vector<std::vector<std::pair<u32, u32>>> tab; std::vector<u64> fps;
+    u32 blockOf(u64 fp, int b) const { return (u32)((fp >> lo[b]) & ((width[b] == 64 ? ~0ULL : (1ULL << width[b]) - 1))); }
+public:
+    explicit NearDupIndex(int kk) : k(kk), blocks(kk + 1), lo(kk + 1), width(kk + 1), tab(kk + 1) { int pos = 0; for (int b = 0; b < blocks; ++b) { width[b] = 64 / blocks + (b < 64 % blocks); lo[b] = pos; pos += width[b]; } assert(pos == 64 && k >= 1); }
+    void add(u64 fp) { u32 id = (u32)fps.size(); fps.push_back(fp); for (int b = 0; b < blocks; ++b) tab[b].emplace_back(blockOf(fp, b), id); }
+    void seal() { for (auto& t : tab) std::sort(t.begin(), t.end()); }
+    std::vector<u32> query(u64 fp, std::size_t& scanned) const {          // 후보 = 어떤 조각이 같은 지문들, 그중 실제 거리 ≤ k 인 것만
+        std::vector<u32> out; for (int b = 0; b < blocks; ++b) { u32 key = blockOf(fp, b); for (auto it = std::lower_bound(tab[b].begin(), tab[b].end(), std::make_pair(key, 0u)); it != tab[b].end() && it->first == key; ++it) { ++scanned; if (hamming(fps[it->second], fp) <= k) out.push_back(it->second); } }
+        std::sort(out.begin(), out.end()); out.erase(std::unique(out.begin(), out.end()), out.end()); return out; }
+    std::vector<u32> brute(u64 fp) const { std::vector<u32> out; for (u32 i = 0; i < fps.size(); ++i) if (hamming(fps[i], fp) <= k) out.push_back(i); return out; }
+};
 
 int main() {
-    uint64_t d1 = simhash("the quick brown fox jumps over the lazy dog and runs into the forest near the old river");
-    uint64_t d2 = simhash("the quick brown fox jumped over the lazy dog and runs into the forest near the old river");
-    uint64_t d3 = simhash("stock markets rallied sharply after the central bank unexpectedly cut interest rates on friday");
-    int near = hamming(d1, d2), far = hamming(d1, d3);
-    assert(near < far);
-    assert(near <= 20);
-    std::cout << "hamming(similar)=" << near << " hamming(different)=" << far << std::endl;
+    std::mt19937_64 rng(6);
+    // ① 코사인 ↔ 해밍: 원본에서 단어 일부를 새 단어로 갈아 끼운 변형 (남기는 비율 f)
+    double worstGap = 0;
+    for (double f : {0.99, 0.95, 0.9, 0.8, 0.6, 0.4, 0.2, 0.0}) {
+        double sumH = 0, sumTheta = 0; const int T = 300;
+        for (int t = 0; t < T; ++t) {
+            Doc a, b; int next = 1000000; for (int i = 0; i < 150; ++i) { int w = (int)(rng() % 20000), tf = 1 + (int)(rng() % 5); a[w] = tf; if ((double)(rng() % 1000) / 1000 < f) b[w] = tf; else b[next++] = tf; }
+            sumH += hamming(simhash(a), simhash(b)) / 64.0; sumTheta += std::acos(std::min(1.0, cosine(a, b))) / M_PI;
+        }
+        double gap = std::abs(sumH - sumTheta) / T; worstGap = std::max(worstGap, gap); assert(gap < 0.03);
+    }
+    // ② 색인 vs 무차별 탐색: 지문 2 만 개 + 계획된 중복쌍 (거리 0~3 으로 비트 뒤집기), 질의 2000 개
+    for (int k : {1, 2, 3, 5}) {
+        NearDupIndex ix(k); std::vector<u64> fps; for (int i = 0; i < 20000; ++i) fps.push_back(rng());
+        for (int i = 0; i < 300; ++i) { u64 f = fps[rng() % 20000]; int d = (int)(rng() % (k + 2)); for (int j = 0; j < d; ++j) f ^= 1ULL << (rng() % 64); fps.push_back(f); }
+        for (u64 f : fps) ix.add(f); ix.seal(); std::size_t scanned = 0, hits = 0;
+        for (int q = 0; q < 2000; ++q) { u64 f = fps[rng() % fps.size()]; if (q % 2) f ^= 1ULL << (rng() % 64); std::vector<u32> got = ix.query(f, scanned), want = ix.brute(f); assert(got == want); hits += got.size(); }
+        assert(hits >= 2000 && scanned < 2000 * (fps.size() / 10));       // 무차별 탐색(2000 × 20300 번)의 10 % 미만만 훑는다
+    }
+    // ③ 비둘기집 원리의 전수 확인 (k = 3): 한 지문의 거리 0~3 변형 43745 개 전부가 질의로 원본을 찾는다
+    {   NearDupIndex ix(3); u64 target = rng(); ix.add(target); for (int i = 0; i < 3000; ++i) ix.add(rng()); ix.seal(); long checked = 0; std::size_t scanned = 0;
+        auto found = [&](u64 f) { std::vector<u32> r = ix.query(f, scanned); ++checked; return std::binary_search(r.begin(), r.end(), 0u); };
+        assert(found(target)); for (int a = 0; a < 64; ++a) { assert(found(target ^ (1ULL << a))); for (int b = a + 1; b < 64; ++b) { assert(found(target ^ (1ULL << a) ^ (1ULL << b))); for (int c = b + 1; c < 64; ++c) assert(found(target ^ (1ULL << a) ^ (1ULL << b) ^ (1ULL << c))); } }
+        assert(checked == 1 + 64 + 2016 + 41664);
+    }
+    // ④ 가족 문서: 100 가족 × (원본 + 변형 3 개, 단어 3 % 교체), 빈도는 지프 분포 → 가족 내 거리 vs 가족 간 거리
+    {   std::vector<Doc> docs; std::vector<int> family; std::vector<double> w(5000); for (int i = 0; i < 5000; ++i) w[i] = 1.0 / (i + 1);
+        std::discrete_distribution<int> zipf(w.begin(), w.end()); std::mt19937 g(2);
+        for (int f = 0; f < 100; ++f) {
+            Doc base; for (int i = 0; i < 250; ++i) ++base[zipf(g)]; docs.push_back(base); family.push_back(f);
+            for (int v = 0; v < 3; ++v) { Doc d = base; int edits = 6; for (int e = 0; e < edits; ++e) { auto it = d.begin(); std::advance(it, g() % d.size()); if (--it->second == 0) d.erase(it); ++d[zipf(g)]; } docs.push_back(d); family.push_back(f); }
+        }
+        for (int stop : {0, 30}) {
+            std::vector<u64> fp; for (auto& d : docs) fp.push_back(simhash(d, stop)); const int T = 10; long within = 0, withinOk = 0, across = 0, acrossBad = 0; double sumWithin = 0, sumAcross = 0;
+            for (std::size_t i = 0; i < docs.size(); ++i) for (std::size_t j = i + 1; j < docs.size(); ++j) { int h = hamming(fp[i], fp[j]); if (family[i] == family[j]) { ++within; withinOk += h <= T; sumWithin += h; } else { ++across; acrossBad += h <= T; sumAcross += h; } }
+            double recall = (double)withinOk / within, fpr = (double)acrossBad / across;
+            if (stop == 0) { assert(sumAcross / across < 14 && fpr > 0.3 && recall > 0.9); std::cout << "SimHash: |measured Hamming/64 - arccos(cos)/pi| stayed below " << worstGap << " at every similarity; the index matched brute force for k=1,2,3,5 and found all 43745 variants within distance 3; in a 400-document Zipf corpus, raw tf weights let stop words dominate (unrelated documents averaged only " << sumAcross / across << " bits apart, so " << 100 * fpr << "% of cross-family pairs fell within 10 bits), "; }
+            else { assert(recall > 0.9 && fpr < 0.002 && sumAcross / across > 20); std::cout << "while dropping the 30 most common words and using 1+2ln(tf) put " << 100 * recall << "% of same-family pairs and " << 100 * fpr << "% of cross-family pairs within 10 bits (means " << sumWithin / within << " vs " << sumAcross / across << ")" << std::endl; }
+        }
+    }
     return 0;
 }
-// Time Complexity: O(단어 수 · 64)
-// Space Complexity: O(1)
+// Time Complexity: 지문 O(단어 수 · 64), 색인 질의 기대 O(k · log N + 후보 수)
+// Space Complexity: O(N · (k + 1)) (색인), 지문은 문서당 8 바이트
 ```
 ## MinHash()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <set>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <string>
 #include <vector>
-#include <cassert>
 
-// MinHash: 무작위 순열(해시) h 아래에서 두 집합의 최소 원소가 같을 확률 = Jaccard(A, B).
-// 해시 K 개의 서명에서 "같은 칸의 비율"이 Jaccard 의 불편 추정량이다 (표준오차 ≈ sqrt(J(1-J)/K))
-uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
-std::vector<uint64_t> minhash(const std::set<int>& s, int K) {
-    std::vector<uint64_t> sig(K, UINT64_MAX);
-    for (int x : s) for (int i = 0; i < K; i++) sig[i] = std::min(sig[i], mix((uint64_t)x * 0x9e3779b97f4a7c15ULL + i * 0xbf58476d1ce4e5b9ULL));
-    return sig;
-}
-double estimate(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
-    int same = 0; for (size_t i = 0; i < a.size(); i++) same += (a[i] == b[i]);
-    return double(same) / a.size();
-}
+// MinHash: 무작위 순열 π 아래에서 두 집합 A, B 의 "최소 원소"가 같을 확률 = Jaccard(A, B) = |A∩B| / |A∪B|.
+// 순열 K 개(여기서는 해시 K 개)로 서명을 만들면 "같은 칸의 비율"이 Jaccard 의 불편 추정량이다 (표준오차 √(J(1−J)/K)).
+//  ① 작은 전체집합(6 개)에서는 모든 순열 720 개를 세어 확률 = Jaccard 를 *정확히* 확인한다 (모든 쌍 A, B).
+//  ② 통계 검증: 편향 없음, 오차가 √(J(1−J)/K) 로 줄어듦. ③ 합집합 서명 = 칸별 최솟값(정확히 같음). ④ b-비트 MinHash(서명 크기를 줄이는 변형), ⑤ bottom-k 스케치(해시 한 번).
+typedef std::uint64_t u64;
+static inline u64 mix(u64 x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+struct MinHash {
+    int K; std::vector<u64> seed;
+    explicit MinHash(int k, u64 s = 1) : K(k), seed(k) { for (int i = 0; i < k; ++i) seed[i] = mix(s * 0x9e3779b97f4a7c15ULL + (u64)i + 1); }
+    std::vector<u64> sign(const std::vector<u64>& set) const {           // 칸 i 의 값 = min_x h_i(x).  원소 하나당 해시 K 번
+        std::vector<u64> sig(K, UINT64_MAX); for (u64 x : set) { u64 hx = mix(x); for (int i = 0; i < K; ++i) sig[i] = std::min(sig[i], mix(hx ^ seed[i])); } return sig; }
+    static double estimate(const std::vector<u64>& a, const std::vector<u64>& b) { int same = 0; for (std::size_t i = 0; i < a.size(); ++i) same += a[i] == b[i]; return (double)same / a.size(); }
+    static std::vector<u64> merge(const std::vector<u64>& a, const std::vector<u64>& b) { std::vector<u64> r(a.size()); for (std::size_t i = 0; i < a.size(); ++i) r[i] = std::min(a[i], b[i]); return r; }
+    static double estimateBBit(const std::vector<u64>& a, const std::vector<u64>& b, int bits) {     // 칸마다 하위 b 비트만 저장해도 (m − 2^−b)/(1 − 2^−b) 로 보정하면 불편 추정
+        u64 mask = (1ULL << bits) - 1; int same = 0; for (std::size_t i = 0; i < a.size(); ++i) same += (a[i] & mask) == (b[i] & mask);
+        double m = (double)same / a.size(), c = std::pow(2.0, -bits); return (m - c) / (1 - c); }
+};
+std::vector<u64> bottomK(const std::vector<u64>& set, std::size_t k, u64 seed) {      // 해시 하나로 가장 작은 k 개만 남긴다 (정렬된 벡터)
+    std::vector<u64> h; for (u64 x : set) h.push_back(mix(mix(x) ^ seed)); std::sort(h.begin(), h.end()); h.erase(std::unique(h.begin(), h.end()), h.end()); if (h.size() > k) h.resize(k); return h; }
+double bottomKJaccard(const std::vector<u64>& a, const std::vector<u64>& b, std::size_t k) {   // 합집합의 bottom-k 중 A, B 양쪽에 모두 있는 비율
+    std::vector<u64> u; std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(u)); if (u.size() > k) u.resize(k);
+    std::size_t both = 0; for (u64 x : u) both += std::binary_search(a.begin(), a.end(), x) && std::binary_search(b.begin(), b.end(), x); return (double)both / u.size(); }
+double exactJaccard(std::vector<u64> a, std::vector<u64> b) { std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end()); std::vector<u64> i, u; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(i)); std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(u)); return (double)i.size() / u.size(); }
+void makePair(int n, int inter, u64 base, std::vector<u64>& A, std::vector<u64>& B) { A.clear(); B.clear(); for (int i = 0; i < n; ++i) A.push_back(base + i); for (int i = n - inter; i < 2 * n - inter; ++i) B.push_back(base + i); }
 
 int main() {
-    std::set<int> A, B;
-    for (int i = 0; i < 100; i++) A.insert(i);
-    for (int i = 50; i < 150; i++) B.insert(i);                    // 교집합 50, 합집합 150 -> J = 1/3
-    double truth = 50.0 / 150.0;
-    double est = estimate(minhash(A, 256), minhash(B, 256));
-    assert(std::fabs(est - truth) < 0.1);
-    assert(estimate(minhash(A, 256), minhash(A, 256)) == 1.0);     // 같은 집합은 서명도 같다
-    std::cout << "true Jaccard " << truth << ", MinHash estimate " << est << std::endl;
+    // ① 전체집합 {0..5} 의 모든 순열(720 개)과 모든 비어 있지 않은 쌍 (A, B): P[argmin_A == argmin_B] = |A∩B| / |A∪B| 가 정확히 성립
+    {   const int U = 6; std::vector<int> perm(U); std::iota(perm.begin(), perm.end(), 0); std::vector<std::vector<int>> perms; do perms.push_back(perm); while (std::next_permutation(perm.begin(), perm.end())); assert(perms.size() == 720);
+        for (int A = 1; A < (1 << U); ++A) for (int B = 1; B < (1 << U); ++B) {
+            int match = 0; for (auto& rank : perms) { int ma = -1, mb = -1; for (int x = 0; x < U; ++x) { if ((A >> x & 1) && (ma < 0 || rank[x] < rank[ma])) ma = x; if ((B >> x & 1) && (mb < 0 || rank[x] < rank[mb])) mb = x; } match += ma == mb; }
+            int inter = __builtin_popcount(A & B), uni = __builtin_popcount(A | B); assert(match * uni == inter * 720);
+        }
+    }
+    // ② 통계: 편향 없음, 표준오차 = √(J(1−J)/K)
+    std::mt19937_64 rng(4); double worstBias = 0, worstRatio = 0, bestRatio = 9;
+    for (int inter : {36, 133, 190}) for (int K : {16, 64, 256}) {
+        std::vector<u64> A, B; makePair(200, inter, 1000, A, B); double J = (double)inter / (400 - inter), se = std::sqrt(J * (1 - J) / K); double sum = 0, sq = 0; const int T = 400;
+        for (int t = 0; t < T; ++t) { MinHash mh(K, 1000 + t); double e = MinHash::estimate(mh.sign(A), mh.sign(B)); sum += e - J; sq += (e - J) * (e - J); }
+        double bias = sum / T, rms = std::sqrt(sq / T); assert(std::abs(bias) < 4 * se / std::sqrt((double)T) && rms > 0.8 * se && rms < 1.25 * se);
+        worstBias = std::max(worstBias, std::abs(bias) / se); worstRatio = std::max(worstRatio, rms / se); bestRatio = std::min(bestRatio, rms / se);
+    }
+    // ③ 합집합 서명 = 칸별 최솟값 (정확히 같음), 같은 집합 → 1, 서로소 → 0
+    for (int it = 0; it < 100; ++it) {
+        std::vector<u64> A(1 + rng() % 50), B(1 + rng() % 50), AB; for (u64& x : A) x = rng() % 200; for (u64& x : B) x = rng() % 200; AB = A; AB.insert(AB.end(), B.begin(), B.end());
+        MinHash mh(64, it); assert(mh.sign(AB) == MinHash::merge(mh.sign(A), mh.sign(B)) && MinHash::estimate(mh.sign(A), mh.sign(A)) == 1.0);
+    }
+    {   std::vector<u64> A, B; for (u64 i = 0; i < 300; ++i) { A.push_back(i); B.push_back(10000 + i); } MinHash mh(512, 5); assert(MinHash::estimate(mh.sign(A), mh.sign(B)) == 0.0); }
+    // ④ b-비트 MinHash: 서명 크기를 b/64 로 줄여도 편향은 없고 분산만 커진다
+    {   std::vector<u64> A, B; makePair(300, 150, 7, A, B); const double J = 1.0 / 3; const int K = 256, T = 300; double d1 = 0, d8 = 0;
+        for (int t = 0; t < T; ++t) { MinHash mh(K, 77 + t); auto sa = mh.sign(A), sb = mh.sign(B); d1 += MinHash::estimateBBit(sa, sb, 1) - J; d8 += MinHash::estimateBBit(sa, sb, 8) - J; }
+        double m1 = 0.5 + 0.5 * J, sd1 = std::sqrt(m1 * (1 - m1) / K) / 0.5, sd8 = std::sqrt(J * (1 - J) / K) / (1 - 1.0 / 256);       // 1 비트는 표준편차가 약 2 배
+        assert(std::abs(d1 / T) < 4 * sd1 / std::sqrt((double)T) && std::abs(d8 / T) < 4 * sd8 / std::sqrt((double)T) && sd1 > 1.8 * sd8); }
+    // ⑤ bottom-k: 해시를 한 번만 쓰고도 비슷한 정확도 (k = 256, 두 집합 각 5000 개)
+    {   std::vector<u64> A, B; makePair(5000, 2500, 91, A, B); double J = 2500.0 / 7500, errMax = 0;
+        for (int t = 0; t < 100; ++t) { u64 seed = 900 + t; double e = bottomKJaccard(bottomK(A, 256, seed), bottomK(B, 256, seed), 256); errMax = std::max(errMax, std::abs(e - J)); }
+        assert(errMax < 4.5 * std::sqrt(J * (1 - J) / 256)); }
+    // ⑥ 문서: 3-글자 조각(shingle) 집합의 Jaccard vs MinHash (서명 K = 256)
+    {   auto shingles = [](const std::string& s) { std::vector<u64> r; for (std::size_t i = 0; i + 3 <= s.size(); ++i) r.push_back((u64)(unsigned char)s[i] << 16 | (u64)(unsigned char)s[i + 1] << 8 | (unsigned char)s[i + 2]); std::sort(r.begin(), r.end()); r.erase(std::unique(r.begin(), r.end()), r.end()); return r; };
+        std::string base; for (int i = 0; i < 400; ++i) base += "abcdefghijklmnopqrstuvwxyz "[rng() % 27]; std::string edited = base; for (int i = 0; i < 20; ++i) edited[rng() % edited.size()] = 'Z'; std::string other; for (int i = 0; i < 400; ++i) other += "abcdefghijklmnopqrstuvwxyz "[rng() % 27];
+        MinHash mh(256, 3); auto sb = mh.sign(shingles(base)), se = mh.sign(shingles(edited)), so = mh.sign(shingles(other));
+        double j1 = exactJaccard(shingles(base), shingles(edited)), j2 = exactJaccard(shingles(base), shingles(other)); assert(std::abs(MinHash::estimate(sb, se) - j1) < 0.12 && std::abs(MinHash::estimate(sb, so) - j2) < 0.08 && j1 > j2 + 0.3);
+    }
+    // 큰 입력: 각 20 만 개, 절반 겹침 (J = 1/3), K = 256
+    {   std::vector<u64> A, B; makePair(200000, 100000, 123456789, A, B); MinHash mh(256, 8); double e = MinHash::estimate(mh.sign(A), mh.sign(B)), J = 1.0 / 3; assert(std::abs(e - J) < 4 * std::sqrt(J * (1 - J) / 256));
+        std::cout << "MinHash: all 720 permutations matched |A∩B|/|A∪B| exactly for every pair of non-empty subsets of 6 elements; over 9 (J, K) settings the largest |bias| was " << worstBias << " x sqrt(J(1-J)/K) and the RMS error stayed within [" << bestRatio << ", " << worstRatio << "] x sqrt(J(1-J)/K); 2*10^5-element sets (J=1/3) gave " << e << std::endl; }
     return 0;
 }
-// Time Complexity: O(|S|·K)
-// Space Complexity: O(K)
+// Time Complexity: 서명 O(|S|·K), 비교 O(K), bottom-k 는 O(|S| log k)
+// Space Complexity: O(K) (b-비트 MinHash 는 K·b 비트)
 ```
 ## SemanticHashing()
 ### 대표코드
@@ -3075,115 +4235,233 @@ int main() {
 ## LearnedHash()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <set>
+#include <functional>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
-#include <cassert>
 
-// 학습된 해시(Learned Index 의 아이디어): 키의 누적분포(CDF)를 모델로 학습하면 h(k) = CDF(k) · m 이
-// 키를 슬롯에 거의 균등·단조하게 펼쳐 놓는다 -> 무작위 해시의 충돌(약 37%)보다 훨씬 적게 충돌한다.
-// 여기서는 정렬된 키에서 32개마다 표본을 뽑아 구간별 선형 보간으로 CDF 를 근사한다.
-struct Model {
-    std::vector<double> sx, sy; size_t n;
-    Model(const std::vector<double>& sorted) : n(sorted.size()) {
-        for (size_t i = 0; i < sorted.size(); i += 32) { sx.push_back(sorted[i]); sy.push_back((double)i); }
-        sx.push_back(sorted.back()); sy.push_back((double)sorted.size() - 1);
+// 학습된 해시(Learned Index 의 아이디어): 키의 누적분포(CDF)를 모델로 학습하면 h(k) = CDF(k)·m 이 키를 슬롯에 균등·단조하게 펼친다.
+// 무작위 해시는 적재율 1 에서 약 37 % 의 키가 충돌하지만(빈 슬롯 e^−1), 이미 아는 키 집합에 대해서는 CDF 가 정확할수록 충돌이 줄고 모델 크기가 정확도를 산다.
+//  · 모델 = 정렬된 학습 키에서 step 개마다 뽑은 (키, 순위) 표본의 구간별 선형 보간 → 순위 추정 → 슬롯.  step = 1 이면 순위 그대로(완전·최소·단조 해시, 모델 크기 n).
+//  · 한계도 같이 확인한다: 새 키(분포 이동)에는 보장이 없고 한 슬롯에 몰리며, 일반 해시와 달리 모델을 다시 학습시켜야 한다. 정확성(조회 결과)은 어떤 모델이든 유지된다.
+typedef std::uint64_t u64;
+static inline u64 mix(u64 x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+class LearnedModel {
+    std::vector<double> sx, sy; std::size_t n;
+public:
+    LearnedModel(const std::vector<u64>& sortedDistinct, std::size_t step) : n(sortedDistinct.size()) {
+        for (std::size_t i = 0; i < n; i += step) { sx.push_back((double)sortedDistinct[i]); sy.push_back((double)i); }
+        if (sx.back() != (double)sortedDistinct.back()) { sx.push_back((double)sortedDistinct.back()); sy.push_back((double)n - 1); }
     }
-    size_t slot(double k, size_t m) const {
-        size_t j = std::upper_bound(sx.begin(), sx.end(), k) - sx.begin();
-        if (j == 0) return 0;
-        if (j >= sx.size()) return m - 1;
-        double t = (k - sx[j - 1]) / (sx[j] - sx[j - 1]);
-        double rank = sy[j - 1] + t * (sy[j] - sy[j - 1]);
-        return std::min<size_t>(m - 1, (size_t)(rank / n * m));
+    std::size_t modelSize() const { return sx.size(); }
+    double rank(u64 key) const {                                         // 추정 순위 ∈ [0, n−1], 키에 대해 단조 비감소
+        double k = (double)key; if (k <= sx.front()) return 0; if (k >= sx.back()) return (double)n - 1;
+        std::size_t j = std::upper_bound(sx.begin(), sx.end(), k) - sx.begin(); double t = (k - sx[j - 1]) / (sx[j] - sx[j - 1]); return sy[j - 1] + t * (sy[j] - sy[j - 1]);
     }
+    std::size_t slot(u64 key, std::size_t m) const { return std::min(m - 1, (std::size_t)(rank(key) * (double)m / (double)n)); }                // (순위 × m) / n 순서: step 1 에서 정수 나눗셈이 정확해진다
 };
-uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+struct RandomHash { std::size_t m; std::size_t operator()(u64 k) const { return mix(k) % m; } };
+struct LearnedHash { const LearnedModel* model; std::size_t m; std::size_t operator()(u64 k) const { return model->slot(k, m); } };
+template <class H> struct ChainTable {                                   // 체인 테이블 (슬롯 함수만 바꿔 끼운다). 조회의 비교 횟수를 센다
+    std::vector<std::vector<u64>> b; H h; std::size_t n = 0;
+    ChainTable(std::size_t m, H hh) : b(m), h(hh) {}
+    bool insert(u64 k) { auto& c = b[h(k)]; if (std::find(c.begin(), c.end(), k) != c.end()) return false; c.push_back(k); ++n; return true; }
+    bool find(u64 k, long& probes) const { for (u64 x : b[h(k)]) { ++probes; if (x == k) return true; } return false; }
+    bool erase(u64 k) { auto& c = b[h(k)]; auto it = std::find(c.begin(), c.end(), k); if (it == c.end()) return false; *it = c.back(); c.pop_back(); --n; return true; }
+    std::size_t collisions() const { std::size_t used = 0; for (auto& c : b) used += !c.empty(); return n - used; }              // 키 수 − 쓰인 슬롯 수
+    std::size_t maxLoad() const { std::size_t mx = 0; for (auto& c : b) mx = std::max(mx, c.size()); return mx; }
+    double avgProbes(const std::vector<u64>& keys) const { long p = 0; for (u64 k : keys) { bool f = find(k, p); assert(f); (void)f; } return (double)p / keys.size(); }
+};
+std::vector<u64> distinctSorted(std::vector<u64> v) { std::sort(v.begin(), v.end()); v.erase(std::unique(v.begin(), v.end()), v.end()); return v; }
 
 int main() {
-    const size_t n = 10000, m = n;                                  // 적재율 1
-    std::vector<double> keys;
-    for (size_t i = 1; i <= n; i++) keys.push_back(std::floor(1000.0 * std::pow((double)i, 1.5)));   // 간격이 점점 벌어지는 치우친 분포
-    Model model(keys);
-    std::set<size_t> learnedSlots, randomSlots;
-    for (double k : keys) { learnedSlots.insert(model.slot(k, m)); randomSlots.insert(mix((uint64_t)k) % m); }
-    size_t learnedCollisions = n - learnedSlots.size(), randomCollisions = n - randomSlots.size();
-    assert(learnedCollisions * 3 < randomCollisions);               // 학습된 해시가 충돌이 훨씬 적다
-    std::cout << "collisions: learned " << learnedCollisions << ", random " << randomCollisions << " (of " << n << ")" << std::endl;
+    std::mt19937_64 rng(12); const std::size_t n = 20000;
+    std::normal_distribution<double> gauss(0, 1);
+    struct Dist { const char* name; std::vector<u64> keys; } dists[6];
+    dists[0].name = "uniform";    for (std::size_t i = 0; i < n * 2; ++i) dists[0].keys.push_back(rng() >> 24);
+    dists[1].name = "power gaps"; for (std::size_t i = 1; i <= n; ++i) dists[1].keys.push_back((u64)std::floor(1000.0 * std::pow((double)i, 1.5)));
+    dists[2].name = "bell";       for (std::size_t i = 0; i < n * 2; ++i) dists[2].keys.push_back((u64)((double)(1ULL << 38) * (3 + gauss(rng))));
+    dists[3].name = "clustered";  { std::vector<u64> centers; for (int c = 0; c < 20; ++c) centers.push_back(rng() >> 24); for (std::size_t i = 0; i < n * 2; ++i) dists[3].keys.push_back(centers[rng() % 20] + rng() % 100000); }
+    dists[4].name = "gapped seq"; for (std::size_t i = 0; i < n; ++i) dists[4].keys.push_back(i * 10 + rng() % 4);
+    dists[5].name = "log-normal"; for (std::size_t i = 0; i < n * 2; ++i) dists[5].keys.push_back((u64)std::exp(14 + 2 * gauss(rng)) + 1);
+    // ① 여섯 가지 분포에서 (학습 키 자체에 대한) 충돌 수: 무작위 해시 ≈ 0.37 n.  표본 1/32 모델은 *규칙적인* 키 집합(간격이 매끈하게 변하는 것)에서만 크게 이기고,
+    //    난수로 뽑은 키는 표본 사이의 무작위 요철을 배울 수 없어 무작위 해시와 비슷하다 (공짜 점심은 없다).  step 1 (모델 크기 n) 은 항상 0.
+    double ratio[6]; int di = 0;
+    for (auto& d : dists) {
+        std::vector<u64> keys = distinctSorted(d.keys); if (keys.size() > n) keys.resize(n); std::size_t nn = keys.size(); assert(nn >= n * 9 / 10);
+        LearnedModel coarse(keys, 32), exact(keys, 1); ChainTable<RandomHash> rnd(nn, RandomHash{nn}); ChainTable<LearnedHash> lrn(nn, LearnedHash{&coarse, nn}), perfect(nn, LearnedHash{&exact, nn});
+        for (u64 k : keys) { rnd.insert(k); lrn.insert(k); perfect.insert(k); }
+        assert(rnd.collisions() > 0.33 * nn && rnd.collisions() < 0.40 * nn);                                    // 푸아송: 빈 칸 비율 e^-1 → 충돌 ≈ 0.368 n
+        assert(perfect.collisions() == 0 && perfect.maxLoad() == 1 && exact.modelSize() == nn);                    // step 1: 순위 자체가 완전·최소 해시, 모델 크기는 n
+        assert(std::abs(rnd.avgProbes(keys) - 1.5) < 0.05);                                                     // 무작위 해시의 평균 비교 횟수 ≈ 1 + α/2 = 1.5
+        ratio[di] = (double)lrn.collisions() / rnd.collisions(); if (di == 1) assert(ratio[di] < 0.15 && lrn.avgProbes(keys) < 1.15); else if (di == 4) assert(ratio[di] < 0.7 && lrn.avgProbes(keys) < 1.3); else assert(ratio[di] > 0.85); ++di;      // 매끈한 거듭제곱 간격 / 격자+잡음 / 나머지(난수 키)
+    }
+    // ② 모델 크기 대 충돌 (균등 분포): step 이 커질수록 모델은 작아지고 충돌은 늘어난다
+    {   std::vector<u64> keys = distinctSorted(dists[0].keys); keys.resize(n); std::size_t prevColl = 0, firstColl = 0, lastColl = 0;
+        for (std::size_t step : {1u, 2u, 4u, 16u, 64u, 256u, 1024u, 4096u}) {
+            LearnedModel mod(keys, step); ChainTable<LearnedHash> t(n, LearnedHash{&mod, n}); for (u64 k : keys) t.insert(k); std::size_t c = t.collisions(); assert(mod.modelSize() <= n / step + 2);
+            if (step == 1) { assert(c == 0); firstColl = c; } else assert(c + n / 50 >= prevColl);              // 거의 단조 증가 (표본 잡음 2 % 허용)
+            prevColl = c; lastColl = c;
+        }
+        assert(lastColl > firstColl + n / 10);
+    }
+    // ③ 단조성: 모델의 슬롯은 키 순서를 보존 — 범위 질의에 쓸 수 있다 (무작위 해시는 불가).  학습하지 않은 임의 키에도 성립
+    for (auto& d : dists) {
+        std::vector<u64> keys = distinctSorted(d.keys); LearnedModel mod(keys, 16); std::vector<u64> probes; for (int i = 0; i < 100000; ++i) probes.push_back(rng() >> (rng() % 40)); std::sort(probes.begin(), probes.end());
+        std::size_t prev = 0; for (u64 q : probes) { std::size_t s = mod.slot(q, 50000); assert(s >= prev && s < 50000); prev = s; }
+    }
+    // ④ 분포가 이동하면 보장이 사라진다: 균등 분포로 학습한 모델에 (a) 범위 밖의 새 키, (b) 범위 안의 좁은 구간의 새 키
+    {   std::vector<u64> keys = distinctSorted(dists[0].keys); keys.resize(n); LearnedModel mod(keys, 32); u64 lo = keys.front(), hi = keys.back();
+        std::vector<u64> outside, narrow; for (std::size_t i = 0; i < n; ++i) { outside.push_back(hi + 1 + rng() % 1000000000ULL); narrow.push_back(lo + (hi - lo) / 2 + rng() % ((hi - lo) / 1000)); }
+        for (const std::vector<u64>* fresh : {&outside, &narrow}) {
+            ChainTable<RandomHash> rnd(n, RandomHash{n}); ChainTable<LearnedHash> lrn(n, LearnedHash{&mod, n}); for (u64 k : *fresh) { rnd.insert(k); lrn.insert(k); }
+            assert(lrn.collisions() > 2 * rnd.collisions() && lrn.maxLoad() > 20 * rnd.maxLoad());               // 몰림: 범위 밖은 마지막 슬롯 하나에 전부
+            long p = 0; for (u64 k : *fresh) { bool f = lrn.find(k, p); assert(f); (void)f; }                      // 그래도 조회 결과는 정확하다 (느려질 뿐)
+        }
+    }
+    // ⑤ 동적 사용: 학습 시점의 키 1 만 개 + 같은 분포의 새 키 삽입·삭제·조회를 std::unordered_map 과 대조 (정확성), 새 키에는 이점이 사라진다 (무작위 해시와 비슷한 비교 횟수)
+    {   std::vector<u64> all = distinctSorted(dists[0].keys); std::shuffle(all.begin(), all.end(), rng); std::vector<u64> train(all.begin(), all.begin() + 10000), fresh(all.begin() + 10000, all.begin() + 20000);
+        std::vector<u64> sortedTrain = distinctSorted(train); LearnedModel mod(sortedTrain, 16); ChainTable<LearnedHash> t(20000, LearnedHash{&mod, 20000}); ChainTable<RandomHash> r(20000, RandomHash{20000}); std::unordered_set<u64> ref;
+        for (u64 k : train) { assert(t.insert(k) == r.insert(k)); ref.insert(k); }
+        for (int op = 0; op < 60000; ++op) { u64 k = rng() % 3 ? all[rng() % 20000] : rng() >> 24; int t3 = (int)(rng() % 3); long p = 0;
+            if (t3 == 0) { bool a = t.insert(k), b = r.insert(k), c = ref.insert(k).second; assert(a == c && b == c); } else if (t3 == 1) { bool a = t.erase(k), b = r.erase(k), c = ref.erase(k) > 0; assert(a == c && b == c); } else { bool a = t.find(k, p), b = r.find(k, p), c = ref.count(k) > 0; assert(a == c && b == c); } }
+        assert(t.n == ref.size() && r.n == ref.size());
+        ChainTable<LearnedHash> t2(20000, LearnedHash{&mod, 20000}); ChainTable<RandomHash> r2(20000, RandomHash{20000}); for (u64 k : fresh) { t2.insert(k); r2.insert(k); }
+        double pl = t2.avgProbes(fresh), pr = r2.avgProbes(fresh); assert(pl > 0.85 * pr && pl < 1.2 * pr);
+        std::cout << "LearnedHash: collisions of a 1/32-sized CDF model relative to random hashing (~37% of keys collide): "; for (int i = 0; i < 6; ++i) std::cout << dists[i].name << " " << ratio[i] << (i < 5 ? ", " : "; "); std::cout << "a full-rank model (size n) gave 0 collisions; keys unseen by the model got " << pl << " probes on average vs " << pr << " for random hashing" << std::endl;
+    }
+    // 큰 입력: 매끈하게 벌어지는 키 100 만 개, 표본 간격 64 (모델 크기 약 1.6 만 = n/64) — 규칙성이 있으면 큰 입력에서도 같은 효과
+    {   std::vector<u64> keys; for (u64 i = 1; i <= 1000000; ++i) keys.push_back((u64)std::floor(2000.0 * std::pow((double)i, 1.5))); LearnedModel mod(keys, 64); const std::size_t m = keys.size();
+        std::vector<char> usedL(m, 0), usedR(m, 0); std::size_t distL = 0, distR = 0; for (u64 k : keys) { std::size_t a = mod.slot(k, m), b = mix(k) % m; distL += !usedL[a]; usedL[a] = 1; distR += !usedR[b]; usedR[b] = 1; }
+        assert(m - distL < 0.25 * (m - distR) && mod.modelSize() < m / 60); }
     return 0;
 }
-// Time Complexity: 조회 O(log S) (S = 표본 수), 상수 시간 모델로 대체 가능
-// Space Complexity: O(n/32)
+// Time Complexity: 조회 O(log S) (S = 표본 수, 균등 분할 표를 쓰면 O(1)), 학습 O(n)
+// Space Complexity: O(n / step)
 ```
 # Part 16. 해시 성능 시각화
 ## CollisionVisualization()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 12개의 키를 버킷 8개에 넣고 충돌을 그림으로 본다. ■ 가 첫 원소, ▲ 는 충돌한 추가 원소
-size_t fnv(const std::string& s) { size_t h = 1469598103934665603ULL; for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; } return h; }
+// 충돌을 눈으로 본다. 12 개의 키를 버킷 8 개에 넣으면 ■ 가 버킷의 첫 원소, ▲ 는 충돌한 추가 원소다.
+//  ① 그림 + 비둘기집 원리(충돌 수 = 키 수 − 사용된 버킷 수 ≥ n − m).  ② "사용된 버킷 수"의 분포를 점유 DP 로 *정확히* 구해, 시드를 바꿔 가며 만든 20 만 개의 해시 함수 결과와 대조.
+//  ③ 생일 역설: 충돌 확률이 처음 1/2 를 넘는 키 수 (m=365 → 23, m=2^32 → 77164 — 흔히 인용되는 77163 은 √(2m ln 2) 근사, 근사 1.1774·√m).  ④ 키 100 만 개를 2^20 칸에 넣은 버킷 적재량 히스토그램 vs 푸아송 분포.
+uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
+uint64_t fnv(const std::string& s, uint64_t seed) { uint64_t h = 1469598103934665603ULL ^ seed; for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; } return mix(h); }       // 시드로 해시 함수 가족을 만든다
+std::vector<double> usedDistribution(int n, int m) {                      // P[u] = 키 n 개를 버킷 m 개에 던졌을 때 정확히 u 개 버킷이 쓰일 확률
+    std::vector<double> dp(m + 1, 0.0); dp[0] = 1;
+    for (int t = 0; t < n; ++t) { std::vector<double> nd(m + 1, 0.0); for (int u = 0; u <= m; ++u) { nd[u] += dp[u] * u / m; if (u < m) nd[u + 1] += dp[u] * (m - u) / m; } dp.swap(nd); }
+    return dp;
+}
+long double collisionProbability(long n, long double m) { long double logNo = 0; for (long i = 1; i < n; ++i) logNo += log1pl(-(long double)i / m); return 1 - expl(logNo); }
+long minKeysForHalf(long double m) { long double logNo = 0; for (long n = 1;; ++n) { logNo += log1pl(-(long double)n / m); if (1 - expl(logNo) >= 0.5L) return n + 1; } }       // n 번째 키까지 넣어 처음 ≥ 1/2
 
 int main() {
     const char* words[] = {"apple", "banana", "cherry", "date", "elder", "fig", "grape", "honey", "iris", "jade", "kiwi", "lemon"};
-    std::vector<std::vector<std::string>> bucket(8);
-    for (auto w : words) bucket[fnv(w) % 8].push_back(w);
-    size_t collisions = 0, used = 0;
-    for (size_t i = 0; i < bucket.size(); i++) {
-        std::cout << "[" << i << "] ";
-        for (size_t j = 0; j < bucket[i].size(); j++) std::cout << (j == 0 ? "■ " : "▲ ") << bucket[i][j] << "  ";
-        std::cout << "\n";
-        if (!bucket[i].empty()) { used++; collisions += bucket[i].size() - 1; }
+    // ① 그림
+    {   std::vector<std::vector<std::string>> bucket(8); for (auto w : words) bucket[fnv(w, 0) % 8].push_back(w); size_t collisions = 0, used = 0;
+        for (size_t i = 0; i < bucket.size(); ++i) { std::cout << "[" << i << "] "; for (size_t j = 0; j < bucket[i].size(); ++j) std::cout << (j == 0 ? "■ " : "▲ ") << bucket[i][j] << "  "; std::cout << "\n"; if (!bucket[i].empty()) { ++used; collisions += bucket[i].size() - 1; } }
+        assert(collisions == 12 - used && collisions >= 4);                // 충돌 수 = 키 수 − 사용된 버킷 수, 12 개를 8 칸에 넣으면 최소 4 번
     }
-    assert(collisions == 12 - used);                               // 충돌 수 = 키 수 - 사용된 버킷 수
-    assert(collisions >= 4);                                       // 12개를 8칸에 넣으면 비둘기집 원리로 최소 4번 충돌
-    std::cout << "keys=12 buckets=8 used=" << used << " collisions=" << collisions << std::endl;
+    // ② 정확한 분포 vs 20 만 개의 시드별 해시 함수
+    {   std::vector<double> exact = usedDistribution(12, 8), mean; double expect = 0; for (int u = 0; u <= 8; ++u) expect += u * exact[u];
+        assert(std::abs(expect - 8 * (1 - std::pow(1 - 1.0 / 8, 12))) < 1e-12 && exact[0] == 0 && exact[1] < 1e-9);       // 독립 닫힌 꼴: m(1 − (1 − 1/m)^n)
+        const int R = 200000; std::vector<int> cnt(9, 0); for (int seed = 0; seed < R; ++seed) { std::vector<char> hit(8, 0); int u = 0; for (auto w : words) { size_t b = fnv(w, (uint64_t)seed * 0x9e3779b97f4a7c15ULL) % 8; u += !hit[b]; hit[b] = 1; } ++cnt[u]; }
+        double worst = 0; for (int u = 0; u <= 8; ++u) { double p = exact[u], sd = std::sqrt(p * (1 - p) / R); worst = std::max(worst, std::abs((double)cnt[u] / R - p) / (sd + 1e-12)); assert(std::abs((double)cnt[u] / R - p) <= 5 * sd + 1e-9); }
+        std::cout << "used buckets (exact vs 200000 hash functions):"; for (int u = 4; u <= 8; ++u) std::cout << "  " << u << ": " << exact[u] << " / " << (double)cnt[u] / R; std::cout << "  (largest deviation " << worst << " sd)\n";
+    }
+    // ③ 생일 역설
+    long n365 = minKeysForHalf(365), n32 = minKeysForHalf(4294967296.0L); assert(n365 == 23 && n32 == 77164);                                        // 정확한 값은 77164 (흔히 인용되는 77163 은 √(2m ln 2) 근사)
+    for (long double m : {1e3L, 1e4L, 1e5L, 1e6L, 4294967296.0L}) { long n = minKeysForHalf(m); assert(std::abs((double)n / (1.1774 * std::sqrt((double)m)) - 1) < 0.03); }
+    {   std::mt19937_64 rng(3); const int m = 1000, R = 100000; long n = minKeysForHalf(m); double p = (double)collisionProbability(n, m); int hits = 0;
+        for (int r = 0; r < R; ++r) { std::vector<char> seen(m, 0); for (long i = 0; i < n; ++i) { size_t b = rng() % m; if (seen[b]) { ++hits; break; } seen[b] = 1; } }
+        assert(n == 38 && std::abs((double)hits / R - p) < 5 * std::sqrt(p * (1 - p) / R)); }
+    // ④ 키 100 만 개를 2^20 칸에: 버킷 적재량 히스토그램 vs 푸아송(λ = n/m)
+    {   const uint64_t n = 1000000, m = 1ULL << 20; std::vector<int> load(m, 0); for (uint64_t i = 0; i < n; ++i) ++load[mix(i) % m];
+        double lambda = (double)n / m; std::vector<long> hist(6, 0); size_t used = 0; for (int l : load) { ++hist[std::min(l, 5)]; used += l > 0; }
+        std::cout << "keys per bucket   (bars = buckets/4000; Poisson prediction in parentheses)\n"; double pk = std::exp(-lambda);
+        for (int k = 0; k <= 5; ++k) { double pred = k < 5 ? pk * m : m; if (k == 5) { double cum = 0, q = std::exp(-lambda); for (int j = 0; j < 5; ++j) { cum += q; q *= lambda / (j + 1); } pred = (1 - cum) * m; } std::cout << "  " << k << (k == 5 ? "+" : " ") << " " << std::string(hist[k] / 4000, '#') << " " << hist[k] << " (" << (long)pred << ")\n";
+            assert(std::abs(hist[k] - pred) < 6 * std::sqrt(pred) + 2); pk *= lambda / (k + 1); }
+        double expectedCollisions = n - m * (1 - std::pow(1 - 1.0 / m, (double)n)); assert(std::abs((double)(n - used) - expectedCollisions) < 0.005 * expectedCollisions);
+        std::cout << "keys=" << n << " buckets=" << m << " collisions=" << n - used << " (expected " << expectedCollisions << ")" << std::endl; }
     return 0;
 }
-// Time Complexity: O(n)
-// Space Complexity: O(n)
+// Time Complexity: DP O(n·m), 분포 측정 O(n)
+// Space Complexity: O(m)
 ```
 ## BucketDistribution()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cstdint>
-#include <cassert>
 
-// 좋은 해시와 나쁜 해시의 버킷 분포를 히스토그램과 카이제곱 통계로 비교한다.
-// 균등하면 χ² ≈ 자유도(m-1) 근처, 치우치면 훨씬 커진다
+// 버킷 분포를 히스토그램과 카이제곱(χ²) 검정으로 평가한다. 균등하면 χ² ≈ 자유도(m−1) 이고, p-값 P[χ² ≥ 관측] 이 매우 작으면 치우친 해시다.
+//  ① 정규화 불완전 감마로 p-값을 직접 구현하고 표준 분위수(df=1: 3.841, 63: 82.529, 100: 124.342 → p=0.05)로 검증.  ② 좋은 해시의 p-값은 [0,1] 에서 균등 (콜모고로프–스미르노프).
+//  ③ 해시 6 가지 × 키 패턴 5 가지 표: 항등 해시 % 2^k 는 간격 키에서 몰리고, 소수 나머지는 소수의 배수 키에서 몰리며, 곱셈 해시는 상위 비트를 써야 한다.
 uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
-double chiSquare(const std::vector<int>& c, int n) {
-    double e = double(n) / c.size(), s = 0;
-    for (int x : c) s += (x - e) * (x - e) / e;
-    return s;
+double gammaQ(double a, double x) {                                      // 정규화 상위 불완전 감마 Q(a, x) = 1 − P(a, x)  (Numerical Recipes 방식: 급수 / 연분수)
+    if (x <= 0) return 1;
+    if (x < a + 1) { double ap = a, sum = 1 / a, del = sum; for (int n = 0; n < 1000; ++n) { ap += 1; del *= x / ap; sum += del; if (std::abs(del) < std::abs(sum) * 1e-15) break; } return 1 - sum * std::exp(-x + a * std::log(x) - std::lgamma(a)); }
+    double b = x + 1 - a, c = 1e300, d = 1 / b, h = d; for (int i = 1; i < 1000; ++i) { double an = -i * (i - a); b += 2; d = an * d + b; if (std::abs(d) < 1e-300) d = 1e-300; c = b + an / c; if (std::abs(c) < 1e-300) c = 1e-300; d = 1 / d; double del = d * c; h *= del; if (std::abs(del - 1) < 1e-15) break; }
+    return std::exp(-x + a * std::log(x) - std::lgamma(a)) * h;
 }
-void bars(const char* name, const std::vector<int>& c) {
-    std::cout << name << "\n";
-    for (size_t i = 0; i < c.size(); i += 8) { int sum = 0; for (size_t j = i; j < i + 8; j++) sum += c[j]; std::cout << "  [" << i << ".." << i + 7 << "] " << std::string(sum / 40, '#') << " " << sum << "\n"; }
+double chiSquareP(double chi, int df) { return gammaQ(df / 2.0, chi / 2.0); }
+double chiSquare(const std::vector<long>& c, long n) { double e = (double)n / c.size(), s = 0; for (long x : c) s += (x - e) * (x - e) / e; return s; }
+void bars(const char* name, const std::vector<long>& c, long n) {
+    std::cout << name << "\n"; for (size_t i = 0; i < c.size(); i += 8) { long sum = 0; for (size_t j = i; j < i + 8; ++j) sum += c[j]; std::cout << "  [" << i << ".." << i + 7 << "] " << std::string(sum / 40, '#') << " " << sum << "\n"; } (void)n;
 }
+typedef uint32_t (*Hash32)(uint32_t);
+uint32_t hIdentity(uint32_t x) { return x; }
+uint32_t hMulLow(uint32_t x) { return x * 2654435769u; }                  // 곱셈 해시, 버킷 = 하위 비트
+uint32_t hMulHigh(uint32_t x) { return (x * 2654435769u) >> 26; }         // 곱셈(피보나치) 해시, 버킷 = 상위 6 비트
+uint32_t hFmix(uint32_t h) { h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16; return h; }
+uint32_t hFnv(uint32_t x) { uint32_t h = 2166136261u; for (int i = 0; i < 4; ++i) { h ^= (x >> (8 * i)) & 0xff; h *= 16777619u; } return h; }
 
 int main() {
-    const int m = 64, n = 10000;
-    std::vector<int> good(m, 0), bad(m, 0);
-    for (int i = 0; i < n; i++) {
-        uint64_t key = (uint64_t)i * 8;                            // 8의 배수 키
-        good[mix(key) % m]++;
-        bad[key % m]++;                                            // 단순 나머지: m=64 와 8의 배수가 겹쳐 8개 버킷만 쓰인다
-    }
-    bars("good hash", good); bars("bad hash (k mod 64, keys multiple of 8)", bad);
-    double cg = chiSquare(good, n), cb = chiSquare(bad, n);
-    assert(cg < 110);                                              // 자유도 63 의 99.9% 분위수 근처 이내
-    assert(cb > 1000);
-    std::cout << "chi-square: good=" << cg << " bad=" << cb << std::endl;
+    // ① 구현 검증: 표준 카이제곱 분위수에서 p ≈ 0.05, 그리고 df=2 에서는 닫힌 꼴 p = e^(−x/2)
+    assert(std::abs(chiSquareP(3.841, 1) - 0.05) < 2e-4 && std::abs(chiSquareP(82.529, 63) - 0.05) < 2e-4 && std::abs(chiSquareP(124.342, 100) - 0.05) < 2e-4 && std::abs(chiSquareP(18.307, 10) - 0.05) < 2e-4);
+    for (double x : {0.5, 2.0, 7.0, 30.0}) assert(std::abs(chiSquareP(x, 2) - std::exp(-x / 2)) < 1e-12);
+    // 원래 예: 8 의 배수 키 만 개를 64 칸에 — 좋은 해시 vs 단순 나머지
+    const int m = 64; const long n = 10000;
+    {   std::vector<long> good(m, 0), bad(m, 0); for (long i = 0; i < n; ++i) { uint64_t key = (uint64_t)i * 8; ++good[mix(key) % m]; ++bad[key % m]; }
+        bars("good hash", good, n); bars("bad hash (k mod 64, keys multiple of 8)", bad, n);
+        double cg = chiSquare(good, n), cb = chiSquare(bad, n); assert(chiSquareP(cg, m - 1) > 0.001 && chiSquareP(cb, m - 1) < 1e-300 + 1e-100 && std::count(bad.begin(), bad.end(), 0L) == 56);      // 8 개 버킷만 쓰인다
+        std::cout << "chi-square: good=" << cg << " (p=" << chiSquareP(cg, m - 1) << ") bad=" << cb << " (p<1e-100)\n"; }
+    // ② 좋은 해시의 p-값은 균등 분포: 무작위 키 집합 400 개 → p-값의 KS 통계량
+    {   std::mt19937_64 rng(8); std::vector<double> ps; for (int t = 0; t < 400; ++t) { std::vector<long> c(m, 0); for (long i = 0; i < n; ++i) ++c[mix(rng()) % m]; ps.push_back(chiSquareP(chiSquare(c, n), m - 1)); }
+        std::sort(ps.begin(), ps.end()); double ks = 0; for (size_t i = 0; i < ps.size(); ++i) ks = std::max({ks, std::abs(ps[i] - (double)(i + 1) / ps.size()), std::abs(ps[i] - (double)i / ps.size())});
+        long below = std::count_if(ps.begin(), ps.end(), [](double p) { return p < 0.05; }); assert(ks < 1.63 / std::sqrt(400.0) && below > 5 && below < 40);
+        std::cout << "400 random key sets: KS distance of p-values to uniform = " << ks << " (1% critical " << 1.63 / std::sqrt(400.0) << "), " << below << " below 0.05\n"; }
+    // ③ 해시 × 키 패턴: χ²/자유도 (균등이면 ≈ 1)
+    struct H { const char* name; Hash32 f; int mod; } hs[] = {{"identity % 64", hIdentity, 64}, {"identity % 67 (prime)", hIdentity, 67}, {"mul low bits % 64", hMulLow, 64}, {"mul high bits % 64", hMulHigh, 64}, {"fnv1a % 64", hFnv, 64}, {"fmix32 % 64", hFmix, 64}};
+    struct P { const char* name; uint32_t stride; } ps[] = {{"seq", 1}, {"x8", 8}, {"x64", 64}, {"x67", 67}, {"x1000", 1000}};
+    double tab[6][5]; std::cout << "chi2/df     "; for (auto& p : ps) std::cout << p.name << "\t"; std::cout << "\n";
+    for (int i = 0; i < 6; ++i) { std::cout << hs[i].name << "\t"; for (int j = 0; j < 5; ++j) { std::vector<long> c(hs[i].mod, 0); for (long k = 0; k < n; ++k) ++c[hs[i].f((uint32_t)k * ps[j].stride + 12345u) % hs[i].mod]; tab[i][j] = chiSquare(c, n) / (hs[i].mod - 1); std::cout << tab[i][j] << "\t"; } std::cout << "\n"; }
+    assert(tab[0][0] < 0.01 && tab[0][1] > 100 && tab[0][2] > 1000);       // 항등 % 64: 연속 키는 완벽, 8·64 간격은 몰린다
+    assert(tab[1][0] < 0.01 && tab[1][1] < 0.02 && tab[1][2] < 0.05 && tab[1][3] > 1000);       // 소수 나머지: 2 의 거듭제곱 간격은 괜찮지만 소수의 배수 키(x67) 는 한 버킷
+    assert(tab[2][2] > 100);                                                // 곱셈 해시의 하위 비트: 64 의 배수 키는 하위 6 비트가 상수(홀수 곱이라 변하지 않음)
+    for (int j = 0; j < 5; ++j) { assert(tab[3][j] < 5); assert(chiSquareP(tab[5][j] * 63, 63) > 1e-4); }     // 상위 비트·fmix32 는 모든 패턴에서 균등
     return 0;
 }
 // Time Complexity: O(n + m)
@@ -3192,65 +4470,116 @@ int main() {
 ## ProbeSequence()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <iostream>
+#include <numeric>
+#include <random>
 #include <set>
 #include <vector>
-#include <cassert>
 
-// 같은 키(홈=3, m=11)의 탐사 순서를 세 방식으로 나란히 본다.
+// 같은 키(홈=3, m=11)의 탐사 순서를 세 방식으로 나란히 보고, 어떤 (m, 보폭)에서 모든 칸을 방문하는지를 전수 확인한다.
+//  · 선형 h+i: 항상 전 칸.  · 이차 h+i²: 소수 m 에서는 (m+1)/2 칸만 방문 → 적재율 1/2 이하여야 삽입이 보장.  · 삼각수 h+i(i+1)/2: m 이 2 의 거듭제곱일 때만 전 칸.
+//  · 이중 해싱 h+i·h2: 방문하는 칸 수 = m/gcd(h2, m) → m 이 소수이거나 h2 가 m 과 서로소여야 전 칸.
 typedef std::vector<unsigned> Seq;
-Seq linear(unsigned h, unsigned m)    { Seq s; for (unsigned i = 0; i < m; i++) s.push_back((h + i) % m); return s; }
-Seq quadratic(unsigned h, unsigned m) { Seq s; for (unsigned i = 0; i < m; i++) s.push_back((h + i * i) % m); return s; }
-Seq doubleHash(unsigned h, unsigned h2, unsigned m) { Seq s; for (unsigned i = 0; i < m; i++) s.push_back((h + i * h2) % m); return s; }
-void show(const char* name, const Seq& s) { std::cout << name << ": "; for (size_t i = 0; i < s.size(); i++) std::cout << s[i] << (i + 1 < s.size() ? " -> " : "\n"); }
+Seq linear(unsigned h, unsigned m)    { Seq s; for (unsigned i = 0; i < m; ++i) s.push_back((h + i) % m); return s; }
+Seq quadratic(unsigned h, unsigned m) { Seq s; for (unsigned i = 0; i < m; ++i) s.push_back((unsigned)((h + (unsigned long long)i * i) % m)); return s; }
+Seq triangular(unsigned h, unsigned m){ Seq s; for (unsigned i = 0; i < m; ++i) s.push_back((unsigned)((h + (unsigned long long)i * (i + 1) / 2) % m)); return s; }
+Seq doubleHash(unsigned h, unsigned h2, unsigned m) { Seq s; for (unsigned i = 0; i < m; ++i) s.push_back((unsigned)((h + (unsigned long long)i * h2) % m)); return s; }
+size_t distinctCount(const Seq& s) { return std::set<unsigned>(s.begin(), s.end()).size(); }
+bool isPrime(unsigned n) { if (n < 2) return false; for (unsigned d = 2; d * d <= n; ++d) if (n % d == 0) return false; return true; }
+void show(const char* name, const Seq& s, unsigned m) {
+    std::cout << name << ": "; for (size_t i = 0; i < s.size(); ++i) std::cout << s[i] << (i + 1 < s.size() ? " -> " : "\n");
+    std::vector<int> order(m, -1); for (size_t i = 0; i < s.size(); ++i) if (order[s[i]] < 0) order[s[i]] = (int)i;         // 칸별 처음 방문한 순번 (빈칸 = 방문 안 함)
+    std::cout << "           slot:"; for (unsigned i = 0; i < m; ++i) std::cout << " " << i; std::cout << "\n           step:"; for (unsigned i = 0; i < m; ++i) { if (order[i] < 0) std::cout << " ."; else std::cout << " " << order[i]; } std::cout << "\n";
+}
 
 int main() {
-    const unsigned m = 11, home = 3, step = 4;                     // 이중 해싱의 보폭 h2 = 4
+    const unsigned m = 11, home = 3, step = 4;                       // 이중 해싱의 보폭 h2 = 4
     Seq a = linear(home, m), b = quadratic(home, m), c = doubleHash(home, step, m);
-    show("linear   ", a); show("quadratic", b); show("double   ", c);
-    assert(a[0] == home && b[0] == home && c[0] == home);          // 모두 홈에서 출발
-    assert(std::set<unsigned>(a.begin(), a.end()).size() == m);     // 선형은 전 칸 방문
-    assert(std::set<unsigned>(c.begin(), c.end()).size() == m);     // m 이 소수면 이중 해싱도 전 칸 방문
-    assert(std::set<unsigned>(b.begin(), b.end()).size() < m);      // i^2 는 일부 칸을 놓친다 (m=11 -> 6칸만)
-    std::cout << "distinct slots: linear=" << m << " quadratic=" << std::set<unsigned>(b.begin(), b.end()).size() << " double=" << m << std::endl;
+    show("linear   ", a, m); show("quadratic", b, m); show("double   ", c, m);
+    assert(a[0] == home && b[0] == home && c[0] == home && distinctCount(a) == m && distinctCount(c) == m && distinctCount(b) == 6);       // i² 는 m=11 에서 6 칸만
+    // ① 이차 탐사: 소수 p 에서 정확히 (p+1)/2 칸, 처음 (p+1)/2 번의 탐사는 서로 다르다.  합성수에서는 제곱수(잉여) 개수와 같다 (독립 계산)
+    for (unsigned p = 3; p < 400; ++p) {
+        if (isPrime(p)) { for (unsigned h : {0u, 1u, p - 1}) { Seq q = quadratic(h, p); assert(distinctCount(q) == (p + 1) / 2); assert(distinctCount(Seq(q.begin(), q.begin() + (p + 1) / 2)) == (p + 1) / 2); } }
+        std::set<unsigned> squares; for (unsigned x = 0; x < p; ++x) squares.insert((x * x) % p); assert(distinctCount(quadratic(0, p)) == squares.size());
+    }
+    // ② 삼각수 탐사: m ≤ 300 에서 전 칸 방문 ⇔ m 이 2 의 거듭제곱
+    for (unsigned mm = 1; mm <= 300; ++mm) assert((distinctCount(triangular(0, mm)) == mm) == ((mm & (mm - 1)) == 0));
+    // ③ 이중 해싱: m ≤ 60 의 모든 보폭에서 방문 칸 수 = m / gcd(h2, m)
+    for (unsigned mm = 2; mm <= 60; ++mm) for (unsigned h2 = 1; h2 < mm; ++h2) assert(distinctCount(doubleHash(7 % mm, h2, mm)) == mm / std::gcd(h2, mm));
+    // ④ 이차 탐사의 삽입 보장: 소수 p, 점유 칸이 (p−1)/2 개 이하면 어떤 점유 상태·홈에서도 (p+1)/2 번 안에 빈 칸을 찾는다 (p=7, 11 전수).  점유가 (p+1)/2 이면 막힐 수 있다 (빈 칸이 남아 있어도)
+    for (unsigned p : {7u, 11u}) {
+        for (unsigned occ = 0; occ < (1u << p); ++occ) { unsigned cnt = __builtin_popcount(occ); if (cnt > (p - 1) / 2) continue; for (unsigned h = 0; h < p; ++h) { Seq q = quadratic(h, p); bool found = false; for (unsigned i = 0; i < (p + 1) / 2; ++i) if (!(occ >> q[i] & 1)) found = true; assert(found); } }
+    }
+    for (unsigned p = 5; p < 100; ++p) if (isPrime(p)) { Seq q = quadratic(0, p); std::set<unsigned> block(q.begin(), q.end()); assert(block.size() == (p + 1) / 2 && p - block.size() == (p - 1) / 2); bool blocked = true; for (unsigned s : q) blocked = blocked && block.count(s); assert(blocked); }   // 점유 (p+1)/2 개로 홈 0 의 모든 탐사가 막힌다
+    // ⑤ 탐사 횟수: 소수 m=10007 에 무작위 홈으로 αm 개를 넣은 뒤, 새 키가 빈 칸을 찾을 때까지의 평균 탐사 수 (실패 탐색)
+    {   const unsigned M = 10007; std::mt19937_64 rng(5);
+        auto trial = [&](double alpha, int kind) {                   // 0 = 선형, 1 = 이중 해싱, 2 = 이차.  표 8 개의 평균 (클러스터 요동을 줄인다)
+            auto probeAt = [&](unsigned h, unsigned h2, unsigned i) -> unsigned { if (kind == 0) return (h + i) % M; if (kind == 1) return (unsigned)((h + (unsigned long long)i * h2) % M); return (unsigned)((h + (unsigned long long)i * i) % M); };
+            double total = 0; const int TABLES = 8, Q = 20000;
+            for (int tb = 0; tb < TABLES; ++tb) {
+                std::vector<char> used(M, 0); for (unsigned n = 0; n < (unsigned)(alpha * M); ++n) { unsigned h = rng() % M, h2 = 1 + rng() % (M - 1), i = 0; while (used[probeAt(h, h2, i)]) ++i; used[probeAt(h, h2, i)] = 1; }
+                double sum = 0; for (int q = 0; q < Q; ++q) { unsigned h = rng() % M, h2 = 1 + rng() % (M - 1), i = 0; while (used[probeAt(h, h2, i)]) ++i; sum += i + 1; } total += sum / Q;
+            }
+            return total / TABLES; };
+        for (double alpha : {0.5, 0.8}) {
+            double lin = trial(alpha, 0), dbl = trial(alpha, 1), linTheory = 0.5 * (1 + 1 / ((1 - alpha) * (1 - alpha))), dblTheory = 1 / (1 - alpha);
+            std::cout << "alpha=" << alpha << ": unsuccessful probes linear " << lin << " (Knuth " << linTheory << "), double hashing " << dbl << " (1/(1-alpha) = " << dblTheory << ")\n";
+            assert(std::abs(lin - linTheory) < 0.08 * linTheory && std::abs(dbl - dblTheory) < 0.06 * dblTheory && lin > dbl);
+        }
+        double quad = trial(0.5, 2), quadTheory = 1 / (1 - 0.5) - 0.5 - std::log(1 - 0.5); assert(std::abs(quad - quadTheory) < 0.08 * quadTheory);       // 이차 탐사 (α ≤ 1/2): Knuth 근사
+        std::cout << "quadratic at alpha=0.5: " << quad << " (approx " << quadTheory << ")" << std::endl; }
     return 0;
 }
-// Time Complexity: O(m)
+// Time Complexity: 탐사열 생성 O(m), 평균 탐사 수 선형 ½(1+1/(1−α)²) / 이중 1/(1−α)
 // Space Complexity: O(m)
 ```
 ## ResizeAnimation()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 체이닝 테이블이 확장되는 순간을 프레임별로 출력한다 (적재율 0.75 초과 시 버킷 2배)
+// 체이닝 테이블이 확장되는 순간을 프레임별로 출력한다 (적재율 0.75 초과 시 버킷 2배, h(k) = k mod m).
+//  ① 프레임 + 분할 성질: m 이 2 의 거듭제곱이고 m → 2m 으로 키우면 모든 키는 제자리(i)이거나 i+m 으로만 옮겨 간다 (한 버킷이 둘로 갈라진다).
+//  ② 소수 크기(7 → 17)로 키우면 거의 모든 키가 다른 버킷으로 이동 (정확히 1 − 7/119 = 94.1 %).  ③ 키우는 정책별 총 재배치 횟수 — ×2: ≤ 2N, ×1.5: ≤ 3N, +k: 이차.
 int main() {
-    std::vector<std::vector<int>> b(2);
-    size_t n = 0, frame = 0, resizes = 0;
-    auto draw = [&](const char* why) {
-        std::cout << "frame " << frame++ << " (" << why << ", n=" << n << ", m=" << b.size() << ")\n";
-        for (size_t i = 0; i < b.size(); i++) { std::cout << "  [" << i << "]"; for (int k : b[i]) std::cout << " " << k; std::cout << "\n"; }
-    };
+    std::vector<std::vector<int>> b(2); size_t n = 0, frame = 0, resizes = 0;
+    auto draw = [&](const std::string& why) { std::cout << "frame " << frame++ << " (" << why << ", n=" << n << ", m=" << b.size() << ")\n"; for (size_t i = 0; i < b.size(); ++i) { std::cout << "  [" << i << "]"; for (int k : b[i]) std::cout << " " << k; std::cout << "\n"; } };
     draw("empty");
     for (int k : {10, 21, 32, 43, 54, 65}) {
         if (double(n + 1) / b.size() > 0.75) {                    // 확장: 모든 키를 새 크기로 재배치
-            std::vector<std::vector<int>> nb(b.size() * 2);
-            for (auto& chain : b) for (int x : chain) nb[x % nb.size()].push_back(x);
-            b.swap(nb); resizes++;
-            draw("resized");
+            std::vector<std::vector<int>> nb(b.size() * 2); size_t oldM = b.size(), moved = 0, total = 0;
+            for (size_t i = 0; i < b.size(); ++i) for (int x : b[i]) { size_t j = (size_t)x % nb.size(); assert(j == i || j == i + oldM); nb[j].push_back(x); moved += j != i; ++total; std::cout << "    key " << x << ": [" << i << "] -> [" << j << "]" << (j == i ? " (stays)" : " (moves)") << "\n"; }
+            b.swap(nb); ++resizes; draw("resized, " + std::to_string(moved) + "/" + std::to_string(total) + " keys moved");
         }
-        b[k % b.size()].push_back(k); n++;
-        draw(("insert " + std::to_string(k)).c_str());
+        b[(size_t)k % b.size()].push_back(k); ++n; draw("insert " + std::to_string(k));
     }
     assert(b.size() == 8 && resizes == 2);                         // 2 -> 4 -> 8
-    size_t total = 0; for (auto& c : b) total += c.size();
-    assert(total == 6 && double(n) / b.size() <= 0.75);
+    size_t total = 0; for (auto& c : b) total += c.size(); assert(total == 6 && double(n) / b.size() <= 0.75);
+    // ② 분할 성질과 이동 비율 (무작위 키 10 만 개, 크기 2^k → 2^(k+1)), 소수 크기에서는 거의 전부 이동
+    std::mt19937_64 rng(2);
+    for (unsigned k = 3; k <= 16; k += 3) {
+        size_t m = 1u << k, moved = 0; const int N = 100000; for (int i = 0; i < N; ++i) { uint64_t key = rng(); size_t a = key % m, c = key % (2 * m); assert(c == a || c == a + m); moved += c != a; }
+        assert(std::abs((double)moved / N - 0.5) < 5 * std::sqrt(0.25 / N));                   // 정확히 절반이 분할되어 나간다 (이항 오차 내)
+    }
+    {   size_t stay = 0, all = 119 * 1000; for (size_t key = 0; key < all; ++key) stay += key % 7 == key % 17; assert(stay * 17 == all && (double)(all - stay) / all > 0.94); }     // 7 → 17: 정확히 7/119 만 제자리
+    // ③ 정책별 총 재배치: N 번 삽입(적재율 1 에서 확장) 동안 확장 때마다 그 시점의 원소 수만큼 이동
+    const long N = 200000; struct Policy { const char* name; double factor; long add; } pol[] = {{"x2", 2.0, 0}, {"x1.5", 1.5, 0}, {"+64", 1.0, 64}};
+    long moves[3];
+    for (int p = 0; p < 3; ++p) { long cap = 16, mv = 0, rs = 0; for (long i = 1; i <= N; ++i) if (i > cap) { mv += i - 1; ++rs; cap = std::max(cap + 1, pol[p].add ? cap + pol[p].add : (long)(cap * pol[p].factor)); } moves[p] = mv; std::cout << pol[p].name << ": " << rs << " resizes, " << mv << " moves for " << N << " inserts (" << (double)mv / N << " per insert)\n"; }
+    assert(moves[0] <= 2 * N && moves[1] <= 3 * N && moves[1] > moves[0] && moves[2] > 50 * moves[0]);     // 곱셈 정책은 분할상환 O(1), 덧셈 정책은 O(N/k) 로 훨씬 크다
     return 0;
 }
-// Time Complexity: 확장 1회 O(n), 삽입당 분할상환 O(1)
+// Time Complexity: 확장 1회 O(n), 삽입당 분할상환 O(1) (×2 정책)
 // Space Complexity: O(n)
 ```
 ## ChainGrowth()
@@ -3331,88 +4660,116 @@ int main() {
 ## AvalancheEffect()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <iomanip>
-#include <string>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <string>
 
-// 눈사태 효과: 입력 1비트를 뒤집으면 출력 비트의 절반(50%)이 뒤집혀야 좋은 해시다. 입력 비트 × 출력 비트 격자로 본다
-uint32_t fnvInt(uint32_t x) { uint32_t h = 2166136261u; for (int i = 0; i < 4; i++) { h ^= (x >> (8 * i)) & 0xff; h *= 16777619u; } return h; }
-uint32_t fmix(uint32_t h) { h ^= h >> 16; h *= 0x85ebca6b; h ^= h >> 13; h *= 0xc2b2ae35; h ^= h >> 16; return h; }
-uint32_t identity(uint32_t x) { return x; }
-
-template <class F>
-double avalanche(F f, const char* name) {
-    double flipsTotal = 0; int samples = 0;
-    std::cout << name << " : 입력 비트 i 를 뒤집을 때 출력 비트가 바뀐 평균 비율 (행: 입력 비트 0..31, 8개씩 묶음)\n  ";
-    for (int bit = 0; bit < 32; bit++) {
-        double flips = 0;
-        for (uint32_t x = 1; x <= 400; x++) { flips += __builtin_popcount(f(x * 2654435761u) ^ f((x * 2654435761u) ^ (1u << bit))); samples++; }
-        flipsTotal += flips;
-        std::cout << std::fixed << std::setprecision(2) << flips / 400 / 32 << (bit % 8 == 7 ? "\n  " : " ");
-    }
-    std::cout << "\n";
-    return flipsTotal / samples / 32;
+// 눈사태 효과: 입력 1 비트를 뒤집으면 출력 비트의 *각각* 이 정확히 1/2 의 확률로 뒤집혀야 좋은 해시다 (엄격한 눈사태 기준, SAC).
+// 32×32 격자(행 = 뒤집은 입력 비트, 열 = 출력 비트)의 칸마다 뒤집힌 비율을 재서 그림으로 본다:  '#' = 1/2 ± 0.05, '+' ±0.15, ':' ±0.3, '.' ±0.45, ' ' = 0 또는 1 에 가까움.
+// 구조적으로 알 수 있는 사실을 전수로 확인한다 — 항등: 대각선만 1.  곱셈 x·C: 입력 비트 i 는 출력 비트 j < i 에 영향이 없고 j = i 는 항상 뒤집힘(삼각형).  CRC32 는 선형이라 모든 칸이 정확히 0 또는 1.
+// FNV-1a: 바이트 안의 입력 비트 k 는 출력 비트 < k 에 영향 없음.  MurmurHash3 fmix32·lowbias32 는 모든 칸이 1/2 근처.
+typedef std::uint32_t u32;
+u32 hIdentity(u32 x) { return x; }
+u32 hMul(u32 x) { return x * 2654435769u; }
+u32 hFnv(u32 x) { u32 h = 2166136261u; for (int i = 0; i < 4; ++i) { h ^= (x >> (8 * i)) & 0xff; h *= 16777619u; } return h; }
+u32 crcTable(int i) { u32 c = (u32)i; for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1; return c; }
+u32 crc32(const unsigned char* p, std::size_t n) { static u32 t[256]; static bool init = false; if (!init) { for (int i = 0; i < 256; ++i) t[i] = crcTable(i); init = true; } u32 c = 0xFFFFFFFFu; for (std::size_t i = 0; i < n; ++i) c = t[(c ^ p[i]) & 0xff] ^ (c >> 8); return c ^ 0xFFFFFFFFu; }
+u32 hCrc(u32 x) { unsigned char b[4] = {(unsigned char)x, (unsigned char)(x >> 8), (unsigned char)(x >> 16), (unsigned char)(x >> 24)}; return crc32(b, 4); }
+u32 hFmix(u32 h) { h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16; return h; }
+u32 hLowbias(u32 x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+struct Matrix { double p[32][32]; double worst, rms; int zeros, ones, middle; };
+Matrix measure(u32 (*f)(u32), int samples, std::mt19937& rng) {
+    static long cnt[32][32]; for (auto& r : cnt) for (long& c : r) c = 0;
+    for (int s = 0; s < samples; ++s) { u32 x = (u32)rng(), fx = f(x); for (int i = 0; i < 32; ++i) { u32 d = fx ^ f(x ^ (1u << i)); for (int j = 0; j < 32; ++j) cnt[i][j] += d >> j & 1; } }
+    Matrix m{}; double sq = 0; for (int i = 0; i < 32; ++i) for (int j = 0; j < 32; ++j) { double p = (double)cnt[i][j] / samples; m.p[i][j] = p; m.worst = std::max(m.worst, std::abs(p - 0.5)); sq += (p - 0.5) * (p - 0.5); m.zeros += cnt[i][j] == 0; m.ones += cnt[i][j] == samples; m.middle += cnt[i][j] != 0 && cnt[i][j] != samples; }
+    m.rms = std::sqrt(sq / 1024); return m;
 }
+char shade(double p) { double d = std::abs(p - 0.5); return d < 0.05 ? '#' : d < 0.15 ? '+' : d < 0.3 ? ':' : d < 0.45 ? '.' : ' '; }
+void draw(const char* name, const Matrix& m) { std::cout << name << "  (worst |p-1/2| = " << m.worst << ", rms = " << m.rms << ")\n"; for (int i = 0; i < 32; ++i) { std::cout << "  in" << (i < 10 ? "0" : "") << i << " "; for (int j = 0; j < 32; ++j) std::cout << shade(m.p[i][j]); std::cout << "\n"; } }
 
 int main() {
-    double a_id = avalanche(identity, "identity"), a_fnv = avalanche(fnvInt, "fnv1a(4byte)"), a_mur = avalanche(fmix, "murmur fmix32");
-    assert(a_id < 0.05);                                           // 항등 함수: 정확히 1비트만 바뀜 (1/32)
-    assert(a_mur > 0.45 && a_mur < 0.55);                          // 이상적인 50%
-    assert(a_mur > a_fnv);                                         // FNV 는 눈사태가 약하다
-    std::cout << "avalanche ratio: identity=" << a_id << " fnv=" << a_fnv << " murmur=" << a_mur << std::endl;
+    assert(crc32((const unsigned char*)"123456789", 9) == 0xCBF43926u);          // CRC-32(IEEE) 표준 시험값
+    std::mt19937 rng(5); const int S = 20000;
+    Matrix mi = measure(hIdentity, S, rng), mm = measure(hMul, S, rng), mf = measure(hFnv, S, rng), mc = measure(hCrc, S, rng), mx = measure(hFmix, S, rng), ml = measure(hLowbias, S, rng);
+    draw("identity", mi); draw("multiply (x*2654435769)", mm); draw("fnv1a (4 bytes)", mf); draw("crc32", mc); draw("murmur3 fmix32", mx); draw("lowbias32", ml);
+    // 구조적 사실 (전수)
+    for (int i = 0; i < 32; ++i) for (int j = 0; j < 32; ++j) {
+        assert(mi.p[i][j] == (i == j ? 1.0 : 0.0));                                        // 항등: 대각선만
+        if (j < i) assert(mm.p[i][j] == 0.0); if (j == i) assert(mm.p[i][j] == 1.0);        // 곱셈: 삼각형, 대각선은 항상 뒤집힘
+        if (j < i % 8) assert(mf.p[i][j] == 0.0);                                          // FNV-1a: 바이트 안의 입력 비트 k 는 출력 비트 < k 에 무영향
+        assert(mc.p[i][j] == 0.0 || mc.p[i][j] == 1.0);                                    // CRC: 선형이므로 칸은 정확히 0 또는 1
+    }
+    assert(mi.ones == 32 && mi.zeros == 992 && mc.middle == 0 && mm.zeros >= 496 && mf.zeros >= 4 * (0 + 1 + 2 + 3 + 4 + 5 + 6 + 7));
+    // 좋은 믹서: 모든 1024 칸이 1/2 근처 (20000 표본의 표준오차 0.0035 → 최악 편차도 0.02 미만)
+    assert(mx.worst < 0.02 && ml.worst < 0.02 && mx.zeros == 0 && ml.zeros == 0 && mx.middle == 1024);
+    assert(mf.rms > mx.rms * 5 && mm.rms > mf.rms && mi.rms > mm.rms);                      // 편향 순위: 항등 > 곱셈 > FNV-1a ≫ fmix32
+    std::cout << "avalanche rms bias: identity " << mi.rms << ", mul " << mm.rms << ", fnv1a " << mf.rms << ", crc32 " << mc.rms << ", fmix32 " << mx.rms << ", lowbias32 " << ml.rms << std::endl;
     return 0;
 }
-// Time Complexity: O(입력비트 · 표본)
-// Space Complexity: O(1)
+// Time Complexity: O(표본 · 32 · 32)
+// Space Complexity: O(1) (격자 32×32)
 ```
 ## HashQualityEvaluation()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
-#include <set>
+#include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 해시 함수 품질을 한 표로 평가한다: (1) 균등도 χ²/자유도  (2) 충돌 수  (3) 눈사태 비율
-// 두 개의 키 집합 — 연속 정수, 64씩 증가하는 정수 — 에서 비교
-uint32_t fnvInt(uint32_t x) { uint32_t h = 2166136261u; for (int i = 0; i < 4; i++) { h ^= (x >> (8 * i)) & 0xff; h *= 16777619u; } return h; }
-uint32_t fmix(uint32_t h) { h ^= h >> 16; h *= 0x85ebca6b; h ^= h >> 13; h *= 0xc2b2ae35; h ^= h >> 16; return h; }
-uint32_t mulShift(uint32_t x) { return x * 2654435769u; }          // Knuth 곱셈법 (상위 비트가 좋다)
-uint32_t modOnly(uint32_t x) { return x; }                         // h(k) = k, 이후 % m
-
-struct Result { double chi; size_t collisions; double aval; };
-template <class F> Result evaluate(F f, uint32_t stride, uint32_t m = 1024, uint32_t n = 20000) {
-    std::vector<int> c(m, 0); std::set<uint32_t> distinct;   // 버킷 = h % m (가장 단순한 선택, 하위 비트 사용)
-    for (uint32_t i = 0; i < n; i++) { uint32_t h = f(i * stride); c[h % m]++; distinct.insert(h); }
-    double e = double(n) / m, chi = 0; for (int x : c) chi += (x - e) * (x - e) / e;
-    double flips = 0; int s = 0;
-    for (uint32_t x = 1; x <= 300; x++) for (int b = 0; b < 32; b++) { flips += __builtin_popcount(f(x * stride) ^ f((x * stride) ^ (1u << b))); s++; }
-    return {chi / (m - 1), n - distinct.size(), flips / s / 32};
+// 해시 함수 품질을 한 장의 성적표로 평가한다. 네 가지 시험:
+//  ① 균등도: 키 패턴(연속·간격 64·간격 1024·간격 4099·무작위) × 버킷 선택(하위 10 비트 / 상위 10 비트)의 χ² z-점수 (z = (χ²−df)/√(2df), 크면 몰림).
+//  ② 희소 키 충돌: 켜진 비트가 3 개 이하인 32 비트 키 5489 개의 출력 상위 16 비트 충돌 수 (이상적으로 ≈ n²/2^17 = 230).
+//  ③ 눈사태: 1 비트 반전 시 출력 각 비트의 뒤집힘 확률이 1/2 에서 벗어난 최악의 정도.
+//  ④ 아핀성: f(x)⊕f(y)⊕f(z)⊕f(x⊕y⊕z) = 0 이 항상 성립하면 f 는 GF(2) 위의 아핀 함수 (키를 알면 충돌·역산이 선형대수로 풀린다).
+typedef std::uint32_t u32;
+u32 hIdentity(u32 x) { return x; }
+u32 hMul(u32 x) { return x * 2654435769u; }
+u32 hFnv(u32 x) { u32 h = 2166136261u; for (int i = 0; i < 4; ++i) { h ^= (x >> (8 * i)) & 0xff; h *= 16777619u; } return h; }
+u32 hCrc(u32 x) { static u32 t[256]; static bool init = false; if (!init) { for (int i = 0; i < 256; ++i) { u32 c = (u32)i; for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1; t[i] = c; } init = true; } u32 c = 0xFFFFFFFFu; for (int i = 0; i < 4; ++i) c = t[(c ^ (x >> (8 * i))) & 0xff] ^ (c >> 8); return c ^ 0xFFFFFFFFu; }
+u32 hFmix(u32 h) { h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u; h ^= h >> 16; return h; }
+u32 hLowbias(u32 x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+double zScore(const std::vector<long>& c, long n) { double e = (double)n / c.size(), s = 0; for (long x : c) s += (x - e) * (x - e) / e; int df = (int)c.size() - 1; return (s - df) / std::sqrt(2.0 * df); }
+struct Report { double zLow, zTop, sparse, aval, affine; };
+Report evaluate(u32 (*f)(u32), std::mt19937& rng) {
+    Report r{-1e9, -1e9, 0, 0, 0}; const long n = 40000;
+    for (u32 stride : {1u, 64u, 1024u, 4099u, 0u}) {                                  // 0 = 무작위 키
+        std::vector<long> lo(1024, 0), top(1024, 0); for (long i = 0; i < n; ++i) { u32 h = f(stride ? (u32)i * stride : (u32)rng()); ++lo[h & 1023]; ++top[h >> 22]; }
+        r.zLow = std::max(r.zLow, zScore(lo, n)); r.zTop = std::max(r.zTop, zScore(top, n)); }
+    { std::vector<u32> keys; keys.push_back(0); for (int a = 0; a < 32; ++a) { keys.push_back(1u << a); for (int b = a + 1; b < 32; ++b) { keys.push_back((1u << a) | (1u << b)); for (int c = b + 1; c < 32; ++c) keys.push_back((1u << a) | (1u << b) | (1u << c)); } }
+      assert(keys.size() == 5489); std::vector<long> cnt(65536, 0); long coll = 0; for (u32 k : keys) coll += cnt[f(k) >> 16]++; r.sparse = (double)coll; }
+    { const int S = 5000; static long c[32][32]; for (auto& row : c) for (long& x : row) x = 0; for (int s = 0; s < S; ++s) { u32 x = (u32)rng(), fx = f(x); for (int i = 0; i < 32; ++i) { u32 d = fx ^ f(x ^ (1u << i)); for (int j = 0; j < 32; ++j) c[i][j] += d >> j & 1; } }
+      for (int i = 0; i < 32; ++i) for (int j = 0; j < 32; ++j) r.aval = std::max(r.aval, std::abs((double)c[i][j] / S - 0.5)); }
+    { long hold = 0; const int T = 20000; for (int t = 0; t < T; ++t) { u32 x = (u32)rng(), y = (u32)rng(), z = (u32)rng(); hold += (f(x) ^ f(y) ^ f(z) ^ f(x ^ y ^ z)) == 0; } r.affine = (double)hold / T; }
+    return r;
 }
 
 int main() {
-    struct { const char* name; Result r1, r64; } rows[] = {
-        {"identity", evaluate(modOnly, 1), evaluate(modOnly, 64)},
-        {"mul-shift", evaluate(mulShift, 1), evaluate(mulShift, 64)},
-        {"fnv1a", evaluate(fnvInt, 1), evaluate(fnvInt, 64)},
-        {"murmur-fmix", evaluate(fmix, 1), evaluate(fmix, 64)},
-    };
-    std::cout << std::left << std::setw(12) << "hash" << "  chi2/df(stride1) chi2/df(stride64) avalanche\n";
-    for (auto& r : rows)
-        std::cout << std::setw(12) << r.name << "  " << std::setw(16) << std::setprecision(3) << r.r1.chi << " " << std::setw(16) << r.r64.chi << " " << r.r1.aval << "\n";
-    assert(rows[0].r64.chi > 10);                                  // 항등 해시 + 64 간격 키는 버킷 몇 개에 몰린다
-    assert(rows[1].r64.chi > 10);                                  // 곱셈 해시도 하위 비트만 쓰면 같은 문제 -> 상위 비트를 써야 한다
-    assert(rows[3].r1.chi < 1.5 && rows[3].r64.chi < 1.5);         // 마무리 섞기를 거친 해시는 어떤 키 패턴에도 균등
-    assert(rows[3].r1.aval > 0.45 && rows[3].r1.aval < 0.55);
+    std::mt19937 rng(11); struct Row { const char* name; u32 (*f)(u32); Report r; } rows[] = {{"identity", hIdentity, {}}, {"mul (Knuth)", hMul, {}}, {"fnv1a", hFnv, {}}, {"crc32", hCrc, {}}, {"murmur fmix32", hFmix, {}}, {"lowbias32", hLowbias, {}}};
+    std::cout << std::left << std::setw(14) << "hash" << std::right << std::setw(10) << "z(low10)" << std::setw(10) << "z(top10)" << std::setw(10) << "sparse" << std::setw(10) << "aval" << std::setw(10) << "affine" << "   verdict\n";
+    for (auto& row : rows) {
+        row.r = evaluate(row.f, rng); bool ok = row.r.zLow < 6 && row.r.zTop < 6 && row.r.sparse < 460 && row.r.aval < 0.05 && row.r.affine < 0.01;
+        std::cout << std::left << std::setw(14) << row.name << std::right << std::setw(10) << std::setprecision(3) << row.r.zLow << std::setw(10) << row.r.zTop << std::setw(10) << row.r.sparse << std::setw(10) << row.r.aval << std::setw(10) << row.r.affine << "   " << (ok ? "PASS" : "FAIL") << "\n";
+    }
+    const Report &id = rows[0].r, &mul = rows[1].r, &fnv = rows[2].r, &crc = rows[3].r, &fmix = rows[4].r, &low = rows[5].r;
+    assert(id.zLow > 100 && id.zTop > 100 && id.sparse > 5000 && id.aval == 0.5 && id.affine == 1.0);                            // 항등: 몰림·충돌·무눈사태·아핀
+    assert(mul.zLow > 100 && mul.zTop < 6 && mul.aval == 0.5 && mul.affine < 0.01);                                              // 곱셈 해시: 하위 비트는 몰리고(간격 1024 → 하위 10 비트 상수), 상위 비트는 균등
+    assert(fnv.aval > 0.45 && fnv.affine < 0.01);                                                                                // FNV-1a: 입력 비트 7 이 출력 하위 비트에 닿지 않는다
+    assert(crc.zLow < 12 && crc.zTop < 12 && crc.sparse < 460 && crc.aval == 0.5 && crc.affine == 1.0);                // CRC32: 균등·충돌은 대체로 문제없지만(간격 키의 선형 구조가 z≈6 으로 비친다) 선형(아핀)이라 보안·SAC 에는 부적합
+    for (const Report* r : {&fmix, &low}) assert(r->zLow < 6 && r->zTop < 6 && r->sparse < 460 && r->aval < 0.05 && r->affine < 0.01);
     return 0;
 }
-// Time Complexity: O(n + 표본)
-// Space Complexity: O(m + n)
+// Time Complexity: O(패턴 수 · n + 표본 · 32 · 32)
+// Space Complexity: O(2^16)
 ```
 ## CacheLocality()
 ### 대표코드
