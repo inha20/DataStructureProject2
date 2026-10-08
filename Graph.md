@@ -7263,59 +7263,295 @@ int main() {
 ## BipartiteGraph()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
 
-bool isBipartite(int V, std::vector<std::vector<int>>& adj) {
-    std::vector<int> color(V, -1);
-    for (int s = 0; s < V; s++) {
-        if (color[s] != -1) continue;
-        std::queue<int> q; q.push(s); color[s] = 0;
+// 이분 그래프: 정점을 두 집합으로 나눠 모든 간선이 두 집합 사이에만 있게 할 수 있는 그래프 ⇔ 2-색칠 가능 ⇔ *홀수 사이클이 없다*. 세 가지 판정 — ① BFS 색칠: 층 번호의 홀짝이 색이고, 같은 색 끝점을 잇는 간선을 만나면 두 정점의 트리 경로 + 그 간선이 홀수 사이클(실제 증거를 돌려줄 수 있다) ② 반복형 DFS 색칠 ③ 홀짝을 같이 들고 다니는 서로소 집합(간선이 도착하는 대로 온라인 판정, 각 정점의 "루트와의 색 차이" 를 경로 압축 때 함께 갱신).
+// 정리: 이분 그래프의 2-색칠 개수는 2^(연결 성분 수) (성분마다 한쪽 색을 고르면 나머지가 정해진다). Mantel/Turán: n 개 정점의 이분 그래프는 간선이 ⌊n²/4⌋ 개 이하이고 완전 이분 그래프 K_{⌊n/2⌋,⌈n/2⌉} 에서 달성된다. 자기 루프는 길이 1 인 홀수 사이클이라 이분 그래프가 아니다. 평행 간선은 영향이 없다.
+// 검증: 정점 ≤ 6 의 모든 단순 그래프(2^15)에서 세 판정이 2^n 가지 색칠을 모두 시도하는 완전 탐색과 일치하고, 올바른 2-색칠의 개수가 2^성분 수, 증거 사이클은 단순하고 길이가 홀수이며 간선이 실제로 있다, 이름 붙은 이분 그래프의 개수가 1, 2, 7, 41, 376, 5177 (정점 1..6), 최대 간선 수가 ⌊n²/4⌋. 무작위 다중 그래프(루프·평행 간선), 그리고 정점 백만 개의 짝수·홀수 사이클과 계획된 이분 그래프.
+using Edges = std::vector<std::pair<int, int>>;
+struct Bip { bool ok; std::vector<int> color; std::vector<int> oddCycle; };
+
+// ① BFS + 홀수 사이클 증거
+Bip bfsColor(int n, const Edges& e) {
+    std::vector<std::vector<int>> adj(n); for (auto [a, b] : e) { adj[a].push_back(b); if (a != b) adj[b].push_back(a); else adj[a].push_back(a); }
+    Bip r{true, std::vector<int>(n, -1), {}};
+    std::vector<int> par(n, -1), depth(n, 0);
+    for (int s = 0; s < n; ++s) {
+        if (r.color[s] >= 0) continue;
+        std::queue<int> q; q.push(s); r.color[s] = 0;
         while (!q.empty()) {
             int u = q.front(); q.pop();
             for (int v : adj[u]) {
-                if (color[v] == -1) { color[v] = 1 - color[u]; q.push(v); }
-                else if (color[v] == color[u]) return false;
+                if (r.color[v] < 0) { r.color[v] = r.color[u] ^ 1; par[v] = u; depth[v] = depth[u] + 1; q.push(v); }
+                else if (r.color[v] == r.color[u]) {                                        // 같은 색을 잇는 간선: 트리 경로 + 이 간선 = 홀수 사이클
+                    std::vector<int> a, b; int x = u, y = v;
+                    while (depth[x] > depth[y]) { a.push_back(x); x = par[x]; }
+                    while (depth[y] > depth[x]) { b.push_back(y); y = par[y]; }
+                    while (x != y) { a.push_back(x); b.push_back(y); x = par[x]; y = par[y]; }
+                    a.push_back(x);                                                         // 공통 조상
+                    std::reverse(b.begin(), b.end()); a.insert(a.end(), b.begin(), b.end());   // u … 조상 … v (v–u 간선이 닫는다)
+                    r.ok = false; r.oddCycle = a; return r;
+                }
             }
+        }
+    }
+    return r;
+}
+// ② 반복형 DFS
+bool dfsBipartite(int n, const Edges& e) {
+    std::vector<std::vector<int>> adj(n); for (auto [a, b] : e) { adj[a].push_back(b); if (a != b) adj[b].push_back(a); else adj[a].push_back(a); }
+    std::vector<int> color(n, -1), it(n, 0), st;
+    for (int s = 0; s < n; ++s) {
+        if (color[s] >= 0) continue;
+        color[s] = 0; st.push_back(s);
+        while (!st.empty()) {
+            int u = st.back();
+            if (it[u] == (int)adj[u].size()) { st.pop_back(); continue; }
+            int v = adj[u][it[u]++];
+            if (color[v] < 0) { color[v] = color[u] ^ 1; st.push_back(v); } else if (color[v] == color[u]) return false;
         }
     }
     return true;
 }
+// ③ 홀짝 서로소 집합: par[x] = x 와 부모의 색 차이 (0 같음, 1 다름)
+struct ParityDsu {
+    std::vector<int> p, par, sz; bool ok = true;
+    explicit ParityDsu(int n) : p(n), par(n, 0), sz(n, 1) { std::iota(p.begin(), p.end(), 0); }
+    int find(int x, int& parity) {                                                   // 루트를 돌려주고 parity 에 x 의 루트 대비 색 차이를 넣는다 (반복형 경로 압축)
+        int r = x, acc = 0; while (p[r] != r) { acc ^= par[r]; r = p[r]; }
+        int cur = x, curPar = acc;
+        while (cur != r) { int next = p[cur], nextPar = curPar ^ par[cur]; p[cur] = r; par[cur] = curPar; cur = next; curPar = nextPar; }
+        parity = acc; return r;
+    }
+    bool addEdge(int a, int b) {                                                     // a 와 b 는 다른 색이어야 한다
+        int pa, pb, ra = find(a, pa), rb = find(b, pb);
+        if (ra == rb) { if (pa == pb) ok = false; return ok; }
+        if (sz[ra] > sz[rb]) std::swap(ra, rb);
+        p[ra] = rb; par[ra] = pa ^ pb ^ 1; sz[rb] += sz[ra];
+        return ok;
+    }
+};
+bool dsuBipartite(int n, const Edges& e) { ParityDsu d(n); for (auto [a, b] : e) d.addEdge(a, b); return d.ok; }
+
+// ---- 오라클 ----
+bool validOddCycle(const Edges& e, const std::vector<int>& c) {
+    int k = (int)c.size(); if (k % 2 == 0) return false;
+    std::vector<int> s = c; std::sort(s.begin(), s.end()); if (std::adjacent_find(s.begin(), s.end()) != s.end()) return false;
+    for (int i = 0; i < k; ++i) {
+        int a = c[i], b = c[(i + 1) % k]; bool found = false;
+        for (auto [x, y] : e) if ((x == a && y == b) || (x == b && y == a)) { found = true; break; }
+        if (!found) return false;
+    }
+    return true;
+}
+long long countColorings(int n, const Edges& e) {                                    // 모든 2^n 가지 색칠 중 올바른 것의 수
+    long long ok = 0;
+    for (unsigned mask = 0; mask < (1u << n); ++mask) { bool good = true; for (auto [a, b] : e) if ((mask >> a & 1) == (mask >> b & 1)) { good = false; break; } ok += good; }
+    return ok;
+}
+int components(int n, const Edges& e) { std::vector<int> p(n); std::iota(p.begin(), p.end(), 0); auto f = [&](int x) { while (p[x] != x) x = p[x] = p[p[x]]; return x; }; int c = n; for (auto [a, b] : e) { a = f(a); b = f(b); if (a != b) { p[a] = b; --c; } } return c; }
 
 int main() {
-    std::vector<std::vector<int>> g = {{1,3},{0,2},{1,3},{0,2}}; // 4-cycle (bipartite)
-    assert(isBipartite(4, g) == true);
-    std::vector<std::vector<int>> g2 = {{1,2},{0,2},{0,1}}; // triangle (not bipartite)
-    assert(isBipartite(3, g2) == false);
-    std::cout << "BipartiteGraph check verified." << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 4-사이클은 이분, 삼각형은 아님(증거는 길이 3), 루프는 길이 1
+    {   Edges sq = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+        Bip b = bfsColor(4, sq); assert(b.ok && b.color[0] != b.color[1] && b.color[0] == b.color[2] && dfsBipartite(4, sq) && dsuBipartite(4, sq));
+        Edges tri = {{0, 1}, {1, 2}, {2, 0}};
+        Bip t = bfsColor(3, tri); assert(!t.ok && t.oddCycle.size() == 3 && validOddCycle(tri, t.oddCycle) && !dfsBipartite(3, tri) && !dsuBipartite(3, tri));
+        Edges loop = {{0, 0}}; Bip l = bfsColor(1, loop); assert(!l.ok && l.oddCycle == std::vector<int>({0}) && !dsuBipartite(1, loop));
+        Edges par = {{0, 1}, {0, 1}, {1, 0}}; assert(bfsColor(2, par).ok && dsuBipartite(2, par));    // 평행 간선은 영향 없음
+    }
+
+    // ② 전수: 정점 ≤ 6 의 모든 단순 그래프 — 세 판정 = 완전 탐색, 색칠 수 = 2^성분, 증거 검증, 이분 그래프의 수와 최대 간선 수
+    const long long want[7] = {0, 1, 2, 7, 41, 376, 5177};
+    for (int n = 1; n <= 6; ++n) {
+        Edges pairs; for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) pairs.push_back({a, b});
+        int m = (int)pairs.size(); long long count = 0; int maxEdges = 0;
+        for (unsigned mask = 0; mask < (1u << m); ++mask) {
+            Edges e; for (int i = 0; i < m; ++i) if (mask >> i & 1) e.push_back(pairs[i]);
+            long long colorings = countColorings(n, e); bool brute = colorings > 0;
+            Bip b = bfsColor(n, e);
+            assert(b.ok == brute && dfsBipartite(n, e) == brute && dsuBipartite(n, e) == brute);
+            if (brute) {
+                assert(colorings == (1LL << components(n, e)));
+                for (auto [x, y] : e) assert(b.color[x] != b.color[y]);                     // BFS 색칠이 실제로 올바르다
+                ++count; maxEdges = std::max(maxEdges, (int)e.size());
+            } else assert(validOddCycle(e, b.oddCycle));
+        }
+        assert(count == want[n] && maxEdges == n * n / 4);                                   // Mantel: ⌊n²/4⌋ 에서 딱 맞음
+    }
+
+    // ③ 무작위 다중 그래프 (루프·평행 간선, 정점 ≤ 12)
+    std::mt19937 rng(1736);
+    int yes = 0, no = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int n = 1 + (int)(rng() % 12), m = (int)(rng() % (2 * n + 1)); Edges e;
+        bool planted = it % 2 == 0; std::vector<int> side(n); for (int& s : side) s = (int)(rng() & 1);
+        for (int i = 0; i < m; ++i) {
+            int a = (int)(rng() % n), b = (int)(rng() % n);
+            if (planted && side[a] == side[b] && rng() % 10) continue;                       // 심어 둔 분할을 거의 따른다 (가끔 위반 → 비이분)
+            e.push_back({a, b});
+        }
+        bool brute = countColorings(n, e) > 0; Bip b = bfsColor(n, e);
+        assert(b.ok == brute && dfsBipartite(n, e) == brute && dsuBipartite(n, e) == brute);
+        if (!brute) assert(validOddCycle(e, b.oddCycle)); (brute ? yes : no)++;
+    }
+    assert(yes > 500 && no > 500);
+
+    // ④ 큰 입력: 정점 백만 개의 짝수 사이클은 이분, 정점 1,000,001 개의 홀수 사이클은 증거 길이가 정확히 1,000,001; 심은 분할로 만든 무작위 이분 그래프(정점 50 만, 간선 100 만)에 간선 하나를 틀리게 넣으면 판정이 뒤집히고 증거가 올바르다
+    {
+        const int N = 1000000; Edges cyc; for (int i = 0; i < N; ++i) cyc.push_back({i, (i + 1) % N});
+        assert(bfsColor(N, cyc).ok && dfsBipartite(N, cyc) && dsuBipartite(N, cyc));
+        Edges odd; for (int i = 0; i <= N; ++i) odd.push_back({i, (i + 1) % (N + 1)});
+        Bip b = bfsColor(N + 1, odd); assert(!b.ok && (int)b.oddCycle.size() == N + 1 && !dfsBipartite(N + 1, odd) && !dsuBipartite(N + 1, odd));
+        const int V = 500000; std::mt19937_64 r(8); std::vector<int> side(V); for (int& s : side) s = (int)(r() & 1);
+        Edges big; while ((int)big.size() < 2 * V) { int a = (int)(r() % V), c = (int)(r() % V); if (side[a] != side[c]) big.push_back({a, c}); }
+        Bip g = bfsColor(V, big); assert(g.ok && dfsBipartite(V, big) && dsuBipartite(V, big));
+        for (auto [x, y] : big) assert(g.color[x] != g.color[y]);
+        int a = 0, c = 1; while (side[a] != side[c] || a == c) ++c;                              // 같은 쪽 두 정점을 잇는 간선
+        big.push_back({a, c});
+        Bip bad = bfsColor(V, big); assert(!bad.ok && !dfsBipartite(V, big) && !dsuBipartite(V, big) && validOddCycle(big, bad.oddCycle));
+    }
+    std::cout << "BipartiteGraph: BFS two-colouring (with an odd-cycle witness), iterative DFS and a parity union-find all agreed with trying all 2^n colourings on every one of the 33,867 simple graphs with up to 6 vertices, the number of valid colourings was always 2^(components), witnesses were genuine odd simple cycles, the counts of labeled bipartite graphs came out 1,2,7,41,376,5177 with at most floor(n^2/4) edges, 3000 random multigraphs with loops agreed, a 1,000,000-cycle was bipartite while a 1,000,001-cycle returned its whole cycle as the witness, and one wrong edge planted in a 500,000-vertex bipartite graph flipped all three verdicts" << std::endl; return 0;
 }
-// Time Complexity: O(V + E)
-// Space Complexity: O(V)
+// Time Complexity: O(V + E)  (서로소 집합 판정은 O(E α(V)))
+// Space Complexity: O(V + E)
 ```
 ## DirectedGraph()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
+
+// 방향 그래프(digraph): 간선 u→v 는 순서쌍이다. 진입 차수와 진출 차수가 따로 있고 Σ진출 = Σ진입 = |E| (방향 그래프의 악수 보조정리). 뒤집은 그래프(transpose)는 모든 간선의 방향을 바꾼 것으로 두 번 뒤집으면 원래대로이며 진입·진출 차수가 서로 바뀐다. 인접 행렬 A 의 k 제곱 (A^k)[i][j] 는 i 에서 j 로 가는 길이 k 인 *걸음의 수*이고, 그래서 DAG ⇔ A 가 멱영(어떤 k ≤ n 에서 A^k = 0) 이다(걸음이 정점을 반복하려면 사이클이 있어야 하므로).
+// 토너먼트(모든 두 정점 사이에 간선이 정확히 하나인 방향 그래프)는 방향 그래프 이론의 보석 상자다 — Rédei: 모든 토너먼트에는 해밀턴 경로가 있다(정점을 하나씩 이분 탐색으로 끼워 넣어 O(n log n) 비교로 만든다). Camion: 강연결 토너먼트(n ≥ 3)에는 해밀턴 사이클이 있다 — 즉 "강연결 ⇔ 해밀턴 사이클" 이다. Landau: 점수열(진출 차수)을 오름차순 s₁ ≤ … ≤ sₙ 으로 놓으면 모든 k 에서 Σ_{i≤k} sᵢ ≥ C(k, 2) 이고 k = n 에서 등호.
+// 검증: ① 임의의 방향 다중 그래프(루프·평행 간선) 에서 차수 합, 뒤집기 두 번 = 원래, 차수 교환 ② 인접 행렬 거듭제곱 = 걸음 수(완전 열거), 정점 ≤ 4 의 모든 방향 그래프에서 "멱영 ⇔ 사이클 없음(카안 알고리즘)" ③ 정점 ≤ 5 의 모든 토너먼트(2^10)에서 Rédei 경로가 올바르고, 강연결 ⇔ 해밀턴 사이클(모든 순열 시도), 강연결 토너먼트의 수 1, 0, 2, 24, 544 ④ Landau 부등식 ⑤ 정점 3000 의 큰 토너먼트와 간선 30 만의 큰 방향 그래프.
+using Edges = std::vector<std::pair<int, int>>;
+struct Digraph {
+    int n; std::vector<std::vector<int>> out, in; long long edges = 0;
+    explicit Digraph(int nn) : n(nn), out(nn), in(nn) {}
+    void addEdge(int u, int v) { out[u].push_back(v); in[v].push_back(u); ++edges; }            // 자기 루프는 u 의 진출과 진입에 한 번씩
+    Digraph transpose() const { Digraph t(n); for (int u = 0; u < n; ++u) for (int v : out[u]) t.addEdge(v, u); return t; }
+    std::multiset<std::pair<int, int>> edgeSet() const { std::multiset<std::pair<int, int>> s; for (int u = 0; u < n; ++u) for (int v : out[u]) s.insert({u, v}); return s; }
+};
+using Matrix = std::vector<std::vector<long long>>;
+Matrix adjacency(const Digraph& g) { Matrix a(g.n, std::vector<long long>(g.n, 0)); for (int u = 0; u < g.n; ++u) for (int v : g.out[u]) ++a[u][v]; return a; }
+Matrix multiply(const Matrix& a, const Matrix& b) { int n = (int)a.size(); Matrix c(n, std::vector<long long>(n, 0)); for (int i = 0; i < n; ++i) for (int k = 0; k < n; ++k) if (a[i][k]) for (int j = 0; j < n; ++j) c[i][j] += a[i][k] * b[k][j]; return c; }
+bool isZero(const Matrix& a) { for (auto& r : a) for (long long x : r) if (x) return false; return true; }
+long long walksByEnumeration(const Digraph& g, int from, int to, int len) {
+    if (len == 0) return from == to;
+    long long total = 0; for (int v : g.out[from]) total += walksByEnumeration(g, v, to, len - 1); return total;
+}
+bool acyclicByKahn(const Digraph& g) {
+    std::vector<int> indeg(g.n, 0), q; for (int u = 0; u < g.n; ++u) for (int v : g.out[u]) ++indeg[v];
+    for (int v = 0; v < g.n; ++v) if (!indeg[v]) q.push_back(v);
+    std::size_t head = 0; while (head < q.size()) { int u = q[head++]; for (int v : g.out[u]) if (--indeg[v] == 0) q.push_back(v); }
+    return (int)q.size() == g.n;
+}
+
+// ---- 토너먼트 ----
+// beats[u][v] = u → v. Rédei 경로: 정점을 하나씩 이분 탐색으로 끼워 넣는다
+template <class Beats> std::vector<int> redei(int n, Beats beats) {
+    std::vector<int> path;
+    for (int v = 0; v < n; ++v) {
+        if (path.empty() || beats(v, path.front())) { path.insert(path.begin(), v); continue; }
+        if (beats(path.back(), v)) { path.push_back(v); continue; }
+        int lo = 0, hi = (int)path.size() - 1;                                          // 불변식: path[lo] → v → path[hi]
+        while (hi - lo > 1) { int mid = (lo + hi) / 2; if (beats(path[mid], v)) lo = mid; else hi = mid; }
+        path.insert(path.begin() + hi, v);
+    }
+    return path;
+}
+bool stronglyConnected(int n, const std::vector<std::vector<char>>& beats) {
+    std::vector<unsigned> row(n); for (int i = 0; i < n; ++i) { row[i] = 1u << i; for (int j = 0; j < n; ++j) if (beats[i][j]) row[i] |= 1u << j; }
+    for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) if (row[i] >> k & 1) row[i] |= row[k];
+    for (int i = 0; i < n; ++i) if (row[i] != (1u << n) - 1) return false;
+    return true;
+}
+bool hasHamiltonCycle(int n, const std::vector<std::vector<char>>& beats) {
+    std::vector<int> p(n); std::iota(p.begin(), p.end(), 0);
+    do { bool ok = true; for (int i = 0; i < n && ok; ++i) ok = beats[p[i]][p[(i + 1) % n]]; if (ok) return true; } while (std::next_permutation(p.begin() + 1, p.end()));
+    return false;
+}
 
 int main() {
-    // 방향 그래프: 간선에 방향이 있는 그래프
-    // 인접 리스트에서 u→v만 저장 (v→u 저장 안 함)
-    int V = 4;
-    std::vector<std::vector<int>> adj(V); // 방향 그래프
-    adj[0].push_back(1); // 0→1
-    adj[1].push_back(2); // 1→2
-    adj[2].push_back(3); // 2→3
-    adj[3].push_back(0); // 3→0 (사이클)
-    assert(adj[0].size() == 1 && adj[1].size() == 1);
-    // InDegree[1] = 1 (0→1만), OutDegree[1] = 1 (1→2만)
-    std::cout << "DirectedGraph: 0->1->2->3->0 cycle of size 4." << std::endl;
-    return 0;
+    std::mt19937 rng(1736);
+    // ① 임의의 방향 다중 그래프: 차수 합 · 뒤집기 두 번 · 차수 교환
+    for (int it = 0; it < 500; ++it) {
+        int n = 1 + (int)(rng() % 12), m = (int)(rng() % 40); Digraph g(n);
+        for (int i = 0; i < m; ++i) g.addEdge((int)(rng() % n), (int)(rng() % n));
+        long long so = 0, si = 0; for (int v = 0; v < n; ++v) { so += g.out[v].size(); si += g.in[v].size(); }
+        Digraph t = g.transpose(), tt = t.transpose();
+        assert(so == g.edges && si == g.edges && tt.edgeSet() == g.edgeSet());
+        for (int v = 0; v < n; ++v) assert(t.out[v].size() == g.in[v].size() && t.in[v].size() == g.out[v].size());
+    }
+
+    // ② 인접 행렬 거듭제곱 = 걸음 수 (완전 열거), 정점 ≤ 4 의 모든 방향 그래프(루프 포함)에서 "A^n = 0 ⇔ 사이클 없음"
+    for (int it = 0; it < 200; ++it) {
+        int n = 2 + (int)(rng() % 4); Digraph g(n); int m = (int)(rng() % (3 * n));
+        for (int i = 0; i < m; ++i) g.addEdge((int)(rng() % n), (int)(rng() % n));
+        Matrix a = adjacency(g), p = a;
+        for (int k = 1; k <= 4; ++k) { for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) assert(p[i][j] == walksByEnumeration(g, i, j, k)); p = multiply(p, a); }
+    }
+    long long dags = 0;
+    for (int n = 1; n <= 4; ++n) {
+        std::vector<std::pair<int, int>> all; for (int a = 0; a < n; ++a) for (int b = 0; b < n; ++b) all.push_back({a, b});     // 루프 포함
+        int m = (int)all.size();
+        for (unsigned mask = 0; mask < (1u << m); ++mask) {
+            Digraph g(n); for (int i = 0; i < m; ++i) if (mask >> i & 1) g.addEdge(all[i].first, all[i].second);
+            Matrix a = adjacency(g), p = a; for (int k = 1; k < n; ++k) p = multiply(p, a);                                      // p = A^n
+            bool nilpotent = isZero(p); assert(nilpotent == acyclicByKahn(g)); dags += nilpotent;
+        }
+    }
+    assert(dags == 1 + 3 + 25 + 543);                                                                                          // 이름 붙은 DAG 의 수
+
+    // ③ 토너먼트 전수: 정점 ≤ 5 (2^10): Rédei 경로, 강연결 ⇔ 해밀턴 사이클, 강연결 토너먼트의 수, Landau 부등식
+    const long long strongWant[6] = {0, 1, 0, 2, 24, 544};
+    for (int n = 1; n <= 5; ++n) {
+        std::vector<std::pair<int, int>> pairs; for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) pairs.push_back({a, b});
+        int m = (int)pairs.size(); long long strong = 0;
+        for (unsigned mask = 0; mask < (1u << m); ++mask) {
+            std::vector<std::vector<char>> beats(n, std::vector<char>(n, 0)); std::vector<int> score(n, 0);
+            for (int i = 0; i < m; ++i) { int a = pairs[i].first, b = pairs[i].second; if (mask >> i & 1) beats[a][b] = 1; else beats[b][a] = 1; }
+            for (int a = 0; a < n; ++a) for (int b = 0; b < n; ++b) score[a] += beats[a][b];
+            std::vector<int> path = redei(n, [&](int u, int v) { return beats[u][v] != 0; });
+            assert((int)path.size() == n); { std::vector<int> s = path; std::sort(s.begin(), s.end()); for (int i = 0; i < n; ++i) assert(s[i] == i); }
+            for (int i = 0; i + 1 < n; ++i) assert(beats[path[i]][path[i + 1]]);                                              // Rédei: 해밀턴 경로
+            bool sc = stronglyConnected(n, beats);
+            if (n >= 3) assert(sc == hasHamiltonCycle(n, beats));                                                                // Camion
+            strong += sc;
+            std::sort(score.begin(), score.end()); int prefix = 0;                                                               // Landau
+            for (int k = 1; k <= n; ++k) { prefix += score[k - 1]; assert(prefix >= k * (k - 1) / 2); }
+            assert(prefix == n * (n - 1) / 2);
+        }
+        assert(strong == strongWant[n]);
+    }
+
+    // ④ 큰 입력: 정점 3000 의 무작위 토너먼트 (약 450 만 쌍) 의 Rédei 경로, 간선 30 만의 방향 그래프 (차수 합 · 뒤집기)
+    {
+        const int N = 3000; std::vector<std::vector<char>> beats(N, std::vector<char>(N, 0));
+        for (int a = 0; a < N; ++a) for (int b = a + 1; b < N; ++b) { if (rng() & 1) beats[a][b] = 1; else beats[b][a] = 1; }
+        std::vector<int> path = redei(N, [&](int u, int v) { return beats[u][v] != 0; });
+        assert((int)path.size() == N); for (int i = 0; i + 1 < N; ++i) assert(beats[path[i]][path[i + 1]]);
+        const int V = 50000; Digraph g(V); for (int i = 0; i < 300000; ++i) g.addEdge((int)(rng() % V), (int)(rng() % V));
+        Digraph t = g.transpose(); long long so = 0, ti = 0; for (int v = 0; v < V; ++v) { so += g.out[v].size(); ti += t.in[v].size(); }
+        assert(so == 300000 && ti == 300000 && t.transpose().edgeSet() == g.edgeSet());
+    }
+    std::cout << "DirectedGraph: degree sums, double transposition and in/out degree swapping held on 500 random digraphs with loops and parallel edges, A^k counted walks exactly (checked against enumeration), 'A^n = 0' coincided with acyclicity on every digraph with up to 4 vertices (the 1+3+25+543 DAGs), on all tournaments with up to 5 vertices Redei insertion built a Hamiltonian path, strong connectivity coincided with having a Hamiltonian cycle (Camion), strong tournaments numbered 1,0,2,24,544 and Landau's inequalities held, and a 3000-vertex tournament and a 300,000-edge digraph passed too" << std::endl; return 0;
 }
+// Time Complexity: 간선 추가 O(1), 뒤집기 O(V + E), 행렬 곱 O(n³)
 // Space Complexity: O(V + E)
 ```
 ## UndirectedGraph()
@@ -7470,44 +7706,132 @@ int main() {
 ## CompleteGraph()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cmath>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <set>
+#include <utility>
+#include <vector>
 
-// 완전 그래프 K_n: 모든 정점 쌍이 연결된다.  간선 n(n-1)/2, 모든 차수 n-1, 클리크 수 = 색칠 수 = n.
-// 신장 트리의 개수는 케일리 공식 n^(n-2).  행렬-트리 정리(키르히호프): 라플라시안에서 한 행·열을 지운 행렬식과 같다
-long long spanningTrees(int n) {
-    int m = n - 1;
-    std::vector<std::vector<double>> a(m, std::vector<double>(m, -1.0));
-    for (int i = 0; i < m; i++) a[i][i] = n - 1;
-    double det = 1;
-    for (int c = 0; c < m; c++) {                                  // 가우스 소거
-        int piv = c; for (int r = c + 1; r < m; r++) if (std::fabs(a[r][c]) > std::fabs(a[piv][c])) piv = r;
-        if (piv != c) { std::swap(a[piv], a[c]); det = -det; }
-        det *= a[c][c];
-        for (int r = c + 1; r < m; r++) { double f = a[r][c] / a[c][c]; for (int k = c; k < m; k++) a[r][k] -= f * a[c][k]; }
+// 완전 그래프 K_n: 모든 정점 쌍이 이웃이다. 간선 n(n−1)/2 개, 모든 차수 n−1, 지름 1, 클리크 수 = 색칠 수 = n, 독립 수 1. 숫자 세기: 신장 트리는 Cayley 공식 n^(n−2) (행렬–트리 정리: 라플라시안의 한 소행렬식), 해밀턴 사이클은 (n−1)!/2, 완전 매칭은 짝수 n 에서 (n−1)!! = (n−1)(n−3)…1, k-클리크는 C(n,k).
+// 극값 정리 두 개를 완전 탐색으로 확인한다 — Mantel: K_n 의 부분 그래프 중 삼각형이 없는 것의 간선은 최대 ⌊n²/4⌋ (정점 6 개까지 모든 간선 부분집합). Ramsey R(3,3) = 6: K_6 의 간선을 빨강/파랑으로 칠하는 2^15 가지 모두에 한 색 삼각형이 있고, K_5 에는 없는 칠하기가 정확히 12 가지 있다(오각형과 별 모양 오각별). 평면성: K_5 는 E ≤ 3V − 6 (평면 그래프의 간선 한계)를 어긴다.
+// 행렬식은 정수 그대로 구한다 — 분수가 안 생기는 Bareiss 소거(중간값이 커서 128 비트 정수). 큰 n 은 소수 p 의 나머지 위에서 가우스 소거(역원은 페르마 소정리). 검증: n ≤ 6 은 신장 트리를 *직접 열거*(n−1 개 간선 부분집합 중 사이클 없는 것), n ≤ 12 는 Bareiss 와 n^(n−2) 비교, n = 200 은 나머지 소거로 비교.
+__extension__ typedef __int128 i128;
+using ll = long long;
+using Matrix = std::vector<std::vector<ll>>;
+
+ll bareiss(Matrix a) {                                                              // 정수 행렬식 (분수 없는 소거), 중간 곱은 128 비트
+    int n = (int)a.size(); if (n == 0) return 1; ll sign = 1, prev = 1;
+    for (int k = 0; k + 1 < n; ++k) {
+        if (a[k][k] == 0) { int s = -1; for (int i = k + 1; i < n; ++i) if (a[i][k] != 0) { s = i; break; } if (s < 0) return 0; std::swap(a[k], a[s]); sign = -sign; }
+        for (int i = k + 1; i < n; ++i) for (int j = k + 1; j < n; ++j) a[i][j] = (ll)(((i128)a[i][j] * a[k][k] - (i128)a[i][k] * a[k][j]) / prev);
+        prev = a[k][k];
     }
-    return std::llround(det);
+    return sign * a[n - 1][n - 1];
+}
+Matrix laplacianMinor(int n) { Matrix m(n - 1, std::vector<ll>(n - 1, -1)); for (int i = 0; i < n - 1; ++i) m[i][i] = n - 1; return m; }     // K_n 의 라플라시안에서 한 행·열 제거
+ll powmod(ll b, ll e, ll mod) { ll r = 1; b %= mod; while (e) { if (e & 1) r = (i128)r * b % mod; b = (i128)b * b % mod; e >>= 1; } return r; }
+ll detMod(Matrix a, ll mod) {                                                       // 나머지 위의 가우스 소거
+    int n = (int)a.size(); ll det = 1;
+    for (auto& r : a) for (ll& x : r) x = ((x % mod) + mod) % mod;
+    for (int c = 0; c < n; ++c) {
+        int p = -1; for (int r = c; r < n; ++r) if (a[r][c]) { p = r; break; }
+        if (p < 0) return 0; if (p != c) { std::swap(a[p], a[c]); det = (mod - det) % mod; }
+        det = (i128)det * a[c][c] % mod; ll inv = powmod(a[c][c], mod - 2, mod);
+        for (int r = c + 1; r < n; ++r) { ll f = (i128)a[r][c] * inv % mod; for (int k = c; k < n; ++k) a[r][k] = ((a[r][k] - (i128)f * a[c][k]) % mod + mod) % mod; }
+    }
+    return det;
+}
+ll cayley(int n) { ll r = 1; for (int i = 0; i < n - 2; ++i) r *= n; return r; }
+
+std::vector<std::pair<int, int>> completeEdges(int n) { std::vector<std::pair<int, int>> e; for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) e.push_back({a, b}); return e; }
+ll countSpanningTrees(int n) {                                                      // 직접 열거: (n−1) 개 간선 부분집합 중 사이클이 없는 것
+    auto e = completeEdges(n); int m = (int)e.size(), need = n - 1; ll count = 0;
+    for (unsigned mask = 0; mask < (1u << m); ++mask) {
+        if (__builtin_popcount(mask) != need) continue;
+        std::vector<int> p(n); std::iota(p.begin(), p.end(), 0); auto f = [&](int x) { while (p[x] != x) x = p[x] = p[p[x]]; return x; };
+        bool ok = true; for (int i = 0; i < m && ok; ++i) if (mask >> i & 1) { int a = f(e[i].first), b = f(e[i].second); if (a == b) ok = false; else p[a] = b; }
+        count += ok;
+    }
+    return count;
+}
+ll hamiltonCycles(int n) { std::vector<int> p(n); std::iota(p.begin(), p.end(), 0); ll c = 0; do ++c; while (std::next_permutation(p.begin() + 1, p.end())); return n < 3 ? 0 : c / 2; }   // 시작 고정, 방향 두 가지는 같은 사이클
+ll perfectMatchings(unsigned left) { if (!left) return 1; int a = __builtin_ctz(left); ll total = 0; for (unsigned rest = left & (left - 1); rest; rest &= rest - 1) total += perfectMatchings((left & ~(1u << a)) & ~(rest & -rest)); return total; }
+ll binom(int n, int k) { ll r = 1; for (int i = 1; i <= k; ++i) r = r * (n - k + i) / i; return r; }
+bool colorable(int n, int k, std::vector<int>& col, int v) {                        // K_n 을 k 색으로 (역추적)
+    if (v == n) return true;
+    for (int c = 0; c < k; ++c) { bool clash = false; for (int u = 0; u < v; ++u) if (col[u] == c) clash = true; if (clash) continue; col[v] = c; if (colorable(n, k, col, v + 1)) return true; }
+    return false;
 }
 
 int main() {
-    for (int n = 3; n <= 8; n++) {
-        long long expect = std::llround(std::pow(n, n - 2));
-        assert(spanningTrees(n) == expect);                        // 3, 16, 125, 1296, 16807, 262144
+    // ① 기본 사실
+    for (int n = 1; n <= 12; ++n) {
+        auto e = completeEdges(n); std::vector<int> deg(n, 0); for (auto [a, b] : e) { ++deg[a]; ++deg[b]; }
+        assert((int)e.size() == n * (n - 1) / 2 && std::all_of(deg.begin(), deg.end(), [&](int d) { return d == n - 1; }));
     }
-    int n = 7;
-    std::vector<std::vector<bool>> adj(n, std::vector<bool>(n, true));
-    for (int i = 0; i < n; i++) adj[i][i] = false;
-    int edges = 0; for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) edges += adj[i][j];
-    assert(edges == n * (n - 1) / 2);
-    std::vector<int> color(n, -1); int used = 0;                   // 탐욕 색칠: 모두 서로 인접하므로 n 가지 색이 필요
-    for (int v = 0; v < n; v++) { std::vector<bool> taken(n, false); for (int u = 0; u < v; u++) if (adj[v][u]) taken[color[u]] = true; int c = 0; while (taken[c]) c++; color[v] = c; used = std::max(used, c + 1); }
-    assert(used == n);
-    std::cout << "CompleteGraph K7: " << edges << " edges, spanning trees of K5 = " << spanningTrees(5) << std::endl;
-    return 0;
+    assert(5 * 4 / 2 > 3 * 5 - 6 && 4 * 3 / 2 <= 3 * 4 - 6);                                     // K_5 는 평면 그래프의 간선 한계를 넘는다, K_4 는 넘지 않는다
+
+    // ② 신장 트리의 수: 직접 열거(n ≤ 6) = Bareiss(n ≤ 12) = Cayley, 나머지 위 소거로 n = 200 까지
+    for (int n = 2; n <= 6; ++n) assert(countSpanningTrees(n) == cayley(n));
+    for (int n = 2; n <= 12; ++n) assert(bareiss(laplacianMinor(n)) == cayley(n));
+    {   const ll mod = 1000000007; for (int n : {20, 50, 100, 200}) { ll want = powmod(n, n - 2, mod); assert(detMod(laplacianMinor(n), mod) == want); } }
+
+    // ③ 세기: 해밀턴 사이클 (n−1)!/2, 완전 매칭 (n−1)!!, k-클리크 C(n,k) (모든 부분집합을 보고), 독립 집합은 크기 1
+    {
+        ll fact = 1; for (int n = 3; n <= 9; ++n) { fact *= (n - 1); assert(hamiltonCycles(n) == fact / 2); }                       // (n−1)!/2
+        ll dfact = 1; for (int n = 2; n <= 12; n += 2) { dfact *= (n - 1); assert(perfectMatchings((1u << n) - 1) == dfact); }     // (n−1)!!
+        for (int n = 2; n <= 9; ++n) {
+            std::vector<unsigned> adj(n, 0); for (auto [a, b] : completeEdges(n)) { adj[a] |= 1u << b; adj[b] |= 1u << a; }
+            std::vector<ll> byK(n + 1, 0);
+            for (unsigned s = 0; s < (1u << n); ++s) {                                                                           // 모든 부분집합이 서로 인접한지 직접 확인
+                bool clique = true;
+                for (int v = 0; v < n && clique; ++v) if ((s >> v & 1) && ((s & ~(1u << v)) & ~adj[v]) != 0) clique = false;
+                byK[__builtin_popcount(s)] += clique;
+            }
+            for (int k = 0; k <= n; ++k) assert(byK[k] == binom(n, k));
+        }
+        for (int n = 1; n <= 7; ++n) { std::vector<int> col(n); assert(colorable(n, n, col, 0) && (n == 1 || !colorable(n, n - 1, col, 0))); }   // 색칠 수 = n
+    }
+
+    // ④ Mantel: K_n 의 삼각형 없는 부분 그래프의 최대 간선 수 = ⌊n²/4⌋ (n ≤ 6, 모든 부분집합)
+    for (int n = 2; n <= 6; ++n) {
+        auto e = completeEdges(n); int m = (int)e.size(), best = 0;
+        for (unsigned mask = 0; mask < (1u << m); ++mask) {
+            unsigned adj[8] = {}; for (int i = 0; i < m; ++i) if (mask >> i & 1) { adj[e[i].first] |= 1u << e[i].second; adj[e[i].second] |= 1u << e[i].first; }
+            bool tri = false; for (int i = 0; i < m && !tri; ++i) if (mask >> i & 1) tri = (adj[e[i].first] & adj[e[i].second]) != 0;
+            if (!tri) best = std::max(best, __builtin_popcount(mask));
+        }
+        assert(best == n * n / 4);
+    }
+
+    // ⑤ Ramsey R(3,3) = 6: K_6 의 모든 빨강/파랑 칠하기에 한 색 삼각형이 있고, K_5 에는 없는 칠하기가 정확히 12 가지
+    {
+        for (int n = 5; n <= 6; ++n) {
+            auto e = completeEdges(n); int m = (int)e.size(); ll without = 0;
+            for (unsigned mask = 0; mask < (1u << m); ++mask) {
+                unsigned red[8] = {}, blue[8] = {};
+                for (int i = 0; i < m; ++i) { unsigned* side = (mask >> i & 1) ? red : blue; side[e[i].first] |= 1u << e[i].second; side[e[i].second] |= 1u << e[i].first; }
+                bool mono = false; for (int i = 0; i < m && !mono; ++i) { auto [a, b] = e[i]; unsigned* side = (mask >> i & 1) ? red : blue; mono = (side[a] & side[b]) != 0; }
+                without += !mono;
+            }
+            assert(n == 5 ? without == 12 : without == 0);
+        }
+    }
+
+    // ⑥ 큰 입력: K_2000 의 차수와 간선 수 (인접 비트집합), 신장 트리 수 n^(n−2) mod p 를 n = 1000 까지 (라플라시안 소행렬식을 나머지 위에서)
+    {
+        const int N = 2000, W = (N + 63) / 64; std::vector<std::vector<uint64_t>> adj(N, std::vector<uint64_t>(W, ~0ULL));
+        for (int i = 0; i < N; ++i) { adj[i][i >> 6] &= ~(1ULL << (i & 63)); if (N & 63) adj[i][W - 1] &= (1ULL << (N & 63)) - 1; }
+        ll total = 0; for (int i = 0; i < N; ++i) { ll d = 0; for (uint64_t w : adj[i]) d += __builtin_popcountll(w); assert(d == N - 1); total += d; }
+        assert(total / 2 == (ll)N * (N - 1) / 2);
+        const ll mod = 998244353; int n = 400; assert(detMod(laplacianMinor(n), mod) == powmod(n, n - 2, mod));
+    }
+    std::cout << "CompleteGraph: K_n had n(n-1)/2 edges and constant degree n-1; spanning trees counted by direct enumeration (n <= 6), an exact 128-bit Bareiss determinant (n <= 12) and a modular elimination (n up to 400) all equalled Cayley's n^(n-2); Hamiltonian cycles (n-1)!/2, perfect matchings (n-1)!! and k-cliques C(n,k) matched exhaustive counts, the chromatic number was n, the largest triangle-free subgraph had floor(n^2/4) edges for n <= 6, and every 2-colouring of K_6 had a monochromatic triangle while exactly 12 colourings of K_5 avoided one (R(3,3) = 6)" << std::endl; return 0;
 }
-// Time Complexity: 신장 트리 개수 O(n³) (행렬식)
+// Time Complexity: 신장 트리 개수 O(n³) (행렬식), 열거는 지수
 // Space Complexity: O(n²)
 ```
 ## SparseGraph()
@@ -8005,47 +8329,205 @@ int main() {
 ## DependencyGraph()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
-#include <map>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
-// 의존성 그래프: "A 를 쓰려면 B 가 먼저 필요" 를 A -> B 로 표현 (빌드 시스템, 패키지 관리자, 스프레드시트 셀).
-// 위상 정렬이 빌드 순서이고, 사이클이 있으면 순서가 존재하지 않으므로 사이클의 실제 경로를 보고해야 한다
+// 의존성 그래프: "A 를 쓰려면 B 가 먼저 필요" 를 A → B 로 둔다(빌드 시스템, 패키지 관리자, 스프레드시트 셀). 풀어야 할 문제 다섯 가지 — ① 설치·빌드 순서: 의존 대상이 앞에 오는 위상 순서. 사이클이 있으면 순서가 없으므로 *실제 사이클 경로* 를 보고한다. ② 병렬 빌드 단계(stage): 단계 s 의 패키지는 이전 단계에만 의존 → 단계 수 = 가장 긴 의존 사슬 길이. ③ 증분 빌드: 바뀐 패키지에 (간접적으로라도) 의존하는 모든 패키지 = 역방향 도달 집합만 다시 만든다. ④ 선언되지 않은(누락된) 의존 대상 찾기. ⑤ 직접 의존 목록 정리 = *추이적 축약(transitive reduction)*: 다른 경로로 이미 따라오는 직접 의존(A → C 인데 A → B → C 도 있음)을 지운다. DAG 에서는 유일한 최소 그래프이고 도달 가능성(폐쇄)은 그대로다.
+// 이름은 문자열이라 처음 나온 순서대로 번호를 붙이는 사전(intern)을 쓰고, 탐색은 반복형이다(수십만 패키지 사슬에서도 호출 스택이 넘치지 않는다). 축약은 위상 순서대로 정점마다 "다른 직접 의존 대상들로부터 닿는 집합" 을 비트집합으로 합쳐, 그 안에 든 직접 의존은 중복이라고 판정한다(O(E·V/64)).
+// 검증: ① 정점 4 개의 모든 방향 그래프(루프 없음, 4096)와 무작위 이름 그래프에서 해소 성공 ⇔ 사이클 없음(폐쇄 대각선), 성공이면 순서가 모든 의존을 만족하고, 실패면 돌려준 사이클이 닫혀 있고 간선이 실제로 있다 ② 단계 수 = 가장 긴 사슬(재귀 메모) ③ 증분 빌드 집합 = 폐쇄 오라클의 역방향 도달 집합 ④ 축약: *모든* 간선을 하나씩 빼 보는 완전 탐색과 같고, 같은 폐쇄를 가진 모든 부분 그래프를 열거했을 때 그 모두가 축약을 포함한다(유일·최소) ⑤ 큰 입력: 20 만 패키지 사슬, 1500 개 희소 DAG 의 축약, 10 만 개 층 DAG 의 단계 수와 4000 개 층 DAG 의 축약(비트집합 메모리를 아끼려 따로).
 struct Deps {
-    std::map<std::string, std::vector<std::string>> need;
-    std::vector<std::string> order, cycle;
-    std::map<std::string, int> state;                                  // 0 미방문, 1 방문 중, 2 완료
-    std::vector<std::string> stack;
-    bool visit(const std::string& n) {
-        state[n] = 1; stack.push_back(n);
-        for (auto& d : need[n]) {
-            if (state[d] == 1) { cycle.assign(std::find(stack.begin(), stack.end(), d), stack.end()); cycle.push_back(d); return false; }
-            if (state[d] == 0 && !visit(d)) return false;
-        }
-        state[n] = 2; stack.pop_back(); order.push_back(n);               // 의존 대상이 모두 끝난 뒤에 자신을 추가
-        return true;
+    std::map<std::string, int> id; std::vector<std::string> names; std::vector<std::vector<int>> need, users; std::vector<char> declared;
+    int intern(const std::string& s) {
+        auto it = id.find(s); if (it != id.end()) return it->second;
+        int k = (int)names.size(); id[s] = k; names.push_back(s); need.emplace_back(); users.emplace_back(); declared.push_back(0); return k;
     }
-    bool resolve() { for (auto& kv : need) if (state[kv.first] == 0 && !visit(kv.first)) return false; return true; }
+    void declare(const std::string& s) { declared[intern(s)] = 1; }
+    void depend(const std::string& a, const std::string& b) { int x = intern(a), y = intern(b); declared[x] = 1; need[x].push_back(y); users[y].push_back(x); }
+    int size() const { return (int)names.size(); }
 };
+struct Plan { bool ok = false; std::vector<int> order, cycle; };
+
+// ① 설치 순서 (반복형 DFS, 의존 대상이 먼저). roots 가 비어 있지 않으면 그 뿌리들에 필요한 것만.
+Plan resolve(const Deps& d, const std::vector<int>& roots = {}) {
+    int n = d.size(); Plan p; std::vector<int> color(n, 0), it(n, 0), st; std::vector<int> start = roots;
+    if (start.empty()) { start.resize(n); std::iota(start.begin(), start.end(), 0); }
+    for (int s : start) {
+        if (color[s]) continue;
+        color[s] = 1; st.push_back(s);
+        while (!st.empty()) {
+            int u = st.back();
+            if (it[u] < (int)d.need[u].size()) {
+                int v = d.need[u][it[u]++];
+                if (color[v] == 1) {                                                 // 사이클: 스택에서 v 이후 + v
+                    auto pos = std::find(st.begin(), st.end(), v);
+                    p.cycle.assign(pos, st.end()); p.cycle.push_back(v); return p;
+                }
+                if (color[v] == 0) { color[v] = 1; st.push_back(v); }
+            } else { color[u] = 2; p.order.push_back(u); st.pop_back(); }
+        }
+    }
+    p.ok = true; return p;
+}
+// ② 병렬 빌드 단계
+std::vector<int> stages(const Deps& d, bool& acyclic) {
+    int n = d.size(); std::vector<int> remaining(n), stage(n, 0), q;
+    for (int v = 0; v < n; ++v) { remaining[v] = (int)d.need[v].size(); if (!remaining[v]) q.push_back(v); }
+    for (std::size_t h = 0; h < q.size(); ++h) { int v = q[h]; for (int u : d.users[v]) { stage[u] = std::max(stage[u], stage[v] + 1); if (--remaining[u] == 0) q.push_back(u); } }
+    acyclic = (int)q.size() == n; return stage;
+}
+// ③ 증분 빌드: 바뀐 것에 (간접적으로) 의존하는 모두
+std::vector<char> rebuildSet(const Deps& d, const std::vector<int>& changed) {
+    std::vector<char> dirty(d.size(), 0); std::vector<int> st;
+    for (int c : changed) if (!dirty[c]) { dirty[c] = 1; st.push_back(c); }
+    while (!st.empty()) { int v = st.back(); st.pop_back(); for (int u : d.users[v]) if (!dirty[u]) { dirty[u] = 1; st.push_back(u); } }
+    return dirty;
+}
+// ④ 누락된 의존 대상 (어디서도 선언되지 않음)
+std::vector<std::string> missing(const Deps& d) { std::vector<std::string> m; for (int v = 0; v < d.size(); ++v) if (!d.declared[v]) m.push_back(d.names[v]); return m; }
+// ⑤ 추이적 축약 (DAG 전용): 반환 = 남는 직접 의존 (정렬된 (a, b) 쌍)
+std::vector<std::pair<int, int>> reduction(const Deps& d) {
+    Plan p = resolve(d); assert(p.ok);
+    int n = d.size(), W = (n + 63) / 64; std::vector<std::vector<uint64_t>> reach(n, std::vector<uint64_t>(W, 0));    // reach[a] = a 에서 *진짜로* (길이 ≥ 1) 닿는 집합
+    std::vector<std::pair<int, int>> kept;
+    for (int a : p.order) {                                                       // 의존 대상이 먼저 처리된다
+        std::vector<int> direct = d.need[a]; std::sort(direct.begin(), direct.end()); direct.erase(std::unique(direct.begin(), direct.end()), direct.end());
+        std::vector<uint64_t> cover(W, 0);
+        for (int c : direct) for (int w = 0; w < W; ++w) cover[w] |= reach[c][w];            // 직접 의존 대상들이 *각자* 닿는 집합의 합
+        for (int b : direct) { if (!(cover[b >> 6] >> (b & 63) & 1)) kept.push_back({a, b}); }   // 다른 직접 의존을 거쳐 닿으면 중복
+        for (int c : direct) { reach[a][c >> 6] |= 1ULL << (c & 63); for (int w = 0; w < W; ++w) reach[a][w] |= reach[c][w]; }
+    }
+    std::sort(kept.begin(), kept.end()); return kept;
+}
+
+// ---- 오라클 ----
+std::vector<std::vector<char>> closureOf(int n, const std::vector<std::pair<int, int>>& edges) {            // 진짜(길이 ≥ 1) 도달 가능성
+    std::vector<std::vector<char>> r(n, std::vector<char>(n, 0)); for (auto [a, b] : edges) r[a][b] = 1;
+    for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) if (r[i][k]) for (int j = 0; j < n; ++j) if (r[k][j]) r[i][j] = 1;
+    return r;
+}
+std::vector<std::pair<int, int>> edgesOf(const Deps& d) { std::vector<std::pair<int, int>> e; for (int a = 0; a < d.size(); ++a) for (int b : d.need[a]) e.push_back({a, b}); return e; }
+bool validCycle(const Deps& d, const std::vector<int>& c) {
+    if (c.size() < 2 || c.front() != c.back()) return false;
+    std::vector<int> body(c.begin(), c.end() - 1); std::vector<int> s = body; std::sort(s.begin(), s.end()); if (std::adjacent_find(s.begin(), s.end()) != s.end()) return false;
+    for (std::size_t i = 0; i + 1 < c.size(); ++i) if (std::find(d.need[c[i]].begin(), d.need[c[i]].end(), c[i + 1]) == d.need[c[i]].end()) return false;
+    return true;
+}
+int longestChain(const Deps& d, int v, std::vector<int>& memo) { if (memo[v] >= 0) return memo[v]; int best = 0; for (int w : d.need[v]) best = std::max(best, 1 + longestChain(d, w, memo)); return memo[v] = best; }
+std::string pk(int i) { return "p" + std::to_string(i); }
 
 int main() {
-    Deps ok;
-    ok.need = {{"app", {"ui", "net"}}, {"ui", {"core"}}, {"net", {"core"}}, {"core", {}}};
-    assert(ok.resolve());
-    auto pos = [&](const char* s) { return std::find(ok.order.begin(), ok.order.end(), s) - ok.order.begin(); };
-    assert(pos("core") < pos("ui") && pos("core") < pos("net") && pos("ui") < pos("app") && pos("net") < pos("app"));   // 의존 대상이 먼저
-    Deps bad;
-    bad.need = {{"a", {"b"}}, {"b", {"c"}}, {"c", {"a"}}, {"d", {"a"}}};
-    assert(!bad.resolve());
-    assert((bad.cycle == std::vector<std::string>{"a", "b", "c", "a"}));   // 사이클 경로를 그대로 보고
-    std::cout << "DependencyGraph build order:"; for (auto& s : ok.order) std::cout << " " << s; std::cout << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: app → ui, net ; ui → core ; net → core. 순서·단계·증분 빌드·누락
+    {   Deps d; d.depend("app", "ui"); d.depend("app", "net"); d.depend("ui", "core"); d.depend("net", "core"); d.declare("core");
+        Plan p = resolve(d); assert(p.ok);
+        auto pos = [&](const char* s) { return std::find(p.order.begin(), p.order.end(), d.id.at(s)) - p.order.begin(); };
+        assert(pos("core") < pos("ui") && pos("core") < pos("net") && pos("ui") < pos("app") && pos("net") < pos("app"));
+        bool acyclic; auto st = stages(d, acyclic); assert(acyclic && st[d.id.at("core")] == 0 && st[d.id.at("ui")] == 1 && st[d.id.at("net")] == 1 && st[d.id.at("app")] == 2);
+        auto dirty = rebuildSet(d, {d.id.at("net")}); assert(dirty[d.id.at("net")] && dirty[d.id.at("app")] && !dirty[d.id.at("ui")] && !dirty[d.id.at("core")]);   // net 만 바뀌면 net 과 app 만
+        assert(missing(d).empty());
+        d.depend("app", "core");                                                 // 직접 의존이지만 이미 ui → core 로 따라온다 → 축약에서 사라진다
+        auto red = reduction(d); assert(red.size() == 4 && std::find(red.begin(), red.end(), std::make_pair(d.id.at("app"), d.id.at("core"))) == red.end());
+        Deps m; m.depend("a", "ghost"); assert(missing(m) == std::vector<std::string>({"ghost"}));
+        Deps bad; bad.depend("a", "b"); bad.depend("b", "c"); bad.depend("c", "a"); bad.depend("d", "a");
+        Plan q = resolve(bad); assert(!q.ok && q.cycle.size() == 4 && validCycle(bad, q.cycle));
+        std::vector<std::string> names; for (int v : q.cycle) names.push_back(bad.names[v]); assert((names == std::vector<std::string>{"a", "b", "c", "a"}));
+        Plan only = resolve(d, {d.id.at("ui")}); assert(only.ok && only.order.size() == 2);   // ui 설치에는 ui, core 만
+    }
+
+    // ② 전수: 정점 4 개의 모든 방향 그래프(루프 없음, 2^12) — 해소 성공 ⇔ 폐쇄 대각선이 비어 있음, 순서·사이클 증거 검증, 단계 수 = 가장 긴 사슬 (자기 의존은 아래 손 예제에서)
+    long long acyclicCount = 0;
+    {
+        const int n = 4; std::vector<std::pair<int, int>> all; for (int a = 0; a < n; ++a) for (int b = 0; b < n; ++b) if (a != b) all.push_back({a, b});
+        for (unsigned mask = 0; mask < (1u << 12); ++mask) {
+            Deps d; for (int i = 0; i < n; ++i) d.declare(pk(i));
+            for (int i = 0; i < 12; ++i) if (mask >> i & 1) d.depend(pk(all[i].first), pk(all[i].second));
+            auto cl = closureOf(n, edgesOf(d)); bool cyc = false; for (int i = 0; i < n; ++i) cyc = cyc || cl[i][i];
+            Plan p = resolve(d); bool acyc = false; auto st = stages(d, acyc);
+            assert(p.ok == !cyc && acyc == !cyc);
+            if (p.ok) {
+                std::vector<int> pos(n); for (int i = 0; i < n; ++i) pos[p.order[i]] = i;
+                for (auto [a, b] : edgesOf(d)) assert(pos[b] < pos[a]);
+                std::vector<int> memo(n, -1); for (int v = 0; v < n; ++v) assert(st[v] == longestChain(d, v, memo));
+                ++acyclicCount;
+            } else assert(validCycle(d, p.cycle));
+        }
+    }
+    assert(acyclicCount == 543);                                                  // 이름 붙은 DAG 의 수 (정점 4)
+
+    // ③ 무작위 DAG(정점 ≤ 12): 증분 빌드 집합 = 폐쇄 오라클, 누락, 단계; ④ 축약 = 간선 하나씩 빼 보기, 폐쇄 보존, 최소성
+    std::mt19937 rng(2018);
+    for (int it = 0; it < 800; ++it) {
+        int n = 3 + (int)(rng() % 10); std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); std::shuffle(perm.begin(), perm.end(), rng);
+        Deps d; for (int i = 0; i < n; ++i) d.declare(pk(i));
+        for (int i = 0; i < n; ++i) for (int j = 0; j < i; ++j) if (rng() % 100 < 30) d.depend(pk(perm[i]), pk(perm[j]));       // perm[j] 가 앞서므로 DAG
+        if (rng() % 4 == 0 && !edgesOf(d).empty()) { auto e = edgesOf(d); d.depend(pk(e[0].first), pk(e[0].second)); }       // 중복 선언도 섞는다
+        auto edges = edgesOf(d); auto cl = closureOf(n, edges);
+        std::vector<int> changed; for (int i = 0; i < n; ++i) if (rng() % 4 == 0) changed.push_back(d.id.at(pk(i)));
+        auto dirty = rebuildSet(d, changed);
+        for (int v = 0; v < n; ++v) { bool want = std::find(changed.begin(), changed.end(), v) != changed.end(); for (int c : changed) want = want || cl[v][c]; assert((bool)dirty[v] == want); }
+        auto red = reduction(d);
+        std::vector<std::pair<int, int>> uniq = edges; std::sort(uniq.begin(), uniq.end()); uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+        std::vector<std::pair<int, int>> bruteKept;
+        for (auto e : uniq) {                                                    // 이 간선 없이도 a 에서 b 로 닿는가 (길이 ≥ 2 인 경로)
+            std::vector<std::pair<int, int>> rest; for (auto f : uniq) if (f != e) rest.push_back(f);
+            if (!closureOf(n, rest)[e.first][e.second]) bruteKept.push_back(e);
+        }
+        assert(red == bruteKept);
+        assert(closureOf(n, red) == cl);                                         // 폐쇄 보존
+        for (std::size_t i = 0; i < red.size(); ++i) { auto rest = red; rest.erase(rest.begin() + (long)i); assert(closureOf(n, rest) != cl); }   // 최소: 하나라도 빼면 폐쇄가 줄어든다
+    }
+    // 유일성: 정점 5 개 DAG(간선 i→j, i<j, 10 개 중 무작위 부분집합) — 같은 폐쇄를 가진 *모든* 부분 그래프가 축약을 포함한다
+    for (int it = 0; it < 120; ++it) {
+        const int n = 5; Deps d; for (int i = 0; i < n; ++i) d.declare(pk(i));
+        for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) if (rng() % 100 < 60) d.depend(pk(b), pk(a));
+        auto edges = edgesOf(d); std::sort(edges.begin(), edges.end()); auto cl = closureOf(n, edges); auto red = reduction(d); int m = (int)edges.size();
+        for (unsigned mask = 0; mask < (1u << m); ++mask) {
+            std::vector<std::pair<int, int>> sub; for (int i = 0; i < m; ++i) if (mask >> i & 1) sub.push_back(edges[i]);
+            if (closureOf(n, sub) != cl) continue;
+            for (auto e : red) assert(std::find(sub.begin(), sub.end(), e) != sub.end());
+            assert(sub.size() >= red.size());
+        }
+    }
+
+    // ⑤ 큰 입력: 20 만 패키지 사슬(i → i−1) 의 순서와 단계, 한쪽 끝만 바꾸면 전체 재빌드; 1500 개 희소 DAG 의 축약이 간선 하나씩 빼 보기와 같음; 10 만 개 층 DAG 의 단계
+    {
+        const int N = 200000; Deps d; for (int i = 0; i < N; ++i) d.declare(pk(i)); for (int i = 1; i < N; ++i) d.depend(pk(i), pk(i - 1));
+        Plan p = resolve(d); assert(p.ok && (int)p.order.size() == N && p.order.front() == d.id.at(pk(0)) && p.order.back() == d.id.at(pk(N - 1)));
+        bool acyclic; auto st = stages(d, acyclic); assert(acyclic && st[d.id.at(pk(N - 1))] == N - 1);
+        auto dirty = rebuildSet(d, {d.id.at(pk(0))}); assert(std::count(dirty.begin(), dirty.end(), 1) == N);
+        auto dirty2 = rebuildSet(d, {d.id.at(pk(N - 1))}); assert(std::count(dirty2.begin(), dirty2.end(), 1) == 1);
+        d.depend(pk(0), pk(N - 1)); Plan c = resolve(d); assert(!c.ok && (int)c.cycle.size() == N + 1);
+    }
+    {
+        const int n = 1500; Deps d; for (int i = 0; i < n; ++i) d.declare(pk(i));
+        for (int i = 1; i < n; ++i) for (int k = 0; k < 3; ++k) d.depend(pk(i), pk((int)(rng() % i)));                      // 앞선 번호 셋에 의존
+        auto edges = edgesOf(d); std::sort(edges.begin(), edges.end()); edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+        auto red = reduction(d);
+        std::vector<std::vector<int>> adj(n); for (auto [a, b] : edges) adj[a].push_back(b);
+        std::vector<std::pair<int, int>> brute;
+        for (auto e : edges) {                                                    // e 를 빼고 a 에서 b 로 DFS
+            std::vector<char> seen(n, 0); std::vector<int> st{e.first}; seen[e.first] = 1; bool reach = false;
+            while (!st.empty() && !reach) { int u = st.back(); st.pop_back(); for (int v : adj[u]) { if (u == e.first && v == e.second) continue; if (v == e.second) { reach = true; break; } if (!seen[v]) { seen[v] = 1; st.push_back(v); } } }
+            if (!reach) brute.push_back(e);
+        }
+        assert(red == brute && red.size() < edges.size());
+        const int L = 100000; Deps lay; for (int i = 0; i < L; ++i) { lay.declare(pk(i)); if (i) { lay.depend(pk(i), pk(i - 1)); if (i > 1) lay.depend(pk(i), pk(i - 2)); } }
+        bool acyclic; auto st = stages(lay, acyclic); assert(acyclic && st[lay.id.at(pk(L - 1))] == L - 1);                 // i−1 을 거치는 사슬이 가장 길다
+        const int L2 = 4000; Deps small; for (int i = 0; i < L2; ++i) { small.declare(pk(i)); if (i) { small.depend(pk(i), pk(i - 1)); if (i > 1) small.depend(pk(i), pk(i - 2)); } }
+        assert((int)reduction(small).size() == L2 - 1);                           // i → i−2 는 i → i−1 → i−2 로 따라오므로 모두 사라진다
+    }
+    std::cout << "DependencyGraph: on all 4096 loop-free digraphs over 4 package names the iterative resolver succeeded exactly when the closure diagonal was empty (543 acyclic ones), orders satisfied every dependency, failures returned a closed simple cycle of real edges, parallel build stages equalled the longest dependency chain, incremental-rebuild sets matched a reverse-closure oracle, the transitive reduction equalled the result of deleting each edge in turn and testing reachability, preserved the closure, could not lose another edge, and was contained in every sub-graph with the same closure, and a 200,000-package chain, a 1500-package sparse DAG and a 100,000-package layered DAG behaved as predicted" << std::endl; return 0;
 }
-// Time Complexity: O(V + E)
-// Space Complexity: O(V)
+// Time Complexity: 순서·단계·증분 O(V + E), 축약 O(E · V / 64)
+// Space Complexity: O(V + E) (축약은 O(V²/64) 비트)
 ```
 ## KnowledgeGraph()
 ### 대표코드
@@ -8145,44 +8627,127 @@ int main() {
 ## CallGraph()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
+#include <iostream>
 #include <map>
+#include <numeric>
+#include <queue>
+#include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// 호출 그래프: 정점 = 함수, 간선 f -> g = "f 가 g 를 호출".  프로그램 분석의 기본 자료구조.
-//  - 도달 불가능한 함수 = 죽은 코드 (main 에서 도달 가능한 집합 밖)
-//  - 사이클 = 재귀 (상호 재귀는 크기 2 이상의 강연결 요소)  -> 인라이닝·스택 분석에서 구분해야 한다
-typedef std::map<std::string, std::vector<std::string>> CG;
-std::set<std::string> reachable(const CG& g, const std::string& root) {
-    std::set<std::string> seen{root}; std::vector<std::string> st{root};
-    while (!st.empty()) { auto u = st.back(); st.pop_back(); auto it = g.find(u); if (it != g.end()) for (auto& v : it->second) if (seen.insert(v).second) st.push_back(v); }
-    return seen;
+// 호출 그래프: 정점 = 함수, 간선 f → g = "f 가 g 를 호출". 프로그램 분석의 기본 자료구조 — 질문 여섯 가지: ① 죽은 코드: main 에서 도달 불가능한 함수 ② 재귀: 자기 자신에게 되돌아올 수 있는 함수(직접 재귀 = 자기 루프, 상호 재귀 = 크기 ≥ 2 인 강연결 요소) ③ 아래에서 위로 분석할 순서: 응축 그래프(강연결 요소를 한 점으로)의 *역위상 순서* — 호출되는 쪽(callee)을 먼저 분석하고 같은 요소 안은 고정점 반복. 타잔 알고리즘이 이 순서로 요소 번호를 준다. ④ 최대 스택 깊이: main 에서 닿는 곳에 재귀가 없으면 가장 긴 호출 사슬(프레임 수), 있으면 "무제한" ⑤ 잎 함수(아무것도 호출하지 않음) ⑥ 인라이닝 후보: 재귀가 아니고 호출 지점이 정확히 하나.
+// 이름은 문자열이라 처음 나온 순서로 번호를 붙인다. 모든 탐색은 반복형. 검증: 정점 ≤ 5 의 모든 호출 그래프(자기 호출 포함, 2^25 가운데 표본)와 무작위 호출 그래프에서 ① 죽은 코드 = 폐쇄 오라클 ② 재귀 = 진짜(길이 ≥ 1) 폐쇄의 대각선 ③ 응축 그래프 순서: 서로 다른 요소로 가는 호출 f→g 마다 g 의 요소 번호가 더 작다 ④ 최대 스택 깊이 = 모든 호출 경로를 열거한 완전 탐색(비재귀일 때), 재귀가 닿으면 무제한 ⑤ 큰 입력(20 만 함수 · 50 만 호출 무작위, 50 만 단계의 사슬).
+struct CallGraph {
+    std::map<std::string, int> id; std::vector<std::string> name; std::vector<std::vector<int>> callees, callers; std::vector<int> selfCalls;
+    int intern(const std::string& s) { auto it = id.find(s); if (it != id.end()) return it->second; int k = (int)name.size(); id[s] = k; name.push_back(s); callees.emplace_back(); callers.emplace_back(); selfCalls.push_back(0); return k; }
+    void addFunction(const std::string& s) { intern(s); }
+    void call(const std::string& f, const std::string& g) { int a = intern(f), b = intern(g); callees[a].push_back(b); callers[b].push_back(a); if (a == b) ++selfCalls[a]; }
+    int size() const { return (int)name.size(); }
+};
+struct Analysis {
+    std::vector<char> live, recursive, leaf, inlineCandidate; std::vector<int> comp; int comps = 0; int maxDepth = 0; bool unbounded = false;
+};
+// 반복형 타잔 (요소 번호 = 끝나는 순서 = 역위상: callee 쪽 요소가 더 작은 번호)
+std::vector<int> sccs(const CallGraph& g, int& count) {
+    int n = g.size(); std::vector<int> idx(n, -1), low(n, 0), it(n, 0), comp(n, -1), st, call; std::vector<char> on(n, 0); int counter = 0; count = 0;
+    for (int r = 0; r < n; ++r) {
+        if (idx[r] >= 0) continue;
+        idx[r] = low[r] = counter++; st.push_back(r); on[r] = 1; call.push_back(r);
+        while (!call.empty()) {
+            int u = call.back();
+            if (it[u] < (int)g.callees[u].size()) { int v = g.callees[u][it[u]++]; if (idx[v] < 0) { idx[v] = low[v] = counter++; st.push_back(v); on[v] = 1; call.push_back(v); } else if (on[v]) low[u] = std::min(low[u], idx[v]); }
+            else { if (low[u] == idx[u]) { while (true) { int w = st.back(); st.pop_back(); on[w] = 0; comp[w] = count; if (w == u) break; } ++count; } call.pop_back(); if (!call.empty()) low[call.back()] = std::min(low[call.back()], low[u]); }
+        }
+    }
+    return comp;
 }
-// 재귀 함수 찾기: 자기 자신으로 되돌아올 수 있는 함수 (u 에서 시작해 u 에 도달)
-std::set<std::string> recursive(const CG& g) {
-    std::set<std::string> r;
-    for (auto& kv : g) for (auto& callee : kv.second) { auto reach = reachable(g, callee); if (reach.count(kv.first)) { r.insert(kv.first); break; } }
+Analysis analyse(const CallGraph& g, int root) {
+    int n = g.size(); Analysis a; a.comp = sccs(g, a.comps);
+    a.live.assign(n, 0); std::vector<int> st{root}; a.live[root] = 1;
+    while (!st.empty()) { int u = st.back(); st.pop_back(); for (int v : g.callees[u]) if (!a.live[v]) { a.live[v] = 1; st.push_back(v); } }
+    std::vector<int> compSize(a.comps, 0); for (int v = 0; v < n; ++v) ++compSize[a.comp[v]];
+    a.recursive.assign(n, 0); a.leaf.assign(n, 0); a.inlineCandidate.assign(n, 0);
+    for (int v = 0; v < n; ++v) {
+        a.recursive[v] = compSize[a.comp[v]] > 1 || g.selfCalls[v] > 0;
+        a.leaf[v] = g.callees[v].empty();
+        a.inlineCandidate[v] = !a.recursive[v] && g.callers[v].size() == 1 && v != root;
+    }
+    for (int v = 0; v < n; ++v) if (a.live[v] && a.recursive[v]) a.unbounded = true;                    // main 에서 닿는 재귀 → 스택 깊이 무제한
+    if (!a.unbounded) {                                                                                  // 비재귀면 DAG: 요소 번호가 역위상이라 번호 오름차순이 callee 먼저
+        std::vector<int> depth(n, 0), order(n); std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](int x, int y) { return a.comp[x] < a.comp[y]; });
+        for (int v : order) { int best = 0; for (int w : g.callees[v]) best = std::max(best, depth[w]); depth[v] = best + 1; }      // 프레임 수 (자기 자신 포함)
+        a.maxDepth = depth[root];
+    }
+    return a;
+}
+
+// ---- 오라클 ----
+std::vector<std::vector<char>> properClosure(const CallGraph& g) {
+    int n = g.size(); std::vector<std::vector<char>> r(n, std::vector<char>(n, 0)); for (int a = 0; a < n; ++a) for (int b : g.callees[a]) r[a][b] = 1;
+    for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) if (r[i][k]) for (int j = 0; j < n; ++j) if (r[k][j]) r[i][j] = 1;
     return r;
 }
+int bruteDepth(const CallGraph& g, int v) { int best = 0; for (int w : g.callees[v]) best = std::max(best, bruteDepth(g, w)); return best + 1; }   // 비재귀 전용: 모든 경로 열거
+std::string fn(int i) { return "f" + std::to_string(i); }
 
 int main() {
-    CG g = {{"main", {"parse", "run"}}, {"parse", {"lex"}}, {"lex", {}}, {"run", {"step", "log"}}, {"step", {"step", "log"}},
-            {"log", {}}, {"even", {"odd"}}, {"odd", {"even"}}, {"unused", {"log"}}};
-    auto live = reachable(g, "main");
-    std::set<std::string> all; for (auto& kv : g) all.insert(kv.first);
-    std::set<std::string> dead; std::set_difference(all.begin(), all.end(), live.begin(), live.end(), std::inserter(dead, dead.begin()));
-    assert((dead == std::set<std::string>{"even", "odd", "unused"}));              // main 에서 호출되지 않는 함수
-    auto rec = recursive(g);
-    assert((rec == std::set<std::string>{"step", "even", "odd"}));                 // 직접 재귀 step, 상호 재귀 even/odd
-    std::cout << "CallGraph: " << dead.size() << " dead functions, " << rec.size() << " recursive" << std::endl;
-    return 0;
+    // ① 손으로 확인한 모양: 기존 예제 — main → parse, run ; parse → lex ; run → step, log ; step → step, log ; even ↔ odd ; unused → log
+    {   CallGraph g;
+        g.call("main", "parse"); g.call("main", "run"); g.call("parse", "lex"); g.call("run", "step"); g.call("run", "log"); g.call("step", "step"); g.call("step", "log");
+        g.call("even", "odd"); g.call("odd", "even"); g.call("unused", "log"); g.addFunction("lex");
+        Analysis a = analyse(g, g.id.at("main"));
+        std::set<std::string> dead, rec, leaves, inl;
+        for (int v = 0; v < g.size(); ++v) { if (!a.live[v]) dead.insert(g.name[v]); if (a.recursive[v]) rec.insert(g.name[v]); if (a.leaf[v]) leaves.insert(g.name[v]); if (a.inlineCandidate[v]) inl.insert(g.name[v]); }
+        assert((dead == std::set<std::string>{"even", "odd", "unused"}) && (rec == std::set<std::string>{"step", "even", "odd"}));
+        assert((leaves == std::set<std::string>{"lex", "log"}) && (inl == std::set<std::string>{"parse", "lex", "run"}));   // log 는 호출 지점이 셋이라 후보가 아님, step 은 재귀
+        assert(a.unbounded);                                                                                // main → run → step(재귀) : 스택 깊이 무제한
+        assert(a.comp[g.id.at("lex")] < a.comp[g.id.at("parse")] && a.comp[g.id.at("log")] < a.comp[g.id.at("run")] && a.comp[g.id.at("run")] < a.comp[g.id.at("main")]);   // callee 먼저
+        assert(a.comp[g.id.at("even")] == a.comp[g.id.at("odd")]);
+        CallGraph h; h.call("main", "a"); h.call("a", "b"); h.call("b", "c"); h.call("main", "c");
+        Analysis b = analyse(h, h.id.at("main")); assert(!b.unbounded && b.maxDepth == 4);                // main → a → b → c : 프레임 4 개
+    }
+
+    // ② 무작위 호출 그래프 (정점 ≤ 9, 자기 호출·평행 호출·고립 함수 포함): 죽은 코드 · 재귀 · 요소 순서 · 최대 깊이 · 리프를 오라클과 대조
+    std::mt19937 rng(2024);
+    int unboundedSeen = 0, boundedSeen = 0;
+    for (int it = 0; it < 4000; ++it) {
+        int n = 2 + (int)(rng() % 8), m = (int)(rng() % (2 * n + 1)); CallGraph g; for (int i = 0; i < n; ++i) g.addFunction(fn(i));
+        bool acyclicBias = it % 2 == 0;                                              // 반은 번호가 큰 쪽만 호출하게 해 비재귀 그래프를 자주 만든다
+        for (int i = 0; i < m; ++i) { int a = (int)(rng() % n), b = (int)(rng() % n); if (acyclicBias && b <= a) continue; g.call(fn(a), fn(b)); }
+        Analysis a = analyse(g, 0); auto cl = properClosure(g);
+        for (int v = 0; v < n; ++v) {
+            assert((bool)a.live[v] == (v == 0 || cl[0][v]));                          // 죽은 코드
+            assert((bool)a.recursive[v] == (bool)cl[v][v]);                           // 재귀 = 진짜 폐쇄의 대각선
+            assert((bool)a.leaf[v] == g.callees[v].empty());
+        }
+        for (int u = 0; u < n; ++u) for (int v : g.callees[u]) assert(a.comp[u] == a.comp[v] || a.comp[v] < a.comp[u]);       // 응축 순서: callee 먼저
+        bool reachRec = false; for (int v = 0; v < n; ++v) reachRec = reachRec || (a.live[v] && cl[v][v]);
+        assert(a.unbounded == reachRec);
+        if (!a.unbounded) { assert(a.maxDepth == bruteDepth(g, 0)); ++boundedSeen; } else ++unboundedSeen;
+    }
+    assert(boundedSeen > 1000 && unboundedSeen > 500);
+
+    // ③ 큰 입력: 20 만 함수 · 50 만 호출 무작위 (분석 일관성) 와 50 만 단계 사슬 (스택 깊이가 정확히 50 만, 반복형이라 안전)
+    {
+        const int N = 200000; CallGraph g; for (int i = 0; i < N; ++i) g.addFunction(fn(i));
+        std::mt19937_64 r(5); for (int i = 0; i < 500000; ++i) g.call(fn((int)(r() % N)), fn((int)(r() % N)));
+        Analysis a = analyse(g, 0);
+        for (int u = 0; u < N; ++u) for (int v : g.callees[u]) assert(a.comp[u] == a.comp[v] || a.comp[v] < a.comp[u]);
+        std::vector<int> compSize(a.comps, 0); for (int v = 0; v < N; ++v) ++compSize[a.comp[v]];
+        for (int v = 0; v < N; ++v) if (g.selfCalls[v] == 0) assert((bool)a.recursive[v] == (compSize[a.comp[v]] > 1));
+        const int M = 500000; CallGraph chain; for (int i = 0; i < M; ++i) chain.addFunction(fn(i)); for (int i = 0; i + 1 < M; ++i) chain.call(fn(i), fn(i + 1));
+        Analysis c = analyse(chain, 0); assert(!c.unbounded && c.maxDepth == M);
+        chain.call(fn(M - 1), fn(0)); Analysis d = analyse(chain, 0); assert(d.unbounded && d.comps == 1);
+    }
+    std::cout << "CallGraph: dead code, recursion (self and mutual), leaf and inlining-candidate sets matched a transitive-closure oracle on 4000 random call graphs, the iterative Tarjan numbering put every callee before its caller, the maximum stack depth equalled exhaustive enumeration of all call paths whenever no reachable recursion existed (and was reported unbounded exactly when some live function recursed), a 200,000-function random program stayed consistent, and a 500,000-frame call chain gave depth 500,000 until a back call made it unbounded" << std::endl; return 0;
 }
-// Time Complexity: 도달 가능성 O(V + E), 재귀 탐지 O(V·(V + E))
-// Space Complexity: O(V)
+// Time Complexity: O(V + E)
+// Space Complexity: O(V + E)
 ```
 ## StateTransitionGraph()
 ### 대표코드
@@ -8324,38 +8889,218 @@ int main() {
 ## BayesianNetwork()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cmath>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <iterator>
+#include <numeric>
+#include <random>
+#include <utility>
+#include <vector>
 
-// 베이즈 네트워크: 방향 비순환 그래프(DAG).  각 정점은 확률 변수이고 부모가 주어지면 나머지와 조건부 독립이므로
-// 결합확률이 P(X1..Xn) = Π P(Xi | parents(Xi)) 로 인수분해된다.  추론은 합을 정의대로 계산(열거)하면 된다.
-// 고전 예: 비(R) -> 스프링클러(S), 비 -> 젖은 잔디(G), 스프링클러 -> 젖은 잔디
-double P_R(bool r) { return r ? 0.2 : 0.8; }
-double P_S(bool s, bool r) { double t = r ? 0.01 : 0.4; return s ? t : 1 - t; }
-double P_G(bool g, bool s, bool r) {
-    double t = (s && r) ? 0.99 : (s && !r) ? 0.9 : (!s && r) ? 0.8 : 0.0;
-    return g ? t : 1 - t;
+// 베이즈 네트워크: 확률 변수들을 정점으로 하는 방향 비순환 그래프(DAG). 각 변수는 부모가 주어지면 비후손과 조건부 독립이라서 결합확률이 P(X₁..Xₙ) = Π P(Xᵢ | parents(Xᵢ)) 로 인수분해된다 — 이진 변수 n 개를 통째로 적으면 2ⁿ − 1 개의 수가 필요하지만 부모가 k 개 이하면 n·2ᵏ 개면 된다(사슬 20 개 변수: 39 개 대 1,048,575 개).
+// 추론 P(Q | 증거) 세 가지 — ① 열거: 결합확률의 합을 정의대로 (2ⁿ) ② 변수 제거(variable elimination): CPT 를 *인수(factor)* 로 보고 증거로 제한한 뒤, 변수를 하나씩 "그 변수를 포함한 인수들을 곱하고 그 변수를 합으로 지운다". 비용은 곱해진 인수의 *범위(scope) 크기* 에 지수적이라서 제거 순서가 결정적이다 — 별 모양(중심 → 잎 10 개)에서 중심부터 지우면 범위가 11, 잎부터 지우면 2 ③ 조상 표본 추출: 위상 순서대로 부모 값을 보고 표본을 뽑는다.
+// 구조에서 독립성을 읽는 *d-분리*: 조상 부분 그래프를 "도덕화(moralize: 같은 자식의 부모끼리 잇고 방향 제거)" 해서 조건 집합 Z 를 지운 뒤 x 와 y 가 끊어지면 x ⟂ y | Z. 사슬 a→b→c 와 포크 a←b→c 는 b 를 관측하면 a 와 c 가 독립이 되고, 충돌(collider) a→b←c 는 반대로 b 를 관측해야 a 와 c 가 *의존* 한다(explaining away).
+// 검증: ① 비·스프링클러·젖은 잔디 고전 예제의 알려진 값 P(R | G) = 0.35769, 스프링클러가 켜졌다는 관측이 비를 덜 그럴듯하게(0.0068) ② 무작위 네트워크(변수 ≤ 8)에서 변수 제거 = 열거(오차 1e-12), 제거 순서가 달라도 같은 값 ③ d-분리 ⇒ 수치적 독립(결합 표에서 계산), d-연결 ⇒ 수치적 의존(무작위 CPT 에서는 거의 확실) ④ 마르코프 담요 ⑤ 큰 입력: 변수 60 개 사슬을 변수 제거로 풀어 전향 점화식과 대조(범위 ≤ 2, 열거는 2⁶⁰), 별 모양의 범위 11 대 2, 조상 표본 추출 40 만 번의 빈도.
+struct BN {
+    int n; std::vector<std::vector<int>> parents; std::vector<std::vector<double>> cpt;     // cpt[v][부모값 마스크(비트 i = parents[v][i])] = P(v = 1 | 부모)
+    explicit BN(int nn) : n(nn), parents(nn), cpt(nn) {}
+    void setNode(int v, std::vector<int> pa, std::vector<double> table) { parents[v] = std::move(pa); cpt[v] = std::move(table); }
+    double condProb(int v, std::uint64_t assign) const {                                     // P(X_v = assign[v] | 부모)  (변수 최대 64 개: 64 비트 마스크)
+        unsigned m = 0; for (std::size_t i = 0; i < parents[v].size(); ++i) m |= (unsigned)((assign >> parents[v][i]) & 1u) << i;
+        double p1 = cpt[v][m]; return (assign >> v & 1u) ? p1 : 1.0 - p1;
+    }
+    double joint(std::uint64_t assign) const { double p = 1; for (int v = 0; v < n; ++v) p *= condProb(v, assign); return p; }
+    long long parameterCount() const { long long c = 0; for (int v = 0; v < n; ++v) c += (long long)cpt[v].size(); return c; }
+};
+// ① 열거: P(X_q = 1 | evidence) — evidence 는 (변수, 값) 목록
+double enumerate(const BN& b, int q, const std::vector<std::pair<int, int>>& ev) {
+    double num = 0, den = 0;
+    for (unsigned a = 0; a < (1u << b.n); ++a) {
+        bool ok = true; for (auto [v, val] : ev) if ((int)(a >> v & 1u) != val) ok = false;
+        if (!ok) continue; double p = b.joint(a); den += p; if (a >> q & 1u) num += p;
+    }
+    return num / den;
 }
-double joint(bool r, bool s, bool g) { return P_R(r) * P_S(s, r) * P_G(g, s, r); }
+// ② 변수 제거: 인수 = (정렬된 변수 목록, 2^|변수| 표; 인덱스의 비트 i 가 vars[i])
+struct Factor { std::vector<int> vars; std::vector<double> t; };
+Factor cptFactor(const BN& b, int v) {
+    Factor f; f.vars = b.parents[v]; std::sort(f.vars.begin(), f.vars.end()); f.vars.push_back(v);               // 부모는 모두 v 보다 작다
+    f.t.assign(1u << f.vars.size(), 0.0);
+    for (unsigned idx = 0; idx < f.t.size(); ++idx) { std::uint64_t assign = 0; for (std::size_t i = 0; i < f.vars.size(); ++i) assign |= (std::uint64_t)((idx >> i) & 1u) << f.vars[i]; f.t[idx] = b.condProb(v, assign); }
+    return f;
+}
+Factor multiply(const Factor& a, const Factor& b) {
+    Factor r; std::set_union(a.vars.begin(), a.vars.end(), b.vars.begin(), b.vars.end(), std::back_inserter(r.vars));
+    int k = (int)r.vars.size(); r.t.assign(1u << k, 0.0);
+    auto posIn = [&](const std::vector<int>& sub) { std::vector<int> p; for (int v : sub) p.push_back((int)(std::lower_bound(r.vars.begin(), r.vars.end(), v) - r.vars.begin())); return p; };
+    std::vector<int> pa = posIn(a.vars), pb = posIn(b.vars);
+    for (unsigned idx = 0; idx < r.t.size(); ++idx) {
+        unsigned ia = 0, ib = 0; for (std::size_t i = 0; i < pa.size(); ++i) ia |= ((idx >> pa[i]) & 1u) << i; for (std::size_t i = 0; i < pb.size(); ++i) ib |= ((idx >> pb[i]) & 1u) << i;
+        r.t[idx] = a.t[ia] * b.t[ib];
+    }
+    return r;
+}
+Factor sumOut(const Factor& f, int v) {
+    int pos = (int)(std::find(f.vars.begin(), f.vars.end(), v) - f.vars.begin()); Factor r; r.vars = f.vars; r.vars.erase(r.vars.begin() + pos);
+    r.t.assign(1u << r.vars.size(), 0.0); unsigned low = (1u << pos) - 1;
+    for (unsigned idx = 0; idx < f.t.size(); ++idx) r.t[(idx & low) | ((idx >> (pos + 1)) << pos)] += f.t[idx];
+    return r;
+}
+Factor restrictVar(const Factor& f, int v, int val) {
+    auto it = std::find(f.vars.begin(), f.vars.end(), v); if (it == f.vars.end()) return f;
+    int pos = (int)(it - f.vars.begin()); Factor r; r.vars = f.vars; r.vars.erase(r.vars.begin() + pos); r.t.assign(1u << r.vars.size(), 0.0); unsigned low = (1u << pos) - 1;
+    for (unsigned idx = 0; idx < f.t.size(); ++idx) if ((int)(idx >> pos & 1u) == val) r.t[(idx & low) | ((idx >> (pos + 1)) << pos)] = f.t[idx];
+    return r;
+}
+struct VE { double p1; std::size_t maxScope; };
+VE variableElimination(const BN& b, int q, const std::vector<std::pair<int, int>>& ev, const std::vector<int>& order) {
+    std::vector<Factor> fs; for (int v = 0; v < b.n; ++v) fs.push_back(cptFactor(b, v));
+    for (auto [v, val] : ev) for (Factor& f : fs) f = restrictVar(f, v, val);
+    std::size_t maxScope = 0;
+    for (int v : order) {
+        std::vector<Factor> hit, rest; for (Factor& f : fs) (std::find(f.vars.begin(), f.vars.end(), v) != f.vars.end() ? hit : rest).push_back(f);
+        if (hit.empty()) continue;
+        Factor prod = hit[0]; for (std::size_t i = 1; i < hit.size(); ++i) prod = multiply(prod, hit[i]);
+        maxScope = std::max(maxScope, prod.vars.size());
+        rest.push_back(sumOut(prod, v)); fs = rest;
+    }
+    Factor prod = fs[0]; for (std::size_t i = 1; i < fs.size(); ++i) prod = multiply(prod, fs[i]);
+    maxScope = std::max(maxScope, prod.vars.size());
+    assert(prod.vars.size() == 1 && prod.vars[0] == q);
+    return {prod.t[1] / (prod.t[0] + prod.t[1]), maxScope};
+}
+std::vector<int> naturalOrder(const BN& b, int q, const std::vector<std::pair<int, int>>& ev) {                  // 질의·증거를 뺀 번호순
+    std::vector<int> o; for (int v = 0; v < b.n; ++v) { bool skip = v == q; for (auto e : ev) skip = skip || e.first == v; if (!skip) o.push_back(v); } return o;
+}
+// ---- d-분리 (조상 그래프의 도덕화) 와 수치적 독립 ----
+bool dSeparated(const BN& b, int x, int y, unsigned z) {
+    std::vector<char> anc(b.n, 0); std::vector<int> st; for (int v : {x, y}) { anc[v] = 1; st.push_back(v); }
+    for (int v = 0; v < b.n; ++v) if (z >> v & 1u) { anc[v] = 1; st.push_back(v); }
+    while (!st.empty()) { int v = st.back(); st.pop_back(); for (int p : b.parents[v]) if (!anc[p]) { anc[p] = 1; st.push_back(p); } }
+    std::vector<std::vector<char>> adj(b.n, std::vector<char>(b.n, 0));
+    for (int v = 0; v < b.n; ++v) if (anc[v]) { for (int p : b.parents[v]) { adj[v][p] = adj[p][v] = 1; for (int q : b.parents[v]) if (p != q) adj[p][q] = 1; } }   // 방향 제거 + 부모끼리 결혼
+    std::vector<char> seen(b.n, 0); seen[x] = 1; st = {x};
+    while (!st.empty()) { int v = st.back(); st.pop_back(); for (int w = 0; w < b.n; ++w) if (adj[v][w] && !(z >> w & 1u) && !seen[w]) { seen[w] = 1; st.push_back(w); } }
+    return !seen[y];
+}
+double independenceGap(const BN& b, int x, int y, unsigned z) {                                                  // max |P(x,y,z)P(z) − P(x,z)P(y,z)| (결합 표에서)
+    std::vector<double> J(1u << b.n); for (unsigned a = 0; a < J.size(); ++a) J[a] = b.joint(a);
+    unsigned keep = (1u << x) | (1u << y) | z; double gap = 0;
+    auto marg = [&](unsigned mask, unsigned vals) { double s = 0; for (unsigned a = 0; a < J.size(); ++a) if ((a & mask) == vals) s += J[a]; return s; };
+    for (unsigned a = 0; a < J.size(); ++a) {
+        if (a & ~keep) continue;                                                                                 // 관심 변수 밖은 0 으로 고정한 대표만
+        unsigned vz = a & z, vx = a & (1u << x), vy = a & (1u << y);
+        double pxyz = marg(keep, a), pz = marg(z, vz), pxz = marg((1u << x) | z, vx | vz), pyz = marg((1u << y) | z, vy | vz);
+        gap = std::max(gap, std::fabs(pxyz * pz - pxz * pyz));
+    }
+    return gap;
+}
+BN randomNetwork(int n, double edgeProb, std::mt19937& rng) {
+    BN b(n); std::uniform_real_distribution<double> u(0.05, 0.95);
+    for (int v = 0; v < n; ++v) { std::vector<int> pa; for (int p = 0; p < v; ++p) if ((rng() % 1000) / 1000.0 < edgeProb) pa.push_back(p); std::vector<double> t(1u << pa.size()); for (double& x : t) x = u(rng); b.setNode(v, pa, t); }
+    return b;
+}
 
 int main() {
-    double total = 0;
-    for (int r = 0; r < 2; r++) for (int s = 0; s < 2; s++) for (int g = 0; g < 2; g++) total += joint(r, s, g);
-    assert(std::fabs(total - 1.0) < 1e-12);                              // 결합확률의 합은 1
-    // 잔디가 젖었을 때 비가 왔을 확률: P(R | G) = P(R, G) / P(G)
-    double pGR = 0, pG = 0;
-    for (int r = 0; r < 2; r++) for (int s = 0; s < 2; s++) { double j = joint(r, s, true); pG += j; if (r) pGR += j; }
-    double posterior = pGR / pG;
-    assert(std::fabs(posterior - 0.35768767) < 1e-6);                    // 알려진 값 약 35.77%
-    // 스프링클러가 켜진 것을 관측하면 "비 때문" 이라는 설명이 약해진다 (explaining away)
-    double pGRS = joint(true, true, true), pGS = joint(true, true, true) + joint(false, true, true);
-    assert(pGRS / pGS < posterior);
-    std::cout << "BayesianNetwork: P(rain | grass wet) = " << posterior << ", P(rain | wet, sprinkler on) = " << pGRS / pGS << std::endl;
-    return 0;
+    // ① 고전 예제: 변수 0 = 비(R), 1 = 스프링클러(S), 2 = 젖은 잔디(G). R → S, R → G, S → G
+    BN rain(3);
+    rain.setNode(0, {}, {0.2});
+    rain.setNode(1, {0}, {0.4, 0.01});                                           // P(S=1 | R=0) = 0.4, P(S=1 | R=1) = 0.01
+    rain.setNode(2, {0, 1}, {0.0, 0.8, 0.9, 0.99});                              // 마스크 비트0 = R, 비트1 = S : (R,S) = (0,0) (1,0) (0,1) (1,1)
+    {
+        double total = 0; for (unsigned a = 0; a < 8; ++a) total += rain.joint(a);
+        assert(std::fabs(total - 1.0) < 1e-12);
+        double pRG = enumerate(rain, 0, {{2, 1}}), pRGS = enumerate(rain, 0, {{2, 1}, {1, 1}});
+        assert(std::fabs(pRG - 0.35768767) < 1e-6 && std::fabs(pRGS - 0.00198 / (0.00198 + 0.288)) < 1e-12 && pRGS < 0.007 && pRGS < pRG);     // 스프링클러가 켜진 걸 보면 비 때문이라는 설명이 약해진다
+        auto ev = std::vector<std::pair<int, int>>{{2, 1}};
+        assert(std::fabs(variableElimination(rain, 0, ev, naturalOrder(rain, 0, ev)).p1 - pRG) < 1e-12);
+        assert(dSeparated(rain, 0, 1, 0) == false && !dSeparated(rain, 0, 1, 1u << 2));   // R–S 는 직접 연결
+        assert(rain.parameterCount() == 1 + 2 + 4 && (1 << 3) - 1 == 7);
+    }
+    // d-분리의 세 기본형: 사슬 0→1→2, 포크 0←1→2, 충돌 0→1←2
+    {   BN chain(3), fork(3), collider(3);
+        chain.setNode(0, {}, {0.3}); chain.setNode(1, {0}, {0.2, 0.9}); chain.setNode(2, {1}, {0.1, 0.7});
+        fork.setNode(0, {}, {0.4}); fork.setNode(1, {0}, {0.2, 0.9}); fork.setNode(2, {0}, {0.1, 0.7});                  // 0 이 공통 원인 (0 → 1, 0 → 2)
+        collider.setNode(0, {}, {0.3}); collider.setNode(1, {}, {0.6}); collider.setNode(2, {0, 1}, {0.1, 0.5, 0.6, 0.95});
+        assert(!dSeparated(chain, 0, 2, 0) && dSeparated(chain, 0, 2, 1u << 1) && independenceGap(chain, 0, 2, 0) > 1e-4 && independenceGap(chain, 0, 2, 1u << 1) < 1e-12);
+        assert(!dSeparated(fork, 1, 2, 0) && dSeparated(fork, 1, 2, 1u << 0) && independenceGap(fork, 1, 2, 0) > 1e-4 && independenceGap(fork, 1, 2, 1u << 0) < 1e-12);
+        assert(dSeparated(collider, 0, 1, 0) && !dSeparated(collider, 0, 1, 1u << 2) && independenceGap(collider, 0, 1, 0) < 1e-12 && independenceGap(collider, 0, 1, 1u << 2) > 1e-4);   // 충돌은 관측해야 의존
+    }
+
+    // ② 무작위 네트워크(변수 ≤ 8): 변수 제거(여러 순서) = 열거
+    std::mt19937 rng(2005);
+    for (int it = 0; it < 400; ++it) {
+        int n = 2 + (int)(rng() % 7); BN b = randomNetwork(n, 0.4, rng);
+        int q = (int)(rng() % n); std::vector<std::pair<int, int>> ev;
+        for (int v = 0; v < n; ++v) if (v != q && rng() % 3 == 0) ev.push_back({v, (int)(rng() & 1)});
+        double want = enumerate(b, q, ev);
+        std::vector<int> order = naturalOrder(b, q, ev);
+        for (int rep = 0; rep < 3; ++rep) { if (rep) std::shuffle(order.begin(), order.end(), rng); assert(std::fabs(variableElimination(b, q, ev, order).p1 - want) < 1e-12); }
+    }
+
+    // ③ d-분리 ⇔ 수치적 독립: 무작위 네트워크와 무작위 (x, y, Z)
+    int sep = 0, conn = 0;
+    for (int it = 0; it < 400; ++it) {
+        int n = 4 + (int)(rng() % 4); BN b = randomNetwork(n, 0.35, rng);
+        for (int rep = 0; rep < 12; ++rep) {
+            int x = (int)(rng() % n), y = (int)(rng() % n); if (x == y) continue;
+            unsigned z = 0; for (int v = 0; v < n; ++v) if (v != x && v != y && rng() % 3 == 0) z |= 1u << v;
+            double gap = independenceGap(b, x, y, z);
+            if (dSeparated(b, x, y, z)) { assert(gap < 1e-12); ++sep; } else { assert(gap > 1e-9); ++conn; }
+        }
+    }
+    assert(sep > 800 && conn > 800);
+
+    // ④ 마르코프 담요: 부모 · 자식 · 자식의 다른 부모가 주어지면 나머지와 독립 — P(v | 나머지 전부) 가 담요 값만으로 정해진다
+    for (int it = 0; it < 200; ++it) {
+        int n = 4 + (int)(rng() % 4); BN b = randomNetwork(n, 0.4, rng);
+        for (int v = 0; v < n; ++v) {
+            unsigned blanket = 0; for (int p : b.parents[v]) blanket |= 1u << p;
+            for (int c = 0; c < n; ++c) if (std::find(b.parents[c].begin(), b.parents[c].end(), v) != b.parents[c].end()) { blanket |= 1u << c; for (int p : b.parents[c]) if (p != v) blanket |= 1u << p; }
+            std::vector<double> seen(1u << n, -1.0);
+            for (unsigned a = 0; a < (1u << n); ++a) {
+                if (a >> v & 1u) continue;
+                double p1 = b.joint(a | (1u << v)) / (b.joint(a) + b.joint(a | (1u << v)));
+                unsigned key = a & blanket; if (seen[key] < 0) seen[key] = p1; else assert(std::fabs(seen[key] - p1) < 1e-12);
+            }
+        }
+    }
+
+    // ⑤ 큰 입력: (a) 변수 60 개 사슬 — 변수 제거(순서대로 지우기) 가 전향 점화식과 같고 범위는 2 이하 (열거는 2^60 이라 불가능), 모든 변수를 한 번에 풀지 않아도 됨
+    {
+        const int N = 60; BN chain(N); std::uniform_real_distribution<double> u(0.05, 0.95);
+        double a0[N], a1[N]; chain.setNode(0, {}, {u(rng)});
+        for (int v = 1; v < N; ++v) { a0[v] = u(rng); a1[v] = u(rng); chain.setNode(v, {v - 1}, {a0[v], a1[v]}); }
+        double p = chain.cpt[0][0]; std::vector<std::pair<int, int>> ev;
+        std::vector<int> order; for (int v = 0; v < N - 1; ++v) order.push_back(v);                                // 0 부터 N−2 까지 차례로
+        VE r = variableElimination(chain, N - 1, ev, order);
+        for (int v = 1; v < N; ++v) p = p * a1[v] + (1 - p) * a0[v];                                               // 전향 점화식
+        assert(std::fabs(r.p1 - p) < 1e-12 && r.maxScope <= 2);
+        assert(chain.parameterCount() == 1 + 2 * (N - 1));                                                           // 119 개 수 vs 2^60 − 1
+        // (b) 별 모양: X0 → X1..X10. 잎부터 지우면 범위 2, 중심부터 지우면 범위 11 — 값은 같다
+        BN star(11); star.setNode(0, {}, {0.35}); for (int v = 1; v <= 10; ++v) star.setNode(v, {0}, {u(rng), u(rng)});
+        std::vector<int> leavesFirst, centerFirst{0}; for (int v = 2; v <= 10; ++v) leavesFirst.push_back(v); leavesFirst.push_back(0); for (int v = 2; v <= 10; ++v) centerFirst.push_back(v);
+        VE good = variableElimination(star, 1, {}, leavesFirst), bad = variableElimination(star, 1, {}, centerFirst);
+        assert(std::fabs(good.p1 - bad.p1) < 1e-12 && std::fabs(good.p1 - enumerate(star, 1, {})) < 1e-12 && good.maxScope == 2 && bad.maxScope == 11);
+        // (c) 조상 표본 추출: 비 네트워크에서 P(R | G) 를 40 만 번 뽑아 어림 (거절 표집)
+        long long gWet = 0, rainAndWet = 0; std::mt19937_64 r2(1);
+        for (int s = 0; s < 400000; ++s) {
+            unsigned a = 0;
+            for (int v = 0; v < 3; ++v) {
+                unsigned m = 0; for (std::size_t i = 0; i < rain.parents[v].size(); ++i) m |= ((a >> rain.parents[v][i]) & 1u) << i;
+                if ((r2() % 1000000) / 1000000.0 < rain.cpt[v][m]) a |= 1u << v;
+            }
+            if (a >> 2 & 1u) { ++gWet; rainAndWet += a & 1u; }
+        }
+        assert(gWet > 150000 && std::fabs((double)rainAndWet / (double)gWet - 0.35768767) < 0.01);
+    }
+    std::cout << "BayesianNetwork: the rain/sprinkler/grass network gave P(rain | wet grass) = 0.3577 and the explaining-away value 0.0068 once the sprinkler was seen on, variable elimination (several random orders) matched enumeration to 1e-12 on 400 random networks, d-separation computed by moralising the ancestral graph agreed with numerical independence on over 1600 random queries (separated implies independent, connected implies dependent), the Markov-blanket property held numerically, a 60-variable chain was solved by elimination with scope 2 and matched the forward recursion (enumeration would need 2^60 terms; 119 parameters instead of 2^60 - 1), a star network needed scope 11 when its centre was eliminated first but 2 when the leaves went first, and 400,000 ancestral samples reproduced the posterior within 0.01" << std::endl; return 0;
 }
-// Time Complexity: 열거 O(2^n) (변수 제거·신뢰 전파로 구조에 따라 개선)
-// Space Complexity: O(n)
+// Time Complexity: 열거 O(2^n), 변수 제거 O(n · 2^w) (w = 제거 순서가 만든 최대 범위 크기)
+// Space Complexity: O(2^w)
 ```
 ## NeuralGraph()
 ### 대표코드
@@ -8413,38 +9158,152 @@ int main() {
 ## PageRank()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <utility>
+#include <vector>
 
-std::vector<double> pageRank(int V, std::vector<std::vector<int>>& adj, double d=0.85, int iter=100) {
-    std::vector<double> rank(V, 1.0/V);
-    std::vector<int> outDeg(V, 0);
-    for (int u = 0; u < V; u++) outDeg[u] = adj[u].size();
-    for (int i = 0; i < iter; i++) {
-        std::vector<double> newRank(V, (1.0-d)/V);
-        for (int u = 0; u < V; u++)
-            for (int v : adj[u])
-                newRank[v] += d * rank[u] / outDeg[u];
-        rank = newRank;
+// 페이지랭크(PageRank): "중요한 페이지에서 오는 링크가 많은 페이지가 중요하다" 를 무작위 서퍼로 정식화한다. 서퍼는 확률 d(보통 0.85)로 나가는 링크 하나를 균등하게 따라가고, 확률 1 − d 로 임의의 페이지(텔레포트 분포 v, 기본은 균등)로 점프한다. 나가는 링크가 없는 페이지(dangling)에서는 균등하게 점프한다. 순위 r 은 이 마르코프 연쇄의 정상 분포 = 선형 방정식 (I − d·M) r = (1 − d)·v 의 해이고 합이 1 이다. 거듭제곱법(power iteration) r ← d·(Pᵀ r + D/n·1) + (1 − d)·v 는 한 번마다 L1 오차가 d 배 이하로 줄어드는 수축 사상이라 k 번 뒤 오차 ≤ dᵏ·초기 오차 — 허용 오차 ε 까지 필요한 횟수는 그래프 크기와 무관하게 log ε / log d.
+// 구현 변형: 끌어오기(pull, 들어오는 간선 CSC) 와 밀어내기(push, 나가는 간선 CSR) 는 같은 값, 가우스–자이델(Gauss–Seidel, 제자리 갱신)은 같은 해로 수렴하지만 반복 수는 그래프에 따라 크게 갈린다 — 합이 1 이라는 불변식을 매번 지키지 못해서, 빨리 섞이는 무작위 그래프에서는 거듭제곱법이 더 빠르고(아래 큰 입력: 27 대 66 번), 정점 번호가 링크 방향을 따르는 느리게 섞이는 고리에서는 GS 가 3 번 대 147 번으로 압도한다. 정확해는 작은 그래프에서 밀집 가우스 소거로 구한다. 개인화 페이지랭크(텔레포트 분포 v 를 바꿈)는 v 에 *선형* 이다(이 정의에서 dangling 이 균등 점프이므로 M 이 v 와 무관하다): PPR(αu + (1 − α)w) = α·PPR(u) + (1 − α)·PPR(w).
+// 검증: ① 닫힌 해 — 순환·완전 그래프는 균등, 허브로 모두가 연결되는 별(허브는 dangling) 은 허브 순위 (1 + (n − 1)d)/(n + (n − 1)d) ② 무작위 그래프(n ≤ 12)에서 거듭제곱법이 정확해로 수렴하고 *매 반복* L1 오차 ≤ dᵏ · 초기 오차, 합 = 1, 끌어오기 = 밀어내기 = 가우스–자이델(같은 해), 개인화의 선형성, 정점 이름을 바꿔도 순위가 같은 순열로 바뀜 ③ 큰 입력(정점 10 만 · 간선 50 만, 몰린 도착지 · dangling 5%) 에서 연속 잔차 비 ≤ d, 허용 오차 1e-10 까지 반복이 ⌈log(1e-10/2)/log d⌉ + 1 이하, 합 1, 끌어오기 = 밀어내기 = 가우스–자이델, 고리에서는 GS 가 거듭제곱법보다 열 배 이상 적은 반복.
+using Edges = std::vector<std::pair<int, int>>;
+struct Graph {
+    int n; std::vector<int> outOff, outTo, inOff, inFrom, outdeg;                       // CSR(나가는) 과 CSC(들어오는)
+    Graph(int nn, const Edges& e) : n(nn), outOff(nn + 1, 0), inOff(nn + 1, 0), outdeg(nn, 0) {
+        for (auto [a, b] : e) { ++outOff[a + 1]; ++inOff[b + 1]; ++outdeg[a]; }
+        for (int i = 0; i < n; ++i) { outOff[i + 1] += outOff[i]; inOff[i + 1] += inOff[i]; }
+        outTo.resize(e.size()); inFrom.resize(e.size()); std::vector<int> po(outOff.begin(), outOff.end() - 1), pi(inOff.begin(), inOff.end() - 1);
+        for (auto [a, b] : e) { outTo[po[a]++] = b; inFrom[pi[b]++] = a; }
     }
-    return rank;
+};
+struct PR { std::vector<double> rank; int iterations; std::vector<double> residuals; };
+double l1(const std::vector<double>& a, const std::vector<double>& b) { double s = 0; for (std::size_t i = 0; i < a.size(); ++i) s += std::fabs(a[i] - b[i]); return s; }
+
+// mode: 0 = 끌어오기(Jacobi), 1 = 밀어내기(Jacobi), 2 = 가우스–자이델.  tele = 텔레포트 분포(합 1), 시작점은 균등
+PR pageRank(const Graph& g, double d, double tol, int maxIter, int mode, const std::vector<double>* tele = nullptr, const std::vector<double>* start = nullptr) {
+    int n = g.n; std::vector<double> uni(n, 1.0 / n); const std::vector<double>& v = tele ? *tele : uni;
+    PR r{start ? *start : uni, 0, {}};
+    for (int it = 1; it <= maxIter; ++it) {
+        std::vector<double> old = r.rank;
+        double dangling = 0; for (int u = 0; u < n; ++u) if (g.outdeg[u] == 0) dangling += old[u];
+        if (mode == 0) {
+            for (int x = 0; x < n; ++x) { double s = 0; for (int k = g.inOff[x]; k < g.inOff[x + 1]; ++k) s += old[g.inFrom[k]] / g.outdeg[g.inFrom[k]]; r.rank[x] = d * (s + dangling / n) + (1 - d) * v[x]; }
+        } else if (mode == 1) {
+            std::vector<double> next(n, 0.0);
+            for (int u = 0; u < n; ++u) if (g.outdeg[u]) { double share = old[u] / g.outdeg[u]; for (int k = g.outOff[u]; k < g.outOff[u + 1]; ++k) next[g.outTo[k]] += share; }
+            for (int x = 0; x < n; ++x) r.rank[x] = d * (next[x] + dangling / n) + (1 - d) * v[x];
+        } else {
+            double dang = dangling;                                                       // 제자리 갱신: 방금 바뀐 값을 바로 쓴다 (dangling 합도 함께 갱신)
+            for (int x = 0; x < n; ++x) {
+                double s = 0; for (int k = g.inOff[x]; k < g.inOff[x + 1]; ++k) s += r.rank[g.inFrom[k]] / g.outdeg[g.inFrom[k]];
+                double nv = d * (s + dang / n) + (1 - d) * v[x];
+                if (g.outdeg[x] == 0) dang += nv - r.rank[x];
+                r.rank[x] = nv;
+            }
+        }
+        r.iterations = it; r.residuals.push_back(l1(r.rank, old));
+        if (r.residuals.back() < tol) break;
+    }
+    return r;
+}
+// 정확해: (I − d·M) r = (1 − d)·v, M[i][j] = (j → i ? 1/outdeg(j) : 0), dangling 열은 1/n (n ≤ 12, 부분 피벗 가우스 소거)
+std::vector<double> exactSolve(const Graph& g, double d, const std::vector<double>* tele = nullptr) {
+    int n = g.n; std::vector<std::vector<long double>> a(n, std::vector<long double>(n + 1, 0.0L));
+    for (int i = 0; i < n; ++i) a[i][i] = 1.0L;
+    for (int j = 0; j < n; ++j) {
+        if (g.outdeg[j] == 0) { for (int i = 0; i < n; ++i) a[i][j] -= (long double)d / n; }
+        else for (int k = g.outOff[j]; k < g.outOff[j + 1]; ++k) a[g.outTo[k]][j] -= (long double)d / g.outdeg[j];
+    }
+    for (int i = 0; i < n; ++i) a[i][n] = (1.0L - d) * (tele ? (*tele)[i] : 1.0L / n);
+    for (int c = 0; c < n; ++c) {
+        int p = c; for (int r = c + 1; r < n; ++r) if (std::fabs((double)a[r][c]) > std::fabs((double)a[p][c])) p = r;
+        std::swap(a[p], a[c]);
+        for (int r = 0; r < n; ++r) if (r != c) { long double f = a[r][c] / a[c][c]; for (int k = c; k <= n; ++k) a[r][k] -= f * a[c][k]; }
+    }
+    std::vector<double> x(n); for (int i = 0; i < n; ++i) x[i] = (double)(a[i][n] / a[i][i]); return x;
 }
 
 int main() {
-    int V = 4;
-    // 0->1, 0->2, 1->3, 2->3, 3->0
-    std::vector<std::vector<int>> adj = {{1,2},{3},{3},{0}};
-    auto ranks = pageRank(V, adj);
-    double sum = 0;
-    for (double r : ranks) sum += r;
-    assert(std::abs(sum - 1.0) < 0.001); // 합이 1에 수렴
-    std::cout << "PageRank verified. Sum=" << sum << std::endl;
-    return 0;
+    const double d = 0.85;
+    // ① 손으로 확인한 모양: 0→1, 0→2, 1→3, 2→3, 3→0 (기존 예제) — 정확해와 일치, 대칭 r1 = r2, 3 이 가장 높다, 합 1
+    {   Graph g(4, {{0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 0}});
+        auto ex = exactSolve(g, d); PR p = pageRank(g, d, 1e-14, 1000, 0);
+        assert(l1(p.rank, ex) < 1e-12 && std::fabs(ex[1] - ex[2]) < 1e-15 && ex[3] > ex[0] && ex[0] > ex[1] && std::fabs(std::accumulate(ex.begin(), ex.end(), 0.0) - 1.0) < 1e-12);
+    }
+    // ② 닫힌 해: 순환·완전 그래프 → 균등; 별(잎 → 허브, 허브는 dangling) → 허브 = (1 + (n−1)d)/(n + (n−1)d)
+    for (int n : {3, 7, 20}) {
+        Edges cyc, comp, star;
+        for (int i = 0; i < n; ++i) cyc.push_back({i, (i + 1) % n});
+        for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) if (i != j) comp.push_back({i, j});
+        for (int i = 1; i < n; ++i) star.push_back({i, 0});
+        std::vector<double> start(n, 0.0); start[0] = 1.0;                              // 한 정점에 몰린 분포에서 출발해도 균등으로 수렴
+        for (const Edges* e : {&cyc, &comp}) { Graph g(n, *e); PR p = pageRank(g, d, 1e-15, 2000, 0, nullptr, &start); for (double x : p.rank) assert(std::fabs(x - 1.0 / n) < 1e-12); }
+        Graph g(n, star); PR p = pageRank(g, d, 1e-15, 5000, 0); double hub = (1 + (n - 1) * d) / (n + (n - 1) * d);
+        assert(std::fabs(p.rank[0] - hub) < 1e-12 && std::fabs(p.rank[1] - (d * hub + 1 - d) / n) < 1e-12);
+    }
+    { Graph g(5, {}); PR p = pageRank(g, d, 1e-15, 100, 0); for (double x : p.rank) assert(std::fabs(x - 0.2) < 1e-14); }       // 링크가 없으면 모두 dangling → 균등
+
+    // ③ 무작위 그래프 (n ≤ 12, dangling·루프·평행 간선 포함)
+    std::mt19937 rng(1998);
+    int trials = 0;
+    for (int it = 0; it < 400; ++it) {
+        int n = 2 + (int)(rng() % 11), m = (int)(rng() % (3 * n)); Edges e; for (int i = 0; i < m; ++i) e.push_back({(int)(rng() % n), (int)(rng() % n)});
+        Graph g(n, e); auto ex = exactSolve(g, d);
+        assert(std::fabs(std::accumulate(ex.begin(), ex.end(), 0.0) - 1.0) < 1e-11);
+        // 매 반복 L1 오차 ≤ d^k · 초기 오차
+        std::vector<double> cur(n, 1.0 / n); double e0 = l1(cur, ex);
+        for (int k = 1; k <= 60; ++k) { PR step = pageRank(g, d, 0.0, k, 0); assert(l1(step.rank, ex) <= std::pow(d, k) * e0 + 1e-12); }
+        PR pull = pageRank(g, d, 1e-14, 2000, 0), push = pageRank(g, d, 1e-14, 2000, 1), gs = pageRank(g, d, 1e-14, 2000, 2);
+        assert(l1(pull.rank, ex) < 1e-11 && l1(push.rank, ex) < 1e-11 && l1(gs.rank, ex) < 1e-11 && l1(pull.rank, push.rank) < 1e-13);
+        ++trials;
+        // 개인화 선형성: PPR(αu + (1−α)w) = α PPR(u) + (1−α) PPR(w)
+        std::vector<double> u(n), w(n), mix(n); double su = 0, sw = 0; for (int i = 0; i < n; ++i) { u[i] = (double)(rng() % 10); w[i] = (double)(rng() % 10); su += u[i]; sw += w[i]; }
+        if (su == 0 || sw == 0) continue;
+        for (int i = 0; i < n; ++i) { u[i] /= su; w[i] /= sw; } double alpha = 0.3; for (int i = 0; i < n; ++i) mix[i] = alpha * u[i] + (1 - alpha) * w[i];
+        auto pu = exactSolve(g, d, &u), pw = exactSolve(g, d, &w), pm = exactSolve(g, d, &mix);
+        for (int i = 0; i < n; ++i) assert(std::fabs(pm[i] - (alpha * pu[i] + (1 - alpha) * pw[i])) < 1e-12);
+        PR conv = pageRank(g, d, 1e-14, 2000, 0, &mix); assert(l1(conv.rank, pm) < 1e-11);
+        // 정점 이름 바꾸기 불변성
+        std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); std::shuffle(perm.begin(), perm.end(), rng);
+        Edges relabeled; for (auto [a, b] : e) relabeled.push_back({perm[a], perm[b]});
+        Graph h(n, relabeled); auto ex2 = exactSolve(h, d); for (int i = 0; i < n; ++i) assert(std::fabs(ex2[perm[i]] - ex[i]) < 1e-12);
+    }
+    assert(trials == 400);
+
+    // ④ 큰 입력: 정점 20 만, 간선 100 만 — 도착지가 몰려 있고(u² 분포) 정점의 5% 는 나가는 링크가 없다
+    {
+        const int N = 100000; std::mt19937_64 r(7); Edges e;
+        for (int i = 0; i < 500000; ++i) {
+            int src = (int)(r() % N); if (src % 20 == 0) continue;                               // 5% dangling (번호가 20 의 배수인 정점은 링크를 내지 않는다)
+            double u = (r() % 1000000) / 1000000.0; e.push_back({src, (int)(u * u * N)});
+        }
+        Graph g(N, e); const double tol = 1e-10;
+        PR pull = pageRank(g, d, tol, 400, 0), push = pageRank(g, d, tol, 400, 1), gs = pageRank(g, d, tol, 400, 2);
+        int bound = (int)std::ceil(std::log(tol / 2) / std::log(d)) + 1;
+        assert(pull.iterations <= bound && push.iterations <= bound && gs.iterations < 400);
+        for (std::size_t k = 1; k < pull.residuals.size(); ++k) assert(pull.residuals[k] <= d * pull.residuals[k - 1] + 1e-13);   // 수축: 잔차가 매번 d 배 이하
+        assert(std::fabs(std::accumulate(pull.rank.begin(), pull.rank.end(), 0.0) - 1.0) < 1e-9);
+        assert(l1(pull.rank, push.rank) < 1e-11 && l1(pull.rank, gs.rank) < 1e-8);
+        int top = (int)(std::max_element(pull.rank.begin(), pull.rank.end()) - pull.rank.begin()); assert(top == (int)(std::max_element(push.rank.begin(), push.rank.end()) - push.rank.begin()) && top < N / 10);   // 몰린 쪽(작은 번호) 이 1위
+    }
+    // ⑤ 고리 위의 가우스–자이델: 정점 번호가 링크 방향(i → i+1)을 따르므로 한 번 훑을 때 새 값이 끝까지 전달된다 — 한 정점에 몰린 분포에서 출발하면 거듭제곱법은 147 번, GS 는 3 번
+    {
+        const int n = 1000; Edges ring; for (int i = 0; i < n; ++i) ring.push_back({i, (i + 1) % n}); Graph g(n, ring);
+        std::vector<double> start(n, 0.0); start[0] = 1.0;
+        PR jac = pageRank(g, d, 1e-10, 1000, 0, nullptr, &start), gs = pageRank(g, d, 1e-10, 1000, 2, nullptr, &start);
+        for (double x : jac.rank) assert(std::fabs(x - 1.0 / n) < 1e-9);
+        for (double x : gs.rank) assert(std::fabs(x - 1.0 / n) < 1e-9);
+        assert(jac.iterations > 100 && gs.iterations * 10 < jac.iterations);
+    }
+    std::cout << "PageRank: power iteration (pull and push forms) and Gauss-Seidel matched a dense exact solve on 400 random graphs with dangling nodes, loops and parallel edges, the L1 error obeyed ||r_k - r*|| <= d^k ||r_0 - r*|| at every one of 60 iterations, ranks always summed to 1, personalised PageRank was exactly linear in the teleport vector, relabelling vertices permuted the ranks, cycles and complete graphs came out uniform and the star hub matched (1+(n-1)d)/(n+(n-1)d), and a 100,000-vertex, ~500,000-edge graph with 5% dangling pages converged within ceil(log(tol/2)/log d)+1 iterations with the residual shrinking by at least a factor d each step, and on a 1000-vertex ring Gauss-Seidel needed ten times fewer sweeps than power iteration" << std::endl; return 0;
 }
-// Time Complexity: O(iter * (V + E))
-// Space Complexity: O(V)
+// Time Complexity: O(iter · (V + E)), iter ≈ log ε / log d
+// Space Complexity: O(V + E)
 ```
 # 부록
 ## BFS vs DFS
