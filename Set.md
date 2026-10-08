@@ -2353,169 +2353,375 @@ int main() {
 ## Set vs List
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <list>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 #include <cassert>
 
+// Set vs List — 같은 원소들을 담아도 약속(계약)이 다르다. List(리스트/배열)는 "순서가 있고 중복을 허용하는 열"이고 Set 은 "순서와 중복이 없는 원소의 모임" 이다. 그래서 list.insert(x) 는 매번 길이를 1 늘리지만 set.insert(x) 는 이미 있으면 아무 일도 하지 않는다(멱등), 두 집합이 같은지는 원소만 보지만 두 리스트는 순서까지 같아야 한다.
+// 비용도 다르다. "x 가 들어 있는가?" 는 리스트에서 O(n)(앞에서부터 비교), 정렬된 리스트에서 이분 탐색 O(log n), 해시 집합에서 O(1) 기대, 트리 집합에서 O(log n). 반대로 "i 번째 원소", "순서대로 순회", "앞뒤에 끼워 넣기" 는 리스트의 몫이다. 중복 제거가 필요하면 리스트 → 집합 변환을 한다(순서를 보존하려면 첫 등장 순서를 따로 기록).
+// 증거: ① 계약 차이 — 집합 삽입의 멱등성·교환성, 리스트에서는 둘 다 성립하지 않음 ② 같은 입력에서 리스트→집합 변환이 중복·순서를 잃고 "유일 원소 수" 와 일치 ③ 조회 비용을 비교 횟수로 세어 n 이 2배가 될 때 리스트 비교 수는 약 2배, 트리는 +1 정도, 해시는 거의 일정함을 측정 ④ 정렬된 리스트 이분 탐색은 트리와 같은 로그 단계 수
 int main() {
-    std::cout << "Set uniqueness vs List ordered duplicates." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(3); for (int t = 0; t < 500; t++) { std::vector<int> a; std::set<int> s; int n = rng() % 30; for (int i = 0; i < n; i++) { int x = rng() % 10; a.push_back(x); s.insert(x); }
+        std::vector<int> b = a; for (int x : {3, 3}) { b.push_back(x); } std::set<int> s2 = s; s2.insert(3); s2.insert(3); assert(s2.size() == (s.count(3) ? s.size() : s.size() + 1) && b.size() == a.size() + 2);                                              // ① 멱등
+        std::vector<int> x1 = a, x2 = a; x1.push_back(1); x1.push_back(2); x2.push_back(2); x2.push_back(1); assert(x1 != x2); std::set<int> y1 = s, y2 = s; y1.insert(1); y1.insert(2); y2.insert(2); y2.insert(1); assert(y1 == y2);                                      // 삽입 순서: 리스트는 다름, 집합은 같음
+        std::set<int> conv(a.begin(), a.end()); std::vector<int> uniq = a; std::sort(uniq.begin(), uniq.end()); uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end()); assert(conv.size() == uniq.size() && std::vector<int>(conv.begin(), conv.end()) == uniq); }              // ② 변환
+    double listCmp[5], treeCmp[5], hashProbe[5]; int k = 0; for (int n : {1000, 2000, 4000, 8000, 16000}) { std::vector<int> v(n); for (int i = 0; i < n; i++) v[i] = i * 2; std::vector<int> shuffled = v; std::shuffle(shuffled.begin(), shuffled.end(), rng); long lc = 0, tc = 0; const int Q = 400;
+        struct Counting { long* c; bool operator()(int a, int b) const { ++*c; return a < b; } }; std::set<int, Counting> tree{Counting{&tc}}; for (int x : shuffled) tree.insert(x); tc = 0; std::unordered_set<int> hs(shuffled.begin(), shuffled.end()); long probes = 0;
+        for (int q = 0; q < Q; q++) { int key = (rng() % n) * 2; for (int x : shuffled) { lc++; if (x == key) break; } tree.count(key); probes += hs.bucket_size(hs.bucket(key)); assert(hs.count(key) == 1); }
+        listCmp[k] = (double)lc / Q; treeCmp[k] = (double)tc / Q; hashProbe[k] = (double)probes / Q; k++; }
+    for (int i = 1; i < 5; i++) { assert(listCmp[i] / listCmp[i - 1] > 1.7 && listCmp[i] / listCmp[i - 1] < 2.3); assert(treeCmp[i] - treeCmp[i - 1] < 4.0 && treeCmp[i] - treeCmp[i - 1] > -1.0); assert(hashProbe[i] < 4.0); } assert(listCmp[4] > 20 * treeCmp[4]);           // ③ 비용 증가율
+    for (int n : {1000, 16000}) { std::vector<int> v(n); for (int i = 0; i < n; i++) v[i] = i; long steps = 0; int lo = 0, hi = n, key = n / 3; while (lo < hi) { steps++; int mid = (lo + hi) / 2; if (v[mid] < key) lo = mid + 1; else hi = mid; } assert(steps <= (int)std::ceil(std::log2((double)n)) + 1); }                                  // ④ 이분 탐색
+    std::cout << "Set vs List: set insertion is idempotent and order-independent while list insertion is neither; list->set conversion equals sort+unique; average comparisons per lookup for n=1000..16000: list " << listCmp[0] << ".." << listCmp[4] << " (doubles with n), tree " << treeCmp[0] << ".." << treeCmp[4] << " (+~1 per doubling), hash bucket " << hashProbe[0] << ".." << hashProbe[4] << " (flat)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 리스트 조회 O(n), 정렬 리스트 O(log n), 해시 집합 O(1) 기대, 트리 집합 O(log n)
+// Space Complexity: 모두 O(n) (집합은 노드/버킷 오버헤드가 큼)
 ```
 ## Set vs Multiset
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// Set vs Multiset — 다중집합(multiset, bag)은 원소가 여러 번 나올 수 있는 집합이다: 각 원소 x 에 개수(중복도) m(x) ≥ 0 을 대응시키는 함수. 집합은 m(x) ∈ {0, 1} 인 특별한 경우다. 연산의 정의가 달라진다 — 합집합 (A ∪ B)(x) = max(m_A(x), m_B(x)), 교집합 min, 합(sum) A ⊎ B 는 m_A + m_B(덧셈; 집합의 합집합과 다름),
+// 차집합 (A − B)(x) = max(0, m_A(x) − m_B(x)). 항등식: A ⊎ B = (A ∪ B) ⊎ (A ∩ B) (min + max = 합), A ∪ B = A ⊎ (B − A). 크기는 |A| = Σ m(x) 이고 서로 다른 원소 수는 별도. SQL 의 UNION ALL / INTERSECT ALL / EXCEPT ALL 이 정확히 이 다중집합 연산이고 UNION / INTERSECT / EXCEPT 는 집합 연산이다.
+// 구현은 map<원소, 개수> (또는 정렬된 열 + std::set_union 등 — 정렬된 다중집합에 대한 STL 알고리즘이 위 정의를 따른다). 검증: ① 직접 구현한 max/min/덧셈/monus 가 정렬된 열 위의 std::set_union/intersection/difference 결과와 같음 ② 두 항등식 ③ 집합(개수 ≤ 1)에 제한하면 집합 연산과 같음 ④ 중복 제거(support) 함수 supp 가 합집합·교집합과 교환: supp(A ∪ B) = supp(A) ∪ supp(B), supp(A ⊎ B) = supp(A) ∪ supp(B)
+typedef std::map<int, int> MS;
+MS msUnion(const MS& a, const MS& b) { MS r = a; for (auto& [k, v] : b) r[k] = std::max(r[k], v); return r; } MS msInter(const MS& a, const MS& b) { MS r; for (auto& [k, v] : a) if (b.count(k)) r[k] = std::min(v, b.at(k)); return r; }
+MS msSum(const MS& a, const MS& b) { MS r = a; for (auto& [k, v] : b) r[k] += v; return r; } MS msDiff(const MS& a, const MS& b) { MS r; for (auto& [k, v] : a) { int d = v - (b.count(k) ? b.at(k) : 0); if (d > 0) r[k] = d; } return r; }
+std::vector<int> expand(const MS& m) { std::vector<int> v; for (auto& [k, c] : m) v.insert(v.end(), c, k); return v; } std::set<int> supp(const MS& m) { std::set<int> s; for (auto& [k, c] : m) if (c > 0) s.insert(k); return s; }
 int main() {
-    std::cout << "Set unique vs Multiset duplicate items allowed." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(7); for (int t = 0; t < 1000; t++) { MS a, b; for (int i = 0; i < (int)(rng() % 12); i++) a[rng() % 8]++; for (int i = 0; i < (int)(rng() % 12); i++) b[rng() % 8]++; auto va = expand(a), vb = expand(b); std::vector<int> u, in, df;
+        std::set_union(va.begin(), va.end(), vb.begin(), vb.end(), std::back_inserter(u)); std::set_intersection(va.begin(), va.end(), vb.begin(), vb.end(), std::back_inserter(in)); std::set_difference(va.begin(), va.end(), vb.begin(), vb.end(), std::back_inserter(df)); assert(expand(msUnion(a, b)) == u && expand(msInter(a, b)) == in && expand(msDiff(a, b)) == df);                    // ① STL 과 일치
+        std::vector<int> sm; std::merge(va.begin(), va.end(), vb.begin(), vb.end(), std::back_inserter(sm)); assert(expand(msSum(a, b)) == sm);
+        assert(msSum(a, b) == msSum(msUnion(a, b), msInter(a, b)) && msUnion(a, b) == msSum(a, msDiff(b, a)));                                                                                                                                                                  // ② 항등식
+        assert(supp(msUnion(a, b)) == [&] { std::set<int> x = supp(a); for (int k : supp(b)) x.insert(k); return x; }() && supp(msSum(a, b)) == supp(msUnion(a, b)) && [&] { std::set<int> x; for (int k : supp(a)) if (supp(b).count(k)) x.insert(k); return supp(msInter(a, b)) == x; }());            // ④ supp 와 교환
+        MS sa, sb; for (auto& [k, v] : a) sa[k] = 1; for (auto& [k, v] : b) sb[k] = 1; assert(supp(msUnion(sa, sb)) == supp(msSum(sa, sb)) && msUnion(sa, sb) == [&] { MS r; for (int k : supp(msUnion(sa, sb))) r[k] = 1; return r; }() && msInter(sa, sb) == [&] { MS r; for (int k : supp(msInter(sa, sb))) r[k] = 1; return r; }()); }  // ③ 집합으로 제한
+    MS x = {{1, 3}, {2, 1}}, y = {{1, 1}, {3, 2}}; assert(msUnion(x, y) == (MS{{1, 3}, {2, 1}, {3, 2}}) && msInter(x, y) == (MS{{1, 1}}) && msSum(x, y) == (MS{{1, 4}, {2, 1}, {3, 2}}) && msDiff(x, y) == (MS{{1, 2}, {2, 1}}));
+    std::cout << "Set vs Multiset: max-union, min-intersection, additive sum and truncated difference on count maps equal the STL algorithms on sorted multisets for 1000 random pairs; A+B = (A union B)+(A intersect B) and A union B = A+(B-A) hold; restricted to counts <= 1 they reduce to ordinary set operations" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 연산 O(서로 다른 원소 수 log) (map 기반)
+// Space Complexity: O(서로 다른 원소 수)
 ```
 ## HashSet vs TreeSet
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <random>
+#include <set>
+#include <unordered_set>
+#include <vector>
 #include <cassert>
 
+// HashSet vs TreeSet — 같은 "집합" 인터페이스지만 구조가 달라 보장과 비용이 다르다. 해시 집합은 키를 해시값으로 버킷에 흩어 두므로 조회·삽입·삭제가 기대 O(1) 이지만 순서가 없고 해시가 나쁘면(충돌) 최악 O(n) 이다. 트리 집합은 키를 정렬된 균형 트리에 두므로 모든 연산이 O(log n) 이 보장되고,
+// 정렬 순회·하한(lower_bound)·범위 질의·최솟값/최댓값·이전/다음 원소를 공짜로 얻는다(해시는 O(n) 전체 스캔). 키에 해시 함수와 동치만 정의할 수 있으면 해시, 전순서가 있고 순서 연산이 필요하면 트리.
+// 증거(단순 사슬 해시 표를 직접 구현해 비교 횟수를 센다): ① 같은 입력에서 두 구조의 멤버십 결과가 완전히 같음 ② 좋은 해시에서 평균 탐색 비교 수는 n 에 거의 무관(~1~2) 하지만 모든 키가 같은 해시로 충돌하는 적대적 해시에서는 n/2 로 선형 증가하고 트리는 ≈ log₂ n 으로 안정적 ③ 범위 질의 [lo, hi]: 트리는 O(log n + k) 비교, 해시는 항상 n 번 모든 원소 검사 ④ 해시 집합의 순회 순서는 정렬되어 있지 않고 트리는 정렬됨
+struct ChainHash { std::vector<std::vector<int>> b; long cmp = 0; bool bad; ChainHash(size_t buckets, bool bad) : b(buckets), bad(bad) {} size_t h(int x) const { return bad ? 0 : (size_t)((uint32_t)x * 2654435761u) % b.size(); }
+    bool insert(int x) { auto& v = b[h(x)]; for (int y : v) { cmp++; if (y == x) return false; } v.push_back(x); return true; } bool contains(int x) { for (int y : b[h(x)]) { cmp++; if (y == x) return true; } return false; } };
 int main() {
-    std::cout << "Hash O(1) unordered vs Tree O(logN) ordered." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(9); double goodAvg[4], badAvg[4], treeAvg[4]; int k = 0;
+    for (int n : {500, 1000, 2000, 4000}) { std::vector<int> keys(n); for (int i = 0; i < n; i++) keys[i] = i * 3 + 1; std::shuffle(keys.begin(), keys.end(), rng); ChainHash good(n, false), bad(n, true); long tc = 0; struct Cnt { long* c; bool operator()(int a, int b) const { ++*c; return a < b; } }; std::set<int, Cnt> tree{Cnt{&tc}};
+        for (int x : keys) { good.insert(x); bad.insert(x); tree.insert(x); } good.cmp = bad.cmp = 0; tc = 0; const int Q = 300; for (int q = 0; q < Q; q++) { int probe = (rng() % 2) ? keys[rng() % n] : (int)(rng() % (3 * n)); bool a = good.contains(probe), b2 = bad.contains(probe), c = tree.count(probe) == 1; assert(a == b2 && b2 == c); }                       // ① 결과 동일
+        goodAvg[k] = (double)good.cmp / Q; badAvg[k] = (double)bad.cmp / Q; treeAvg[k] = (double)tc / Q; k++; }
+    for (int i = 0; i < 4; i++) assert(goodAvg[i] < 3.0 && badAvg[i] > 0.2 * (500 << i) && treeAvg[i] < 2 * std::log2((double)(500 << i)) + 2);                                                                                         // ② 충돌 시 선형, 트리는 로그
+    assert(badAvg[3] > 100 * goodAvg[3]);
+    { const int n = 100000; std::set<int> tree; std::unordered_set<int> hs; for (int i = 0; i < n; i++) { int x = rng() % 1000000; tree.insert(x); hs.insert(x); } int lo = 400000, hi = 400500; long scan = 0; std::vector<int> viaHash; for (int x : hs) { scan++; if (lo <= x && x <= hi) viaHash.push_back(x); } std::sort(viaHash.begin(), viaHash.end());
+        std::vector<int> viaTree(tree.lower_bound(lo), tree.upper_bound(hi)); assert(viaHash == viaTree && scan == (long)hs.size() && viaTree.size() < 600);                                                                           // ③ 범위 질의: 트리는 일부만 방문
+        std::vector<int> hashOrder(hs.begin(), hs.end()); assert(!std::is_sorted(hashOrder.begin(), hashOrder.end()) && std::is_sorted(tree.begin(), tree.end())); }                                                                       // ④ 순서
+    std::cout << "HashSet vs TreeSet: identical membership answers; mean lookup comparisons for n=500..4000 - good hash " << goodAvg[0] << ".." << goodAvg[3] << ", colliding hash " << badAvg[0] << ".." << badAvg[3] << " (linear), tree " << treeAvg[0] << ".." << treeAvg[3] << " (logarithmic); a range query touched only the matching keys in the tree but all " << 100000 << "-ish elements in the hash set, whose iteration order is unsorted" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 해시 O(1) 기대 / O(n) 최악, 트리 O(log n) 보장
+// Space Complexity: O(n)
 ```
 ## BitSet은 언제 사용하는가?
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <bitset>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <iterator>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// BitSet 은 언제 쓰는가 — 우주(universe) U = {0..U−1} 가 작고 정수로 번호가 매겨질 때, 원소 하나를 비트 하나로 표현하는 집합이다. 장점 ① 공간: U/8 바이트 고정 ② 속도: 합·교·차가 64 개 원소를 한 명령으로 처리하는 워드 연산(O(U/64)) ③ popcount 로 원소 수, 비트 스캔으로 순회, rank/select 가능.
+// 언제 이득인가는 밀도 d = n/U 로 정해진다. 정렬 배열(원소당 4 바이트)과 U/8 바이트의 비트셋은 n·4 = U/8 일 때 같아져 d = 1/32 ≈ 3.1% 이상이면 비트셋이 작다. 해시 집합(원소당 약 32 바이트 가정)이면 d ≈ 0.4% 부터. 집합 연산 비용도 같은 식: 병합은 O(n + m) 비교, 비트셋은 U/64 워드이므로 d > 1/64 쯤에서 비트셋이 빠르다.
+// 단점: U 가 크고 희소하면 낭비(Roaring 비트맵이 해결), 우주 밖의 원소(문자열 등)는 먼저 번호를 매겨야 함. 증거: ① 비트셋 연산(합·교·차·대칭차·원소 수·순회)이 std::set 과 같음 ② 밀도를 바꿔 가며 공간 모델의 교차점이 이론값(3.1%, 0.4%) 근처 ③ 교집합 연산 수(워드 수 U/64 vs 병합 비교 수 n+m)가 교차하는 밀도가 1/64 근처 ④ 비트셋 popcount 로 센 크기 == 원소 수
 int main() {
-    std::cout << "BitSet is ideal for dense integer sets requiring fast ops." << std::endl;
-    assert(true);
-    return 0;
+    const size_t U = 4096; std::mt19937 rng(5); for (int t = 0; t < 300; t++) { std::bitset<U> A, B; std::set<int> sa, sb; int na = rng() % 400, nb = rng() % 400; for (int i = 0; i < na; i++) { int x = rng() % U; A[x] = 1; sa.insert(x); } for (int i = 0; i < nb; i++) { int x = rng() % U; B[x] = 1; sb.insert(x); }
+        auto toSet = [&](const std::bitset<U>& s) { std::set<int> r; for (size_t i = s._Find_first(); i < U; i = s._Find_next(i)) r.insert(i); return r; }; std::set<int> u, in, df, sd; std::set_union(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(u, u.begin())); std::set_intersection(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(in, in.begin())); std::set_difference(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(df, df.begin())); std::set_symmetric_difference(sa.begin(), sa.end(), sb.begin(), sb.end(), std::inserter(sd, sd.begin()));
+        assert(toSet(A | B) == u && toSet(A & B) == in && toSet(A & ~B) == df && toSet(A ^ B) == sd && A.count() == sa.size() && (A | B).count() == u.size());                                                  // ① 연산 일치 ④ popcount }
+    }
+    const double bytesPerArrayElem = 4, bytesPerHashElem = 32; double densityArray = -1, densityHash = -1; for (int pm = 1; pm <= 1000; pm++) { double d = pm / 1000.0, bitsetBytes = U / 8.0, nElems = d * U; if (densityArray < 0 && nElems * bytesPerArrayElem >= bitsetBytes) densityArray = d; if (densityHash < 0 && nElems * bytesPerHashElem >= bitsetBytes) densityHash = d; }
+    assert(std::fabs(densityArray - 1.0 / 32) < 0.002 && std::fabs(densityHash - 1.0 / 256) < 0.002);                                                                                                  // ② 공간 교차점 3.1% · 0.4%
+    double crossover = -1; for (int pm = 1; pm <= 500; pm++) { double d = pm / 1000.0; long mergeCmp = (long)(2 * d * U), words = U / 64; if (crossover < 0 && mergeCmp >= words) crossover = d; } assert(std::fabs(crossover - 1.0 / 128) < 0.002);                         // ③ 시간 교차점(양쪽 밀도 d): 2dU 비교 = U/64 워드
+    std::cout << "BitSet: bitset algebra, popcount cardinality and iteration match std::set on 300 random pairs; modeled break-even densities - smaller than a sorted int array above " << densityArray * 100 << "% density, smaller than a hash set above " << densityHash * 100 << "%; intersecting is cheaper than a merge above about " << crossover * 100 << "% density" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 합·교·차 O(U/64), 원소 수 O(U/64) (popcount), 단일 비트 접근 O(1)
+// Space Complexity: U/8 바이트
 ```
 ## Union-Find가 거의 O(1)인 이유
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// Union-Find 가 "거의 O(1)" 인 이유 — 서로소 집합에 두 최적화를 함께 쓰면(랭크/크기에 의한 합치기 + 경로 압축) m 번의 연산이 n 개 원소에서 총 O(m·α(n)) 이 든다(Tarjan 1975). α 는 역 아커만 함수이며 우주에 있는 원자 수만큼 큰 n 에서도 4 를 넘지 않는다.
+// 아커만 계열: A₀(j) = j + 1, A_k(j) = A_{k−1}^{(j+1)}(j) (A_{k−1} 을 j+1 번 합성). 닫힌 꼴 A₁(j) = 2j + 1, A₂(j) = 2^{j+1}(j + 1) − 1, A₃(1) = 2047, A₄(1) ≥ 2^2047 은 탑 지수라 10⁸⁰ 보다 훨씬 크다. α(n) = min{k : A_k(1) ≥ n}.
+// 직관: 랭크 덕에 트리 높이 ≤ log n, 압축은 한 번 오른 경로를 평평하게 만들어 같은 경로를 다시 오르는 비용을 없애며, 둘이 합쳐지면 "분할상환 비용이 로그의 로그의 …(반복)" 로 내려가 α(n) 이 된다. 증거: ① 아커만 정의로 계산한 값이 닫힌 꼴과 일치하고 α(n) 이 n 에 대해 단조이며 α(2047) = 3, α(10⁹) = 4 ② 무작위·적대적 합치기+조회 열에서 find 가 따라간 평균 간선 수가 n = 10⁶ 까지 4 미만 ③ 최적화를 빼면 적대적 열에서 훨씬 큼(사슬 열: 아무것도 안 쓰면 ≈ n/2, 압축만 쓰면 상수 / 이항 트리 열: 랭크만 쓰면 ≈ log n 의 절반, 둘 다 쓰면 상수) ④ 총 걸음 수/연산 수가 n 을 키워도 거의 그대로
+long long A(int k, long long j) { if (k == 0) return j + 1; long long v = j; for (long long t = 0; t <= j; t++) v = A(k - 1, v); return v; }
+int alpha(double n) { if (n <= 2) return 0 + (n > 1 ? 1 : 0); if (n <= 3) return 1; if (n <= 7) return 2; if (n <= 2047) return 3; return 4; }                                                    // A₀(1)=2, A₁(1)=3, A₂(1)=7, A₃(1)=2047, A₄(1) = 거대
+struct DSU { std::vector<int> p, rk; long long steps = 0; bool compress, byRank; DSU(int n, bool compress, bool byRank) : p(n), rk(n, 0), compress(compress), byRank(byRank) { std::iota(p.begin(), p.end(), 0); }
+    int find(int x) { int r = x; while (p[r] != r) { r = p[r]; steps++; } if (compress) while (p[x] != r) { int nx = p[x]; p[x] = r; x = nx; } return r; } void unite(int a, int b) { a = find(a); b = find(b); if (a == b) return; if (byRank) { if (rk[a] < rk[b]) std::swap(a, b); p[b] = a; if (rk[a] == rk[b]) rk[a]++; } else p[a] = b; } };
 int main() {
-    std::cout << "Path compression + Rank bound time to inverse Ackermann." << std::endl;
-    assert(true);
-    return 0;
+    assert(A(0, 5) == 6 && A(1, 7) == 15 && A(2, 3) == (1LL << 4) * 4 - 1 && A(2, 1) == 7 && A(3, 1) == 2047);                                                                              // ① 닫힌 꼴과 아커만 값
+    for (long long j = 0; j <= 6; j++) { assert(A(1, j) == 2 * j + 1 && A(2, j) == (1LL << (j + 1)) * (j + 1) - 1); } assert(alpha(2047) == 3 && alpha(2048) == 4 && alpha(1e9) == 4 && alpha(1e80) == 4);
+    std::mt19937 rng(4); double avgAt[3]; int idx = 0;
+    for (int n : {1000, 100000, 1000000}) { DSU d(n, true, true); long long ops = 0; for (int i = 0; i < 2 * n; i++) { int a = rng() % n, b = rng() % n; if (rng() % 2) d.unite(a, b); else d.find(a); ops++; } for (int i = 0; i < n; i++) { d.find(rng() % n); ops++; } avgAt[idx++] = (double)d.steps / ops; }
+    for (int i = 0; i < 3; i++) assert(avgAt[i] < 4.0); assert(avgAt[2] - avgAt[0] < 1.0);                                                                                                    // ② ④ n 이 1000 배가 돼도 거의 그대로
+    auto adversarial = [&](int kind, bool compress, bool byRank) { const int N = kind == 0 ? 20000 : 16384; DSU d(N, compress, byRank); if (kind == 0) { for (int i = 0; i + 1 < N; i++) d.unite(i, i + 1); } else { for (int s = 1; s < N; s *= 2) for (int i = 0; i + s < N; i += 2 * s) d.unite(i, i + s); }        // 0: 사슬(랭크 없으면 깊이 N), 1: 이항 트리(랭크가 있어도 깊이 log N)
+        d.steps = 0; for (int rep = 0; rep < 3; rep++) for (int i = 0; i < N; i++) d.find(i); return (double)d.steps / (3.0 * N); };
+    double chainBoth = adversarial(0, true, true), chainCompress = adversarial(0, true, false), chainNone = adversarial(0, false, false), binBoth = adversarial(1, true, true), binRank = adversarial(1, false, true);
+    assert(chainBoth < 2.0 && chainCompress < 3.0 && chainNone > 20000 / 4.0 && binBoth < 3.0 && binRank > 3.0 && binRank > 2 * binBoth && binRank <= std::log2(16384.0));                                                       // ③ 대조군
+    std::cout << "Union-Find: Ackermann closed forms verified (A1=2j+1, A2=2^(j+1)(j+1)-1, A3(1)=2047) so alpha(n)<=4 for any physical n; average find steps with both optimizations: " << avgAt[0] << " / " << avgAt[1] << " / " << avgAt[2] << " for n = 1e3 / 1e5 / 1e6; steps per find on a chain-building adversary: " << chainBoth << " (both), " << chainCompress << " (compression only), " << chainNone << " (neither); on a binomial-tree adversary: " << binBoth << " (both) versus " << binRank << " (rank only, about log2(n)/2)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: m 번 연산 O(m α(n)) (분할상환)
+// Space Complexity: O(n)
 ```
 ## 집합과 그래프의 연결
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <queue>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 집합과 그래프의 연결 — 집합 위의 이항 관계 R ⊆ V × V 는 그대로 방향 그래프의 간선 집합이다. 그래서 관계의 성질이 그래프의 모양이 된다: 반사적 = 모든 정점에 자기 고리, 대칭적 = 무방향 그래프, 추이적 = "두 걸음으로 갈 수 있으면 한 걸음에도 갈 수 있음".
+// 닫힘(closure)은 도달 가능성이다: R 의 반사-추이 닫힘 R* = "u 에서 v 로 가는 경로가 있다". 동치 관계는 서로소인 완전 그래프(클릭)들의 모임이며 그 클릭이 연결 성분이다(동치류 = 성분). 방향 비순환 그래프(DAG)의 추이 닫힘은 엄격한 부분 순서이고, 거꾸로 부분 순서의 하세 다이어그램(추이 환원)이 가장 적은 간선의 DAG 다.
+// 증거: ① Warshall 추이 닫힘 == 모든 정점에서 BFS 한 도달 가능성 ② 무방향 그래프의 도달 가능성 관계(반사-추이 닫힘)는 동치 관계이고 동치류 수 == 연결 성분 수 ③ DAG 의 추이 닫힘은 비반사·반대칭·추이(엄격 부분 순서) ④ 추이 환원(간선 (u,w) 에 대해 u→v→w 가 있으면 제거)의 닫힘이 원래 닫힘과 같고 환원이 최소(어떤 간선을 빼도 닫힘이 달라짐)
+typedef std::vector<std::vector<char>> M;
+M warshall(M r) { int n = r.size(); for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) if (r[i][k]) for (int j = 0; j < n; j++) if (r[k][j]) r[i][j] = 1; return r; }
+M reach(const M& r) { int n = r.size(); M out(n, std::vector<char>(n, 0)); for (int s = 0; s < n; s++) { std::queue<int> q; q.push(s); std::vector<char> seen(n, 0); while (!q.empty()) { int u = q.front(); q.pop(); for (int v = 0; v < n; v++) if (r[u][v] && !seen[v]) { seen[v] = 1; out[s][v] = 1; q.push(v); } } } return out; }
 int main() {
-    std::cout << "Graph is a set of vertices and set of relation edges." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(8); for (int t = 0; t < 300; t++) { int n = 2 + rng() % 9; M r(n, std::vector<char>(n, 0)); for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) r[i][j] = rng() % 5 == 0; assert(warshall(r) == reach(r)); }                                                    // ①
+    for (int t = 0; t < 300; t++) { int n = 2 + rng() % 12; M r(n, std::vector<char>(n, 0)); for (int k = 0; k < n; k++) { int a = rng() % n, b = rng() % n; r[a][b] = r[b][a] = 1; } M c = reach(r); for (int i = 0; i < n; i++) c[i][i] = 1;
+        for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) { assert(c[a][b] == c[b][a]); for (int d = 0; d < n; d++) if (c[a][b] && c[b][d]) assert(c[a][d]); } std::set<std::vector<char>> classes(c.begin(), c.end()); int comps = 0; std::vector<char> seen(n, 0); for (int s = 0; s < n; s++) if (!seen[s]) { comps++; std::queue<int> q; q.push(s); seen[s] = 1; while (!q.empty()) { int u = q.front(); q.pop(); for (int v = 0; v < n; v++) if (r[u][v] && !seen[v]) { seen[v] = 1; q.push(v); } } } assert((int)classes.size() == comps); }  // ② 동치류 = 성분
+    int minimalChecks = 0; for (int t = 0; t < 300; t++) { int n = 3 + rng() % 8; M dag(n, std::vector<char>(n, 0)); for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) dag[i][j] = rng() % 3 == 0; M clo = warshall(dag);
+        for (int i = 0; i < n; i++) { assert(!clo[i][i]); for (int j = 0; j < n; j++) { assert(!(clo[i][j] && clo[j][i])); for (int k = 0; k < n; k++) if (clo[i][j] && clo[j][k]) assert(clo[i][k]); } }                                                              // ③ 엄격 부분 순서
+        M red = clo; for (int u = 0; u < n; u++) for (int w = 0; w < n; w++) for (int v = 0; v < n; v++) if (clo[u][v] && clo[v][w]) red[u][w] = 0; assert(warshall(red) == clo);                                                                                            // ④ 환원의 닫힘 = 닫힘
+        for (int u = 0; u < n; u++) for (int w = 0; w < n; w++) if (red[u][w]) { M less = red; less[u][w] = 0; assert(warshall(less) != clo); minimalChecks++; } }                                                                                                               // 최소성
+    std::cout << "Sets and graphs: Warshall closure equals BFS reachability on 300 random digraphs; reachability of an undirected graph is an equivalence relation whose classes are exactly its connected components; the closure of a DAG is a strict partial order and its transitive reduction (" << minimalChecks << " edges checked) regenerates it with no redundant edge" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: Warshall O(n³), 정점마다 BFS O(n(n + e))
+// Space Complexity: O(n²)
 ```
 ## 집합과 관계(Relation)
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <vector>
 #include <cassert>
 
+// 집합과 관계 — 두 집합 A, B 의 곱집합 A × B 의 부분집합이 A 에서 B 로의 관계다. 크기 n 인 집합 위의 이항 관계는 n² 개의 순서쌍 각각을 넣거나 빼므로 모두 2^(n²) 개. 성질별로 세면 — 반사적 2^(n²−n), 대칭적 2^(n(n+1)/2), 반대칭적 2ⁿ·3^(n(n−1)/2) (쌍마다 {없음, a→b, b→a} 세 가지, 자기 쌍은 자유),
+// 추이적(수열 1, 2, 13, 171, 3994, …), 부분 순서(반사+반대칭+추이; 1, 3, 19, 219, 4231, … 구별되는 원소에 이름이 붙은 경우), 동치 관계는 Bell 수(1, 2, 5, 15, 52). 이 부록은 n ≤ 4 에서 2^(n²) ≤ 65536 개 관계를 전부 나열해 위 숫자를 직접 확인한다 — 수학적 사실을 프로그램이 검산하는 연습이다.
+// 추가로 관계의 연산: 역관계, 합성, 곱집합과의 관계(관계 ⊆ A × B 는 A→B 의 "다가 함수" 로 볼 수 있음; 각 a 에 b 가 정확히 하나면 함수). 검증: n = 1..4 에서 위 여섯 종류의 개수 + 전순서(선형 순서)가 n! 개이고 전부 부분 순서임, 동치 ∩ 부분 순서 = 항등 관계뿐, 엄격 부분 순서의 개수가 부분 순서의 개수와 같음(자기 쌍을 넣고 빼는 대응)
+typedef std::vector<unsigned> Rel;  // 행 비트마스크: rel[a] 의 b 번째 비트 = (a, b) ∈ R
+bool refl(const Rel& r, int n) { for (int a = 0; a < n; a++) if (!(r[a] >> a & 1)) return false; return true; } bool irrefl(const Rel& r, int n) { for (int a = 0; a < n; a++) if (r[a] >> a & 1) return false; return true; }
+bool sym(const Rel& r, int n) { for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) if ((r[a] >> b & 1) != (r[b] >> a & 1)) return false; return true; } bool antisym(const Rel& r, int n) { for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) if ((r[a] >> b & 1) && (r[b] >> a & 1)) return false; return true; }
+bool trans(const Rel& r, int n) { for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) if (r[a] >> b & 1) if (r[b] & ~r[a]) return false; return true; }
 int main() {
-    std::cout << "Relation is a subset of Cartesian Product." << std::endl;
-    assert(true);
-    return 0;
+    const long long expectTrans[5] = {1, 2, 13, 171, 3994}, expectPoset[5] = {1, 1, 3, 19, 219}, bell[5] = {1, 1, 2, 5, 15};
+    for (int n = 1; n <= 4; n++) { long long total = 0, nRefl = 0, nSym = 0, nAnti = 0, nTrans = 0, nPoset = 0, nEquiv = 0, nStrict = 0, nTotalOrder = 0, nEquivAndPoset = 0;
+        for (unsigned code = 0; code < (1u << (n * n)); code++) { Rel r(n); for (int a = 0; a < n; a++) r[a] = (code >> (a * n)) & ((1u << n) - 1); total++; bool rf = refl(r, n), sy = sym(r, n), an = antisym(r, n), tr = trans(r, n); nRefl += rf; nSym += sy; nAnti += an; nTrans += tr;
+            bool poset = rf && an && tr, equiv = rf && sy && tr, strict = irrefl(r, n) && an && tr; nPoset += poset; nEquiv += equiv; nStrict += strict; if (equiv && poset) { nEquivAndPoset++; for (int a = 0; a < n; a++) assert(r[a] == (1u << a)); }                                // 동치이면서 부분 순서 = 항등 관계
+            if (poset) { bool tot = true; for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) if (!(r[a] >> b & 1) && !(r[b] >> a & 1)) tot = false; nTotalOrder += tot; } }
+        long long pow3 = 1; for (int i = 0; i < n * (n - 1) / 2; i++) pow3 *= 3; long long fact = 1; for (int i = 2; i <= n; i++) fact *= i;
+        assert(total == (1LL << (n * n)) && nRefl == (1LL << (n * n - n)) && nSym == (1LL << (n * (n + 1) / 2)) && nAnti == (1LL << n) * pow3 && nTrans == expectTrans[n] && nPoset == expectPoset[n] && nEquiv == bell[n] && nStrict == nPoset && nTotalOrder == fact && nEquivAndPoset == 1); }
+    std::cout << "Sets and relations: exhaustive enumeration over all 2^(n^2) relations for n = 1..4 confirms the counts - reflexive 2^(n^2-n), symmetric 2^(n(n+1)/2), antisymmetric 2^n 3^(n(n-1)/2), transitive 1/2/13/171/3994, partial orders 1/3/19/219, equivalences 1/2/5/15, linear orders n!" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: O(2^(n²) · n²) 완전 열거
+// Space Complexity: O(n)
 ```
 ## 집합과 함수(Function)
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 집합과 함수 — 함수 f: A → B 는 "모든 a ∈ A 에 정확히 하나의 b ∈ B 가 대응하는 관계" 이다. 서로 다른 함수의 총수는 |B|^|A| (각 a 마다 b 를 고르므로). 성질별 개수 — 단사(서로 다른 a 는 서로 다른 f(a))는 |B|·(|B|−1)···(|B|−|A|+1), 전사(모든 b 가 쓰임)는 포함-배제로 Σ_k (−1)^k C(m,k)(m−k)^n = m!·S(n,m) (제2종 스털링 수),
+// 전단사(일대일 대응)는 |A| = |B| = n 일 때 n!. 비둘기집 원리가 이 개수 공식의 결과다: |A| > |B| 이면 단사가 0 개. 집합 연산과의 관계 — 상(像) f(X) = {f(x)}, 역상 f⁻¹(Y) = {x : f(x) ∈ Y}. 역상은 모든 집합 연산을 보존한다(f⁻¹(Y₁ ∪ Y₂) = f⁻¹(Y₁) ∪ f⁻¹(Y₂), ∩ 와 여집합도).
+// 상은 합집합만 보존하고 교집합은 f(X₁ ∩ X₂) ⊆ f(X₁) ∩ f(X₂) 이며 f 가 단사일 때만 등호. 검증: |A| ≤ 5, |B| ≤ 5 의 모든 함수를 나열해 ① 총수 |B|^|A|, 단사 수, 전사 수(= m!·S(n,m)), 전단사 수 ② 모든 함수와 무작위 부분집합에서 상·역상 법칙 ③ 교집합의 상이 진부분집합이 되는 반례가 단사가 아닌 함수에서만 존재 ④ 합성 (g∘f)⁻¹ = f⁻¹∘g⁻¹
+long long stirling2(int n, int k) { std::vector<std::vector<long long>> S(n + 1, std::vector<long long>(k + 1, 0)); S[0][0] = 1; for (int i = 1; i <= n; i++) for (int j = 1; j <= std::min(i, k); j++) S[i][j] = j * S[i - 1][j] + S[i - 1][j - 1]; return S[n][k]; }
 int main() {
-    std::cout << "Function is a relation mapping exactly one output." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(5); bool counterexampleNonInjective = false;
+    for (int n = 1; n <= 5; n++) for (int m = 1; m <= 5; m++) { long long total = 0, inj = 0, surj = 0, bij = 0; std::vector<int> f(n, 0); for (;;) { total++; std::set<int> img(f.begin(), f.end()); bool injective = (int)img.size() == n, surjective = (int)img.size() == m; inj += injective; surj += surjective; bij += injective && surjective;
+            if (total % 7 == 0) { unsigned X1 = rng() & ((1u << n) - 1), X2 = rng() & ((1u << n) - 1); auto image = [&](unsigned X) { unsigned r = 0; for (int a = 0; a < n; a++) if (X >> a & 1) r |= 1u << f[a]; return r; }; assert(image(X1 | X2) == (image(X1) | image(X2)) && (image(X1 & X2) & ~(image(X1) & image(X2))) == 0); if (image(X1 & X2) != (image(X1) & image(X2))) { counterexampleNonInjective = true; assert(!injective); } if (injective) assert(image(X1 & X2) == (image(X1) & image(X2))); }
+            int i = 0; while (i < n && ++f[i] == m) f[i++] = 0; if (i == n) break; }
+        long long pw = 1; for (int k = 0; k < n; k++) pw *= m; long long falling = 1; for (int k = 0; k < n; k++) falling *= std::max(0, m - k); long long fm = 1; for (int k = 2; k <= m; k++) fm *= k; assert(total == pw && inj == falling && surj == fm * stirling2(n, m) && bij == (n == m ? fm : 0)); if (n > m) assert(inj == 0); }                              // ① 개수
+    for (int t = 0; t < 2000; t++) { int n = 1 + rng() % 8, m = 1 + rng() % 8; std::vector<int> f(n); for (int& x : f) x = rng() % m; unsigned Y1 = rng() & ((1u << m) - 1), Y2 = rng() & ((1u << m) - 1); auto pre = [&](unsigned Y) { unsigned r = 0; for (int a = 0; a < n; a++) if (Y >> f[a] & 1) r |= 1u << a; return r; }; unsigned fullA = (1u << n) - 1, fullB = (1u << m) - 1;
+        assert(pre(Y1 | Y2) == (pre(Y1) | pre(Y2)) && pre(Y1 & Y2) == (pre(Y1) & pre(Y2)) && pre(fullB & ~Y1) == (fullA & ~pre(Y1)));                                                                                                   // ② 역상은 합·교·여집합을 보존
+        int k = 1 + rng() % 6; std::vector<int> g(m); for (int& x : g) x = rng() % k; unsigned Z = rng() & ((1u << k) - 1); auto preG = [&](unsigned Y) { unsigned r = 0; for (int b = 0; b < m; b++) if (Y >> g[b] & 1) r |= 1u << b; return r; }; assert(pre(preG(Z)) == [&] { unsigned r = 0; for (int a = 0; a < n; a++) if (Z >> g[f[a]] & 1) r |= 1u << a; return r; }());   // ④ (g∘f)⁻¹ = f⁻¹∘g⁻¹
+    }
+    assert(counterexampleNonInjective);
+    std::cout << "Sets and functions: all functions A->B with |A|,|B| <= 5 were enumerated - totals |B|^|A|, injective counts equal falling factorials, surjective counts equal m!*S(n,m), bijections n!; preimages preserve union/intersection/complement and compose contravariantly, images preserve unions only (intersection counterexamples appear exactly for non-injective functions)" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 함수 전수 열거 O(m^n · n)
+// Space Complexity: O(n)
 ```
 ## SQL은 왜 집합 이론 위에서 동작하는가?
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <iterator>
+#include <map>
+#include <optional>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// SQL 은 왜 집합 이론 위에서 동작하는가 — 관계형 모델에서 테이블(릴레이션)은 튜플의 집합이고 질의는 그 위의 대수 연산(관계 대수)의 합성이다: SELECT DISTINCT = 사영 π, WHERE = 선택 σ, JOIN = 곱집합 위의 선택 ⋈, UNION/INTERSECT/EXCEPT = ∪, ∩, −, GROUP BY = 키가 같은 행끼리의 분할.
+// 연산이 대수 법칙을 만족하기 때문에 질의 최적화기가 "의미를 바꾸지 않고" 식을 변형할 수 있다 — 선택 밀어내리기 σ_p(R ⋈ S) = σ_p(R) ⋈ S, 조인의 교환·결합법칙, 합집합 분배법칙 등. 그래서 사용자는 "무엇을" 쓰고 최적화기가 "어떻게" 를 고른다(선언적).
+// 그러나 실제 SQL 은 순수한 집합이 아니다: ① 기본은 중복을 허용하는 다중집합(bag)이라 UNION ALL / EXCEPT ALL 이 별도로 있고 ② NULL 때문에 논리가 3 값(참, 거짓, 알 수 없음)이 되어 고전 집합 법칙 σ_p(R) ∪ σ_¬p(R) = R 이 깨진다 — NOT IN 에 NULL 이 있으면 결과가 비는 유명한 함정. 증거: ① 대수 법칙 5 개를 무작위 릴레이션으로 검증 ② bag 의미론과 set 의미론의 차이(UNION vs UNION ALL 크기 등식) ③ NULL 이 있는 데이터에서 σ_p ∪ σ_¬p 가 R 보다 작고 NOT IN 이 빈 결과를 내는 사례를 재현
+typedef std::vector<int> Row; typedef std::vector<Row> Bag; typedef std::set<Row> Rel; typedef std::optional<int> Val; typedef std::optional<bool> Tri;
+Rel toSet(const Bag& b) { return Rel(b.begin(), b.end()); }
+Rel join(const Rel& r, const Rel& s) { Rel o; for (auto& x : r) for (auto& y : s) if (x[1] == y[0]) o.insert({x[0], x[1], y[1]}); return o; }
 int main() {
-    std::cout << "Relational algebra grounds SQL in set operations." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(7); for (int t = 0; t < 200; t++) { Rel R, S, T; for (int i = 0; i < 12; i++) { R.insert({(int)(rng() % 6), (int)(rng() % 4)}); S.insert({(int)(rng() % 4), (int)(rng() % 5)}); T.insert({(int)(rng() % 5), (int)(rng() % 3)}); }
+        auto pa = [](const Row& r) { return r[0] < 3; }; auto sel = [&](const Rel& x, auto p) { Rel o; for (auto& r : x) if (p(r)) o.insert(r); return o; };
+        assert(sel(join(R, S), pa) == join(sel(R, pa), S));                                                                                                                                   // 선택 밀어내리기
+        Rel RS; for (auto& x : R) for (auto& y : S) if (x[1] == y[0]) RS.insert({x[0], x[1], y[1]}); auto swapJoin = [&](const Rel& s, const Rel& r) { Rel o; for (auto& y : s) for (auto& x : r) if (x[1] == y[0]) o.insert({x[0], x[1], y[1]}); return o; }; assert(swapJoin(S, R) == RS);                // 조인의 교환
+        Rel left, right; { Rel RS2 = join(R, S); for (auto& a : RS2) for (auto& b : T) if (a[2] == b[0]) left.insert({a[0], a[1], a[2], b[1]}); Rel ST; for (auto& y : S) for (auto& z : T) if (y[1] == z[0]) ST.insert({y[0], y[1], z[1]}); for (auto& x : R) for (auto& st : ST) if (x[1] == st[0]) right.insert({x[0], x[1], st[1], st[2]}); } assert(left == right);   // 조인의 결합
+        Rel U = R; U.insert(R.begin(), R.end()); Rel R2; for (int i = 0; i < 8; i++) R2.insert({(int)(rng() % 6), (int)(rng() % 4)}); Rel un = R; un.insert(R2.begin(), R2.end()); Rel viaSel = sel(R, pa); Rel s2 = sel(R2, pa); viaSel.insert(s2.begin(), s2.end()); assert(sel(un, pa) == viaSel);   // 선택은 합집합에 분배
+        Rel cond; for (auto& r : R) if (pa(r) || r[1] == 2) cond.insert(r); Rel part1 = sel(R, pa), part2 = sel(R, [](const Row& r) { return r[1] == 2; }); part1.insert(part2.begin(), part2.end()); assert(cond == part1);                                           // σ_{p∨q} = σ_p ∪ σ_q
+        Rel pr1; for (auto& r : R) pr1.insert({r[0]}); Rel pr2; for (auto& r : R2) pr2.insert({r[0]}); Rel pu = pr1; pu.insert(pr2.begin(), pr2.end()); Rel pr3; for (auto& r : un) pr3.insert({r[0]}); assert(pr3 == pu); }                                                  // π 는 합집합에 분배
+    Bag a = {{1}, {1}, {2}}, b = {{1}, {3}}; Bag unionAll = a; unionAll.insert(unionAll.end(), b.begin(), b.end()); Rel unionSet = toSet(unionAll); assert(unionAll.size() == 5 && unionSet.size() == 3);                                               // ② UNION ALL 은 개수를 더하고 UNION 은 중복 제거
+    std::map<int, int> ca, cb; for (auto& r : a) ca[r[0]]++; for (auto& r : b) cb[r[0]]++; std::map<int, int> exceptAll; for (auto& [k, v] : ca) { int d = v - (cb.count(k) ? cb[k] : 0); if (d > 0) exceptAll[k] = d; } assert(exceptAll[1] == 1 && exceptAll[2] == 1 && exceptAll.size() == 2); Rel exceptSet; for (auto& r : toSet(a)) if (!toSet(b).count(r)) exceptSet.insert(r); assert(exceptSet.size() == 1);        // EXCEPT ALL vs EXCEPT
+    auto lessThan = [](Val x, int c) -> Tri { if (!x) return std::nullopt; return *x < c; }; auto notTri = [](Tri t) -> Tri { if (!t) return std::nullopt; return !*t; }; std::vector<Val> col = {1, 5, std::nullopt, 7, 2}; int p = 0, np = 0;
+    for (auto& v : col) { Tri t = lessThan(v, 4); if (t && *t) p++; if (notTri(t) && *notTri(t)) np++; } assert(p == 2 && np == 2 && p + np < (int)col.size());                                                                                                                   // ③ σ_p 와 σ_¬p 의 합이 R 보다 작음 (NULL 행은 둘 다 아님)
+    std::vector<Val> sub = {1, std::nullopt}; auto notIn = [&](Val x) -> Tri { Tri result = true; for (auto& s : sub) { Tri eq = (!x || !s) ? Tri(std::nullopt) : Tri(*x == *s); if (eq && *eq) return false; if (!eq) result = std::nullopt; } return result; }; int kept = 0; for (int x : {2, 3, 4}) { Tri t = notIn(x); kept += (t && *t); } assert(kept == 0);                                      // x NOT IN (1, NULL) 은 모든 x 에 대해 참이 아님
+    std::cout << "SQL and set theory: selection pushdown, join commutativity and associativity, selection over union, sigma over OR, and projection over union hold on 200 random relations; UNION ALL vs UNION and EXCEPT ALL vs EXCEPT show bag vs set semantics; three-valued logic makes sigma_p + sigma_not_p cover only " << p + np << " of " << col.size() << " rows and x NOT IN (1, NULL) keeps nothing" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 관계 대수 연산 자체는 설명용 (질의 최적화기는 비용 기반 탐색)
+// Space Complexity: O(릴레이션 크기)
 ```
 ## AI에서 Label Set과 Vocabulary Set의 의미
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <cassert>
 
+// AI 에서 Label Set 과 Vocabulary Set 의 의미 — 모델은 "닫힌 집합" 위에서 숫자를 다룬다. Label set: 분류 모델이 고를 수 있는 정답 후보의 유한 집합 C. 출력층이 |C| 개 로짓이라 레이블을 추가하려면 모델 구조(출력 차원)와 학습 데이터를 바꿔야 하고(닫힌 세계 가정), 집합에 없는 입력은 억지로 C 의 어딘가로 분류된다.
+// Vocabulary set: 텍스트 모델이 이해하는 토큰의 유한 집합 V. 임베딩 표 크기가 |V|·d 이고 소프트맥스 비용이 |V| 에 비례하므로 V 가 크면 무겁다. 반대로 V 가 작으면 단어가 여러 조각으로 쪼개져 시퀀스가 길어진다 — 어휘 크기 vs 시퀀스 길이의 교환이다.
+// 서브워드 토큰화(BPE, Byte-Pair Encoding)는 이 교환을 푸는 표준 방법이다: 시작 어휘 = 모든 문자(또는 바이트), 코퍼스에서 가장 자주 인접한 두 토큰을 합쳐 새 토큰으로 추가하기를 반복한다. 검증(합성 코퍼스): ① 병합을 늘릴수록(어휘가 커질수록) 단어당 평균 토큰 수가 단조 감소 ② 단어 수준 어휘는 학습에 없던 단어에서 OOV 가 생기지만 BPE(문자 기반)는 OOV 0 ③ 인코딩-디코딩이 원문을 복원 ④ 임베딩 매개변수 수 |V|·d 와 소프트맥스 곱셈 수의 증가를 표로 계산
+typedef std::vector<std::string> Seq;
+std::vector<Seq> splitChars(const std::vector<std::string>& words) { std::vector<Seq> out; for (auto& w : words) { Seq s; for (char c : w) s.push_back(std::string(1, c)); out.push_back(s); } return out; }
+std::vector<std::pair<std::string, std::string>> trainBPE(std::vector<Seq> corpus, const std::vector<long>& freq, int merges) { std::vector<std::pair<std::string, std::string>> rules; for (int m = 0; m < merges; m++) { std::map<std::pair<std::string, std::string>, long> pairs; for (size_t i = 0; i < corpus.size(); i++) for (size_t j = 0; j + 1 < corpus[i].size(); j++) pairs[{corpus[i][j], corpus[i][j + 1]}] += freq[i];
+        if (pairs.empty()) break; auto best = std::max_element(pairs.begin(), pairs.end(), [](auto& a, auto& b) { return a.second < b.second || (a.second == b.second && a.first > b.first); }); rules.push_back(best->first); for (auto& s : corpus) { Seq o; for (size_t j = 0; j < s.size();) { if (j + 1 < s.size() && s[j] == best->first.first && s[j + 1] == best->first.second) { o.push_back(s[j] + s[j + 1]); j += 2; } else o.push_back(s[j++]); } s = o; } } return rules; }
+Seq encode(const std::string& word, const std::vector<std::pair<std::string, std::string>>& rules) { Seq s; for (char c : word) s.push_back(std::string(1, c)); for (auto& r : rules) { Seq o; for (size_t j = 0; j < s.size();) { if (j + 1 < s.size() && s[j] == r.first && s[j + 1] == r.second) { o.push_back(s[j] + s[j + 1]); j += 2; } else o.push_back(s[j++]); } s = o; } return s; }
 int main() {
-    std::cout << "Sets define discrete target or input spaces." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(3); const std::vector<std::string> stems = {"set", "list", "tree", "graph", "hash", "queue", "stack", "heap", "trie", "sort"}, suffixes = {"", "s", "ed", "ing", "er", "ers", "able"}; std::vector<std::string> train; std::vector<long> freq; std::map<std::string, long> seen;
+    for (int i = 0; i < 5000; i++) { std::string w = stems[rng() % stems.size()] + suffixes[rng() % suffixes.size()]; seen[w]++; } for (auto& [w, c] : seen) { train.push_back(w); freq.push_back(c); }
+    std::vector<std::string> heldOut; for (auto& s : stems) for (auto& x : suffixes) if (!seen.count(s + x)) heldOut.push_back(s + x); heldOut.push_back("setting"); heldOut.push_back("graphed"); heldOut.push_back("heaper");
+    std::set<std::string> wordVocab(train.begin(), train.end()); int oov = 0; for (auto& w : heldOut) oov += !wordVocab.count(w); assert(oov > 0);                                                                                        // ② 단어 수준 어휘는 OOV 가 생김
+    double prevTokens = 1e9; std::vector<double> tokens; for (int merges : {0, 5, 10, 20, 40, 80}) { auto rules = trainBPE(splitChars(train), freq, merges); long total = 0, words = 0; std::set<std::string> vocab; for (size_t i = 0; i < train.size(); i++) { Seq e = encode(train[i], rules); total += (long)e.size() * freq[i]; words += freq[i]; std::string joined; for (auto& t : e) { joined += t; vocab.insert(t); } assert(joined == train[i]); } double avg = (double)total / words; assert(avg <= prevTokens + 1e-9); prevTokens = avg; tokens.push_back(avg);        // ① 단조 감소 ③ 복원
+        for (auto& w : heldOut) { Seq e = encode(w, rules); std::string joined; for (auto& t : e) joined += t; assert(joined == w); } }                                                                                                                      // 학습에 없던 단어도 문자 조각으로 복원 → OOV 0
+    assert(tokens.front() > 5 && tokens.back() < 0.6 * tokens.front());
+    std::cout << "Label and vocabulary sets: held-out words were out-of-vocabulary " << oov << " times for the word-level vocabulary but BPE re-encoded every one losslessly; average tokens per word fell as merges grew (0/5/10/20/40/80 merges): "; for (double t : tokens) std::cout << t << " "; std::cout << "; for d=64 an embedding table of V=32000 needs " << 32000 * 64 << " parameters while V=256 needs " << 256 * 64 << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: BPE 학습 O(병합 수 × 코퍼스 크기), 인코딩 O(병합 수 × 단어 길이)
+// Space Complexity: O(어휘 크기 · 임베딩 차원)
 ```
 ## 비트마스크와 집합의 대응 관계
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <set>
+#include <vector>
 #include <cassert>
 
+// 비트마스크와 집합의 대응 — 전체집합이 n 원소 {0..n−1} 이면 부분집합 S ↔ 정수 mask(S) = Σ_{i∈S} 2^i 는 부분집합 2ⁿ 개와 정수 0..2ⁿ−1 사이의 전단사다(이진수의 i 번째 비트 = i 의 소속). 이 대응은 연산까지 보존하는 동형 사상(부울 대수 동형)이다:
+//   합집합 ↔ OR  교집합 ↔ AND  여집합 ↔ XOR (전체 마스크)  차집합 A−B ↔ A & ~B  대칭차 ↔ XOR  A ⊆ B ↔ (A & B) == A  원소 i 추가 ↔ mask | 1<<i  제거 ↔ & ~(1<<i)  소속 ↔ mask >> i & 1  크기 ↔ popcount  최소 원소 ↔ ctz(mask)  최하위 원소 분리 ↔ mask & −mask  최하위 제거 ↔ mask & (mask − 1).
+// 포함 순서 A ⊆ B 이면 mask(A) ≤ mask(B) 이므로 정수의 대소 순서는 포함 순서의 선형 확장이다 — 마스크를 0 부터 증가시키며 DP 를 채우면 "부분집합이 먼저 나온다". Gray 코드는 연속한 마스크가 정확히 한 비트만 다른 열(초입방체의 해밀턴 경로)이다. 검증: ① n ≤ 10 의 모든 마스크 쌍에서 위 연산 대응이 std::set 과 일치(전수) ② 포함 ⇒ 수치 비교 ③ Gray 코드가 모든 마스크를 한 번씩 정확히 한 비트 차이로 방문 ④ 그 외 관용구 (분리·제거·최소 원소)
 int main() {
-    std::cout << "Bit operations correspond directly to set operations." << std::endl;
-    assert(true);
-    return 0;
+    for (int n = 1; n <= 8; n++) { const uint32_t full = (1u << n) - 1; auto toSet = [&](uint32_t m) { std::set<int> s; for (int i = 0; i < n; i++) if (m >> i & 1) s.insert(i); return s; };
+        for (uint32_t a = 0; a <= full; a++) for (uint32_t b = 0; b <= full; b++) { auto A = toSet(a), B = toSet(b); std::set<int> u(A), in, df, sd; u.insert(B.begin(), B.end()); for (int x : A) if (B.count(x)) in.insert(x); for (int x : A) if (!B.count(x)) df.insert(x); sd = df; for (int x : B) if (!A.count(x)) sd.insert(x);
+            assert(toSet(a | b) == u && toSet(a & b) == in && toSet(a & ~b & full) == df && toSet(a ^ b) == sd); bool sub = std::includes(B.begin(), B.end(), A.begin(), A.end()); assert(((a & b) == a) == sub); if (sub) assert(a <= b); }                                       // ① ② 연산 · 포함 ⇒ 수치 순서
+        for (uint32_t a = 0; a <= full; a++) { auto A = toSet(a); assert(toSet(full ^ a).size() + A.size() == (size_t)n && __builtin_popcount(a) == (int)A.size()); if (a) { assert(*A.begin() == __builtin_ctz(a) && (a & -a) == (1u << *A.begin()) && toSet(a & (a - 1)) == [&] { std::set<int> r = A; r.erase(r.begin()); return r; }()); } for (int i = 0; i < n; i++) { assert((a >> i & 1) == (int)A.count(i) && toSet(a | (1u << i)) == [&] { std::set<int> r = A; r.insert(i); return r; }() && toSet(a & ~(1u << i)) == [&] { std::set<int> r = A; r.erase(i); return r; }()); } }   // ④ 관용구
+        std::set<uint32_t> visited; uint32_t prev = 0; for (uint32_t i = 0; i <= full; i++) { uint32_t g = i ^ (i >> 1); assert(visited.insert(g).second); if (i) assert(__builtin_popcount(g ^ prev) == 1); prev = g; } assert(visited.size() == (size_t)full + 1); }               // ③ Gray 코드: 모든 마스크를 한 번씩, 한 비트 차이로
+    std::cout << "Bitmask <-> set: for every pair of subsets of an n-element universe (n <= 8) OR/AND/AND-NOT/XOR/complement/subset-test/cardinality/lowest-element idioms equal the std::set operations, inclusion implies numeric order, and the Gray code visits all masks with single-bit steps" << std::endl; return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 집합 연산 O(1) (n ≤ 64), 전수 검증 O(4ⁿ)
 // Space Complexity: O(1)
 ```
 ## 부분집합 열거 최적화
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 부분집합 열거 최적화 — 집합 S(n 개)의 모든 부분집합에 대해 "부분집합의 합" 같은 값을 구하는 방법의 비용을 비교한다. ① 순진한 방법: 마스크마다 비트를 훑어 합을 다시 계산 → O(n·2ⁿ) ② Gray 코드: 연속한 마스크가 한 비트만 다르므로 합을 ±x 한 번으로 갱신 → O(2ⁿ) (한 원소당 상수)
+// ③ 최하위 비트 DP: sum[mask] = sum[mask & (mask−1)] + x[ctz(mask)] → O(2ⁿ) 시간, O(2ⁿ) 메모리. ④ 부분집합 위의 부분집합 열거(for sub = mask; sub; sub = (sub−1) & mask)로 모든 (sub ⊆ mask) 쌍을 훑으면 O(3ⁿ). ⑤ 합 위 DP(SOS DP, zeta 변환): F(mask) = Σ_{sub ⊆ mask} f(sub) 를 비트별로 한 번씩 누적해 O(n·2ⁿ) 에 모든 mask 를 구한다 — 3ⁿ 을 n·2ⁿ 으로 줄인다.
+// 검증: ① 세 방법(순진·Gray·최하위 비트 DP)이 같은 합표를 만들고 연산 수가 n·2ⁿ : 2ⁿ : 2ⁿ ② SOS DP 가 O(3ⁿ) 부분집합 순회와 같은 결과를 내고 덧셈 수 n·2ⁿ⁻¹ 이 3ⁿ 보다 훨씬 작음(n = 16) ③ Gray 코드 순회가 모든 마스크를 한 번씩 방문 ④ 크기 k 부분집합만 필요하면 Gosper 가 C(n,k) 개만 방문(2ⁿ 전체 필터링 대비)
 int main() {
-    std::cout << "Bit tricks allow O(3^N) generation of subsets of subsets." << std::endl;
-    assert(true);
-    return 0;
+    std::mt19937 rng(5); const int n = 16; std::vector<long long> x(n); for (auto& v : x) v = rng() % 1000 - 300;
+    std::vector<long long> naive(1u << n), gray(1u << n), lowbit(1u << n); long long opsNaive = 0, opsGray = 0, opsLow = 0; for (uint32_t m = 0; m < (1u << n); m++) { long long s = 0; for (int i = 0; i < n; i++) { opsNaive++; if (m >> i & 1) s += x[i]; } naive[m] = s; }
+    { uint32_t g = 0; long long s = 0; gray[0] = 0; for (uint32_t i = 1; i < (1u << n); i++) { uint32_t ng = i ^ (i >> 1); int bit = __builtin_ctz(g ^ ng); s += (ng >> bit & 1) ? x[bit] : -x[bit]; opsGray++; g = ng; gray[g] = s; } }                                                                                                                  // Gray 순서로 방문하며 한 번의 덧셈/뺄셈
+    lowbit[0] = 0; for (uint32_t m = 1; m < (1u << n); m++) { lowbit[m] = lowbit[m & (m - 1)] + x[__builtin_ctz(m)]; opsLow++; }
+    assert(naive == gray && naive == lowbit && opsNaive == (long long)n * (1u << n) && opsGray == (1u << n) - 1 && opsLow == (1u << n) - 1);                                                                                                // ①
+    const int n2 = 14; std::vector<long long> f(1u << n2); for (auto& v : f) v = rng() % 100; std::vector<long long> brute(1u << n2, 0); long long visits = 0; for (uint32_t m = 0; m < (1u << n2); m++) { for (uint32_t sub = m;; sub = (sub - 1) & m) { brute[m] += f[sub]; visits++; if (sub == 0) break; } }
+    std::vector<long long> sos = f; long long adds = 0; for (int b = 0; b < n2; b++) for (uint32_t m = 0; m < (1u << n2); m++) if (m >> b & 1) { sos[m] += sos[m ^ (1u << b)]; adds++; }
+    long long pow3 = 1; for (int i = 0; i < n2; i++) pow3 *= 3; assert(sos == brute && visits == pow3 && adds == (long long)n2 * (1u << (n2 - 1)) && adds * 20 < visits);                                                                                 // ②
+    std::vector<char> seen(1u << n, 0); for (uint32_t i = 0; i < (1u << n); i++) { uint32_t g = i ^ (i >> 1); assert(!seen[g]); seen[g] = 1; }                                                                                                    // ③
+    for (int k : {2, 5, 8}) { long long cnt = 0, filtered = 0; for (uint32_t m = 0; m < (1u << n); m++) { filtered++; if (__builtin_popcount(m) == k) cnt++; } long long gosperCnt = 0; for (uint32_t v = (1u << k) - 1; v < (1u << n);) { gosperCnt++; uint32_t c = v & -v, r = v + c; v = (((r ^ v) >> 2) / c) | r; } assert(gosperCnt == cnt && gosperCnt * 10 < filtered || k == 8); }     // ④ Gosper 는 C(n,k) 개만 방문
+    std::cout << "Subset enumeration: per-mask sums with n=16 took " << opsNaive << " operations naively but " << opsGray << " with Gray-code updates (identical tables); sum-over-subsets DP needed " << adds << " additions versus " << visits << " visits for 3^n submask enumeration at n=14 with identical results; Gosper's hack visits only C(n,k) masks" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 순진 O(n·2ⁿ), Gray/최하위 비트 DP O(2ⁿ), 부분집합 열거 O(3ⁿ), SOS DP O(n·2ⁿ)
+// Space Complexity: O(2ⁿ)
 ```
 
