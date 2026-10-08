@@ -1342,88 +1342,445 @@ int main() {
 ## KDTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "K-D Tree alternates splitting planes per dimension." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// KD 트리(트리 관점의 요약, 정본은 Tree.md Part 11): 깊이마다 축을 번갈아 가며 중앙값으로 공간을 반으로 가르는 이진 트리. 최근접 이웃 탐색은 가까운 쪽을 먼저 내려가고,
+// 분할 평면까지의 거리가 현재 최선보다 멀면 반대쪽 부분 트리를 통째로 건너뛴다
+typedef std::vector<double> P; std::vector<P> pts;
+int build(std::vector<int>& id, int lo, int hi, int axis, std::vector<int>& L, std::vector<int>& R) {      // 반환: 이 구간의 루트 점 번호
+    if (lo >= hi) return -1; int m = (lo + hi) / 2;
+    std::nth_element(id.begin() + lo, id.begin() + m, id.begin() + hi, [&](int a, int b) { return pts[a][axis] < pts[b][axis]; });
+    int root = id[m]; L[root] = build(id, lo, m, 1 - axis, L, R); R[root] = build(id, m + 1, hi, 1 - axis, L, R); return root;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+void nn(int t, const P& q, int axis, const std::vector<int>& L, const std::vector<int>& R, int& best, double& bd) {
+    if (t < 0) return; double d = 0; for (int k = 0; k < 2; k++) d += (pts[t][k] - q[k]) * (pts[t][k] - q[k]);
+    if (d < bd) { bd = d; best = t; }
+    double diff = q[axis] - pts[t][axis]; int near = diff < 0 ? L[t] : R[t], far = diff < 0 ? R[t] : L[t];
+    nn(near, q, 1 - axis, L, R, best, bd); if (diff * diff < bd) nn(far, q, 1 - axis, L, R, best, bd);     // 평면 너머가 최선보다 멀면 가지치기
+}
+int main() {
+    std::mt19937 g(1); std::uniform_real_distribution<double> U(0, 1); int n = 2000;
+    for (int i = 0; i < n; i++) pts.push_back({U(g), U(g)});
+    std::vector<int> id(n), L(n, -1), R(n, -1); for (int i = 0; i < n; i++) id[i] = i; int root = build(id, 0, n, 0, L, R);
+    for (int t = 0; t < 200; t++) { P q = {U(g), U(g)}; int best = -1; double bd = 1e18; nn(root, q, 0, L, R, best, bd);
+        double bf = 1e18; for (auto& p : pts) bf = std::min(bf, (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1])); assert(bd == bf); }
+    std::cout << "KDTree: nearest neighbour verified against brute force" << std::endl; return 0;
+}
+// Time Complexity: 구성 O(N log N), 최근접 질의 평균 O(log N)
+// Space Complexity: O(N)
 ```
 ## QuadTree()
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <memory>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 쿼드트리(트리 관점의 요약, 정본은 Tree.md Part 11): 정사각형 영역을 4 등분(NW, NE, SW, SE)해 가며 점을 담는다. 한 칸에 점이 용량(여기서는 4)을 넘으면 쪼갠다.
+// 사각형 범위 질의는 영역이 겹치지 않는 칸을 건너뛴다.  지도 타일, 충돌 검사, 이미지 압축의 바탕
+struct Q {
+    double x, y, h; std::vector<std::pair<double, double>> p; std::unique_ptr<Q> c[4];                       // 중심 (x, y), 반변 h
+    Q(double x, double y, double h) : x(x), y(y), h(h) {}
+    bool insert(double px, double py) {
+        if (px < x - h || px >= x + h || py < y - h || py >= y + h) return false;
+        if (!c[0] && p.size() < 4) { p.push_back({px, py}); return true; }
+        if (!c[0]) { for (int i = 0; i < 4; i++) c[i].reset(new Q(x + (i & 1 ? h / 2 : -h / 2), y + (i & 2 ? h / 2 : -h / 2), h / 2)); for (auto& q : p) for (auto& k : c) if (k->insert(q.first, q.second)) break; p.clear(); }
+        for (auto& k : c) if (k->insert(px, py)) return true; return false;
+    }
+    int count(double x0, double y0, double x1, double y1) const {
+        if (x1 < x - h || x0 >= x + h || y1 < y - h || y0 >= y + h) return 0; int r = 0;
+        for (auto& q : p) r += q.first >= x0 && q.first <= x1 && q.second >= y0 && q.second <= y1;
+        if (c[0]) for (auto& k : c) r += k->count(x0, y0, x1, y1); return r;
+    }
+};
 int main() {
-    std::cout << "QuadTree divides 2D space into 4 quadrants." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(2); std::uniform_real_distribution<double> U(0, 1); Q root(0.5, 0.5, 0.5); std::vector<std::pair<double, double>> v;
+    for (int i = 0; i < 3000; i++) { v.push_back({U(g), U(g)}); assert(root.insert(v.back().first, v.back().second)); }
+    for (int t = 0; t < 200; t++) { double a = U(g), b = U(g), c = U(g), d = U(g); if (a > c) std::swap(a, c); if (b > d) std::swap(b, d);
+        int want = 0; for (auto& q : v) want += q.first >= a && q.first <= c && q.second >= b && q.second <= d; assert(root.count(a, b, c, d) == want); }
+    std::cout << "QuadTree: range counts verified" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입 O(깊이), 범위 질의 O(깊이 + k)
+// Space Complexity: O(N)
 ```
 ## Octree()
 ### 대표코드
 ```cpp
+#include <array>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 옥트리(트리 관점의 요약, 정본은 Tree.md Part 11): 쿼드트리의 3차원 판. 정육면체를 8 등분하며, 3D 게임·점군(point cloud)·복셀 맵에서 쓴다.
+// 점이 들어갈 자식 번호는 세 비트: (x >= cx) | (y >= cy) << 1 | (z >= cz) << 2
+typedef std::array<double, 3> V3;
+struct O {
+    V3 c; double h; std::vector<V3> p; std::unique_ptr<O> k[8];
+    O(V3 c, double h) : c(c), h(h) {}
+    static int octant(const V3& c, const V3& q) { return (q[0] >= c[0]) | (q[1] >= c[1]) << 1 | (q[2] >= c[2]) << 2; }
+    void insert(const V3& q) {
+        if (!k[0] && p.size() < 8) { p.push_back(q); return; }
+        if (!k[0]) { for (int i = 0; i < 8; i++) k[i].reset(new O({c[0] + (i & 1 ? h / 2 : -h / 2), c[1] + (i & 2 ? h / 2 : -h / 2), c[2] + (i & 4 ? h / 2 : -h / 2)}, h / 2)); auto old = p; p.clear(); for (auto& o : old) k[octant(c, o)]->insert(o); }
+        k[octant(c, q)]->insert(q);
+    }
+    int countIn(const V3& lo, const V3& hi) const {
+        for (int a = 0; a < 3; a++) if (hi[a] < c[a] - h || lo[a] >= c[a] + h) return 0;
+        int r = 0; for (auto& q : p) r += q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1] && q[2] >= lo[2] && q[2] <= hi[2];
+        if (k[0]) for (auto& s : k) r += s->countIn(lo, hi); return r;
+    }
+};
 int main() {
-    std::cout << "Octree divides 3D space into 8 octants." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(3); std::uniform_real_distribution<double> U(0, 1); O root({0.5, 0.5, 0.5}, 0.5); std::vector<V3> v;
+    for (int i = 0; i < 4000; i++) { v.push_back({U(g), U(g), U(g)}); root.insert(v.back()); }
+    for (int t = 0; t < 200; t++) { V3 a = {U(g), U(g), U(g)}, b = {U(g), U(g), U(g)}; for (int d = 0; d < 3; d++) if (a[d] > b[d]) std::swap(a[d], b[d]);
+        int want = 0; for (auto& q : v) want += q[0] >= a[0] && q[0] <= b[0] && q[1] >= a[1] && q[1] <= b[1] && q[2] >= a[2] && q[2] <= b[2]; assert(root.countIn(a, b) == want); }
+    std::cout << "Octree: 3D range counts verified" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 삽입 O(깊이), 범위 질의 O(깊이 + k)
+// Space Complexity: O(N)
 ```
 ## RTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "R-Tree groups spatial objects into hierarchically nested bounding boxes." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// R-트리(트리 관점의 요약, 정본은 Tree.md Part 16): 사각형(MBR)을 B-트리처럼 균형 있게 묶는 공간 색인. 내부 노드의 각 항목 = (자식을 모두 덮는 사각형, 자식).
+// 질의 사각형과 겹치지 않는 항목은 아래를 통째로 건너뛴다. 여기서는 정적 데이터를 정렬 후 M 개씩 묶는 STR(Sort-Tile-Recursive) 벌크 로드 방식으로 만든다 (삽입·분할은 Tree.md 판)
+struct R { double x1, y1, x2, y2; };
+bool hit(const R& a, const R& b) { return a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2; }
+struct Node { R box; std::vector<Node*> kids; std::vector<int> ids; };
+Node* pack(std::vector<std::pair<R, int>>& v, int M) {                      // 잎 단계: x 로 정렬 -> 세로 띠로 자르고 띠 안에서 y 로 정렬해 M 개씩
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.first.x1 + a.first.x2 < b.first.x1 + b.first.x2; });
+    int leaves = (v.size() + M - 1) / M, strips = std::max(1, (int)std::ceil(std::sqrt((double)leaves))), per = (v.size() + strips - 1) / strips;
+    std::vector<Node*> level;
+    for (size_t s = 0; s < v.size(); s += per) { auto b = v.begin() + s, e = v.begin() + std::min(v.size(), s + per);
+        std::sort(b, e, [](auto& a, auto& c) { return a.first.y1 + a.first.y2 < c.first.y1 + c.first.y2; });
+        for (auto it = b; it < e; it += std::min<long>(M, e - it)) { Node* n = new Node; n->box = it->first;
+            for (auto j = it; j < it + std::min<long>(M, e - it); ++j) { n->ids.push_back(j->second); n->box = {std::min(n->box.x1, j->first.x1), std::min(n->box.y1, j->first.y1), std::max(n->box.x2, j->first.x2), std::max(n->box.y2, j->first.y2)}; }
+            level.push_back(n); } }
+    while (level.size() > 1) { std::vector<Node*> up; for (size_t i = 0; i < level.size(); i += M) { Node* n = new Node; n->box = level[i]->box; for (size_t j = i; j < std::min(level.size(), i + M); j++) { n->kids.push_back(level[j]); n->box = {std::min(n->box.x1, level[j]->box.x1), std::min(n->box.y1, level[j]->box.y1), std::max(n->box.x2, level[j]->box.x2), std::max(n->box.y2, level[j]->box.y2)}; } up.push_back(n); } level = up; }
+    return level[0];
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+void query(Node* n, const R& q, const std::vector<R>& rects, std::vector<int>& out) {
+    if (!hit(n->box, q)) return; for (int id : n->ids) if (hit(rects[id], q)) out.push_back(id); for (Node* k : n->kids) query(k, q, rects, out);
+}
+int main() {
+    std::mt19937 g(4); std::uniform_real_distribution<double> U(0, 1000); std::vector<R> rects; std::vector<std::pair<R, int>> items;
+    for (int i = 0; i < 3000; i++) { double x = U(g), y = U(g); rects.push_back({x, y, x + U(g) / 20, y + U(g) / 20}); items.push_back({rects.back(), i}); }
+    Node* root = pack(items, 8);
+    for (int t = 0; t < 200; t++) { double x = U(g), y = U(g); R q{x, y, x + 60, y + 60}; std::vector<int> got, want; query(root, q, rects, got);
+        for (int i = 0; i < 3000; i++) if (hit(rects[i], q)) want.push_back(i); std::sort(got.begin(), got.end()); assert(got == want); }
+    std::cout << "RTree: STR-packed tree verified against brute force" << std::endl; return 0;
+}
+// Time Complexity: 벌크 로드 O(N log N), 질의 O(log N + k) (겹침이 적을 때)
+// Space Complexity: O(N)
 ```
 ## BallTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <iostream>
+#include <memory>
+#include <queue>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Ball Tree bounds points in hyperspheres instead of hyperrectangles." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 볼 트리(ball tree): 점들을 "공(중심 c, 반지름 r)" 으로 감싸 계층을 만든다. KD 트리가 축에 정렬된 평면으로 가르는 데 비해 공은 축에 구애받지 않아 중간 차원(~20)에서도 더 잘 버틴다.
+// 구성: 가장 퍼진 축에서 중앙값으로 점을 둘로 나누고 각 쪽의 평균/최대거리로 공을 만든다. 질의: 점 q 에서 공까지의 거리 하한 max(0, |q-c| - r) 이 현재 k 번째 최선보다 크면 공 전체를 가지치기한다
+// (삼각부등식: 공 안의 모든 점 p 에 대해 |q-p| >= |q-c| - r)
+const int D = 6;
+typedef std::array<double, D> Pt;
+double dist(const Pt& a, const Pt& b) { double s = 0; for (int i = 0; i < D; i++) s += (a[i] - b[i]) * (a[i] - b[i]); return std::sqrt(s); }
+long evals = 0;                                                            // 거리 계산 횟수
+struct Node { Pt c; double r = 0; int lo, hi; Node *l = nullptr, *rt = nullptr; };
+std::vector<Pt> pts; std::vector<int> perm; std::vector<std::unique_ptr<Node>> pool;
+Node* build(int lo, int hi) {
+    pool.emplace_back(new Node); Node* n = pool.back().get(); n->lo = lo; n->hi = hi; n->c.fill(0);
+    for (int i = lo; i < hi; i++) for (int d = 0; d < D; d++) n->c[d] += pts[perm[i]][d] / (hi - lo);
+    for (int i = lo; i < hi; i++) n->r = std::max(n->r, dist(n->c, pts[perm[i]]));
+    if (hi - lo <= 8) return n;
+    int axis = 0; double best = -1;
+    for (int d = 0; d < D; d++) { double mn = 1e18, mx = -1e18; for (int i = lo; i < hi; i++) { mn = std::min(mn, pts[perm[i]][d]); mx = std::max(mx, pts[perm[i]][d]); } if (mx - mn > best) { best = mx - mn; axis = d; } }
+    int mid = (lo + hi) / 2; std::nth_element(perm.begin() + lo, perm.begin() + mid, perm.begin() + hi, [&](int a, int b) { return pts[a][axis] < pts[b][axis]; });
+    n->l = build(lo, mid); n->rt = build(mid, hi); return n;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+void knn(const Node* n, const Pt& q, int k, std::priority_queue<std::pair<double, int>>& heap) {
+    evals++; double dc = dist(q, n->c);
+    if (heap.size() == (size_t)k && dc - n->r >= heap.top().first) return;       // 공 전체가 현재 k 번째보다 멀다
+    if (!n->l) { for (int i = n->lo; i < n->hi; i++) { evals++; double d = dist(q, pts[perm[i]]); if (heap.size() < (size_t)k) heap.push({d, perm[i]}); else if (d < heap.top().first) { heap.pop(); heap.push({d, perm[i]}); } } return; }
+    evals++; double dl = dist(q, n->l->c), dr = dist(q, n->rt->c);
+    if (dl - n->l->r < dr - n->rt->r) { knn(n->l, q, k, heap); knn(n->rt, q, k, heap); } else { knn(n->rt, q, k, heap); knn(n->l, q, k, heap); }   // 더 가까운 공부터
+}
+int main() {
+    std::mt19937 g(5); std::normal_distribution<double> N(0, 1); int n = 6000;
+    std::vector<Pt> centers(12); for (auto& c : centers) for (auto& x : c) x = N(g) * 6;
+    for (int i = 0; i < n; i++) { Pt p = centers[g() % 12]; for (auto& x : p) x += N(g); pts.push_back(p); }      // 12 개 군집
+    perm.resize(n); for (int i = 0; i < n; i++) perm[i] = i; Node* root = build(0, n);
+    long total = 0; int Q = 200, k = 5;
+    for (int t = 0; t < Q; t++) {
+        Pt q = centers[g() % 12]; for (auto& x : q) x += N(g); std::priority_queue<std::pair<double, int>> heap; evals = 0; knn(root, q, k, heap); total += evals;
+        std::vector<double> all; for (auto& p : pts) all.push_back(dist(q, p)); std::sort(all.begin(), all.end());
+        std::vector<double> got; while (!heap.empty()) { got.push_back(heap.top().first); heap.pop(); } std::reverse(got.begin(), got.end());
+        for (int i = 0; i < k; i++) assert(std::fabs(got[i] - all[i]) < 1e-12);
+    }
+    double avg = (double)total / Q; assert(avg < n / 3.0);
+    std::cout << "BallTree: " << k << "-NN exact; avg distance evaluations " << avg << " vs brute force " << n << std::endl; return 0;
+}
+// Time Complexity: 구성 O(N log N), kNN 평균 O(log N) ~ O(N^(1-1/d))
+// Space Complexity: O(N)
 ```
 ## BVHTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Bounding Volume Hierarchy encapsulates complex 3D meshes for ray tracing." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// BVH(Bounding Volume Hierarchy): 물체들을 축 정렬 상자(AABB)로 감싸 이진 트리를 만든 공간 색인. 레이트레이싱(레이-장면 교차), 충돌 검사의 기본이다. 공간을 가르는 KD 트리와 달리
+// 물체를 나누므로 상자끼리 겹칠 수 있지만 물체가 한 번만 저장된다.  구성: 중심점이 가장 퍼진 축에서 중앙값으로 둘로 나눈다.  레이 질의: 상자와 레이가 만나지 않으면(slab 방법) 가지치기하고, 가까운 자식부터
+typedef std::array<double, 3> V;
+struct Box { V lo, hi; };
+Box merge(const Box& a, const Box& b) { Box r; for (int i = 0; i < 3; i++) { r.lo[i] = std::min(a.lo[i], b.lo[i]); r.hi[i] = std::max(a.hi[i], b.hi[i]); } return r; }
+bool rayBox(const Box& b, const V& o, const V& inv, double tmax, double& tnear) {      // slab 방법: 각 축의 [진입, 이탈] 구간들의 교집합
+    double t0 = 0, t1 = tmax;
+    for (int i = 0; i < 3; i++) { double a = (b.lo[i] - o[i]) * inv[i], c = (b.hi[i] - o[i]) * inv[i]; if (a > c) std::swap(a, c); t0 = std::max(t0, a); t1 = std::min(t1, c); if (t0 > t1) return false; }
+    tnear = t0; return true;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+struct Node { Box box; int lo, hi; Node *l = nullptr, *r = nullptr; };
+std::vector<Box> prims; std::vector<int> idx; std::vector<std::unique_ptr<Node>> pool; long visits = 0;
+Node* build(int lo, int hi) {
+    pool.emplace_back(new Node); Node* n = pool.back().get(); n->lo = lo; n->hi = hi; n->box = prims[idx[lo]];
+    for (int i = lo + 1; i < hi; i++) n->box = merge(n->box, prims[idx[i]]);
+    if (hi - lo <= 2) return n;
+    int axis = 0; double best = -1;
+    for (int d = 0; d < 3; d++) { double mn = 1e18, mx = -1e18; for (int i = lo; i < hi; i++) { double c = (prims[idx[i]].lo[d] + prims[idx[i]].hi[d]) / 2; mn = std::min(mn, c); mx = std::max(mx, c); } if (mx - mn > best) { best = mx - mn; axis = d; } }
+    int mid = (lo + hi) / 2; std::nth_element(idx.begin() + lo, idx.begin() + mid, idx.begin() + hi, [&](int a, int b) { return prims[a].lo[axis] + prims[a].hi[axis] < prims[b].lo[axis] + prims[b].hi[axis]; });
+    n->l = build(lo, mid); n->r = build(mid, hi); return n;
+}
+void closest(const Node* n, const V& o, const V& inv, double& tbest, int& hit) {       // 레이와 처음 만나는 상자
+    visits++; double tn; if (!rayBox(n->box, o, inv, tbest, tn)) return;
+    if (!n->l) { for (int i = n->lo; i < n->hi; i++) { double t; if (rayBox(prims[idx[i]], o, inv, tbest, t) && t < tbest) { tbest = t; hit = idx[i]; } } return; }
+    double a, b; bool ha = rayBox(n->l->box, o, inv, tbest, a), hb = rayBox(n->r->box, o, inv, tbest, b);
+    if (ha && (!hb || a <= b)) { closest(n->l, o, inv, tbest, hit); closest(n->r, o, inv, tbest, hit); } else { closest(n->r, o, inv, tbest, hit); closest(n->l, o, inv, tbest, hit); }
+}
+bool overlap(const Box& a, const Box& b) { for (int i = 0; i < 3; i++) if (a.hi[i] < b.lo[i] || b.hi[i] < a.lo[i]) return false; return true; }
+void overlaps(const Node* n, const Box& q, std::vector<int>& out) {
+    if (!overlap(n->box, q)) return;
+    if (!n->l) { for (int i = n->lo; i < n->hi; i++) if (overlap(prims[idx[i]], q)) out.push_back(idx[i]); return; }
+    overlaps(n->l, q, out); overlaps(n->r, q, out);
+}
+int main() {
+    std::mt19937 g(6); std::uniform_real_distribution<double> U(0, 100), S(0.2, 2.0); int n = 3000;
+    for (int i = 0; i < n; i++) { V c = {U(g), U(g), U(g)}; double s = S(g); prims.push_back({{c[0], c[1], c[2]}, {c[0] + s, c[1] + s, c[2] + s}}); }
+    idx.resize(n); for (int i = 0; i < n; i++) idx[i] = i; Node* root = build(0, n);
+    long total = 0; int rays = 400;
+    for (int t = 0; t < rays; t++) {
+        V o = {U(g), U(g), -10.0}, d = {(U(g) - 50) / 100, (U(g) - 50) / 100, 1.0}; V inv = {1 / d[0], 1 / d[1], 1 / d[2]};
+        double tb = 1e18; int hit = -1; visits = 0; closest(root, o, inv, tb, hit); total += visits;
+        double tw = 1e18; int want = -1; for (int i = 0; i < n; i++) { double tn; if (rayBox(prims[i], o, inv, tw, tn) && tn < tw) { tw = tn; want = i; } }
+        assert(hit == want && (hit < 0 || std::fabs(tb - tw) < 1e-9));
+    }
+    for (int t = 0; t < 200; t++) { V c = {U(g), U(g), U(g)}; Box q{{c[0], c[1], c[2]}, {c[0] + 8, c[1] + 8, c[2] + 8}}; std::vector<int> got, want; overlaps(root, q, got); for (int i = 0; i < n; i++) if (overlap(prims[i], q)) want.push_back(i); std::sort(got.begin(), got.end()); assert(got == want); }
+    double avg = (double)total / rays; assert(avg < n / 10.0);
+    std::cout << "BVHTree: closest-hit ray casting exact; avg nodes visited per ray " << avg << " vs brute force " << n << std::endl; return 0;
+}
+// Time Complexity: 구성 O(N log N), 레이 질의 평균 O(log N)
+// Space Complexity: O(N)
 ```
 
+## BKTree()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <random>
+#include <string>
+#include <vector>
+#include <cassert>
+
+// BK 트리(Burkhard–Keller): 거리 함수 d 가 "거리 공리"(삼각부등식 포함)를 만족하는 어떤 이산 거리 공간(편집 거리, 해밍 거리)에서도 쓸 수 있는 철자 교정·퍼지 검색용 트리.
+// 임의의 단어를 루트로 삼고, 각 노드의 자식은 "루트와의 거리 = k" 인 단어들을 k 번 간선에 매단다. 질의 q 와 허용 반경 r: 노드 u 까지의 거리가 d 이면,
+// 삼각부등식에 의해 정답이 있을 수 있는 자식 간선은 |k - d| <= r 인 것뿐이다 -> 나머지는 통째로 건너뛴다
+int levenshtein(const std::string& a, const std::string& b) {
+    std::vector<int> prev(b.size() + 1), cur(b.size() + 1); for (size_t j = 0; j <= b.size(); j++) prev[j] = j;
+    for (size_t i = 1; i <= a.size(); i++) { cur[0] = i; for (size_t j = 1; j <= b.size(); j++) cur[j] = std::min({prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1])}); std::swap(prev, cur); }
+    return prev[b.size()];
+}
+long calls = 0;
+int dist(const std::string& a, const std::string& b) { calls++; return levenshtein(a, b); }
+struct Node { std::string w; std::map<int, Node*> kid; };
+std::vector<std::unique_ptr<Node>> pool;
+void insert(Node*& root, const std::string& w) {
+    if (!root) { pool.emplace_back(new Node{w, {}}); root = pool.back().get(); return; }
+    Node* t = root;
+    for (;;) { int d = dist(w, t->w); if (d == 0) return; auto it = t->kid.find(d); if (it == t->kid.end()) { pool.emplace_back(new Node{w, {}}); t->kid[d] = pool.back().get(); return; } t = it->second; }
+}
+void search(const Node* t, const std::string& q, int r, std::vector<std::string>& out) {
+    int d = dist(q, t->w); if (d <= r) out.push_back(t->w);
+    for (auto it = t->kid.lower_bound(d - r); it != t->kid.end() && it->first <= d + r; ++it) search(it->second, q, r, out);
+}
+
+int main() {
+    std::mt19937 g(7); std::vector<std::string> words;
+    for (int i = 0; i < 4000; i++) { std::string w; int len = 2 + g() % 13; for (int j = 0; j < len; j++) w += 'a' + g() % 26; words.push_back(w); }
+    std::sort(words.begin(), words.end()); words.erase(std::unique(words.begin(), words.end()), words.end());
+    Node* root = nullptr; calls = 0; for (auto& w : words) insert(root, w);
+    long total = 0; int Q = 200;
+    for (int t = 0; t < Q; t++) {
+        std::string q = words[g() % words.size()]; if (!q.empty()) q[g() % q.size()] = 'a' + g() % 26;       // 사전 단어를 한 글자 바꾼 오타
+        std::vector<std::string> got; calls = 0; search(root, q, 1, got); total += calls; std::sort(got.begin(), got.end());
+        std::vector<std::string> want; for (auto& w : words) if (levenshtein(q, w) <= 1) want.push_back(w);
+        assert(got == want);
+    }
+    double avg = (double)total / Q; assert(avg < words.size() / 2.0);
+    std::cout << "BKTree: radius-1 search exact; avg distance computations " << avg << " vs brute force " << words.size() << std::endl; return 0;
+}
+// Time Complexity: 검색 평균 O(N^α) (α < 1, 반경이 작을수록 가지치기가 잘 됨)
+// Space Complexity: O(N)
+```
+## VPTree()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <iostream>
+#include <memory>
+#include <queue>
+#include <random>
+#include <vector>
+#include <cassert>
+
+// VP 트리(vantage-point tree): 거리 함수만 있으면 되는 일반 거리 공간(좌표가 필요 없음)의 이진 트리.
+// 각 노드에서 "기준점(vantage point) v" 를 하나 고르고, 나머지 점을 v 와의 거리의 중앙값 μ 로 둘로 나눈다 (안쪽: d <= μ, 바깥쪽: d > μ).
+// 질의 q 와 현재 k 번째 최선 거리 τ: d = d(q, v). 안쪽에 정답이 있을 수 있으려면 d - τ <= μ, 바깥쪽이려면 d + τ >= μ (삼각부등식).  더 유망한 쪽부터 내려가며 τ 를 줄인다
+const int D = 4;
+typedef std::array<double, D> Pt;
+long evals = 0;
+double dist(const Pt& a, const Pt& b) { evals++; double s = 0; for (int i = 0; i < D; i++) s += (a[i] - b[i]) * (a[i] - b[i]); return std::sqrt(s); }
+struct Node { int vp; double mu = 0; Node *in = nullptr, *out = nullptr; };
+std::vector<Pt> pts; std::vector<std::unique_ptr<Node>> pool;
+Node* build(std::vector<int>& id, int lo, int hi) {
+    if (lo >= hi) return nullptr;
+    pool.emplace_back(new Node); Node* n = pool.back().get(); n->vp = id[lo];
+    if (hi - lo == 1) return n;
+    int mid = (lo + 1 + hi) / 2; std::vector<double> d(pts.size());
+    for (int i = lo + 1; i < hi; i++) d[id[i]] = dist(pts[n->vp], pts[id[i]]);
+    std::nth_element(id.begin() + lo + 1, id.begin() + mid, id.begin() + hi, [&](int a, int b) { return d[a] < d[b]; });
+    n->mu = d[id[mid]]; n->in = build(id, lo + 1, mid); n->out = build(id, mid, hi); return n;
+}
+void knn(const Node* n, const Pt& q, int k, std::priority_queue<std::pair<double, int>>& heap) {
+    if (!n) return;
+    double d = dist(q, pts[n->vp]);
+    if (heap.size() < (size_t)k) heap.push({d, n->vp}); else if (d < heap.top().first) { heap.pop(); heap.push({d, n->vp}); }
+    auto tau = [&]() { return heap.size() < (size_t)k ? 1e18 : heap.top().first; };
+    if (d <= n->mu) { knn(n->in, q, k, heap); if (d + tau() >= n->mu) knn(n->out, q, k, heap); }
+    else            { knn(n->out, q, k, heap); if (d - tau() <= n->mu) knn(n->in, q, k, heap); }
+}
+int main() {
+    std::mt19937 g(8); std::normal_distribution<double> N(0, 1); int n = 5000;
+    std::vector<Pt> centers(10); for (auto& c : centers) for (auto& x : c) x = N(g) * 6;
+    for (int i = 0; i < n; i++) { Pt p = centers[g() % 10]; for (auto& x : p) x += N(g); pts.push_back(p); }
+    std::vector<int> id(n); for (int i = 0; i < n; i++) id[i] = i; Node* root = build(id, 0, n);
+    long total = 0; int Q = 200, k = 5;
+    for (int t = 0; t < Q; t++) {
+        Pt q = centers[g() % 10]; for (auto& x : q) x += N(g); std::priority_queue<std::pair<double, int>> heap; evals = 0; knn(root, q, k, heap); total += evals;
+        std::vector<double> all; for (auto& p : pts) all.push_back(std::sqrt([&] { double s = 0; for (int i = 0; i < D; i++) s += (p[i] - q[i]) * (p[i] - q[i]); return s; }())); std::sort(all.begin(), all.end());
+        std::vector<double> got; while (!heap.empty()) { got.push_back(heap.top().first); heap.pop(); } std::reverse(got.begin(), got.end());
+        for (int i = 0; i < k; i++) assert(std::fabs(got[i] - all[i]) < 1e-9);
+    }
+    double avg = (double)total / Q; assert(avg < n / 4.0);
+    std::cout << "VPTree: " << k << "-NN exact; avg distance evaluations " << avg << " vs brute force " << n << std::endl; return 0;
+}
+// Time Complexity: 구성 O(N log N), kNN 평균 O(log N) (차원이 낮거나 군집이 있을 때)
+// Space Complexity: O(N)
+```
+## CoverTree()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <random>
+#include <vector>
+#include <cassert>
+
+// 커버 트리(Beygelzimer–Kakade–Langford): 이중 차원(doubling dimension)이 작은 거리 공간에서 최근접 탐색을 O(c^12 log n) 에 보장하는 트리. 각 점은 "레벨 i" 에 속하며 세 가지를 지킨다:
+//   중첩  C_i ⊂ C_(i-1)    덮기  C_(i-1) 의 모든 점 p 는 C_i 의 어떤 점 q 가 d(p,q) <= 2^i 로 덮는다 (그 q 가 p 의 부모)    분리  C_i 의 서로 다른 두 점은 거리 > 2^i
+// 레벨 i 는 "반지름 2^i 해상도"이므로 위로 갈수록 성기고 아래로 갈수록 촘촘하다. 삽입은 점이 들어갈 수 있는 가장 낮은 레벨을 위에서 아래로 찾고, NN 질의는 레벨을 내려가며
+// 후보 집합 Q 를 "d(q, Q) + 2^i 이내" 로 줄인다 (레벨 i 노드의 모든 후손은 2^i 이내이므로 그보다 먼 후보는 정답이 될 수 없다)
+typedef std::vector<double> P;
+std::vector<P> pts; std::vector<int> lvl; std::vector<std::vector<int>> kids; int root = -1, maxL = 0, minL = 0; long evals = 0;
+double d(int a, const P& q) { evals++; double s = 0; for (size_t i = 0; i < q.size(); i++) s += (pts[a][i] - q[i]) * (pts[a][i] - q[i]); return std::sqrt(s); }
+double pw(int i) { return std::ldexp(1.0, i); }
+bool insertRec(int p, const std::vector<int>& Q, int i) {                   // Q: 레벨 >= i 인 노드들 중 p 를 덮을 수 있는 후보
+    std::vector<int> C = Q; for (int q : Q) for (int c : kids[q]) if (lvl[c] == i - 1) C.push_back(c);      // Children(Q)
+    double dm = 1e18; for (int c : C) dm = std::min(dm, d(c, pts[p]));
+    if (dm > pw(i)) return false;
+    std::vector<int> Qp; for (int c : C) if (d(c, pts[p]) <= pw(i)) Qp.push_back(c);
+    if (insertRec(p, Qp, i - 1)) return true;
+    for (int q : Q) if (d(q, pts[p]) <= pw(i)) { lvl[p] = i - 1; kids[q].push_back(p); minL = std::min(minL, i - 1); return true; }          // 더 아래로 못 가면 Q 의 한 점의 자식으로
+    return false;
+}
+void insert(const P& x) {
+    int p = pts.size(); pts.push_back(x); lvl.push_back(0); kids.emplace_back();
+    if (root < 0) { root = p; lvl[p] = 0; maxL = minL = 0; return; }
+    while (d(root, x) > pw(maxL)) maxL++;                                  // 루트의 덮는 반지름을 키운다
+    lvl[root] = maxL; bool ok = insertRec(p, {root}, maxL); assert(ok); (void)ok;
+}
+int nearest(const P& q) {
+    std::vector<int> Q = {root};
+    for (int i = maxL; i > minL; i--) {
+        std::vector<int> C = Q; for (int u : Q) for (int c : kids[u]) if (lvl[c] == i - 1) C.push_back(c);
+        double dm = 1e18; std::vector<double> dd; for (int c : C) { dd.push_back(d(c, q)); dm = std::min(dm, dd.back()); }
+        Q.clear(); for (size_t j = 0; j < C.size(); j++) if (dd[j] <= dm + pw(i)) Q.push_back(C[j]);
+    }
+    int best = -1; double bd = 1e18; for (int u : Q) { double x = d(u, q); if (x < bd) { bd = x; best = u; } } return best;
+}
+
+int main() {
+    std::mt19937 g(9); std::uniform_real_distribution<double> U(0, 100);
+    int n = 1200; for (int i = 0; i < n; i++) insert({U(g), U(g), U(g)});
+    for (int i = 1; i <= minL + 40 && i <= maxL; i++) {}                  // (수준 범위 확인용 자리)
+    for (int i = minL; i <= maxL; i++) {                                    // 분리 불변식: 레벨 i 에 존재하는 점들(lvl >= i)은 서로 > 2^i
+        std::vector<int> Ci; for (int p = 0; p < n; p++) if (lvl[p] >= i) Ci.push_back(p);
+        for (size_t a = 0; a < Ci.size() && Ci.size() < 400; a++) for (size_t b = a + 1; b < Ci.size(); b++) { double s = 0; for (int k = 0; k < 3; k++) s += (pts[Ci[a]][k] - pts[Ci[b]][k]) * (pts[Ci[a]][k] - pts[Ci[b]][k]); assert(std::sqrt(s) > pw(i) - 1e-12); }
+    }
+    for (int c = 0; c < n; c++) for (int ch : kids[c]) { double s = 0; for (int k = 0; k < 3; k++) s += (pts[c][k] - pts[ch][k]) * (pts[c][k] - pts[ch][k]); assert(std::sqrt(s) <= pw(lvl[ch] + 1) + 1e-12); }   // 덮기 불변식
+    long total = 0; int Q = 300;
+    for (int t = 0; t < Q; t++) {
+        P q = {U(g), U(g), U(g)}; evals = 0; int got = nearest(q); total += evals;
+        double bd = 1e18; int want = -1; for (int p = 0; p < n; p++) { double s = 0; for (int k = 0; k < 3; k++) s += (pts[p][k] - q[k]) * (pts[p][k] - q[k]); if (s < bd) { bd = s; want = p; } }
+        assert(got == want);
+    }
+    double avg = (double)total / Q;
+    std::cout << "CoverTree: levels " << minL << ".." << maxL << ", nearest neighbour exact; avg distance evaluations " << avg << " vs brute force " << n << std::endl; return 0;
+}
+// Time Complexity: 삽입·NN 질의 O(c^6 log N) (c: 팽창 상수)
+// Space Complexity: O(N)
+```
 # Part 6. 범위 질의
 ## SegmentTree()
 ### 대표코드
@@ -1462,15 +1819,26 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 지연 전파(트리 관점의 요약, 정본은 Tree.md Part 12): 구간 갱신을 구간 전체를 덮는 노드에 "미뤄 둔 갱신(lz)" 으로만 기록하고, 더 깊이 내려가야 할 때 비로소 자식에게 내려보낸다 -> 구간 덧셈 + 구간 합이 둘 다 O(log N)
+struct Seg {
+    int n; std::vector<long> sum, lz; explicit Seg(int n) : n(n), sum(4 * n, 0), lz(4 * n, 0) {}
+    void app(int o, int l, int r, long v) { sum[o] += v * (r - l + 1); lz[o] += v; }
+    void push(int o, int l, int r) { if (lz[o]) { int m = (l + r) / 2; app(2 * o, l, m, lz[o]); app(2 * o + 1, m + 1, r, lz[o]); lz[o] = 0; } }
+    void add(int o, int l, int r, int a, int b, long v) { if (b < l || r < a) return; if (a <= l && r <= b) { app(o, l, r, v); return; } push(o, l, r); int m = (l + r) / 2; add(2 * o, l, m, a, b, v); add(2 * o + 1, m + 1, r, a, b, v); sum[o] = sum[2 * o] + sum[2 * o + 1]; }
+    long query(int o, int l, int r, int a, int b) { if (b < l || r < a) return 0; if (a <= l && r <= b) return sum[o]; push(o, l, r); int m = (l + r) / 2; return query(2 * o, l, m, a, b) + query(2 * o + 1, m + 1, r, a, b); }
+};
 int main() {
-    std::cout << "Lazy Propagation defers segment tree updates until node is visited." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    int n = 500; Seg s(n); std::vector<long> a(n, 0); std::mt19937 g(1);
+    for (int t = 0; t < 5000; t++) { int l = g() % n, r = g() % n; if (l > r) std::swap(l, r); long v = (long)(g() % 100) - 50;
+        if (g() % 2) { s.add(1, 0, n - 1, l, r, v); for (int i = l; i <= r; i++) a[i] += v; } else { long w = 0; for (int i = l; i <= r; i++) w += a[i]; assert(s.query(1, 0, n - 1, l, r) == w); } }
+    std::cout << "LazyPropagation: range add / range sum verified" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 갱신·질의 O(log N)
+// Space Complexity: O(N)
 ```
 ## FenwickTree()
 ### 대표코드
@@ -1502,44 +1870,108 @@ int main() {
 ## SparseTable()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 희소 표(sparse table): 변하지 않는 배열에서 "구간 최솟값(RMQ)" 같은 질의를 O(1) 에 답한다. 표 st[k][i] = 구간 [i, i + 2^k) 의 결과를 O(n log n) 로 미리 계산하고,
+// 질의 [l, r] 은 길이 2^k <= 길이 < 2^(k+1) 인 k 를 골라 두 구간 [l, l+2^k) 과 (r-2^k, r] 을 겹쳐 합친다. 겹쳐도 결과가 변하지 않는 연산(최소·최대·gcd·AND·OR; 멱등)이어야 한다.
+// 합처럼 겹치면 안 되는 연산은 이진 분해로 O(log n) (아래 sum 확인).  갱신이 없을 때 세그먼트 트리보다 질의가 빠르다
+template <class Op> struct Sparse {
+    std::vector<std::vector<long>> st; Op op; std::vector<int> lg;
+    Sparse(const std::vector<long>& a, Op op) : op(op), lg(a.size() + 1, 0) {
+        int n = a.size(); for (int i = 2; i <= n; i++) lg[i] = lg[i / 2] + 1;
+        st.push_back(a); for (int k = 1; (1 << k) <= n; k++) { st.emplace_back(n - (1 << k) + 1); for (int i = 0; i + (1 << k) <= n; i++) st[k][i] = op(st[k - 1][i], st[k - 1][i + (1 << (k - 1))]); }
+    }
+    long query(int l, int r) const { int k = lg[r - l + 1]; return op(st[k][l], st[k][r - (1 << k) + 1]); }       // 두 구간이 겹쳐도 OK (멱등)
+    long disjoint(int l, int r) const { long acc = 0; for (int k = lg[r - l + 1]; l <= r; ) { while ((1 << k) > r - l + 1) k--; acc += st[k][l]; l += 1 << k; } return acc; }   // 합: 겹치지 않게
+};
+
 int main() {
-    std::cout << "Sparse Table processes static RMQ queries in O(1)." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(2); int n = 3000; std::vector<long> a(n); for (auto& x : a) x = (long)(g() % 100000) + 1;
+    auto mn = [](long x, long y) { return std::min(x, y); }; auto gc = [](long x, long y) { return std::gcd(x, y); }; auto pl = [](long x, long y) { return x + y; };
+    Sparse<decltype(mn)> smin(a, mn); Sparse<decltype(gc)> sg(a, gc); Sparse<decltype(pl)> ss(a, pl);
+    for (int t = 0; t < 20000; t++) {
+        int l = g() % n, r = g() % n; if (l > r) std::swap(l, r);
+        long m = a[l], gg = 0, s = 0; for (int i = l; i <= r; i++) { m = std::min(m, a[i]); gg = std::gcd(gg, a[i]); s += a[i]; }
+        assert(smin.query(l, r) == m && sg.query(l, r) == gg && ss.disjoint(l, r) == s);
+    }
+    std::cout << "SparseTable: O(1) min/gcd queries, " << smin.st.size() << " levels for n=" << n << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 구성 O(N log N), 멱등 연산 질의 O(1)
+// Space Complexity: O(N log N)
 ```
 ## IntervalTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
-int main() {
-    std::cout << "Interval Tree finds overlapping segments in O(log N + K)." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+// 구간 트리(트리 관점의 요약, 정본은 Tree.md Part 16): 구간을 시작점 순으로 BST 에 두고 각 노드에 "부분 트리의 최대 끝점(mx)" 을 덧붙여, mx 가 질의 시작보다 작은 부분 트리를 통째로 건너뛴다.
+// 여기서는 정렬된 배열을 암묵적 균형 BST 로 쓰는 정적 판
+struct Iv { int lo, hi; };
+std::vector<Iv> a; std::vector<int> mx;
+int build(int l, int r) { if (l >= r) return -1; int m = (l + r) / 2; int v = a[m].hi; v = std::max(v, build(l, m)); v = std::max(v, build(m + 1, r)); mx[m] = v; return v; }
+void query(int l, int r, int qlo, int qhi, std::vector<int>& out) {
+    if (l >= r) return; int m = (l + r) / 2; if (mx[m] < qlo) return;       // 부분 트리의 최대 끝점이 질의 시작보다 작으면 건너뜀
+    query(l, m, qlo, qhi, out); if (a[m].lo <= qhi && qlo <= a[m].hi) out.push_back(m); if (a[m].lo <= qhi) query(m + 1, r, qlo, qhi, out);
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+int main() {
+    std::mt19937 g(3); for (int i = 0; i < 2000; i++) { int lo = g() % 100000; a.push_back({lo, lo + (int)(g() % 80)}); }
+    std::sort(a.begin(), a.end(), [](const Iv& x, const Iv& y) { return x.lo < y.lo; }); mx.assign(a.size(), 0); build(0, a.size());
+    for (int t = 0; t < 500; t++) { int lo = g() % 100000, hi = lo + g() % 50; std::vector<int> got, want; query(0, a.size(), lo, hi, got); for (size_t i = 0; i < a.size(); i++) if (a[i].lo <= hi && lo <= a[i].hi) want.push_back(i); std::sort(got.begin(), got.end()); assert(got == want); }
+    std::cout << "IntervalTree: overlap queries verified" << std::endl; return 0;
+}
+// Time Complexity: 질의 O(log N + k)
+// Space Complexity: O(N)
 ```
 ## RangeTree()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
+#include <random>
+#include <vector>
 #include <cassert>
 
+// 범위 트리(range tree): 2차원 직사각형 안의 점 개수/목록을 O(log² n + k) 에 답하는 정적 구조. x 로 정렬한 점들 위에 균형 이진 트리를 만들고,
+// 각 노드에는 "그 부분 트리의 점들을 y 로 정렬한 목록" 을 보관한다 (다단계 구조 = 트리 속의 트리).  질의 [x1,x2]×[y1,y2]: x 구간을 O(log n) 개의 노드로 분해하고
+// 각 노드의 y 정렬 목록에서 [y1,y2] 를 이분 탐색으로 센다 (분수 계단식(fractional cascading)을 쓰면 O(log n + k))
+struct RT {
+    int n; std::vector<std::pair<int, int>> byX; std::vector<std::vector<std::pair<int, int>>> ys;     // ys[node] = (y, x) 정렬 목록
+    explicit RT(std::vector<std::pair<int, int>> pts) : n(pts.size()), byX(std::move(pts)), ys(4 * n) { std::sort(byX.begin(), byX.end()); build(1, 0, n - 1); }
+    void build(int o, int l, int r) {
+        for (int i = l; i <= r; i++) ys[o].push_back({byX[i].second, byX[i].first}); std::sort(ys[o].begin(), ys[o].end());
+        if (l == r) return; int m = (l + r) / 2; build(2 * o, l, m); build(2 * o + 1, m + 1, r);
+    }
+    int count(int o, int l, int r, int xi, int xj, int y1, int y2) const {  // byX 인덱스 [xi, xj] 에 해당하는 점 중 y 가 [y1, y2]
+        if (xj < l || r < xi) return 0;
+        if (xi <= l && r <= xj) return std::upper_bound(ys[o].begin(), ys[o].end(), std::make_pair(y2, INT32_MAX)) - std::lower_bound(ys[o].begin(), ys[o].end(), std::make_pair(y1, INT32_MIN));
+        int m = (l + r) / 2; return count(2 * o, l, m, xi, xj, y1, y2) + count(2 * o + 1, m + 1, r, xi, xj, y1, y2);
+    }
+    int count(int x1, int x2, int y1, int y2) const {
+        int xi = std::lower_bound(byX.begin(), byX.end(), std::make_pair(x1, INT32_MIN)) - byX.begin(), xj = (int)(std::upper_bound(byX.begin(), byX.end(), std::make_pair(x2, INT32_MAX)) - byX.begin()) - 1;
+        return xi > xj ? 0 : count(1, 0, n - 1, xi, xj, y1, y2);
+    }
+};
 int main() {
-    std::cout << "Range Tree supports orthogonal range queries over multiple dimensions." << std::endl;
-    assert(1 == 1); // Solved
-    return 0;
+    std::mt19937 g(4); std::vector<std::pair<int, int>> pts; for (int i = 0; i < 5000; i++) pts.push_back({(int)(g() % 10000), (int)(g() % 10000)});
+    RT t(pts);
+    for (int q = 0; q < 2000; q++) {
+        int x1 = g() % 10000, x2 = g() % 10000, y1 = g() % 10000, y2 = g() % 10000; if (x1 > x2) std::swap(x1, x2); if (y1 > y2) std::swap(y1, y2);
+        int want = 0; for (auto& p : pts) want += p.first >= x1 && p.first <= x2 && p.second >= y1 && p.second <= y2;
+        assert(t.count(x1, x2, y1, y2) == want);
+    }
+    std::cout << "RangeTree: 2D rectangle counting verified, memory = n log n entries" << std::endl; return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 구성 O(N log N), 개수 질의 O(log² N)
+// Space Complexity: O(N log N)
 ```
 
 # Part 7. 균형 트리
