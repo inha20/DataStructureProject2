@@ -5893,174 +5893,186 @@ int main() {
 ## FordFulkerson()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
 #include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
-int V_ff;
-std::vector<std::vector<int>> cap;
-
-bool bfsFF(int src, int sink, std::vector<int>& parent) {
-    std::vector<bool> visited(V_ff, false);
-    std::queue<int> q; q.push(src); visited[src] = true; parent[src] = -1;
-    while (!q.empty()) {
-        int u = q.front(); q.pop();
-        for (int v = 0; v < V_ff; v++)
-            if (!visited[v] && cap[u][v] > 0) { parent[v]=u; visited[v]=true; q.push(v); }
-    }
-    return visited[sink];
-}
-
-int fordFulkerson(int src, int sink, int V) {
-    V_ff = V; int maxFlow = 0;
-    std::vector<int> parent(V);
-    while (bfsFF(src, sink, parent)) {
-        int pathFlow = INT_MAX;
-        for (int v = sink; v != src; v = parent[v])
-            pathFlow = std::min(pathFlow, cap[parent[v]][v]);
-        for (int v = sink; v != src; v = parent[v]) {
-            cap[parent[v]][v] -= pathFlow;
-            cap[v][parent[v]] += pathFlow;
-        }
-        maxFlow += pathFlow;
-    }
-    return maxFlow;
-}
+// 포드–풀커슨 방법(Ford–Fulkerson 1956): 잔여 그래프에서 s→t 증가 경로를 찾아 병목 용량만큼 흘리고, 더 이상 경로가 없을 때까지 반복한다.  잔여 용량 = 용량 − 흐름, 반대 방향 간선의 잔여 용량 = 흐름(되돌릴 수 있다).
+//  *경로를 고르는 규칙을 정하지 않은 방법* 이라 규칙에 따라 속도가 크게 달라진다 — 아래 구현은 깊이 우선(DFS)으로 고르고, 임의의 경로를 흘려 보내는 pushAlong 도 노출한다.  최대 유량 최소 절단 정리: 최대 유량 = 최소 절단 용량 (끝났을 때 s 에서 잔여 그래프로 닿는 점들의 집합이 최소 절단).
+//  ① 무작위 그래프 3 000 개(정점 2~9, 간선 0~25 개, 평행·역방향·자기 고리·용량 0 포함)에서 최대 유량 == *모든 절단을 전수 열거한* 최소 절단 용량  ② 흐름 인증서: 모든 간선 0 ≤ 흐름 ≤ 용량, s·t 를 뺀 모든 정점에서 들어온 흐름 = 나간 흐름, s 의 순유출 == t 의 순유입 == 값; 잔여 도달 집합의 절단 용량 == 값
+//  ③ 정점 40 개 간선 300 개 무작위 그래프 50 개를 인접 행렬 위의 독립 구현(BFS 증가 경로)과 대조  ④ 경로 선택이 나쁜 경우: s→a, s→b, a→t, b→t 가 용량 C, a→b 가 1 인 그래프에서 s→a→b→t 와 s→b→a→t 를 번갈아 고르면 증가가 정확히 2C 번(= 값이 겨우 1 씩 늘어난다) 필요 — C = 200 에서 400 번이고, DFS 규칙은 4 번.  용량이 10^9 이면 유사 다항 시간이라 수십억 번 → Edmonds–Karp(BFS)와 Dinic 의 동기
+struct MaxFlow {
+    struct Edge { int to; long long cap; int rev; };
+    std::vector<std::vector<Edge>> g; std::vector<char> seen; std::vector<std::pair<int, int>> ids; std::vector<long long> original; long long augmentations = 0;
+    explicit MaxFlow(int n) : g(n), seen(n, 0) {}
+    int addEdge(int u, int v, long long c) { int iu = (int)g[u].size(), iv = (int)g[v].size() + (u == v ? 1 : 0); g[u].push_back({v, c, iv}); g[v].push_back({u, 0, iu}); ids.push_back({u, iu}); original.push_back(c); return (int)ids.size() - 1; }
+    long long flowOn(int id) const { return original[id] - g[ids[id].first][ids[id].second].cap; }                                      // 흐름 = 원래 용량 − 남은 용량
+    long long dfs(int u, int t, long long f) {
+        if (u == t) return f; seen[u] = 1;
+        for (Edge& e : g[u]) if (e.cap > 0 && !seen[e.to]) { long long d = dfs(e.to, t, std::min(f, e.cap)); if (d > 0) { e.cap -= d; g[e.to][e.rev].cap += d; return d; } }
+        return 0; }
+    long long maxflow(int s, int t) { long long total = 0; if (s == t) return 0; for (;;) { std::fill(seen.begin(), seen.end(), 0); long long d = dfs(s, t, LLONG_MAX); if (d == 0) return total; total += d; ++augmentations; } }
+    long long pushAlong(const std::vector<int>& nodes) {                                                                                   // 주어진 점 열을 따라 병목만큼 흘린다(길이 막혀 있으면 0)
+        std::vector<Edge*> path; long long bottleneck = LLONG_MAX;
+        for (size_t i = 0; i + 1 < nodes.size(); ++i) { Edge* best = nullptr; for (Edge& e : g[nodes[i]]) if (e.to == nodes[i + 1] && e.cap > 0 && (!best || e.cap > best->cap)) best = &e; if (!best) return 0; path.push_back(best); bottleneck = std::min(bottleneck, best->cap); }
+        for (Edge* e : path) { e->cap -= bottleneck; g[e->to][e->rev].cap += bottleneck; } ++augmentations; return bottleneck; }
+    std::vector<char> reachable(int s) const { std::vector<char> r(g.size(), 0); std::queue<int> q; r[s] = 1; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (const Edge& e : g[u]) if (e.cap > 0 && !r[e.to]) { r[e.to] = 1; q.push(e.to); } } return r; }
+};
+struct Arc { int u, v; long long c; };
+long long bruteMinCut(int n, const std::vector<Arc>& arcs, int s, int t) {                                                              // 독립 오라클: s 쪽에 둘 점의 모든 부분집합을 열거
+    long long best = LLONG_MAX; for (unsigned mask = 0; mask < (1u << n); ++mask) { if (!(mask >> s & 1) || (mask >> t & 1)) continue; long long cut = 0; for (const Arc& a : arcs) if ((mask >> a.u & 1) && !(mask >> a.v & 1)) cut += a.c; best = std::min(best, cut); } return best; }
+long long matrixMaxFlow(int n, const std::vector<Arc>& arcs, int s, int t) {                                                            // 독립 오라클 2: 인접 행렬 + BFS 증가 경로
+    std::vector<std::vector<long long>> cap(n, std::vector<long long>(n, 0)); for (const Arc& a : arcs) if (a.u != a.v) cap[a.u][a.v] += a.c; long long total = 0;
+    for (;;) { std::vector<int> par(n, -1); par[s] = s; std::queue<int> q; q.push(s); while (!q.empty() && par[t] < 0) { int u = q.front(); q.pop(); for (int v = 0; v < n; ++v) if (par[v] < 0 && cap[u][v] > 0) { par[v] = u; q.push(v); } }
+        if (par[t] < 0) return total; long long b = LLONG_MAX; for (int v = t; v != s; v = par[v]) b = std::min(b, cap[par[v]][v]); for (int v = t; v != s; v = par[v]) { cap[par[v]][v] -= b; cap[v][par[v]] += b; } total += b; } }
+void certify(const MaxFlow& mf, const std::vector<Arc>& arcs, const std::vector<int>& ids, int n, int s, int t, long long value) {       // 흐름 인증서
+    std::vector<long long> net(n, 0); for (size_t i = 0; i < arcs.size(); ++i) { long long f = mf.flowOn(ids[i]); assert(f >= 0 && f <= arcs[i].c); net[arcs[i].u] -= f; net[arcs[i].v] += f; }
+    for (int v = 0; v < n; ++v) if (v != s && v != t) assert(net[v] == 0); if (s != t) assert(-net[s] == value && net[t] == value);
+    std::vector<char> inS = mf.reachable(s); assert(s == t || !inS[t]); long long cut = 0; for (const Arc& a : arcs) if (inS[a.u] && !inS[a.v]) cut += a.c; if (s != t) assert(cut == value); }                   // 잔여 도달 집합 = 최소 절단
 
 int main() {
-    V_ff = 6; cap.assign(6, std::vector<int>(6, 0));
-    cap[0][1]=16; cap[0][2]=13; cap[1][2]=10; cap[1][3]=12;
-    cap[2][4]=14; cap[3][5]=20; cap[4][3]=7; cap[4][5]=4;
-    int mf = fordFulkerson(0, 5, 6);
-    assert(mf == 23);
-    std::cout << "FordFulkerson max flow: " << mf << std::endl;
+    std::mt19937 rng(11);
+    for (int trial = 0; trial < 3000; ++trial) { int n = 2 + (int)(rng() % 8), m = (int)(rng() % 26); std::vector<Arc> arcs; MaxFlow mf(n); std::vector<int> ids;                       // ①② 무작위 그래프
+        for (int i = 0; i < m; ++i) { Arc a{(int)(rng() % n), (int)(rng() % n), (long long)(rng() % 13)}; arcs.push_back(a); ids.push_back(mf.addEdge(a.u, a.v, a.c)); }
+        int s = 0, t = n - 1; long long value = mf.maxflow(s, t); assert(value == bruteMinCut(n, arcs, s, t)); certify(mf, arcs, ids, n, s, t, value); }
+    for (int trial = 0; trial < 50; ++trial) { int n = 40, m = 300; std::vector<Arc> arcs; MaxFlow mf(n); for (int i = 0; i < m; ++i) { Arc a{(int)(rng() % n), (int)(rng() % n), (long long)(rng() % 50) + 1}; arcs.push_back(a); mf.addEdge(a.u, a.v, a.c); }      // ③
+        assert(mf.maxflow(0, n - 1) == matrixMaxFlow(n, arcs, 0, n - 1)); }
+    {   const long long C = 200; std::vector<Arc> arcs = {{0, 1, C}, {0, 2, C}, {1, 3, C}, {2, 3, C}, {1, 2, 1}}; MaxFlow bad(4), good(4); for (const Arc& a : arcs) { bad.addEdge(a.u, a.v, a.c); good.addEdge(a.u, a.v, a.c); }            // ④ 경로 선택이 나쁜 경우
+        long long total = 0; for (long long step = 0; total < 2 * C; ++step) { long long pushed = bad.pushAlong(step % 2 == 0 ? std::vector<int>{0, 1, 2, 3} : std::vector<int>{0, 2, 1, 3}); assert(pushed == 1); total += pushed; }
+        assert(bad.augmentations == 2 * C && total == 2 * C && bad.maxflow(0, 3) == 0);                                                    // 번갈아 고르면 값이 1 씩만 늘어난다
+        assert(good.maxflow(0, 3) == 2 * C && good.augmentations <= 4 && matrixMaxFlow(4, arcs, 0, 3) == 2 * C); }                          // DFS 규칙은 4 번 이내
+    std::cout << "FordFulkerson: max flow equalled the exhaustively enumerated min cut on 3000 random graphs with a valid flow certificate each time, matched an independent matrix implementation on 50 graphs of 40 nodes, and an unlucky path rule needed 400 augmentations for a value of 400 where the DFS rule needed at most 4" << std::endl;
     return 0;
 }
-// Time Complexity: O(VE^2) with BFS (Edmonds-Karp)
-// Space Complexity: O(V^2)
+// Time Complexity: O(E · f) (f = 최대 유량, 정수 용량), 경로 선택 규칙이 정해지지 않으면 유사 다항 시간
+// Space Complexity: O(V + E)
 ```
 ## EdmondsKarp()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
 #include <algorithm>
 #include <cassert>
+#include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
-int V = 4;
-std::vector<std::vector<int>> capacity, flow, adj;
-
-int bfs(int s, int t, std::vector<int>& parent) {
-    std::fill(parent.begin(), parent.end(), -1);
-    parent[s] = -2;
-    std::queue<std::pair<int, int>> q;
-    q.push({s, 1e9});
-    
-    while (!q.empty()) {
-        auto [cur, f] = q.front(); q.pop();
-        for (int next : adj[cur]) {
-            if (parent[next] == -1 && capacity[cur][next] - flow[cur][next] > 0) {
-                parent[next] = cur;
-                int new_flow = std::min(f, capacity[cur][next] - flow[cur][next]);
-                if (next == t) return new_flow;
-                q.push({next, new_flow});
-            }
-        }
+// 에드먼즈–카프(Edmonds–Karp 1972): 포드–풀커슨에서 증가 경로를 *가장 적은 간선 수(BFS)* 로 고른다.  그러면 경로 길이가 단조 비감소이고, 증가마다 병목 간선이 하나 포화되며, 한 간선이 병목이 될 수 있는 횟수가 V/2 번뿐이라 증가 횟수가 O(VE) — 용량이 아무리 커도 총 시간 O(V E²).
+//  ① 무작위 그래프 3 000 개(정점 2~9, 간선 0~25 개, 평행·역방향·자기 고리·용량 0 포함)에서 최대 유량 == 모든 절단을 전수 열거한 최소 절단 용량, 흐름 인증서(용량 제약·보존·값·잔여 도달 절단)
+//  ② 증가 경로 길이가 *단조 비감소* (핵심 보조정리)이고 증가 횟수 ≤ V·E  ③ 정점 40 개 간선 300 개 그래프 50 개를 독립 구현(인접 행렬 + DFS 증가 경로)과 대조  ④ 포드–풀커슨의 나쁜 사례(용량 C 의 마름모에 가운데 간선 1): C = 10^9 라도 증가는 *2 번*  ⑤ 이분 매칭: 무작위 이분 그래프 300 개(왼쪽·오른쪽 ≤ 7)의 단위 용량 최대 유량 == 비트마스크 DP 최대 매칭
+struct Arc { int u, v; long long c; };
+struct EK {
+    struct Edge { int to; long long cap; int rev; };
+    std::vector<std::vector<Edge>> g; std::vector<std::pair<int, int>> ids; std::vector<long long> original; long long augmentations = 0; std::vector<int> pathLengths;
+    explicit EK(int n) : g(n) {}
+    int addEdge(int u, int v, long long c) { int iu = (int)g[u].size(), iv = (int)g[v].size() + (u == v ? 1 : 0); g[u].push_back({v, c, iv}); g[v].push_back({u, 0, iu}); ids.push_back({u, iu}); original.push_back(c); return (int)ids.size() - 1; }
+    long long flowOn(int id) const { return original[id] - g[ids[id].first][ids[id].second].cap; }
+    long long maxflow(int s, int t) {
+        long long total = 0; if (s == t) return 0;
+        for (;;) {
+            std::vector<int> parent(g.size(), -1), parentEdge(g.size(), -1), depth(g.size(), -1); std::queue<int> q; q.push(s); depth[s] = 0; parent[s] = s;
+            while (!q.empty() && depth[t] < 0) { int u = q.front(); q.pop(); for (size_t k = 0; k < g[u].size(); ++k) { const Edge& e = g[u][k]; if (e.cap > 0 && depth[e.to] < 0) { depth[e.to] = depth[u] + 1; parent[e.to] = u; parentEdge[e.to] = (int)k; q.push(e.to); } } }
+            if (depth[t] < 0) return total;                                                                                                  // 더 이상 증가 경로가 없다
+            long long b = LLONG_MAX; for (int v = t; v != s; v = parent[v]) b = std::min(b, g[parent[v]][parentEdge[v]].cap);
+            for (int v = t; v != s; v = parent[v]) { Edge& e = g[parent[v]][parentEdge[v]]; e.cap -= b; g[e.to][e.rev].cap += b; }
+            total += b; ++augmentations; pathLengths.push_back(depth[t]); }
     }
-    return 0;
-}
-
-int edmondsKarp(int s, int t) {
-    int max_flow = 0, new_flow;
-    std::vector<int> parent(V);
-    while ((new_flow = bfs(s, t, parent))) {
-        max_flow += new_flow;
-        int cur = t;
-        while (cur != s) {
-            int prev = parent[cur];
-            flow[prev][cur] += new_flow;
-            flow[cur][prev] -= new_flow;
-            cur = prev;
-        }
-    }
-    return max_flow;
-}
+    std::vector<char> reachable(int s) const { std::vector<char> r(g.size(), 0); std::queue<int> q; r[s] = 1; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (const Edge& e : g[u]) if (e.cap > 0 && !r[e.to]) { r[e.to] = 1; q.push(e.to); } } return r; }
+};
+long long bruteMinCut(int n, const std::vector<Arc>& arcs, int s, int t) { long long best = LLONG_MAX; for (unsigned mask = 0; mask < (1u << n); ++mask) { if (!(mask >> s & 1) || (mask >> t & 1)) continue; long long cut = 0; for (const Arc& a : arcs) if ((mask >> a.u & 1) && !(mask >> a.v & 1)) cut += a.c; best = std::min(best, cut); } return best; }
+long long matrixDfsFlow(int n, const std::vector<Arc>& arcs, int s, int t) {                                                            // 독립 오라클: 인접 행렬 + DFS 증가 경로
+    std::vector<std::vector<long long>> cap(n, std::vector<long long>(n, 0)); for (const Arc& a : arcs) if (a.u != a.v) cap[a.u][a.v] += a.c; long long total = 0;
+    for (;;) { std::vector<char> seen(n, 0); std::vector<int> par(n, -1); std::vector<int> st = {s}; seen[s] = 1; while (!st.empty() && !seen[t]) { int u = st.back(); st.pop_back(); for (int v = 0; v < n; ++v) if (!seen[v] && cap[u][v] > 0) { seen[v] = 1; par[v] = u; st.push_back(v); } }
+        if (!seen[t]) return total; long long b = LLONG_MAX; for (int v = t; v != s; v = par[v]) b = std::min(b, cap[par[v]][v]); for (int v = t; v != s; v = par[v]) { cap[par[v]][v] -= b; cap[v][par[v]] += b; } total += b; } }
+int bitmaskMatching(int L, int R, const std::vector<std::vector<int>>& adj) { std::vector<int> dp(1u << R, -1000); dp[0] = 0; int best = 0; for (int i = 0; i < L; ++i) { std::vector<int> nxt = dp; for (unsigned mask = 0; mask < (1u << R); ++mask) if (dp[mask] >= 0) for (int j : adj[i]) if (!(mask >> j & 1)) nxt[mask | (1u << j)] = std::max(nxt[mask | (1u << j)], dp[mask] + 1); dp = nxt; } for (int x : dp) best = std::max(best, x); return best; }
 
 int main() {
-    capacity.assign(V, std::vector<int>(V, 0));
-    flow.assign(V, std::vector<int>(V, 0));
-    adj.assign(V, std::vector<int>());
-    
-    auto addEdge = [](int u, int v, int cap) {
-        adj[u].push_back(v); adj[v].push_back(u);
-        capacity[u][v] += cap;
-    };
-    
-    addEdge(0, 1, 3); addEdge(0, 2, 2); addEdge(1, 2, 5); addEdge(1, 3, 2); addEdge(2, 3, 3);
-    
-    assert(edmondsKarp(0, 3) == 5);
-    std::cout << "Edmonds-Karp Max Flow verified." << std::endl;
+    std::mt19937 rng(12);
+    for (int trial = 0; trial < 3000; ++trial) { int n = 2 + (int)(rng() % 8), m = (int)(rng() % 26); std::vector<Arc> arcs; EK ek(n); std::vector<int> ids;                           // ①②
+        for (int i = 0; i < m; ++i) { Arc a{(int)(rng() % n), (int)(rng() % n), (long long)(rng() % 13)}; arcs.push_back(a); ids.push_back(ek.addEdge(a.u, a.v, a.c)); }
+        int s = 0, t = n - 1; long long value = ek.maxflow(s, t); assert(value == bruteMinCut(n, arcs, s, t));
+        std::vector<long long> net(n, 0); for (size_t i = 0; i < arcs.size(); ++i) { long long f = ek.flowOn(ids[i]); assert(f >= 0 && f <= arcs[i].c); net[arcs[i].u] -= f; net[arcs[i].v] += f; } for (int v = 0; v < n; ++v) if (v != s && v != t) assert(net[v] == 0); assert(-net[s] == value && net[t] == value);
+        std::vector<char> inS = ek.reachable(s); assert(!inS[t]); long long cut = 0; for (const Arc& a : arcs) if (inS[a.u] && !inS[a.v]) cut += a.c; assert(cut == value);
+        for (size_t i = 1; i < ek.pathLengths.size(); ++i) assert(ek.pathLengths[i - 1] <= ek.pathLengths[i]);                              // 경로 길이 단조 비감소
+        assert(ek.augmentations <= (long long)n * (long long)std::max(m, 1)); }
+    for (int trial = 0; trial < 50; ++trial) { int n = 40, m = 300; std::vector<Arc> arcs; EK ek(n); for (int i = 0; i < m; ++i) { Arc a{(int)(rng() % n), (int)(rng() % n), (long long)(rng() % 50) + 1}; arcs.push_back(a); ek.addEdge(a.u, a.v, a.c); }      // ③
+        assert(ek.maxflow(0, n - 1) == matrixDfsFlow(n, arcs, 0, n - 1)); }
+    {   const long long C = 1000000000LL; EK ek(4); ek.addEdge(0, 1, C); ek.addEdge(0, 2, C); ek.addEdge(1, 2, 1); ek.addEdge(1, 3, C); ek.addEdge(2, 3, C); assert(ek.maxflow(0, 3) == 2 * C && ek.augmentations == 2 && ek.pathLengths[0] == 2 && ek.pathLengths[1] == 2); }   // ④
+    for (int trial = 0; trial < 300; ++trial) { int L = 1 + (int)(rng() % 7), R = 1 + (int)(rng() % 7); std::vector<std::vector<int>> adj(L); EK ek(L + R + 2); int s = L + R, t = L + R + 1;      // ⑤ 이분 매칭
+        for (int i = 0; i < L; ++i) { ek.addEdge(s, i, 1); for (int j = 0; j < R; ++j) if (rng() % 3 == 0) { adj[i].push_back(j); ek.addEdge(i, L + j, 1); } } for (int j = 0; j < R; ++j) ek.addEdge(L + j, t, 1);
+        assert(ek.maxflow(s, t) == bitmaskMatching(L, R, adj)); }
+    std::cout << "EdmondsKarp: max flow equalled the exhaustive min cut with valid certificates on 3000 random graphs, augmenting path lengths never decreased, the bad Ford-Fulkerson diamond with capacity 10^9 needed just 2 augmentations, and unit-capacity flows equalled bitmask-DP bipartite matchings" << std::endl;
     return 0;
 }
-// Time Complexity: O(V E^2)
-// Space Complexity: O(V^2) for matrix
+// Time Complexity: O(V E²) (증가 O(VE) 번 × BFS O(E))
+// Space Complexity: O(V + E)
 ```
 ## Dinic()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
-#include <queue>
+#include <algorithm>
 #include <cassert>
 #include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
 
+// 디닉(Dinic 1970): 단계(phase)마다 ① BFS 로 잔여 그래프의 *수준 그래프*(s 로부터의 거리)를 만들고 ② 수준이 한 칸씩 올라가는 간선만 써서 *막힘 흐름(blocking flow)* 을 DFS 로 한꺼번에 구한다 — 간선마다 "현재 호(current arc)" 포인터를 두어 막다른 간선을 다시 훑지 않는다.
+//  단계가 끝나면 s–t 최단 거리가 *반드시 늘어나므로* 단계 수 ≤ V − 1, 단계당 O(VE) → 총 O(V² E).  단위 용량 그래프(이분 매칭)는 O(E √V).
+//  ① 무작위 그래프 3 000 개(정점 2~9, 간선 0~25 개, 평행·역방향·자기 고리·용량 0 포함)에서 최대 유량 == 모든 절단을 전수 열거한 최소 절단 용량 + 흐름 인증서  ② 단계마다 s–t 거리가 *엄격히 증가*하고 단계 수 ≤ V − 1  ③ 정점 40 개 간선 300 개 그래프 50 개를 독립 구현(인접 행렬 + BFS)과 대조
+//  ④ 큰 입력: 층 20 개 × 층당 150 점, 간선 약 6 만 개의 무작위 층 그래프에서 흐름 값이 s 의 나가는 용량 합과 t 의 들어오는 용량 합 이하이고, 잔여 그래프로 닿는 집합의 절단 용량이 흐름과 *정확히 같다*(최소 절단 인증서 = 최적성 증명)  ⑤ 이분 매칭: 무작위 이분 그래프 300 개의 단위 용량 최대 유량 == 비트마스크 DP 최대 매칭, 완전 이분 그래프 K(n,m) 의 값 = min(n, m)
+struct Arc { int u, v; long long c; };
 struct Dinic {
-    struct Edge { int to, rev; int cap; };
-    std::vector<std::vector<Edge>> graph;
-    std::vector<int> level, iter;
-    int n;
-    Dinic(int n) : graph(n), level(n), iter(n), n(n) {}
-    void addEdge(int from, int to, int cap) {
-        graph[from].push_back({to, (int)graph[to].size(), cap});
-        graph[to].push_back({from, (int)graph[from].size()-1, 0});
-    }
-    bool bfs(int s, int t) {
-        std::fill(level.begin(), level.end(), -1);
-        std::queue<int> q; level[s]=0; q.push(s);
-        while (!q.empty()) { int v=q.front(); q.pop(); for (auto& e:graph[v]) if (e.cap>0&&level[e.to]<0) { level[e.to]=level[v]+1; q.push(e.to); } }
-        return level[t] >= 0;
-    }
-    int dfs(int v, int t, int f) {
-        if (v==t) return f;
-        for (int& i=iter[v]; i<(int)graph[v].size(); i++) {
-            Edge& e=graph[v][i];
-            if (e.cap>0&&level[v]<level[e.to]) {
-                int d=dfs(e.to,t,std::min(f,e.cap));
-                if (d>0) { e.cap-=d; graph[e.to][e.rev].cap+=d; return d; }
-            }
-        }
-        return 0;
-    }
-    int maxflow(int s, int t) {
-        int flow=0;
-        while (bfs(s,t)) { std::fill(iter.begin(),iter.end(),0); int d; while ((d=dfs(s,t,INT_MAX))>0) flow+=d; }
-        return flow;
-    }
+    struct Edge { int to, rev; long long cap; };
+    std::vector<std::vector<Edge>> graph; std::vector<int> level, iter; std::vector<std::pair<int, int>> ids; std::vector<long long> original; std::vector<int> phaseDistances; long long phases = 0;
+    explicit Dinic(int n) : graph(n), level(n), iter(n) {}
+    int addEdge(int from, int to, long long cap) { int iu = (int)graph[from].size(), iv = (int)graph[to].size() + (from == to ? 1 : 0); graph[from].push_back({to, iv, cap}); graph[to].push_back({from, iu, 0}); ids.push_back({from, iu}); original.push_back(cap); return (int)ids.size() - 1; }
+    long long flowOn(int id) const { return original[id] - graph[ids[id].first][ids[id].second].cap; }
+    bool bfs(int s, int t) { std::fill(level.begin(), level.end(), -1); std::queue<int> q; level[s] = 0; q.push(s); while (!q.empty()) { int v = q.front(); q.pop(); for (const Edge& e : graph[v]) if (e.cap > 0 && level[e.to] < 0) { level[e.to] = level[v] + 1; q.push(e.to); } } return level[t] >= 0; }
+    long long dfs(int v, int t, long long f) {
+        if (v == t) return f;
+        for (int& i = iter[v]; i < (int)graph[v].size(); i++) { Edge& e = graph[v][i]; if (e.cap > 0 && level[v] < level[e.to]) { long long d = dfs(e.to, t, std::min(f, e.cap)); if (d > 0) { e.cap -= d; graph[e.to][e.rev].cap += d; return d; } } }       // 막다른 간선은 현재 호 포인터가 건너뛴다
+        return 0; }
+    long long maxflow(int s, int t) { long long flow = 0; if (s == t) return 0; while (bfs(s, t)) { phaseDistances.push_back(level[t]); ++phases; std::fill(iter.begin(), iter.end(), 0); long long d; while ((d = dfs(s, t, LLONG_MAX)) > 0) flow += d; } return flow; }
+    std::vector<char> reachable(int s) const { std::vector<char> r(graph.size(), 0); std::queue<int> q; r[s] = 1; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (const Edge& e : graph[u]) if (e.cap > 0 && !r[e.to]) { r[e.to] = 1; q.push(e.to); } } return r; }
 };
+long long bruteMinCut(int n, const std::vector<Arc>& arcs, int s, int t) { long long best = LLONG_MAX; for (unsigned mask = 0; mask < (1u << n); ++mask) { if (!(mask >> s & 1) || (mask >> t & 1)) continue; long long cut = 0; for (const Arc& a : arcs) if ((mask >> a.u & 1) && !(mask >> a.v & 1)) cut += a.c; best = std::min(best, cut); } return best; }
+long long matrixFlow(int n, const std::vector<Arc>& arcs, int s, int t) {
+    std::vector<std::vector<long long>> cap(n, std::vector<long long>(n, 0)); for (const Arc& a : arcs) if (a.u != a.v) cap[a.u][a.v] += a.c; long long total = 0;
+    for (;;) { std::vector<int> par(n, -1); par[s] = s; std::queue<int> q; q.push(s); while (!q.empty() && par[t] < 0) { int u = q.front(); q.pop(); for (int v = 0; v < n; ++v) if (par[v] < 0 && cap[u][v] > 0) { par[v] = u; q.push(v); } }
+        if (par[t] < 0) return total; long long b = LLONG_MAX; for (int v = t; v != s; v = par[v]) b = std::min(b, cap[par[v]][v]); for (int v = t; v != s; v = par[v]) { cap[par[v]][v] -= b; cap[v][par[v]] += b; } total += b; } }
+int bitmaskMatching(int L, int R, const std::vector<std::vector<int>>& adj) { std::vector<int> dp(1u << R, -1000); dp[0] = 0; int best = 0; for (int i = 0; i < L; ++i) { std::vector<int> nxt = dp; for (unsigned mask = 0; mask < (1u << R); ++mask) if (dp[mask] >= 0) for (int j : adj[i]) if (!(mask >> j & 1)) nxt[mask | (1u << j)] = std::max(nxt[mask | (1u << j)], dp[mask] + 1); dp = nxt; } for (int x : dp) best = std::max(best, x); return best; }
 
 int main() {
-    Dinic dinic(6);
-    dinic.addEdge(0,1,16); dinic.addEdge(0,2,13); dinic.addEdge(1,2,10);
-    dinic.addEdge(1,3,12); dinic.addEdge(2,4,14); dinic.addEdge(3,5,20);
-    dinic.addEdge(4,3,7); dinic.addEdge(4,5,4);
-    assert(dinic.maxflow(0,5) == 23);
-    std::cout << "Dinic max flow: 23" << std::endl;
+    std::mt19937 rng(13);
+    for (int trial = 0; trial < 3000; ++trial) { int n = 2 + (int)(rng() % 8), m = (int)(rng() % 26); std::vector<Arc> arcs; Dinic d(n); std::vector<int> ids;                                  // ①②
+        for (int i = 0; i < m; ++i) { Arc a{(int)(rng() % n), (int)(rng() % n), (long long)(rng() % 13)}; arcs.push_back(a); ids.push_back(d.addEdge(a.u, a.v, a.c)); }
+        int s = 0, t = n - 1; long long value = d.maxflow(s, t); assert(value == bruteMinCut(n, arcs, s, t));
+        std::vector<long long> net(n, 0); for (size_t i = 0; i < arcs.size(); ++i) { long long f = d.flowOn(ids[i]); assert(f >= 0 && f <= arcs[i].c); net[arcs[i].u] -= f; net[arcs[i].v] += f; } for (int v = 0; v < n; ++v) if (v != s && v != t) assert(net[v] == 0); assert(-net[s] == value && net[t] == value);
+        std::vector<char> inS = d.reachable(s); assert(!inS[t]); long long cut = 0; for (const Arc& a : arcs) if (inS[a.u] && !inS[a.v]) cut += a.c; assert(cut == value);
+        for (size_t i = 1; i < d.phaseDistances.size(); ++i) assert(d.phaseDistances[i - 1] < d.phaseDistances[i]);                          // 단계마다 거리가 엄격히 늘어난다
+        assert(d.phases <= std::max(n - 1, 0)); }
+    for (int trial = 0; trial < 50; ++trial) { int n = 40, m = 300; std::vector<Arc> arcs; Dinic d(n); for (int i = 0; i < m; ++i) { Arc a{(int)(rng() % n), (int)(rng() % n), (long long)(rng() % 50) + 1}; arcs.push_back(a); d.addEdge(a.u, a.v, a.c); }      // ③
+        assert(d.maxflow(0, n - 1) == matrixFlow(n, arcs, 0, n - 1)); }
+    {   const int LAYERS = 20, WIDTH = 150, n = LAYERS * WIDTH + 2, s = n - 2, t = n - 1; Dinic d(n); std::vector<Arc> arcs; auto add = [&](int u, int v, long long c) { arcs.push_back({u, v, c}); d.addEdge(u, v, c); };         // ④ 큰 입력
+        for (int j = 0; j < WIDTH; ++j) { add(s, j, 1 + (long long)(rng() % 100)); add((LAYERS - 1) * WIDTH + j, t, 1 + (long long)(rng() % 100)); }
+        for (int l = 0; l + 1 < LAYERS; ++l) for (int j = 0; j < WIDTH; ++j) for (int k = 0; k < 20; ++k) add(l * WIDTH + j, (l + 1) * WIDTH + (int)(rng() % WIDTH), 1 + (long long)(rng() % 20));
+        long long value = d.maxflow(s, t); long long outCap = 0, inCap = 0; for (const Arc& a : arcs) { if (a.u == s) outCap += a.c; if (a.v == t) inCap += a.c; } assert(value > 0 && value <= std::min(outCap, inCap));
+        std::vector<char> inS = d.reachable(s); assert(!inS[t]); long long cut = 0; for (const Arc& a : arcs) if (inS[a.u] && !inS[a.v]) cut += a.c; assert(cut == value); assert(arcs.size() > 55000); }
+    for (int trial = 0; trial < 300; ++trial) { int L = 1 + (int)(rng() % 7), R = 1 + (int)(rng() % 7); std::vector<std::vector<int>> adj(L); Dinic d(L + R + 2); int s = L + R, t = L + R + 1;      // ⑤ 이분 매칭
+        for (int i = 0; i < L; ++i) { d.addEdge(s, i, 1); for (int j = 0; j < R; ++j) if (rng() % 3 == 0) { adj[i].push_back(j); d.addEdge(i, L + j, 1); } } for (int j = 0; j < R; ++j) d.addEdge(L + j, t, 1);
+        assert(d.maxflow(s, t) == bitmaskMatching(L, R, adj)); }
+    for (int n = 1; n <= 12; ++n) for (int m = 1; m <= 12; ++m) { Dinic d(n + m + 2); int s = n + m, t = n + m + 1; for (int i = 0; i < n; ++i) { d.addEdge(s, i, 1); for (int j = 0; j < m; ++j) d.addEdge(i, n + j, 1); } for (int j = 0; j < m; ++j) d.addEdge(n + j, t, 1); assert(d.maxflow(s, t) == std::min(n, m)); }
+    std::cout << "Dinic: max flow equalled the exhaustive min cut with valid certificates on 3000 random graphs, the s-t distance rose strictly in every phase (phases <= V-1), a 3000-node 60000-edge layered network produced a min-cut certificate equal to its flow, and unit-capacity flows equalled bitmask-DP matchings and min(n, m) on complete bipartite graphs" << std::endl;
     return 0;
 }
-// Time Complexity: O(V^2 * E)
+// Time Complexity: O(V² E), 단위 용량 이분 그래프 O(E √V)
 // Space Complexity: O(V + E)
 ```
 ## PushRelabel()
@@ -6348,49 +6360,55 @@ int main() {
 ## HungarianAlgorithm()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
 #include <climits>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <vector>
 
-// 헝가리안 알고리즘: 이분 그래프 최소 비용 완전 매칭 (할당 문제)
-int hungarian(std::vector<std::vector<int>>& cost) {
-    int n = cost.size();
-    std::vector<int> u(n+1), v(n+1), p(n+1), way(n+1);
+// 헝가리안 알고리즘(Kuhn–Munkres, e-maxx 의 O(n²m) 쌍대 변수 판): 행 n 개를 서로 다른 열 m ≥ n 개에 배정하는 최소 비용 할당 문제.  행 포텐셜 u, 열 포텐셜 v 를 유지하며 *모든 칸에서 u[i] + v[j] ≤ c[i][j]* (쌍대 실현 가능)를 지키고, 배정된 칸에서는 등식이 되게 한다.
+//  그러면 약한 쌍대성으로 배정 비용 = Σu + Σv 가 어떤 배정의 비용보다도 클 수 없으므로 *그 자체가 최적성의 증명서* 다.  최대화는 비용에 −1 을 곱해 푼다.
+//  ① 무작위 비용표 2 000 개(n ≤ 7, m = n..n+2, 음수·동점 포함)에서 비용 == 모든 단사 배정을 열거한 최솟값 + 반환된 배정이 서로 다른 열을 쓰고 비용 합이 같음  ② 쌍대 증명서: 큰 표(n = 150~200, 비용 −1000..1000)에서도 모든 칸 u+v ≤ c, 배정 칸 u+v = c, 비용 == Σu + Σv
+//  ③ 최대화(−c)와 동점·전부 같은 표(비용 = n·상수)·한 행만 있는 표 ④ 책의 예 {{4,2,3},{1,3,2},{2,1,4}} 최소 비용 5, 배정 (0→2, 1→0, 2→1) 의 비용은 3 + 1 + 1
+struct Result { long long cost; std::vector<int> colOfRow; std::vector<long long> u, v; };
+Result hungarian(const std::vector<std::vector<long long>>& a) {                                                    // 1-기반 인덱스, 행 n ≤ 열 m
+    int n = (int)a.size(), m = (int)a[0].size(); const long long INF = LLONG_MAX / 4;
+    std::vector<long long> u(n + 1, 0), v(m + 1, 0); std::vector<int> p(m + 1, 0), way(m + 1, 0);
     for (int i = 1; i <= n; i++) {
-        p[0] = i;
-        int j0 = 0;
-        std::vector<int> minv(n+1, INT_MAX);
-        std::vector<bool> used(n+1, false);
+        p[0] = i; int j0 = 0; std::vector<long long> minv(m + 1, INF); std::vector<char> used(m + 1, false);
         do {
-            used[j0] = true;
-            int i0 = p[j0], delta = INT_MAX, j1 = 0;
-            for (int j = 1; j <= n; j++) {
-                if (!used[j]) {
-                    int cur = cost[i0-1][j-1] - u[i0] - v[j];
-                    if (cur < minv[j]) { minv[j]=cur; way[j]=j0; }
-                    if (minv[j] < delta) { delta=minv[j]; j1=j; }
-                }
-            }
-            for (int j = 0; j <= n; j++) { if (used[j]) { u[p[j]]+=delta; v[j]-=delta; } else minv[j]-=delta; }
+            used[j0] = true; int i0 = p[j0], j1 = 0; long long delta = INF;
+            for (int j = 1; j <= m; j++) if (!used[j]) { long long cur = a[i0 - 1][j - 1] - u[i0] - v[j]; if (cur < minv[j]) { minv[j] = cur; way[j] = j0; } if (minv[j] < delta) { delta = minv[j]; j1 = j; } }
+            for (int j = 0; j <= m; j++) { if (used[j]) { u[p[j]] += delta; v[j] -= delta; } else minv[j] -= delta; }
             j0 = j1;
         } while (p[j0] != 0);
-        do { int j1=way[j0]; p[j0]=p[j1]; j0=j1; } while (j0);
+        do { int j1 = way[j0]; p[j0] = p[j1]; j0 = j1; } while (j0);                                                // 교대 경로를 따라 배정을 뒤집는다
     }
-    int result = 0;
-    for (int j = 1; j <= n; j++) if (p[j]) result += cost[p[j]-1][j-1];
-    return result;
+    Result r; r.colOfRow.assign(n, -1); r.cost = 0; for (int j = 1; j <= m; j++) if (p[j]) { r.colOfRow[p[j] - 1] = j - 1; r.cost += a[p[j] - 1][j - 1]; }
+    r.u.assign(u.begin() + 1, u.end()); r.v.assign(v.begin() + 1, v.end()); return r;
 }
+long long bruteForce(const std::vector<std::vector<long long>>& a, int row, std::vector<char>& usedCol) {          // 독립 오라클: 모든 단사 배정을 재귀로 열거
+    int n = (int)a.size(), m = (int)a[0].size(); if (row == n) return 0; long long best = LLONG_MAX; for (int j = 0; j < m; ++j) if (!usedCol[j]) { usedCol[j] = 1; best = std::min(best, a[row][j] + bruteForce(a, row + 1, usedCol)); usedCol[j] = 0; } return best; }
 
 int main() {
-    std::vector<std::vector<int>> cost = {{4,2,3},{1,3,2},{2,1,4}};
-    int minCost = hungarian(cost);
-    assert(minCost == 5); // 최적 할당: (0→2)=3,(1→0)=1,(2→1)=1;
-    std::cout << "Hungarian min cost: " << minCost << std::endl;
+    std::mt19937 rng(14);
+    for (int trial = 0; trial < 2000; ++trial) { int n = 1 + (int)(rng() % 7), m = n + (int)(rng() % 3); std::vector<std::vector<long long>> a(n, std::vector<long long>(m)); int range = rng() % 3 == 0 ? 3 : 40; for (auto& row : a) for (auto& x : row) x = (long long)(rng() % (2 * range + 1)) - range;       // ①
+        Result r = hungarian(a); std::vector<char> usedCol(m, 0); assert(r.cost == bruteForce(a, 0, usedCol));
+        std::vector<char> seenCol(m, 0); long long sum = 0; for (int i = 0; i < n; ++i) { int j = r.colOfRow[i]; assert(j >= 0 && j < m && !seenCol[j]); seenCol[j] = 1; sum += a[i][j]; } assert(sum == r.cost); }
+    for (int n : {150, 200}) { std::vector<std::vector<long long>> a(n, std::vector<long long>(n + 3)); for (auto& row : a) for (auto& x : row) x = (long long)(rng() % 2001) - 1000; Result r = hungarian(a);        // ② 쌍대 증명서
+        long long dual = 0; for (long long x : r.u) dual += x; for (long long x : r.v) dual += x; for (int i = 0; i < n; ++i) for (int j = 0; j < n + 3; ++j) assert(r.u[i] + r.v[j] <= a[i][j]);
+        std::vector<char> seenCol(n + 3, 0); for (int i = 0; i < n; ++i) { int j = r.colOfRow[i]; assert(j >= 0 && !seenCol[j] && r.u[i] + r.v[j] == a[i][j]); seenCol[j] = 1; } assert(dual == r.cost); }
+    {   std::vector<std::vector<long long>> a = {{4, 2, 3}, {1, 3, 2}, {2, 1, 4}}; Result r = hungarian(a); assert(r.cost == 5 && r.colOfRow == (std::vector<int>{2, 0, 1}));                           // ④ 책의 예
+        std::vector<std::vector<long long>> neg = a; for (auto& row : neg) for (auto& x : row) x = -x; Result mx = hungarian(neg); std::vector<char> used(3, 0); assert(mx.cost == bruteForce(neg, 0, used) && -mx.cost >= r.cost); }       // ③ 최대화
+    {   std::vector<std::vector<long long>> same(6, std::vector<long long>(6, 7)); Result r = hungarian(same); assert(r.cost == 42);                                                                  // 전부 같은 표
+        std::vector<std::vector<long long>> one = {{5, -2, 9, -2}}; Result o = hungarian(one); assert(o.cost == -2 && (o.colOfRow[0] == 1 || o.colOfRow[0] == 3)); }                                  // 한 행만 있는 표
+    std::cout << "HungarianAlgorithm: costs equalled the exhaustive optimum on 2000 random tables (negative entries and ties included), and tables of 150-200 rows came with a dual certificate u+v <= c everywhere, equality on assigned cells and primal cost = dual sum" << std::endl;
     return 0;
 }
-// Time Complexity: O(N^3)
-// Space Complexity: O(N^2)
+// Time Complexity: O(n² m)
+// Space Complexity: O(n m) (입력 표 포함, 알고리즘 자체는 O(n + m))
 ```
 ## HopcroftKarp()
 ### 대표코드

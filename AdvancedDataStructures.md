@@ -1017,6 +1017,7 @@ int main() {
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <algorithm>
 #include <random>
 #include <vector>
 #include <cassert>
@@ -1025,6 +1026,9 @@ int main() {
 // 해시의 앞 p 비트로 m = 2^p 개의 레지스터 중 하나를 고르고, 나머지 비트의 "앞쪽 0 의 개수 + 1"(rho)의 최댓값을 레지스터에 기록한다.
 // 추정 = α_m · m² / Σ 2^(-레지스터)  (조화 평균으로 이상치를 눌러 준다).  작은 값에서는 빈 레지스터 수 V 로 선형 카운팅 m ln(m/V) 을 쓴다. 표준 오차 ≈ 1.04/√m
 // 합집합은 레지스터별 max 한 번으로 정확히(손실 없이) 병합된다 -> 분산 집계에 적합
+//  ① 레지스터 *자체* 검증: p = 4, 8, 12, 14 에서 20 만 개를 넣은 레지스터 배열이, 해시를 비트 하나씩 훑어 앞쪽 0 을 세는 독립 오라클이 계산한 배열과 정확히 같다  ② 병합 법칙: 두 집합의 병합 == 합집합 스트림을 직접 넣은 것(교환·결합·멱등), 같은 원소를 두 번 넣어도 레지스터 불변
+//  ③ 통계: p = 10(표준 오차 1.04/√m = 3.25%) 에서 서로 다른 원소 2 만 개짜리 독립 시행 400 번의 평균 오차가 0 에서 3σ/√400 이내이고 제곱평균 제곱근(RMS)이 이론 표준 오차의 0.8~1.2 배  ④ rho 분포: 무작위 해시 100 만 개에서 "앞쪽 0 의 개수 + 1 = k" 인 개수가 N·2^−k 의 5σ 이내 (k = 1..12)
+//  ⑤ 범위 훑기: p = 12 로 n = 50 … 100 만 (작은 범위 보정이 바뀌는 2.5m = 10 240 근처 포함)에서 상대 오차 < 8% (표준 오차의 5 배), 아주 작은 n 은 절대 오차 ≤ 3
 static inline uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
 struct HLL {
     int p; size_t m; std::vector<uint8_t> reg;
@@ -1056,6 +1060,20 @@ int main() {
     for (uint64_t i = 0; i < 60000; i++) a.add(i);
     for (uint64_t i = 40000; i < 100000; i++) b.add(i);                    // 두 구간이 겹친다: 합집합 크기 100000
     a.merge(b); assert(std::fabs(a.estimate() - 100000) / 100000 < 0.04);
+    {   auto oracleRho = [](uint64_t h, int p) { uint64_t w = h << p; int k = 1; for (int bit = 63; bit >= 0 && !((w >> bit) & 1); --bit) ++k; return std::min(k, 64 - p + 1); };           // ① 독립 오라클
+        for (int p : {4, 8, 12, 14}) { HLL h(p); std::vector<uint8_t> want((size_t)1 << p, 0); std::mt19937_64 rng(1000 + p); for (int i = 0; i < 200000; ++i) { uint64_t x = rng(); h.add(x); uint64_t hh = mix(x); size_t idx = hh >> (64 - p); want[idx] = (uint8_t)std::max<int>(want[idx], oracleRho(hh, p)); } assert(h.reg == want); } }
+    {   HLL x(10), y(10), u(10), twice(10); std::mt19937_64 rng(5); std::vector<uint64_t> xs(5000), ys(5000), zs(3000); for (auto& v : xs) v = rng(); for (auto& v : ys) v = rng(); for (auto& v : zs) v = rng();             // ② 병합 법칙
+        for (uint64_t v : xs) { x.add(v); u.add(v); twice.add(v); twice.add(v); } for (uint64_t v : ys) { y.add(v); u.add(v); } assert(x.reg == twice.reg);
+        HLL xy = x; xy.merge(y); HLL yx = y; yx.merge(x); assert(xy.reg == u.reg && yx.reg == u.reg); HLL again = xy; again.merge(x); again.merge(y); assert(again.reg == xy.reg);
+        HLL z(10); for (uint64_t v : zs) z.add(v); HLL left = xy; left.merge(z); HLL yz = y; yz.merge(z); HLL right = x; right.merge(yz); assert(left.reg == right.reg); }
+    {   const int p = 10, trials = 400; const double n = 20000, se = 1.04 / std::sqrt((double)(1 << p)); double sum = 0, sq = 0; std::mt19937_64 rng(77);                                                          // ③ 통계
+        for (int t = 0; t < trials; ++t) { HLL h(p); for (int i = 0; i < (int)n; ++i) h.add(rng()); double e = (h.estimate() - n) / n; sum += e; sq += e * e; }
+        double mean = sum / trials, rms = std::sqrt(sq / trials); assert(std::fabs(mean) < 3 * se / std::sqrt((double)trials) && rms > 0.8 * se && rms < 1.2 * se); }
+    {   const uint64_t N = 1000000; long cnt[14] = {0}; std::mt19937_64 rng(31); for (uint64_t i = 0; i < N; ++i) { uint64_t w = rng() << 4; int k = 1; for (int bit = 63; bit >= 0 && !((w >> bit) & 1); --bit) ++k; if (k <= 13) ++cnt[k]; }                // ④ rho 분포
+        for (int k = 1; k <= 12; ++k) { double expect = (double)N / std::pow(2.0, k); assert(std::fabs(cnt[k] - expect) <= 5 * std::sqrt(expect)); } }
+    {   const int p = 12; const double se = 1.04 / std::sqrt((double)(1 << p));                                                                                                                               // ⑤ 범위 훑기
+        for (size_t n : {50u, 100u, 500u, 1000u, 5000u, 8000u, 10240u, 10300u, 12000u, 20000u, 50000u, 200000u, 1000000u}) { HLL h(p); for (uint64_t i = 0; i < n; ++i) h.add(i * 0x9e3779b97f4a7c15ULL + 12345); double e = h.estimate();
+            if (n <= 100) assert(std::fabs(e - (double)n) <= 3.0); else assert(std::fabs(e - (double)n) / (double)n < 5 * se); } }
     return 0;
 }
 // Time Complexity: 삽입 O(1), 추정 O(m)
@@ -3488,6 +3506,7 @@ int main() {
 //  실패하면 현재 값이 expected 에 되돌려 담기므로 "읽기 → 계산 → CAS, 실패 시 반복" 루프를 만든다.  이 틀로 fetch_add 가 제공하지 않는 연산 — 최댓값 갱신, 곱셈, 포화(상한) 카운터, 스핀락 — 을 락 없이 만든다.
 //  ① 의미: 성공하면 값이 바뀌고, 실패하면 expected 가 현재 값으로 갱신된다 (단일 스레드에서 결정적으로 확인)  ② "읽고-쓰기" 를 비원자적으로 하면 갱신을 잃는다 — 일정을 손으로 짜 재현하고 CAS 는 그 일정에서 실패해 재시도함을 확인
 //  ③ 8 스레드 × 10 만 번: CAS 최댓값 = 전체 최댓값, CAS 곱셈 = 3^(총 횟수) mod 2^64, 포화 카운터 = min(총 횟수, 상한), CAS 스핀락으로 지킨 비원자 카운터 = 총 횟수 (TSan 무결)  ④ 성공한 CAS 횟수는 연산 수와 정확히 같고 실패 횟수는 재시도일 뿐이다.
+// audit: stress (보존 법칙이 오라클: 최댓값 = 전체 최댓값, 곱 = 3^(총 횟수) mod 2^64, 포화 카운터 = min(총 횟수, 상한), 스핀락 보호 카운터 = 총 횟수)
 template <class T> T atomicMax(std::atomic<T>& a, T v, long& retries) { T cur = a.load(); while (cur < v && !a.compare_exchange_weak(cur, v)) ++retries; return cur; }                      // 실패하면 cur 가 현재 값으로 바뀌어 다시 비교
 void atomicMulMod(std::atomic<uint64_t>& a, uint64_t m, long& retries) { uint64_t cur = a.load(); while (!a.compare_exchange_weak(cur, cur * m)) ++retries; }                                    // mod 2^64 곱셈
 bool saturatingInc(std::atomic<int>& a, int limit, long& retries) { int cur = a.load(); while (cur < limit) { if (a.compare_exchange_weak(cur, cur + 1)) return true; ++retries; } return false; }
@@ -3530,6 +3549,7 @@ int main() {
 // 읽는 쪽: 노드 포인터 p 를 읽으면 먼저 자기 전용 위험 슬롯 hp[tid] 에 p 를 공시하고, 공유 위치가 여전히 p 인지 다시 확인한 뒤에만 역참조한다 (공시 후 재검증이 핵심).
 // 지우는 쪽: 구조에서 뗀 노드는 곧바로 delete 하지 않고 자기 retired 목록에 넣는다. 목록이 임계값을 넘으면 모든 스레드의 hp 를 훑어 "아무도 공시하지 않은" 노드만 해제한다.
 // 이렇게 하면 해제된 주소가 재사용되어 CAS 가 속는 ABA 문제도 함께 막힌다 (공시된 노드는 해제되지 않으니 주소가 재사용될 수 없다)
+// audit: exhaustive (모델 검사 부분은 두 스레드의 모든 인터리빙을 전수 탐색, 실제 스레드 부분은 합계·할당=해제 보존 법칙)
 const int MAXT = 8, THRESH = 32;
 struct Node { int v; Node* next; };
 std::atomic<Node*> top{nullptr}; std::atomic<Node*> hp[MAXT];
@@ -3557,7 +3577,32 @@ bool pop(int& v) {
 }
 void threadExit() { hp[tid].store(nullptr); scan(); std::lock_guard<std::mutex> g(orphanMu); orphans.insert(orphans.end(), retired.begin(), retired.end()); retired.clear(); }
 
+//  모델 검사(모든 스케줄 전수): 스택 1→2→3 에서 스레드 A 는 pop 한 번, 스레드 B 는 pop 두 번(각 pop 뒤 retire·scan)을 *명령 단위*(top 읽기 / 위험 공시 / 재검증 / t->next 읽기 / CAS / 위험 해제 / scan)로 쪼개 두 스레드의 모든 인터리빙을 DFS 로 훑는다.
+//  모드 0 = 보호 없음(scan 이 모두 해제), 1 = 공시만 하고 재검증 안 함, 2 = 공시 + 재검증(위의 프로토콜).  "해제된 노드의 next 를 읽는" 스케줄이 모드 0·1 에는 *존재* 하고 모드 2 에는 *하나도 없음* 을 보이며, 모든 스케줄에서 같은 노드를 두 스레드가 pop 하지 않는다.
+struct MC {
+    int mode; int next[4] = {0, 2, 3, 0}; bool freed[4] = {false, false, false, false}; int top = 1, hp[2] = {0, 0};
+    int pc[2] = {0, 0}, t[2] = {0, 0}, nx[2] = {0, 0}, restarts[2] = {0, 0}, pops[2] = {0, 0}; std::vector<int> retiredList; bool uaf = false; std::vector<int> got[2];
+    explicit MC(int m) : mode(m) {}
+    void step(int x) {
+        switch (pc[x]) {
+            case 0: t[x] = top; pc[x] = t[x] == 0 ? 99 : (mode >= 1 ? 1 : 3); break;                                            // top 읽기 (빈 스택이면 끝)
+            case 1: hp[x] = t[x]; pc[x] = mode >= 2 ? 2 : 3; break;                                                              // 위험 공시
+            case 2: if (top != t[x]) pc[x] = ++restarts[x] > 1 ? 99 : 0; else pc[x] = 3; break;                                  // 재검증 실패면 처음부터
+            case 3: if (freed[t[x]]) uaf = true; nx[x] = next[t[x]]; pc[x] = 4; break;                                         // t->next 읽기: 해제된 노드면 위반
+            case 4: if (top == t[x]) { top = nx[x]; got[x].push_back(t[x]); pc[x] = 5; } else pc[x] = ++restarts[x] > 1 ? 99 : 0; break;   // CAS
+            case 5: hp[x] = 0; if (x == 1) { retiredList.push_back(t[x]); pc[x] = 6; } else pc[x] = 99; break;                  // 위험 해제, B 는 retire
+            default: { std::vector<int> keep; for (int n : retiredList) { if (mode >= 1 && (hp[0] == n || hp[1] == n)) keep.push_back(n); else freed[n] = true; } retiredList = keep; ++pops[x]; pc[x] = pops[x] < 2 ? 0 : 99; } }   // scan
+    }
+};
+void explore(const MC& s, long& schedules, long& bad) {
+    bool moved = false;
+    for (int x = 0; x < 2; ++x) if (s.pc[x] != 99) { moved = true; MC c = s; c.step(x); explore(c, schedules, bad); }
+    if (!moved) { ++schedules; if (s.uaf) ++bad; std::vector<int> all = s.got[0]; all.insert(all.end(), s.got[1].begin(), s.got[1].end()); std::sort(all.begin(), all.end()); assert(std::adjacent_find(all.begin(), all.end()) == all.end()); }   // 같은 노드를 두 번 pop 하지 않는다
+}
 int main() {
+    {   long sch[3] = {0, 0, 0}, uaf[3] = {0, 0, 0}; for (int mode = 0; mode < 3; ++mode) { MC s(mode); explore(s, sch[mode], uaf[mode]); }
+        assert(uaf[0] > 0 && uaf[1] > 0 && uaf[2] == 0 && sch[2] > 1000);                                                          // 보호 없음·재검증 없음은 위반이 있고, 프로토콜은 모든 스케줄에서 안전
+        std::cout << "HazardPointer model check: " << sch[2] << " schedules, unsafe schedules without protection " << uaf[0] << ", without revalidation " << uaf[1] << ", with the full protocol " << uaf[2] << std::endl; }
     const int T = 4, N = 50000; std::atomic<long> pushedSum{0}, poppedSum{0};
     std::vector<std::thread> th;
     for (int t = 0; t < T; t++) th.emplace_back([&, t] {
@@ -4087,6 +4132,7 @@ int main() {
 
 // 병렬 해시 테이블(GPU/멀티코어): 개방 주소법(선형 탐사) + 슬롯의 키를 원자 CAS 로 점유한다. 빈 슬롯(0)에 CAS(0 -> key) 가 성공한 스레드가 그 슬롯의 주인이고, 실패했는데 들어 있는 키가 같으면 이미 다른 스레드가 넣은 것이다.
 // 잠금이 없고 슬롯 하나에만 경쟁하므로 수천 스레드(GPU)에서 잘 확장된다. 한계: 키를 먼저 점유하고 값을 나중에 쓰므로 "삽입 단계"와 "조회 단계"를 분리해야 한다(phase-concurrent), 삭제와 크기 변경은 어렵다
+// audit: differential (단일 스레드 std::unordered_map 이 독립 기준: 새로 만든 슬롯 수 == 서로 다른 키 수, 모든 키의 값, 없는 키의 부재)
 static inline uint64_t mix(uint64_t x) { x += 0x9e3779b97f4a7c15ULL; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL; x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL; return x ^ (x >> 31); }
 struct PHT {
     size_t mask; std::unique_ptr<std::atomic<uint64_t>[]> keys; std::unique_ptr<std::atomic<uint32_t>[]> vals; std::atomic<long> probes{0};
@@ -6294,6 +6340,7 @@ int main() {
 //  CAS 증가 연산 = [읽기] → [CAS(읽은 값, +1)] (실패하면 처음부터), fetch_add 연산 = [fetch_add] 한 단계.  스케줄 = 매 단계 어느 스레드가 한 명령을 실행하는지의 열 (길이 S 인 2^S 가지를 전부 본다).
 //  ① 락프리 성질: 모든 스케줄에서 *성공한 CAS 가 하나도 없는 연속 구간*의 최대 길이가 상수(3 단계)로 묶인다 — 실패한 CAS 는 그 사이 다른 스레드의 성공이 있었다는 뜻이므로  ② 웨이트프리 위반: 스레드 B 가 *자기 명령을 정확히 S/2 개 실행하고도* 연산을 하나도 못 끝내는 스케줄이 존재하며(매 라운드 A.읽기, B.읽기, A.CAS 성공, B.CAS 실패) S 에 비례해 늘어난다
 //  ③ fetch_add 는 모든 스케줄에서 스레드가 자기 명령 하나마다 연산을 하나씩 끝낸다(상한 1)  ④ 정확성: 모든 스케줄에서 최종 카운터 = 성공한 연산 수  ⑤ 실제 스레드 4 개의 CAS / fetch_add 카운터가 정확하다(진행 보장은 정확성과 별개).
+// audit: exhaustive (두 스레드의 *모든* 스케줄을 길이 20 까지 전수 탐색)
 struct Sim {
     long x = 0; int pc[2] = {0, 0}; long seen[2] = {0, 0}; long done[2] = {0, 0}; long failed[2] = {0, 0}; long ownSteps[2] = {0, 0}; long sinceDone[2] = {0, 0}; long maxSinceDone[2] = {0, 0}; long sinceSuccess = 0, maxSinceSuccess = 0;
     void stepCas(int t) { ++ownSteps[t]; ++sinceDone[t]; ++sinceSuccess;
