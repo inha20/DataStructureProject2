@@ -65,17 +65,41 @@ int main() {
 ## Alignment()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <memory>
-#include <cassert>
+#include <new>
+#include <random>
+#include <vector>
 
 // 정렬(alignment): 크기 N 인 자료형은 N 의 배수 주소에 놓는 것이 원칙이다 (CPU 가 한 번에 읽는 단위와 캐시 라인에 맞추기 위해).
-// alignUp(a, N) = (a + N - 1) & ~(N - 1)   (N 은 2의 거듭제곱)
+// alignUp(a, N) = (a + N - 1) & ~(N - 1)   (N 은 2의 거듭제곱 — 그렇지 않으면 이 식은 틀린다)
+// 검증: ① 손으로 고른 값  ② 정렬 1~4096(2의 거듭제곱 13 가지)과 주소 0~8191 *전부* 에서 alignUp/alignDown 의 정의(가장 작은/큰 배수)를 만족, 나눗셈 판과 같고 비트 마스크 식은 2의 거듭제곱이 아닌 정렬에서 틀린다
+//        ③ std::align 을 직접 구현한 판이 무작위 (정렬, 크기, 버퍼, 남은 공간) 20 000 개에서 표준 구현과 같은 결과(포인터·남은 공간·nullptr)  ④ 과할당으로 직접 만든 정렬 할당기: 정렬 1~4096 으로 할당한 블록이 정렬되고 서로 겹치지 않으며 쓴 값이 보존·해제됨
+//        ⑤ 정렬 안 맞는 주소의 읽기는 memcpy 로 — 오프셋 0~3 에서 읽은 32 비트 값이 바이트 조합과 같음, over-aligned 타입의 new, std::atomic 의 정렬
 uintptr_t alignUp(uintptr_t addr, size_t a) { return (addr + a - 1) & ~(uintptr_t)(a - 1); }
+uintptr_t alignDown(uintptr_t addr, size_t a) { return addr & ~(uintptr_t)(a - 1); }
+uintptr_t alignUpAny(uintptr_t addr, size_t a) { return (addr + a - 1) / a * a; }               // 나눗셈 판: 어떤 a 에도 맞다
 bool isAligned(const void* p, size_t a) { return (reinterpret_cast<uintptr_t>(p) & (a - 1)) == 0; }
+void* myAlign(size_t alignment, size_t size, void*& ptr, size_t& space) {                         // std::align 과 같은 계약: 맞으면 정렬된 포인터를 돌려주고 ptr 를 옮기며 space 를 줄인다, 안 맞으면 nullptr 이고 아무것도 바꾸지 않는다
+    uintptr_t p = reinterpret_cast<uintptr_t>(ptr); uintptr_t aligned = alignUp(p, alignment); size_t pad = (size_t)(aligned - p);
+    if (space < pad || space - pad < size) return nullptr;
+    ptr = reinterpret_cast<void*>(aligned); space -= pad; return ptr;
+}
+void* alignedAlloc(size_t size, size_t alignment) {                                              // 원래 포인터를 정렬된 블록 바로 앞에 저장해 두고 free 때 꺼낸다
+    void* raw = std::malloc(size + alignment + sizeof(void*)); if (!raw) return nullptr;
+    uintptr_t aligned = alignUp(reinterpret_cast<uintptr_t>(raw) + sizeof(void*), alignment);
+    reinterpret_cast<void**>(aligned)[-1] = raw; return reinterpret_cast<void*>(aligned);
+}
+void alignedFree(void* p) { if (p) std::free(reinterpret_cast<void**>(p)[-1]); }
+struct alignas(64) CacheLine { char bytes[64]; };
+struct alignas(32) Vec32 { float v[8]; };
 
 int main() {
     assert(alignUp(13, 8) == 16 && alignUp(16, 8) == 16 && alignUp(0, 64) == 0 && alignUp(65, 64) == 128);
@@ -87,10 +111,41 @@ int main() {
     char buf[100]; void* p = buf; size_t space = sizeof(buf);
     void* aligned = std::align(32, 10, p, space);
     assert(aligned && isAligned(aligned, 32) && space <= sizeof(buf));
-    // 정렬이 맞지 않는 읽기는 memcpy 로 안전하게 (직접 캐스팅하면 일부 CPU 에서 오류, C++ 에서는 정의되지 않은 동작)
-    unsigned char raw[8] = {0, 1, 0, 0, 0, 0, 0, 0}; uint32_t v; std::memcpy(&v, raw + 1, 4);
-    assert(v == 1 || v == 0x01000000u);                               // 바이트 {1,0,0,0}: 리틀 엔디언이면 1, 빅 엔디언이면 0x01000000
-    std::cout << "Alignment verified: alignUp(13,8) = " << alignUp(13, 8) << std::endl;
+    // ② 모든 (정렬, 주소) 에서 정의대로
+    for (size_t a = 1; a <= 4096; a *= 2) for (uintptr_t addr = 0; addr < 8192; addr++) {
+        uintptr_t up = alignUp(addr, a), down = alignDown(addr, a);
+        assert(up % a == 0 && up >= addr && up - addr < a);                                      // 가장 작은 배수: 사이에 배수가 더 없다
+        assert(down % a == 0 && down <= addr && addr - down < a && (up == down || up == down + a) && up == alignUpAny(addr, a) && alignUp(up, a) == up);
+        assert((addr % a == 0) == (up == addr) && ((addr % a == 0) == (down == addr)));
+    }
+    long maskWrong = 0; for (size_t a : {3u, 5u, 6u, 12u, 24u, 100u}) for (uintptr_t addr = 0; addr < 500; addr++) maskWrong += alignUp(addr, a) != alignUpAny(addr, a);
+    assert(maskWrong > 1000);                                                                    // 마스크 식은 2의 거듭제곱이 아닌 정렬에서 틀린다
+    // ③ std::align 대조
+    std::mt19937_64 rng(5); alignas(64) static char arena[512]; long nulls = 0, oks = 0;
+    for (int it = 0; it < 20000; ++it) {
+        size_t al = size_t(1) << (rng() % 9), sz = rng() % 200; size_t off = rng() % 300, sp = rng() % 400;
+        void* a = arena + off; void* b = arena + off; size_t spA = sp, spB = sp;
+        void* ra = std::align(al, sz, a, spA); void* rb = myAlign(al, sz, b, spB);
+        assert(ra == rb && a == b && spA == spB);
+        if (ra) { assert(isAligned(ra, al) && ra >= arena + off); ++oks; } else { assert(a == arena + off && spA == sp); ++nulls; }                                   // 실패하면 아무것도 바뀌지 않는다
+    }
+    assert(oks > 3000 && nulls > 3000);
+    // ④ 정렬 할당기
+    {   std::vector<std::pair<unsigned char*, size_t>> blocks; std::vector<size_t> aligns;
+        for (int i = 0; i < 400; i++) { size_t al = size_t(1) << (rng() % 13), sz = 1 + rng() % 300; unsigned char* q = (unsigned char*)alignedAlloc(sz, al); assert(q && isAligned(q, al)); for (size_t k = 0; k < sz; k++) q[k] = (unsigned char)(i + k); blocks.push_back({q, sz}); aligns.push_back(al); }
+        std::vector<std::pair<uintptr_t, uintptr_t>> ranges; for (auto& b : blocks) ranges.push_back({(uintptr_t)b.first, (uintptr_t)b.first + b.second}); std::sort(ranges.begin(), ranges.end());
+        for (size_t i = 1; i < ranges.size(); i++) assert(ranges[i - 1].second <= ranges[i].first);                                // 겹치지 않는다
+        for (size_t i = 0; i < blocks.size(); i++) for (size_t k = 0; k < blocks[i].second; k++) assert(blocks[i].first[k] == (unsigned char)(i + k));          // 쓴 값 보존
+        for (auto& b : blocks) alignedFree(b.first); }
+    // ⑤ 정렬 안 맞는 읽기, over-aligned new, atomic
+    {   unsigned char raw[8] = {0, 1, 2, 3, 4, 5, 6, 7}; const uint16_t probe = 1; bool little = *reinterpret_cast<const unsigned char*>(&probe) == 1;
+        for (int off = 0; off < 4; off++) { uint32_t v; std::memcpy(&v, raw + off, 4); uint32_t want = little ? (uint32_t)raw[off] | (uint32_t)raw[off + 1] << 8 | (uint32_t)raw[off + 2] << 16 | (uint32_t)raw[off + 3] << 24
+                                                                  : (uint32_t)raw[off] << 24 | (uint32_t)raw[off + 1] << 16 | (uint32_t)raw[off + 2] << 8 | raw[off + 3]; assert(v == want); } }
+    {   std::vector<CacheLine*> v; for (int i = 0; i < 200; i++) { CacheLine* c = new CacheLine(); assert(isAligned(c, 64)); v.push_back(c); } for (auto* c : v) delete c;
+        Vec32* arr = new Vec32[10]; for (int i = 0; i < 10; i++) assert(isAligned(&arr[i], 32) && (uintptr_t)&arr[i] - (uintptr_t)&arr[0] == (uintptr_t)i * sizeof(Vec32)); delete[] arr;
+        static_assert(sizeof(CacheLine) == 64 && alignof(CacheLine) == 64 && sizeof(Vec32) == 32, "alignas 는 크기를 정렬의 배수로 키운다");
+        CacheLine two[2]; assert((uintptr_t)&two[1] - (uintptr_t)&two[0] == 64 && alignof(std::atomic<uint64_t>) == 8 && alignof(std::max_align_t) >= alignof(long double)); }
+    std::cout << "Alignment verified: alignUp(13,8) = " << alignUp(13, 8) << "; std::align and the hand-written version agreed on " << oks + nulls << " random requests (" << nulls << " rejected)" << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
@@ -271,27 +326,72 @@ int main() {
 ## DataSegment()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
+#include <atomic>
 #include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <thread>
+#include <vector>
+#if defined(__linux__)
+#include <sys/stat.h>
+#include <unistd.h>
+extern "C" char etext, edata, end, __bss_start, __data_start;      // GNU ld / glibc 가 정의하는 구역 경계 기호
+#endif
 
 // 데이터 세그먼트: 정적 저장 기간(static storage duration) 변수가 사는 곳.
 //  .data = 0 이 아닌 초기값이 있는 전역/static (초기값이 실행 파일에 저장됨)
 //  .bss  = 초기값이 없거나 0 인 전역/static (실행 파일에는 크기만 기록되고 로드될 때 0 으로 채워진다)
 // 그래서 큰 배열을 전역으로 선언해도 실행 파일 크기는 거의 늘지 않는다.  static 지역 변수도 여기에 있어 호출 사이에 값이 유지된다
+// 검증: ① 값과 0 초기화, 호출 사이 유지  ② Linux: 링커 기호로 구역 경계를 얻어 `.data` 변수가 [etext, edata) 에, `.bss` 변수가 [__bss_start, end) 에 있음을 확인 — 문자열 리터럴·스택·힙은 어느 구역에도 속하지 않음
+//        ③ 실행 파일 크기가 bss 배열(16 MB)보다 훨씬 작음  ④ 요구 페이징: 0 으로 시작하는 큰 배열은 건드리기 전까지 실제 메모리(RSS)를 거의 쓰지 않고, 전부 건드리면 그 크기만큼 늘어난다  ⑤ 함수 안 static 은 여러 스레드가 동시에 처음 불러도 초기화가 *정확히 한 번* (C++11 보장)
+// audit: no-sanitize (새니타이저가 전역을 재배치하고 그림자 메모리를 써서 구역 경계와 상주 메모리 측정이 달라진다)
 int withValue = 42;                 // .data
-int zeroed[1000000];                // .bss: 4MB 인데 파일에는 저장되지 않음
+int zeroed[4000000];                // .bss: 16MB 인데 파일에는 저장되지 않음
 static int counter;                 // .bss, 이 파일에서만 보임
+const char* literal = "text segment string";                      // 포인터 변수는 .data, 가리키는 문자열은 읽기 전용 구역
 
 int nextId() { static int id = 100; return id++; }       // static 지역: 첫 호출 때 한 번 초기화
+std::atomic<int> initRuns{0};
+int expensiveInit() { initRuns.fetch_add(1); return 7; }
+int lazyValue() { static int v = expensiveInit(); return v; }
+long residentPages() {                                                                              // /proc/self/statm 의 두 번째 값 = 상주 페이지 수
+#if defined(__linux__)
+    FILE* f = fopen("/proc/self/statm", "r"); long a = 0, r = 0; if (f) { if (fscanf(f, "%ld %ld", &a, &r) != 2) r = -1; fclose(f); } return r;
+#else
+    return -1;
+#endif
+}
 
 int main() {
     assert(withValue == 42);
-    for (int i = 0; i < 1000000; i += 99999) assert(zeroed[i] == 0);   // 전부 0 으로 시작 (보장됨)
+    for (int i = 0; i < 4000000; i += 99999) assert(zeroed[i] == 0);   // 전부 0 으로 시작 (보장됨)
     assert(counter == 0);
     assert(nextId() == 100 && nextId() == 101 && nextId() == 102);     // 호출 사이에 값 유지
-    zeroed[5] = 9; counter++;
+#if defined(__linux__)
+    uintptr_t e0 = (uintptr_t)&etext, d0 = (uintptr_t)&__data_start, e1 = (uintptr_t)&edata, b0 = (uintptr_t)&__bss_start, b1 = (uintptr_t)&end;
+    assert(e0 <= d0 && d0 <= e1 && e1 <= b0 && b0 <= b1);                                              // 구역 순서: 코드 < 읽기 전용 상수 < 초기화된 데이터 < bss
+    assert((uintptr_t)&withValue >= d0 && (uintptr_t)&withValue < e1 && (uintptr_t)&literal >= d0 && (uintptr_t)&literal < e1);       // .data
+    assert((uintptr_t)zeroed >= b0 && (uintptr_t)(zeroed + 4000000) <= b1 && (uintptr_t)&counter >= b0 && (uintptr_t)&counter < b1);         // .bss
+    int onStack = 0; void* onHeap = ::operator new(16);
+    auto inData = [&](uintptr_t a) { return (a >= d0 && a < b1); };
+    assert(!inData((uintptr_t)&onStack) && !inData((uintptr_t)onHeap) && !inData((uintptr_t)literal) && (uintptr_t)literal >= e0 && (uintptr_t)literal < d0);    // 스택·힙은 데이터 세그먼트가 아니고, 문자열 리터럴은 코드와 데이터 사이의 읽기 전용 구역(.rodata)
+    ::operator delete(onHeap);
+    struct stat st; assert(stat("/proc/self/exe", &st) == 0 && (size_t)st.st_size < sizeof(zeroed) / 2);       // ③ 파일이 bss 배열 크기의 절반도 안 된다
+    long before = residentPages(); assert(before > 0);                                                   // ④ 요구 페이징
+    zeroed[5] = 9; long afterOne = residentPages(); assert(afterOne - before <= 8);                        // 한 칸만 건드리면 페이지 한두 개
+    for (size_t i = 0; i < 4000000; i += 1024) zeroed[i] = 1;                                              // 4 KB 마다 하나씩 = 모든 페이지
+    long afterAll = residentPages(); long grown = afterAll - afterOne; assert(grown > 3500 && grown < 4600);           // 16 MB = 4096 페이지
+#else
+    zeroed[5] = 9;
+#endif
+    counter++;
     assert(zeroed[5] == 9 && counter == 1);
+    // ⑤ 스레드가 동시에 처음 부른다
+    {   std::atomic<int> go{0}; std::vector<std::thread> ts; std::atomic<int> sum{0};
+        for (int t = 0; t < 8; t++) ts.emplace_back([&] { while (!go.load()) {} sum.fetch_add(lazyValue()); });
+        go = 1; for (auto& th : ts) th.join(); assert(initRuns == 1 && sum == 8 * 7); }
     std::cout << "DataSegment: zero-initialized bss array of " << sizeof(zeroed) / 1024 << " KB" << std::endl;
     return 0;
 }
@@ -301,20 +401,43 @@ int main() {
 ## EnvironmentVariable()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <map>
 #include <string>
-#include <cassert>
+#include <vector>
 #if defined(__unix__) || defined(__APPLE__)
+#include <sys/wait.h>
+#include <unistd.h>
 extern char** environ;
+static char** initialEnviron = environ;                              // 프로그램 시작 직후의 환경 배열 (setenv 가 배열을 새로 만들면 environ 과 달라진다)
 #endif
 
 // 환경 변수: 프로세스가 시작될 때 부모로부터 "NAME=value" 문자열 배열로 복사받는다 (스택의 맨 위쪽에 놓인다).
-// getenv/setenv 는 이 배열을 읽고 고친다.  fork 한 자식은 부모의 환경을 그대로 물려받는다
+// getenv/setenv 는 이 배열을 읽고 고친다.  fork 한 자식은 부모의 환경을 그대로 물려받고(복사본이라 자식의 변경은 부모에 보이지 않는다), exec 는 환경을 그대로 넘기거나 envp 로 명시한 환경으로 갈아 끼운다
+// 검증(POSIX): ① setenv/getenv/unsetenv 의 기본 동작과 overwrite 규칙  ② environ 의 모든 "NAME=value" 항목을 직접 쪼갠 결과가 getenv 와 일치 (이름에 '=' 가 없고 처음 나온 항목이 우선)
+//        ③ 잘못된 이름("", "A=B")은 EINVAL 로 거부, 값에는 '=' 가 들어갈 수 있고, 이름은 대소문자를 구분  ④ 변수 500 개를 넣었다 모두 지우면 환경 배열이 원래 항목 집합으로 돌아오고, 배열이 실제로 새로 만들어졌으며 시작 시 항목은 스택 위쪽 주소에 있음
+//        ⑤ fork+exec 로 /bin/sh 를 띄워 자식이 본 환경을 파이프로 읽는다: 상속, envp 로 명시, 빈 envp, unsetenv 후 — 그리고 exec 없는 fork 의 자식이 바꾼 값은 부모에 보이지 않는다
+#if defined(__unix__) || defined(__APPLE__)
+std::string runShell(const char* script, char* const envp[]) {                                      // envp 가 nullptr 이면 현재 환경을 물려준다
+    int fd[2]; int pr = pipe(fd); assert(pr == 0 && access("/bin/sh", X_OK) == 0); (void)pr;
+    pid_t pid = fork(); assert(pid >= 0);
+    if (pid == 0) { dup2(fd[1], 1); close(fd[0]); close(fd[1]); char* argv[] = {(char*)"sh", (char*)"-c", (char*)script, nullptr}; if (envp) execve("/bin/sh", argv, envp); else execv("/bin/sh", argv); _exit(127); }
+    close(fd[1]); std::string out; char buf[256]; ssize_t n; while ((n = read(fd[0], buf, sizeof buf)) > 0) out.append(buf, (size_t)n); close(fd[0]);
+    int st = 0; waitpid(pid, &st, 0); assert(WIFEXITED(st) && WEXITSTATUS(st) == 0); return out;
+}
+std::vector<std::string> snapshot() { std::vector<std::string> v; for (char** e = environ; *e; e++) v.push_back(*e); std::sort(v.begin(), v.end()); return v; }
+#endif
+
 int main() {
     assert(std::getenv("DS_PROJECT_DEMO") == nullptr);
 #if defined(__unix__) || defined(__APPLE__)
+    int local = 0;
     setenv("DS_PROJECT_DEMO", "hello", 1);
     assert(std::string(std::getenv("DS_PROJECT_DEMO")) == "hello");
     bool found = false;
@@ -322,8 +445,38 @@ int main() {
     assert(found);
     setenv("DS_PROJECT_DEMO", "world", 0);                          // overwrite=0: 이미 있으면 바꾸지 않는다
     assert(std::string(std::getenv("DS_PROJECT_DEMO")) == "hello");
+    setenv("DS_PROJECT_DEMO", "world", 1); assert(std::string(std::getenv("DS_PROJECT_DEMO")) == "world");
     unsetenv("DS_PROJECT_DEMO");
-    assert(std::getenv("DS_PROJECT_DEMO") == nullptr);
+    assert(std::getenv("DS_PROJECT_DEMO") == nullptr && unsetenv("DS_NEVER_SET") == 0);
+    // ② environ 을 직접 쪼갠 결과가 getenv 와 같다
+    {   std::map<std::string, std::string> first; size_t entries = 0;
+        for (char** e = environ; *e; e++) { std::string s = *e; size_t eq = s.find('='); if (eq == std::string::npos || eq == 0) continue; ++entries; first.emplace(s.substr(0, eq), s.substr(eq + 1)); }                // 같은 이름이 또 나와도 처음 것을 유지
+        assert(entries > 0 && !first.empty()); for (auto& kv : first) { const char* v = std::getenv(kv.first.c_str()); assert(v && kv.second == v); } }
+    // ③ 이름 규칙
+    errno = 0; assert(setenv("", "x", 1) == -1 && errno == EINVAL); errno = 0; assert(setenv("A=B", "x", 1) == -1 && errno == EINVAL && std::getenv("A") == nullptr);
+    setenv("DS_EQ", "a=b=c", 1); assert(std::string(std::getenv("DS_EQ")) == "a=b=c"); setenv("Ds_Eq", "lower", 1); assert(std::string(std::getenv("DS_EQ")) == "a=b=c" && std::string(std::getenv("Ds_Eq")) == "lower");
+    setenv("DS_EMPTY", "", 1); assert(std::getenv("DS_EMPTY") != nullptr && std::string(std::getenv("DS_EMPTY")).empty());                // 값이 비어 있는 것과 없는 것은 다르다
+    unsetenv("DS_EQ"); unsetenv("Ds_Eq"); unsetenv("DS_EMPTY");
+    // ④ 개수 불변식과 배열 재할당
+    {   std::vector<std::string> before = snapshot(); char** arrayBefore = environ;
+        for (int i = 0; i < 500; i++) setenv(("DS_VAR_" + std::to_string(i)).c_str(), std::to_string(i * 3).c_str(), 1);
+        assert(snapshot().size() == before.size() + 500 && std::string(std::getenv("DS_VAR_77")) == "231" && environ != initialEnviron);       // 항목이 늘어 새 배열이 만들어졌다
+        for (int i = 0; i < 500; i++) assert(unsetenv(("DS_VAR_" + std::to_string(i)).c_str()) == 0);
+        assert(snapshot() == before); (void)arrayBefore;
+#if defined(__linux__)
+        assert((uintptr_t)initialEnviron[0] > (uintptr_t)&local);                                                                          // 시작 시 환경 문자열은 main 의 지역 변수보다 위(스택 맨 위쪽)
+#endif
+    }
+    // ⑤ fork + exec
+    setenv("DS_A", "from_parent", 1); unsetenv("DS_B");
+    assert(runShell("printf '%s|%s' \"$DS_A\" \"$DS_B\"", nullptr) == "from_parent|");                                    // 상속
+    { char* only[] = {(char*)"DS_B=explicit", nullptr}; assert(runShell("printf '%s|%s' \"$DS_A\" \"$DS_B\"", only) == "|explicit"); }                  // envp 로 명시하면 부모 환경은 넘어가지 않는다
+    { char* none[] = {nullptr}; assert(runShell("printf '%s|%s' \"$DS_A\" \"$DS_B\"", none) == "|"); }                      // 빈 환경
+    unsetenv("DS_A"); assert(runShell("printf '%s' \"[$DS_A]\"", nullptr) == "[]");                                         // 부모가 지운 변수는 자식도 못 본다
+    {   setenv("DS_COW", "parent", 1); int pfd[2]; int pr = pipe(pfd); assert(pr == 0); (void)pr; pid_t pid = fork();
+        if (pid == 0) { setenv("DS_COW", "child_changed", 1); const char* v = std::getenv("DS_COW"); ssize_t w = write(pfd[1], v, std::strlen(v)); (void)w; _exit(0); }       // exec 없는 fork: 자식이 바꾼 값
+        close(pfd[1]); char buf[64] = {0}; ssize_t n = read(pfd[0], buf, sizeof buf - 1); (void)n; close(pfd[0]); int st = 0; waitpid(pid, &st, 0);
+        assert(std::string(buf) == "child_changed" && std::string(std::getenv("DS_COW")) == "parent"); unsetenv("DS_COW"); }       // 부모는 그대로
 #endif
     std::cout << "EnvironmentVariable verified." << std::endl;
     return 0;
@@ -397,23 +550,37 @@ int main(int argc, char* argv[]) {
 ## PushFrame()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <stdexcept>
+#include <vector>
 
 // 함수 호출 한 번이 스택에 "프레임" 을 쌓는 과정(호출 규약 요약): 인자 -> 복귀 주소 -> 이전 프레임 포인터(BP) -> 지역 변수.
 // 스택은 높은 주소에서 낮은 주소로 자란다 (x86).  시뮬레이션: 8바이트 단위 메모리 위에서 SP 를 내리며 프레임을 만든다
+// 호출: 호출자가 인자를 오른쪽부터 push → call 이 복귀 주소 push → 피호출자가 BP 를 push 하고 BP ← SP, SP ← SP − 지역 칸 수.   반환: SP ← BP, BP 복원, 복귀 주소 pop, 인자 pop.
+// 프레임 포인터 사슬(저장된 BP 들)을 따라가면 호출 스택 전체(복귀 주소들)를 복원할 수 있다 — 디버거의 backtrace 가 하는 일
+// 검증: ① 손으로 짠 프레임 배치  ② 무작위 호출/반환 20 000 번(깊이 ≤ 60, 인자 0~4 개, 지역 0~6 칸, 모든 칸에 고유한 값을 써 둠)을 오라클(프레임 벡터)과 대조: 매번 backtrace 가 호출 스택과 같고, 반환 값(복귀 주소)이 맞고,
+//        *모든* 프레임의 인자·지역 변수가 다른 호출에 의해 훼손되지 않으며, 프레임 크기의 합 = 스택 사용량(닫힌 식), bp − sp = 맨 위 프레임의 지역 칸 수
+//        ③ 균일한 프레임(인자 2, 지역 3 → 7 칸)에서 256 칸 스택은 정확히 36 번째 호출까지 되고 37 번째에서 스택 오버플로  ④ 프레임 k 까지 한꺼번에 풀어(longjmp 처럼) 나머지 프레임의 값이 그대로
 struct Machine {
-    std::vector<uint64_t> mem; size_t sp, bp;                          // 인덱스 = 주소 (낮은 주소 = 작은 인덱스)
-    explicit Machine(size_t words) : mem(words, 0), sp(words), bp(words) {}
-    void push(uint64_t v) { assert(sp > 0); mem[--sp] = v; }
+    std::vector<uint64_t> mem; size_t sp, bp; const size_t base;           // 인덱스 = 주소 (낮은 주소 = 작은 인덱스), base = 스택의 맨 위
+    explicit Machine(size_t words) : mem(words, 0), sp(words), bp(words), base(words) {}
+    void push(uint64_t v) { if (sp == 0) throw std::overflow_error("stack overflow"); mem[--sp] = v; }
     void pushFrame(uint64_t returnAddr, size_t localWords) {
         push(returnAddr);                                              // call 명령이 복귀 주소를 쌓는다
         push(bp); bp = sp;                                             // 이전 BP 저장, 새 BP = 현재 SP
+        if (sp < localWords) throw std::overflow_error("stack overflow");
         sp -= localWords;                                              // 지역 변수 공간 확보
     }
+    void call(const std::vector<uint64_t>& args, uint64_t returnAddr, size_t localWords) { for (size_t i = args.size(); i-- > 0;) push(args[i]); pushFrame(returnAddr, localWords); }
+    uint64_t ret(size_t argc) { sp = bp; bp = mem[sp++]; uint64_t r = mem[sp++]; sp += argc; return r; }      // SP ← BP; BP 복원; 복귀 주소 pop; 인자 pop
+    uint64_t& arg(size_t i) { return mem[bp + 2 + i]; }
+    uint64_t& local(size_t j) { return mem[bp - 1 - j]; }
+    std::vector<uint64_t> backtrace() const { std::vector<uint64_t> r; for (size_t b = bp; b != base; b = mem[b]) r.push_back(mem[b + 1]); return r; }       // 가장 안쪽 호출부터 복귀 주소
 };
+struct Frame { uint64_t ret; std::vector<uint64_t> args, locals; };
 
 int main() {
     Machine m(64);
@@ -426,7 +593,45 @@ int main() {
     assert(m.mem[m.bp] == 64);                                        // BP 위치에 이전 BP (첫 프레임이라 맨 위)
     assert(m.mem[m.bp + 2] == 22 && m.mem[m.bp + 3] == 11);           // 그 위에 인자
     assert(m.bp - m.sp == 3);                                         // 지역 변수 3칸
-    std::cout << "PushFrame: SP moved down by " << top - m.sp << " words" << std::endl;
+    assert((m.backtrace() == std::vector<uint64_t>{0xDEADBEEF}));
+    // ② 무작위 호출/반환
+    std::mt19937 rng(123); Machine mc(4096); std::vector<Frame> frames; long calls = 0, rets = 0; size_t maxDepth = 0; uint64_t stamp = 1;
+    auto verify = [&]() {
+        std::vector<uint64_t> want; for (size_t i = frames.size(); i-- > 0;) want.push_back(frames[i].ret);
+        assert(mc.backtrace() == want);                                                               // 프레임 포인터 사슬 = 호출 스택
+        size_t used = 0; size_t b = mc.bp, sp = mc.sp;
+        for (size_t i = frames.size(); i-- > 0;) {                                                     // 위에서부터 (가장 안쪽 프레임부터) 모든 프레임의 내용 확인
+            const Frame& f = frames[i]; used += f.args.size() + 2 + f.locals.size();
+            for (size_t k = 0; k < f.args.size(); k++) assert(mc.mem[b + 2 + k] == f.args[k]);
+            for (size_t k = 0; k < f.locals.size(); k++) assert(mc.mem[b - 1 - k] == f.locals[k]);
+            if (i == frames.size() - 1) assert(b - sp == f.locals.size());                             // bp − sp = 맨 위 프레임의 지역 칸 수
+            b = mc.mem[b];
+        }
+        assert(used == mc.base - mc.sp);                                                               // 프레임 크기의 합 = 스택 사용량
+    };
+    for (int step = 0; step < 20000; ++step) {
+        bool doCall = frames.empty() || (frames.size() < 60 && rng() % 100 < 52);
+        if (doCall) {
+            Frame f; f.ret = 0x1000 + (uint64_t)(rng() % 0xFFFF); size_t argc = rng() % 5, locals = rng() % 7;
+            for (size_t i = 0; i < argc; i++) f.args.push_back(stamp++); mc.call(f.args, f.ret, locals);
+            for (size_t j = 0; j < locals; j++) { f.locals.push_back(stamp++); mc.local(j) = f.locals.back(); }
+            for (size_t i = 0; i < argc; i++) assert(mc.arg(i) == f.args[i]);
+            frames.push_back(f); ++calls; maxDepth = std::max(maxDepth, frames.size());
+        } else {
+            for (size_t j = 0; j < frames.back().locals.size(); j++) { frames.back().locals[j] = stamp++; mc.local(j) = frames.back().locals[j]; }              // 반환 직전에 지역 변수를 고쳐 쓴다
+            uint64_t r = mc.ret(frames.back().args.size()); assert(r == frames.back().ret); frames.pop_back(); ++rets;
+        }
+        if (step % 7 == 0 || frames.size() < 3) verify();
+    }
+    verify(); assert(calls > 5000 && rets > 4000 && maxDepth >= 30);
+    // ④ 프레임 k 까지 한꺼번에 풀기 (longjmp 처럼 저장해 둔 BP 를 따라 올라간다)
+    {   while (frames.size() < 25) { Frame f; f.ret = 0x2000 + frames.size(); f.args = {stamp++, stamp++}; mc.call(f.args, f.ret, 2); f.locals = {stamp++, stamp++}; mc.local(0) = f.locals[0]; mc.local(1) = f.locals[1]; frames.push_back(f); }
+        size_t k = 10; while (frames.size() > k) { mc.ret(frames.back().args.size()); frames.pop_back(); } verify(); assert(mc.backtrace().size() == k); }
+    // ③ 오버플로
+    {   Machine small(256); int depth = 0; bool overflow = false;
+        try { for (;; ++depth) small.call({1, 2}, 0xAA, 3); } catch (const std::overflow_error&) { overflow = true; }
+        assert(overflow && depth == 36 && 36 * 7 <= 256 && 37 * 7 > 256); }
+    std::cout << "PushFrame: SP moved down by " << top - m.sp << " words; " << calls << " random calls and " << rets << " returns kept every frame intact and every backtrace exact (max depth " << maxDepth << ")" << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
@@ -490,6 +695,7 @@ int main() {
 #include <stdexcept>
 #include <vector>
 
+// audit: differential (호출 수·최대 깊이·결과를 반복문 오라클과 닫힌 식 2·fib(n+1)−1 로 대조)
 // 호출 과정을 명시적인 스택 기계로 흉내 낸다 — 아주 작은 가상 기계(VM)를 만들어 재귀 함수를 *기계어 수준*으로 실행한다.  호출(CALL)은 "인수를 push → 복귀 주소와 BP 를 push → BP 를 새 프레임에 맞춤 → 점프", 반환(RET)은 "결과를 꺼내 두고 SP ← BP, 저장된 BP·복귀 주소를 복원, 인수를 pop, 결과를 push".
 //  재귀 factorial 과 fibonacci 를 손으로 어셈블해 돌린다.  ① fact(0..20), fib(0..25) 의 결과가 반복문 오라클과 같다  ② 호출 횟수: fib(n) 의 CALL 수 = 2·fib(n+1) − 1 (재귀 트리의 노드 수), fact(n) 은 n 번(n ≥ 1)  ③ 최대 스택 깊이(프레임 수) = 재귀 깊이: fact(n) → n, fib(n) → max(n, 1)
 //  ④ 깊이 10 만의 fact 도 가상 스택(힙)이라 오버플로 없이 되고(정수는 mod 2^64), 스택 한도를 낮추면 *정확히 한도 깊이에서* 오버플로 예외  ⑤ 프레임 한 개의 크기는 일정(인수 1 + 복귀 주소 + 저장된 BP + 곱셈을 기다리며 쌓아 둔 피연산자 n 하나 = 4 칸)이라 최대 스택 사용량 = 정확히 4 · 깊이 + 1.
@@ -650,6 +856,7 @@ int main() {
 #include <iostream>
 #include <vector>
 
+// audit: closed-form (재귀 프레임 간격이 일정하고 지역 배열 크기 차이와 일치)
 // 스택 프레임(요약, 정본은 Stack.md Part 8): 함수 호출마다 프레임이 하나씩 쌓이고, 호출된 함수의 프레임은 더 낮은 주소에 놓인다.  `__builtin_frame_address(0)` 으로 현재 프레임의 주소를 얻어 확인할 수 있다 (GCC/Clang).
 //  같은 함수를 재귀로 부르면 프레임 크기가 같으므로 *깊이가 한 칸 깊어질 때마다 주소가 정확히 같은 간격(stride)으로 줄어든다*.  간격은 지역 변수가 커지면 그만큼 커진다.
 //  ① 깊이 60 재귀의 프레임 주소가 엄격히 감소하고 간격이 *모두 같다* (16 바이트 정렬)  ② 지역 배열 64 / 256 / 1024 바이트 함수의 간격 차이가 배열 크기 차이와 ±64 바이트 안에서 일치  ③ 호출된 함수의 `__builtin_frame_address(1)` (= 호출자의 프레임 주소)이 바로 위 깊이의 프레임 주소와 같다
@@ -693,6 +900,7 @@ int main() {
 #include <unistd.h>
 #endif
 
+// audit: closed-form (한도 ÷ 프레임 크기로 예측한 깊이를 자식 프로세스의 실제 도달 깊이와 대조)
 // 스택 오버플로(요약, 정본은 Stack.md Part 10): 스택은 크기가 정해져 있다(보통 8MB).  재귀가 너무 깊거나 지역 배열이 너무 크면 한계를 넘어 세그멘테이션 오류.
 //  안전하게 보는 법 둘: (1) 한도(getrlimit)와 프레임 한 개의 크기를 재서 "최대 재귀 깊이" 를 예측하고 그 일부만 실제로 재귀해 본다  (2) *자식 프로세스*를 fork 해 스택 한도를 1 MB 로 낮춘 뒤 무한 재귀시키고, 부모가 SIGSEGV 로 죽었음을 확인하고 죽기 전 도달한 깊이를 공유 메모리에서 읽어 예측과 비교한다.
 //  ① 프레임 크기 측정(주소 간격)  ② 예측 깊이의 1/4 만큼 재귀한 합이 정확  ③ 자식이 SIGSEGV 로 종료했고(`WIFSIGNALED`), 도달 깊이가 예측(한도 ÷ 프레임 크기)의 85%~102% — 스택 맨 위에 환경 변수·인자가 이미 차지한 몇 KB 때문에 약간 못 미친다
@@ -733,6 +941,7 @@ int main() {
 #include <iostream>
 #include <variant>
 
+// audit: differential (꼬리 재귀·일반 재귀·반복문·트램펄린의 값을 서로 대조하고 스택 주소 범위를 측정)
 // 꼬리 호출 최적화(TCO): 함수의 마지막 동작이 다른 (또는 자기 자신의) 호출이면 현재 프레임이 더 이상 필요 없으므로 새 프레임 없이 "점프" 로 바꿀 수 있다 → 재귀가 반복문과 같은 공간 O(1).
 //  C++ 표준은 TCO 를 보장하지 않는다 (-O2 에서는 대개 적용되지만 디버그 빌드에서는 안 된다) — 그래서 *적용 여부에 의존하는 코드는 이식성이 없다*.  보장이 필요하면 트램펄린(trampoline)으로 직접 구현한다.
 //  트램펄린: 재귀 호출 대신 "다음에 할 일" 을 반환하고, 반복문이 그것을 이어서 실행한다 → 스택이 쌓이지 않는다.  상호 재귀(isEven ↔ isOdd)처럼 컴파일러가 제거하기 힘든 경우에도 된다.
@@ -767,47 +976,66 @@ int main() {
 ## malloc()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
+#include <map>
+#include <random>
 #include <vector>
-#include <cassert>
 
-// malloc 의 핵심 동작을 작은 힙 위에서 단계별로 본다 (first-fit, 분할, 병합).
+// malloc 의 핵심 동작을 작은 힙 위에서 단계별로 본다 (분할, 병합, 탐색 정책).
 //   1) 할당 가능한 블록 탐색  2) 필요한 만큼 분할  3) 헤더(크기·사용 여부) 기록  4) 사용자 포인터 = 헤더 바로 뒤
-//   free: 사용 표시를 지우고 이웃한 빈 블록과 병합해 단편화를 줄인다
-struct Header { size_t size; bool used; };                             // 사용자 영역 크기, 사용 중 여부
+//   free: 사용 표시를 지우고 이웃한 빈 블록과 병합해 단편화를 줄인다.  탐색 정책: 처음 맞는 곳(first-fit) / 가장 꼭 맞는 곳(best-fit) / 가장 큰 곳(worst-fit) / 마지막 할당 지점부터(next-fit)
+// 검증: ① 손으로 짠 시나리오(분할·구멍 재사용·병합)와 외부 단편화의 닫힌 식  ② 네 정책 모두에서 무작위 할당/해제 20 000 번(크기 1~200): 블록이 힙을 빈틈없이 덮고, 빈 블록끼리 이웃하지 않고(완전 병합), 사용 중 블록의 내용이 보존되고 겹치지 않으며,
+//        사용자 포인터가 8 바이트 정렬이고, 회계(사용자 영역 + 헤더 + 빈 영역 = 전체)가 맞는다  ③ 정책 오라클: 할당 직전 블록 목록으로 각 정책이 *어느 블록을 골라야 하는지* 따로 계산해 실제 반환 주소와 대조하고, 실패는 "맞는 빈 블록이 정말 없을 때만"
+//        ④ 같은 부하에서 정책별 단편화·실패 횟수를 비교
+struct Header { size_t size; size_t used; };                            // 사용자 영역 크기, 사용 중 여부 (16 바이트)
+enum Policy { FIRST, BEST, WORST, NEXT };
 class Heap {
-    std::vector<uint8_t> mem;
-    Header* hdr(size_t off) { return (Header*)&mem[off]; }
+    std::vector<uint8_t> mem; Policy policy; size_t lastOff = 0;
+    Header hdr(size_t off) const { Header h; std::memcpy(&h, &mem[off], sizeof h); return h; }
+    void setHdr(size_t off, Header h) { std::memcpy(&mem[off], &h, sizeof h); }
     static size_t round8(size_t n) { return (n + 7) & ~size_t(7); }
+    size_t next(size_t off) const { return off + sizeof(Header) + hdr(off).size; }
 public:
-    explicit Heap(size_t bytes) : mem(bytes) { *hdr(0) = Header{bytes - sizeof(Header), false}; }
+    explicit Heap(size_t bytes, Policy p = FIRST) : mem(bytes), policy(p) { setHdr(0, Header{bytes - sizeof(Header), 0}); }
     void* alloc(size_t n) {
-        n = round8(n);
-        for (size_t off = 0; off < mem.size(); off += sizeof(Header) + hdr(off)->size) {       // 1) 첫 번째로 맞는 블록
-            Header* h = hdr(off);
-            if (h->used || h->size < n) continue;
-            if (h->size >= n + sizeof(Header) + 8) {                                           // 2) 남는 부분을 새 빈 블록으로 분할
-                *hdr(off + sizeof(Header) + n) = Header{h->size - n - sizeof(Header), false};
-                h->size = n;
-            }
-            h->used = true;                                                                     // 3) 사용 중으로 표시
-            return &mem[off + sizeof(Header)];                                                  // 4) 사용자 포인터
+        n = round8(n); if (n == 0) n = 8; size_t pick = SIZE_MAX;
+        if (policy == NEXT) {                                                                  // 마지막 할당 지점부터 한 바퀴
+            size_t start = lastOff; for (int pass = 0; pass < 2 && pick == SIZE_MAX; pass++) for (size_t off = pass == 0 ? start : 0; off < (pass == 0 ? mem.size() : start); off = next(off)) { Header h = hdr(off); if (!h.used && h.size >= n) { pick = off; break; } }
+        } else for (size_t off = 0; off < mem.size(); off = next(off)) {
+            Header h = hdr(off); if (h.used || h.size < n) continue;
+            if (pick == SIZE_MAX) { pick = off; if (policy == FIRST) break; continue; }
+            Header best = hdr(pick); if ((policy == BEST && h.size < best.size) || (policy == WORST && h.size > best.size)) pick = off;
         }
-        return nullptr;
+        if (pick == SIZE_MAX) return nullptr;
+        Header h = hdr(pick);
+        if (h.size >= n + sizeof(Header) + 8) { setHdr(pick + sizeof(Header) + n, Header{h.size - n - sizeof(Header), 0}); h.size = n; }       // 2) 남는 부분을 새 빈 블록으로 분할
+        h.used = 1; setHdr(pick, h); lastOff = pick;                                           // 3) 사용 중으로 표시
+        return &mem[pick + sizeof(Header)];                                                   // 4) 사용자 포인터
     }
     void release(void* p) {
-        size_t off = (uint8_t*)p - &mem[0] - sizeof(Header);
-        hdr(off)->used = false;
+        size_t off = (size_t)((uint8_t*)p - &mem[0]) - sizeof(Header); Header h = hdr(off); h.used = 0; setHdr(off, h);
         for (size_t o = 0; o < mem.size();) {                                                   // 인접한 빈 블록 병합
-            Header* h = hdr(o); size_t next = o + sizeof(Header) + h->size;
-            if (!h->used && next < mem.size() && !hdr(next)->used) h->size += sizeof(Header) + hdr(next)->size; else o = next;
+            Header a = hdr(o); size_t nx = next(o);
+            if (!a.used && nx < mem.size() && !hdr(nx).used) { a.size += sizeof(Header) + hdr(nx).size; setHdr(o, a); if (lastOff == nx) lastOff = o; } else o = nx;
         }
     }
-    size_t blocks() { size_t c = 0; for (size_t o = 0; o < mem.size(); o += sizeof(Header) + hdr(o)->size) c++; return c; }
-    size_t largestFree() { size_t m = 0; for (size_t o = 0; o < mem.size(); o += sizeof(Header) + hdr(o)->size) if (!hdr(o)->used) m = std::max(m, hdr(o)->size); return m; }
+    size_t blocks() const { size_t c = 0; for (size_t o = 0; o < mem.size(); o = next(o)) c++; return c; }
+    size_t largestFree() const { size_t m = 0; for (size_t o = 0; o < mem.size(); o = next(o)) if (!hdr(o).used) m = std::max(m, hdr(o).size); return m; }
+    size_t totalFree() const { size_t m = 0; for (size_t o = 0; o < mem.size(); o = next(o)) if (!hdr(o).used) m += hdr(o).size; return m; }
+    size_t offsetOf(void* p) const { return (size_t)((uint8_t*)p - &mem[0]) - sizeof(Header); }
+    std::vector<std::pair<size_t, Header>> layout() const { std::vector<std::pair<size_t, Header>> v; for (size_t o = 0; o < mem.size(); o = next(o)) v.push_back({o, hdr(o)}); return v; }
+    bool validate() const {                                                                    // 불변식: 힙을 빈틈없이 덮고, 빈 블록이 이웃하지 않으며, 회계가 맞는다
+        size_t covered = 0, payload = 0, headers = 0, freeBytes = 0; bool prevFree = false;
+        for (size_t o = 0; o < mem.size();) { Header h = hdr(o); if (h.size % 8 != 0 || o + sizeof(Header) + h.size > mem.size()) return false; if (!h.used && prevFree) return false; prevFree = !h.used;
+            covered += sizeof(Header) + h.size; headers += sizeof(Header); (h.used ? payload : freeBytes) += h.size; o += sizeof(Header) + h.size; }
+        return covered == mem.size() && payload + freeBytes + headers == mem.size();
+    }
+    void* base() { return &mem[0]; }
 };
 
 int main() {
@@ -821,8 +1049,43 @@ int main() {
     assert(d == b);                                                    // 구멍을 재사용 (b 의 자리)
     h.release(a); h.release(d); h.release(c);                          // 전부 해제하면 인접 블록이 병합되어
     assert(h.blocks() == 1 && h.largestFree() == total);               // 처음의 하나짜리 큰 블록으로 돌아온다
-    assert(h.alloc(5000) == nullptr);                                  // 너무 큰 요청은 실패
-    std::cout << "malloc simulation: split, reuse and coalesce verified." << std::endl;
+    assert(h.alloc(5000) == nullptr && h.validate());                  // 너무 큰 요청은 실패
+    // ① 외부 단편화: 32 바이트 블록 20 개(블록당 48 바이트) -> 하나 건너 해제하면 빈 영역은 충분한데 64 바이트가 안 들어간다
+    {   Heap f(1024); std::vector<void*> v; for (int i = 0; i < 20; i++) v.push_back(f.alloc(32)); assert(f.blocks() == 21 && f.totalFree() == 1024 - 20 * 48 - 16);
+        for (int i = 0; i < 20; i += 2) f.release(v[i]); size_t freeBytes = f.totalFree();                   // 구멍 10 개(각 32) + 꼬리
+        assert(freeBytes == 10 * 32 + (1024 - 20 * 48 - 16) && f.largestFree() < 64 && freeBytes >= 64 && f.alloc(64) == nullptr);            // 총량은 충분해도 연속 64 가 없다
+        f.release(v[1]); assert(f.largestFree() == 32 + 16 + 32 + 16 + 32 && f.alloc(64) != nullptr && f.validate()); }                           // 이웃 하나를 더 풀면 세 블록이 병합되어 성공
+    // ②③ 정책별 무작위 부하
+    std::mt19937 rng(77); long placed[4] = {0, 0, 0, 0}, failed[4] = {0, 0, 0, 0}; double fragSum[4] = {0, 0, 0, 0}; long fragSamples[4] = {0, 0, 0, 0};
+    for (int pol = 0; pol < 4; pol++) {
+        Heap heap(4096, (Policy)pol); struct Live { uint8_t* p; size_t n; uint8_t tag; }; std::vector<Live> live; int tagCounter = 1;
+        for (int step = 0; step < 20000; ++step) {
+            bool doAlloc = live.empty() || rng() % 100 < 52;
+            if (doAlloc) {
+                size_t n = 1 + rng() % 200, r = std::max<size_t>(8, (n + 7) & ~size_t(7)); auto before = heap.layout();
+                size_t expect = SIZE_MAX;                                                                          // 오라클: 정책이 골라야 할 블록의 오프셋
+                if (pol == NEXT) { /* 마지막 할당 지점은 힙 내부 상태라 first-fit 오라클로는 못 구한다: 실패 여부만 대조 */ }
+                else for (auto& e : before) { if (e.second.used || e.second.size < r) continue; if (expect == SIZE_MAX) { expect = e.first; continue; }
+                    size_t cur = 0; for (auto& q : before) if (q.first == expect) cur = q.second.size;
+                    if ((pol == BEST && e.second.size < cur) || (pol == WORST && e.second.size > cur)) expect = e.first; }
+                bool anyFits = false; for (auto& e : before) anyFits |= !e.second.used && e.second.size >= r;
+                void* p = heap.alloc(n);
+                if (!p) { assert(!anyFits); ++failed[pol]; continue; }                                             // 실패는 맞는 블록이 정말 없을 때만
+                assert(anyFits && (size_t)((uint8_t*)p - (uint8_t*)heap.base()) % 8 == 0 && (pol == NEXT || heap.offsetOf(p) == expect));
+                uint8_t tag = (uint8_t)(tagCounter++); std::memset(p, tag, n); live.push_back({(uint8_t*)p, n, tag}); ++placed[pol];
+            } else {
+                size_t i = rng() % live.size(); for (size_t k = 0; k < live[i].n; k++) assert(live[i].p[k] == live[i].tag);          // 해제 전에 내용 확인
+                heap.release(live[i].p); live.erase(live.begin() + (long)i);
+            }
+            assert(heap.validate());
+            if (step % 50 == 0 && heap.totalFree() > 0) { fragSum[pol] += 1.0 - (double)heap.largestFree() / (double)heap.totalFree(); ++fragSamples[pol]; }
+        }
+        for (auto& l : live) for (size_t k = 0; k < l.n; k++) assert(l.p[k] == l.tag);                               // 끝날 때 살아 있는 블록 전부 내용 보존
+        for (auto& l : live) heap.release(l.p); assert(heap.blocks() == 1 && heap.validate());
+    }
+    for (int pol = 0; pol < 4; pol++) assert(placed[pol] > 5000);
+    double frag[4]; for (int pol = 0; pol < 4; pol++) frag[pol] = fragSum[pol] / (double)fragSamples[pol];
+    std::cout << "malloc simulation: split, reuse and coalesce verified; mean external fragmentation first/best/worst/next = " << frag[0] << " / " << frag[1] << " / " << frag[2] << " / " << frag[3] << ", failures " << failed[0] << "/" << failed[1] << "/" << failed[2] << "/" << failed[3] << std::endl;
     return 0;
 }
 // Time Complexity: 할당 O(블록 수) (first-fit), 해제 O(블록 수) (병합 포함)
@@ -1928,6 +2191,7 @@ int main() {
 #include <unordered_set>
 #include <vector>
 
+// audit: closed-form (캐시 시뮬레이터의 미스 수를 N²/16, N² 같은 닫힌 식과 임계 보폭 이론으로 대조)
 // 2차원 배열은 메모리에서 행 우선(row-major)으로 놓인다: a[i][j] 의 주소 = base + (i·N + j)·4.  행 순서로 훑으면 연속 주소라 라인당 16 개가 적중하지만, 열 순서로 훑으면 한 번 접근할 때마다 N·4 바이트씩 건너뛰어 매번 다른 라인 → 미스 폭증.
 //  열 순회의 미스는 N 에 *매우 민감하다*: 보폭 N·4 바이트가 (라인 × 세트 수)의 약수에 가까우면 열의 원소들이 몇 안 되는 세트로 몰려 용량이 충분해도 서로 쫓아낸다(임계 보폭, critical stride).  행을 한 칸 더 길게(패딩) 잡으면 풀린다.
 //  ① 행 순서의 미스 = N²/16 (컴펄서리뿐)  ② 같은 배열을 열 순서로 훑으면 N = 512(보폭 2048 B → 세트 64 개 중 2 개만 사용)에서 미스 N² 개 — 행 순서의 16 배  ③ 행을 한 칸(513)만 늘려도 미스가 줄고, 8 칸(520, 32 바이트)이면 행 순서와 거의 같다
@@ -2800,6 +3064,7 @@ int main() {
 #include <thread>
 #include <vector>
 
+// audit: exhaustive (ABA 가 일어나는 모든 20 가지 인터리브를 열거하고 락 없는 스택은 보존 법칙으로 확인)
 // CAS(compare-and-swap): "현재 값이 expected 와 같으면 desired 로 바꾸고 성공, 아니면 실패하고 현재 값을 알려 준다" 를 한 번에 하는 원자 명령 (x86: cmpxchg).  락 없는 자료구조의 기본 블록: 읽고 → 계산하고 → CAS 로 반영을 시도하고, 실패하면(다른 스레드가 먼저 바꿈) 다시 시도한다.
 //  ABA 문제: 값이 A → B → A 로 바뀌어도 CAS 는 "그대로" 라고 판단한다.  해법: 포인터에 버전 번호(태그)를 함께 CAS.
 //  ① 의미: 성공하면 값이 바뀌고, 실패하면 expected 가 현재 값으로 갱신된다  ② 락 없는 스택 push 를 CAS 루프로: 4 스레드 × 5000 번, 모든 값이 정확히 한 번씩 들어간다(풀 기반 노드, 누수 없음)  ③ ABA 를 *모든 인터리빙 열거*로 증명: 스레드 1 이 pop(읽기 3 단계), 스레드 2 가 "A, B 를 pop 하고 B 를 해제한 뒤 A 를 다시 push" 하는 3 단계를 가질 때 20 가지 순서 중
@@ -2846,6 +3111,7 @@ int main() {
 #include <thread>
 #include <vector>
 
+// audit: exhaustive (메모리 모형의 모든 실행 순서를 열거해 가능한 결과 집합을 얻는다)
 // 메모리 장벽: CPU 와 컴파일러는 성능을 위해 서로 다른 주소에 대한 읽기/쓰기 순서를 바꾼다 (x86 도 "쓰기 뒤 읽기" 는 스토어 버퍼 때문에 순서가 바뀐다).
 //  고전 실험(Store Buffering, SB):  스레드 A: x = 1; r0 = y;     스레드 B: y = 1; r1 = x;   순차 일관성이라면 (r0, r1) = (0, 0) 은 불가능하지만, 장벽 없이는 둘 다 0 을 볼 수 있다.   seq_cst(또는 fence) 를 쓰면 절대 일어나지 않는다.
 //  운에 맡기는 실제 실행 대신 먼저 *메모리 모델을 모형화*해 가능한 결과 전부를 열거한다 — 각 스레드의 명령을 "앞선 명령이 끝나야 하는 관계(waits)" 로 묶고, 모든 실행 순서(스레드 선택 × 준비된 명령 선택)를 깊이 우선으로 훑는다.
@@ -2921,6 +3187,7 @@ int main() {
 #include <thread>
 #include <vector>
 
+// audit: exhaustive (메모리 모형의 모든 실행 순서를 열거해 가능한 결과 집합을 얻는다)
 // acquire/release: seq_cst 보다 약하지만 가장 흔한 "메시지 전달" 패턴에 충분한 순서 보장.  release 저장: 이 저장 "이전의 모든 쓰기" 가 이 저장과 함께 다른 스레드에 보이게 한다.  acquire 적재: release 가 쓴 값을 읽었다면, 그 release 이전의 모든 쓰기를 볼 수 있다.
 //  생산자가 data 를 쓰고 flag 를 release 로 올리면, flag 를 acquire 로 본 소비자는 반드시 최신 data 를 읽는다.  *한쪽만으로는 부족하다* — 모형(아래 열거기)으로 모든 조합을 확인한다.
 //  ① MP(메시지 전달): 금지하고 싶은 결과 (flag = 1, data = 0) 은 약한 모델에서 (relaxed, relaxed)·(release 저장, relaxed 적재)·(relaxed 저장, acquire 적재) 이면 *가능*하고 (release, acquire)·(acq_rel, acq_rel)·(seq_cst, seq_cst) 이면 불가능  ② 인과성의 전이(WRC): T0 이 x = 1, T1 이 x 를 acquire 로 읽은 뒤 y = 1(release), T2 가 y 를 acquire 로 읽은 뒤 x 를 읽을 때 (x=1 을 본 T1 → y=1 을 본 T2 → x=0) 은 release/acquire 로 금지, relaxed 로는 가능
