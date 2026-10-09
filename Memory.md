@@ -5565,46 +5565,141 @@ int main() {
 ## BufferOverflow()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <array>
-#include <cstdint>
-#include <cstring>
-#include <stdexcept>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 // 버퍼 오버플로: 버퍼 크기를 넘겨 인접한 메모리를 덮어쓴다.  탐지: 할당 앞뒤에 "레드존" 을 두고 특정 값을 채워 두었다가 해제할 때(또는 접근할 때) 값이 바뀌었는지 본다.
 // 안전한 C++: std::array::at / vector::at 의 범위 검사, 길이를 지정하는 복사 함수
-class GuardedBuffer {
-    static const size_t RZ = 8; std::vector<uint8_t> mem; size_t n;
+// 이 예제는 AddressSanitizer 의 핵심을 직접 만든다 — 그림자 메모리(shadow memory): 메모리 8바이트마다 상태 1바이트 {0: 전부 접근 가능, 1~7: 앞 k 바이트만 접근 가능, 음수: 왼쪽/오른쪽 레드존, 해제됨, 미할당}.
+//  모든 접근 앞에서 그림자만 검사하므로 바이트 정밀도로 off-by-one 을 잡고, 해제된 블록은 격리(quarantine)에 한동안 두어 해제 후 사용(UAF)을 잡는다(격리를 벗어나 재사용되면 별칭이 되어 못 잡는다).
+// 검증: ① 그림자 검사 == 바이트별 기준(할당 기록에서 바이트마다 분류를 따로 유지) — 무작위 할당/해제/이중 해제/잘못된 해제/접근(1·2·4·8 바이트, 정렬 안 된 것 포함) 60 000 번에서 오류 종류까지 일치
+//        ② 격리 닫힌 형태: 격리 용량이 블록 16 개일 때 해제 뒤 15 번 더 해제해도 낡은 포인터는 UAF 로 잡히고, 16 번 더 해제하면 그 블록이 재사용되어 못 잡는다
+//        ③ 스택 카나리 모형: 연속 덮어쓰기는 길이 > 버퍼일 때만 탐지(카나리 변경), 카나리 바이트를 알면 memcpy 로는 우회되지만 낮은 바이트가 0 인 카나리는 문자열 복사로는 못 넘는다, 색인으로 반환 주소를 직접 쓰면 카나리가 못 막는다
+//        ④ 안전한 복사: 직접 만든 copyBounded 가 snprintf 와 모든 (원본 길이, 대상 크기) 조합에서 같고, strncpy 는 가득 차면 널로 끝나지 않고 짧으면 0 으로 채운다
+enum Err { NONE, OVERFLOW, UNDERFLOW, USE_AFTER_FREE, WILD, DOUBLE_FREE, INVALID_FREE };
+
+class ShadowHeap {
+    static constexpr int8_t LEFT = -1, RIGHT = -2, FREED = -3, UNALLOC = -4;
+    struct Chunk { size_t addr, size, rounded; bool freed; };
+    std::vector<int8_t> shadow; std::map<size_t, Chunk> chunks; std::vector<size_t> quarantine; size_t qBytes = 0, qLimit, top; std::map<size_t, std::vector<size_t>> freeLists; size_t heapSize;
+    void setUser(const Chunk& c, bool live) {
+        for (size_t g = 0; g < c.rounded / 8; ++g) shadow[c.addr / 8 + g] = live ? 0 : FREED;
+        if (live && c.size % 8) shadow[c.addr / 8 + c.rounded / 8 - 1] = (int8_t)(c.size % 8);                      // 마지막 8 바이트 묶음은 앞 k 바이트만 사용
+    }
 public:
-    explicit GuardedBuffer(size_t size) : mem(size + 2 * RZ, 0xFE), n(size) { std::memset(&mem[RZ], 0, size); }
-    uint8_t* data() { return &mem[RZ]; }                                 // 사용자 영역
-    bool redzonesIntact() const {
-        for (size_t i = 0; i < RZ; i++) if (mem[i] != 0xFE || mem[RZ + n + i] != 0xFE) return false;
-        return true;
+    static constexpr size_t RZ = 16;
+    ShadowHeap(size_t size, size_t quarantineBytes) : shadow(size / 8, UNALLOC), qLimit(quarantineBytes), top(RZ), heapSize(size) {}
+    size_t alloc(size_t n) {                                                                                       // 실패하면 0
+        size_t rounded = (n + 7) & ~size_t(7); if (rounded == 0) rounded = 8; size_t addr;
+        auto fl = freeLists.find(rounded);
+        if (fl != freeLists.end() && !fl->second.empty()) { addr = fl->second.back(); fl->second.pop_back(); }        // 격리를 벗어난 같은 크기 블록을 재사용
+        else { if (top + rounded + 2 * RZ > heapSize) return 0; addr = top; top += rounded + 2 * RZ; for (size_t g = 0; g < RZ / 8; ++g) { shadow[(addr - RZ) / 8 + g] = LEFT; shadow[(addr + rounded) / 8 + g] = RIGHT; } }
+        Chunk c{addr, n, rounded, false}; chunks[addr] = c; setUser(c, true); return addr;
+    }
+    Err release(size_t addr) {
+        auto it = chunks.find(addr); if (it == chunks.end()) return INVALID_FREE; if (it->second.freed) return DOUBLE_FREE;
+        it->second.freed = true; setUser(it->second, false); quarantine.push_back(addr); qBytes += it->second.rounded;
+        while (qBytes > qLimit && !quarantine.empty()) { size_t old = quarantine.front(); quarantine.erase(quarantine.begin()); qBytes -= chunks[old].rounded; freeLists[chunks[old].rounded].push_back(old); }   // 격리 용량을 넘으면 가장 오래된 것부터 재사용 가능
+        return NONE;
+    }
+    Err check(size_t addr, size_t n) const {                                                                       // 접근 [addr, addr + n) 검사
+        for (size_t b = addr; b < addr + n; ++b) {
+            if (b / 8 >= shadow.size()) return WILD;
+            int8_t k = shadow[b / 8]; if (k == 0 || (k > 0 && b % 8 < (size_t)k)) continue;
+            return k == LEFT ? UNDERFLOW : (k == RIGHT || k > 0) ? OVERFLOW : k == FREED ? USE_AFTER_FREE : WILD;
+        }
+        return NONE;
     }
 };
 
+// 스택 카나리 모형: [버퍼 16][카나리 8][반환 주소 8]
+struct Frame {
+    uint8_t mem[32]; uint64_t canary; uint64_t evil = 0xDEADBEEFDEADBEEFULL;
+    explicit Frame(uint64_t c) : canary(c) { std::memset(mem, 0, sizeof mem); std::memcpy(mem + 16, &c, 8); uint64_t ret = 0x400123; std::memcpy(mem + 24, &ret, 8); }
+    uint64_t savedCanary() const { uint64_t c; std::memcpy(&c, mem + 16, 8); return c; }
+    uint64_t returnAddress() const { uint64_t r; std::memcpy(&r, mem + 24, 8); return r; }
+    bool canaryIntact() const { return savedCanary() == canary; }
+};
+void strcpyLike(uint8_t* dst, const uint8_t* src) { while (*src) *dst++ = *src++; *dst = 0; }                   // 널에서 멈추는 복사 (strcpy)
+
+size_t copyBounded(char* dst, size_t dstSize, const char* src) {                                                // snprintf 처럼: 항상 널 종단, 원본 전체 길이를 돌려준다
+    size_t n = std::strlen(src); if (dstSize) { size_t k = std::min(n, dstSize - 1); std::memcpy(dst, src, k); dst[k] = 0; } return n;
+}
+
 int main() {
-    GuardedBuffer b(16);
-    std::memset(b.data(), 'A', 16);                                      // 정확히 16바이트: 정상
-    assert(b.redzonesIntact());
-    b.data()[16] = 'X';                                                  // 1바이트 초과 쓰기(off-by-one)
-    assert(!b.redzonesIntact());                                         // 뒤쪽 레드존이 오염되어 탐지된다
-    GuardedBuffer under(16); under.data()[-1] = 'Y';
-    assert(!under.redzonesIntact());                                     // 앞쪽 언더플로도 탐지
-    std::array<int, 4> arr = {1, 2, 3, 4};
-    bool caught = false; try { arr.at(4) = 0; } catch (const std::out_of_range&) { caught = true; }
-    assert(caught);                                                      // at() 은 범위를 검사한다
-    char dst[8]; const char* src = "this string is too long";
-    std::strncpy(dst, src, sizeof(dst) - 1); dst[sizeof(dst) - 1] = '\0';   // 길이를 제한한 복사 + 항상 널 종단
-    assert(std::strlen(dst) == 7);
-    std::cout << "BufferOverflow: off-by-one detected through red zones." << std::endl;
+    // 원래 예
+    {   ShadowHeap h(4096, 1024); size_t p = h.alloc(16);
+        assert(h.check(p, 16) == NONE && h.check(p, 1) == NONE);                                                  // 정확히 16 바이트: 정상
+        assert(h.check(p + 16, 1) == OVERFLOW && h.check(p - 1, 1) == UNDERFLOW);                                 // off-by-one 과 언더플로
+        std::array<int, 4> arr = {1, 2, 3, 4}; bool caught = false; try { arr.at(4) = 0; } catch (const std::out_of_range&) { caught = true; } assert(caught); }
+    // ① 그림자 검사 == 바이트별 기준
+    std::mt19937 rng(77); long accesses = 0, byKind[7] = {0, 0, 0, 0, 0, 0, 0};
+    {   const size_t SIZE = 1 << 16; ShadowHeap h(SIZE, 2048); std::vector<Err> truth(SIZE, WILD); struct Rec { size_t addr, n, rounded; bool freed; }; std::vector<Rec> recs;
+        auto fill = [&](size_t a, size_t len, Err e) { for (size_t i = 0; i < len; ++i) truth[a + i] = e; };
+        for (int step = 0; step < 60000; ++step) {
+            int op = (int)(rng() % 100);
+            if (op < 30) {
+                size_t n = 1 + rng() % 100; size_t a = h.alloc(n); if (!a) continue; size_t r = (n + 7) & ~size_t(7);
+                fill(a - ShadowHeap::RZ, ShadowHeap::RZ, UNDERFLOW); fill(a, n, NONE); fill(a + n, r - n + ShadowHeap::RZ, OVERFLOW);                       // 바이트마다 분류를 따로 유지 (왼쪽 레드존, 사용자, 오른쪽 슬랙 + 레드존)
+                bool reused = false; for (auto& rec : recs) { if (rec.addr == a) { rec = {a, n, r, false}; reused = true; } } if (!reused) recs.push_back({a, n, r, false});
+            } else if (op < 48 && !recs.empty()) {
+                Rec& rec = recs[rng() % recs.size()]; Err e = h.release(rec.addr);
+                if (rec.freed) assert(e == DOUBLE_FREE); else { assert(e == NONE); rec.freed = true; fill(rec.addr, rec.rounded, USE_AFTER_FREE); }                         // 해제된 구간은 반올림한 크기 전체가 UAF
+            } else if (op < 50) { size_t bogus = 8 * (1 + rng() % 8000); bool known = false; for (auto& rec : recs) known |= rec.addr == bogus; if (!known) assert(h.release(bogus) == INVALID_FREE); }
+            else {
+                size_t a, w = (size_t)1 << (rng() % 4);
+                if (!recs.empty() && rng() % 10) { Rec& rec = recs[rng() % recs.size()]; long off = (long)(rng() % (rec.n + 48)) - 24; if ((long)rec.addr + off < 0) off = 0; a = (size_t)((long)rec.addr + off); } else a = rng() % (SIZE + 64);
+                Err want = NONE; for (size_t b = a; b < a + w; ++b) { Err e = b < SIZE ? truth[b] : WILD; if (e != NONE) { want = e; break; } }
+                assert(h.check(a, w) == want); ++accesses; ++byKind[want];
+            }
+        }
+        assert(byKind[NONE] > 5000 && byKind[OVERFLOW] > 500 && byKind[UNDERFLOW] > 500 && byKind[USE_AFTER_FREE] > 500 && byKind[WILD] > 100); }
+    // ② 격리
+    {   const size_t Q = 16 * 64; auto scenario = [&](int extraFrees) {
+            ShadowHeap h(1 << 16, Q); std::vector<size_t> others; size_t victim = h.alloc(64); for (int i = 0; i < 20; ++i) others.push_back(h.alloc(64));
+            assert(h.release(victim) == NONE); for (int i = 0; i < extraFrees; ++i) assert(h.release(others[i]) == NONE);
+            if (extraFrees >= 16) { size_t again = h.alloc(64); assert(again == victim); }                                                                         // 격리를 벗어난 블록이 재사용된다
+            return h.check(victim, 4); };
+        assert(scenario(15) == USE_AFTER_FREE);                                                                      // 격리에 16 개: 아직 격리 안 -> 낡은 포인터를 잡는다
+        assert(scenario(16) == NONE); }                                                                              // 17 개째가 들어와 victim 이 밀려나 재사용 -> 별칭이라 못 잡는다 (격리의 한계)
+    // ③ 스택 카나리 모형
+    {   const uint64_t canary = 0x5a3c9e1d7b2f4a00ULL;                                                                // 낮은 바이트가 0 인 "터미네이터" 카나리
+        for (int len = 0; len <= 32; ++len) { Frame f(canary); std::memset(f.mem, 'A', (size_t)len); assert(f.canaryIntact() == (len <= 16)); assert((f.returnAddress() == 0x400123) == (len <= 24)); }   // 연속 덮어쓰기: 길이 > 16 이면 카나리가 먼저 깨진다
+        Frame leaked(canary); uint8_t payload[32]; std::memset(payload, 'A', 16); std::memcpy(payload + 16, &canary, 8); std::memcpy(payload + 24, &leaked.evil, 8); std::memcpy(leaked.mem, payload, 32);
+        assert(leaked.canaryIntact() && leaked.returnAddress() == leaked.evil);                                      // 카나리 값이 새면 memcpy 로 우회: 카나리는 반환 주소를 못 지킨다
+        Frame str(canary); uint8_t sp[33]; std::memcpy(sp, payload, 32); sp[32] = 0; strcpyLike(str.mem, sp);
+        assert(str.canaryIntact() && str.returnAddress() == 0x400123);                                               // 문자열 복사는 카나리의 0 바이트에서 멈춘다 -> 반환 주소에 못 닿는다
+        Frame idx(canary); idx.mem[24] = 0x99; assert(idx.canaryIntact() && idx.returnAddress() != 0x400123); }      // 색인이 건너뛰는 쓰기는 카나리를 건드리지 않고 반환 주소를 바꾼다
+    // ④ 안전한 복사
+    {   long cases = 0;
+        for (size_t srcLen = 0; srcLen <= 20; ++srcLen) for (size_t dstSize = 0; dstSize <= 24; ++dstSize) {
+            std::string src(srcLen, 'x'); for (size_t i = 0; i < srcLen; ++i) src[i] = (char)('a' + i % 26);
+            std::vector<char> mine(dstSize + 4, '#'), ref(dstSize + 4, '#');
+            size_t r1 = copyBounded(mine.data(), dstSize, src.c_str()); int r2 = std::snprintf(ref.data(), dstSize, "%s", src.c_str());
+            assert(r1 == (size_t)r2 && mine == ref);                                                                  // 반환값(원본 길이)과 대상 버퍼의 모든 바이트가 snprintf 와 같다 (경계 밖 4 바이트도 건드리지 않음)
+            for (size_t i = dstSize; i < mine.size(); ++i) assert(mine[i] == '#');
+            if (dstSize) assert(std::strlen(mine.data()) == std::min(srcLen, dstSize - 1));
+            ++cases;
+        }
+        const char* volatile longSrc = "0123456789"; char d1[8]; std::memset(d1, '#', sizeof d1); std::strncpy(d1, longSrc, sizeof d1); assert(d1[7] == '7' && std::memchr(d1, 0, sizeof d1) == nullptr);        // strncpy: 가득 차면 널로 끝나지 않는다
+        char d2[8]; std::memset(d2, '#', sizeof d2); std::strncpy(d2, "ab", sizeof d2); assert(d2[2] == 0 && d2[7] == 0);                                              // 짧으면 나머지를 전부 0 으로 채운다
+        assert(cases == 21 * 25); }
+    std::cout << "BufferOverflow verified: shadow memory matched the per-byte oracle on " << accesses << " accesses (" << byKind[OVERFLOW] << " overflows, " << byKind[UNDERFLOW] << " underflows, "
+              << byKind[USE_AFTER_FREE] << " use-after-free); quarantine boundary, canary limits and snprintf equivalence confirmed." << std::endl;
     return 0;
 }
-// Time Complexity: 검사 O(레드존 크기)
-// Space Complexity: 할당당 2 · 레드존
+// Time Complexity: 접근 검사 O(접근 크기), 할당·해제 O(1) (격리 큐 제외)
+// Space Complexity: 힙 크기 / 8 (그림자) + 할당당 2 · 레드존
 ```
 ## HeapCorruption()
 ### 대표코드
@@ -5707,42 +5802,110 @@ int main() {
 ## MemoryMappedFile()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <random>
 #include <string>
-#include <cassert>
+#include <vector>
 #if defined(__unix__) || defined(__APPLE__)
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 // 메모리 맵 파일: mmap 으로 파일을 프로세스 주소 공간에 붙이면 read/write 시스템 호출 없이 포인터로 파일 내용을 읽고 쓴다.
 // 페이지를 처음 만질 때 커널이 파일에서 읽어 오고(페이지 캐시와 공유 -> 복사 1회 절약), MAP_SHARED 로 수정하면 파일에 반영된다
+// 이 예제는 의미를 하나씩 확인하고, 마지막에 mmap 위에 영속 로그를 만들어 닫았다 다시 열어도 내용이 보존되는지 대조한다:
+//  ① MAP_SHARED 쓰기는 pread 로 보이고, MAP_PRIVATE 쓰기는 파일에 안 간다(쓰기 시 복사)  ② 같은 파일의 두 MAP_SHARED 매핑은 msync 없이도 서로의 쓰기를 즉시 본다(같은 페이지 캐시)
+//  ③ 파일 끝이 페이지 중간이면 그 페이지의 나머지는 0 으로 읽히고 거기 쓴 것은 파일에 반영되지 않는다(파일 크기 불변)  ④ 오프셋은 페이지 크기의 배수여야 한다(아니면 EINVAL)
+//  ⑤ 읽는 세 방법 — read, pread, mmap — 이 무작위 위치·길이 3 000 번에서 같은 바이트  ⑥ 영속 로그(머리 + 항목 배열): 항목을 쓰고 커밋(개수 갱신)한 뒤 msync·munmap·재매핑, 파일을 ftruncate 로 늘려 다시 매핑해도 이전 항목이 보존 —
+//        std::vector 모형과 5 번의 열기/닫기·증설을 거쳐 일치, 커밋하지 않은 항목은 다시 열면 보이지 않음(찢어진 쓰기 모형)
+#if defined(__unix__) || defined(__APPLE__)
+struct LogHeader { uint64_t magic, count, capacity; };
+class MappedLog {                                                                              // [LogHeader][uint64_t 항목 capacity 개]
+    int fd = -1; char* base = nullptr; size_t bytes = 0; std::string path;
+    static size_t sizeFor(uint64_t capacity) { return sizeof(LogHeader) + capacity * sizeof(uint64_t); }
+    void mapAll(size_t n) { base = (char*)mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); assert(base != MAP_FAILED); bytes = n; }
+public:
+    explicit MappedLog(const std::string& p) : path(p) {
+        fd = open(path.c_str(), O_RDWR | O_CREAT, 0600); assert(fd >= 0); struct stat st; fstat(fd, &st);
+        if (st.st_size == 0) { assert(ftruncate(fd, (off_t)sizeFor(4)) == 0); mapAll(sizeFor(4)); *hdr() = {0x4c4f4721, 0, 4}; }
+        else { mapAll((size_t)st.st_size); assert(hdr()->magic == 0x4c4f4721); }
+    }
+    ~MappedLog() { if (base) { msync(base, bytes, MS_SYNC); munmap(base, bytes); } if (fd >= 0) close(fd); }
+    LogHeader* hdr() { return reinterpret_cast<LogHeader*>(base); }
+    uint64_t* items() { return reinterpret_cast<uint64_t*>(base + sizeof(LogHeader)); }
+    uint64_t count() { return hdr()->count; }
+    void stage(uint64_t v) {                                                                    // 항목만 쓰고 개수는 올리지 않는다 (아직 커밋 전)
+        if (hdr()->count == hdr()->capacity) { grow(); }
+        items()[hdr()->count] = v;
+    }
+    void commit() { hdr()->count++; msync(base, bytes, MS_SYNC); }                              // 개수를 올리는 것이 커밋 지점
+    void append(uint64_t v) { stage(v); commit(); }
+    void grow() {                                                                               // ftruncate 로 파일을 두 배로 늘리고 다시 매핑 (주소가 바뀔 수 있다)
+        uint64_t newCap = hdr()->capacity * 2; msync(base, bytes, MS_SYNC); munmap(base, bytes); assert(ftruncate(fd, (off_t)sizeFor(newCap)) == 0); mapAll(sizeFor(newCap)); hdr()->capacity = newCap;
+    }
+};
+#endif
+
 int main() {
 #if defined(__unix__) || defined(__APPLE__)
-    char path[] = "/tmp/ds_mmap_XXXXXX";
-    int fd = mkstemp(path); assert(fd >= 0);
-    const long ps = sysconf(_SC_PAGESIZE);
-    std::string content(2 * ps, 'a'); content.replace(ps, 5, "HELLO");   // 두 페이지짜리 파일, 둘째 페이지 앞에 HELLO
+    char path[] = "/tmp/ds_mmap_XXXXXX"; int fd = mkstemp(path); assert(fd >= 0); const long ps = sysconf(_SC_PAGESIZE);
+    std::string content(2 * ps, 'a'); content.replace(ps, 5, "HELLO");                                  // 두 페이지짜리 파일, 둘째 페이지 앞에 HELLO
     assert(write(fd, content.data(), content.size()) == (ssize_t)content.size());
-
-    char* m = (char*)mmap(nullptr, content.size(), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    assert(m != MAP_FAILED);
-    assert(m[0] == 'a' && std::memcmp(m + ps, "HELLO", 5) == 0);          // 포인터로 파일 내용을 읽는다
-    std::memcpy(m + 10, "WORLD", 5);                                       // 메모리에 쓰면
-    msync(m, content.size(), MS_SYNC);                                     // 파일에 반영한다
-    char check[6] = {0}; assert(pread(fd, check, 5, 10) == 5);
-    assert(std::strcmp(check, "WORLD") == 0);                              // read 로 읽은 파일 내용에서도 보인다
-    munmap(m, content.size()); close(fd); unlink(path);
-    std::cout << "MemoryMappedFile: file edited through a pointer and visible via pread." << std::endl;
+    char* m = (char*)mmap(nullptr, content.size(), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); assert(m != MAP_FAILED);
+    assert(m[0] == 'a' && std::memcmp(m + ps, "HELLO", 5) == 0);                                        // 포인터로 파일 내용을 읽는다
+    std::memcpy(m + 10, "WORLD", 5); msync(m, content.size(), MS_SYNC);
+    char check[6] = {0}; assert(pread(fd, check, 5, 10) == 5 && std::strcmp(check, "WORLD") == 0);       // ① 공유 매핑의 쓰기는 read 로 보인다
+    // ① 비공개 매핑: 쓰기 시 복사
+    char* priv = (char*)mmap(nullptr, content.size(), PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0); assert(priv != MAP_FAILED);
+    std::memcpy(priv + 20, "PRIVATE", 7); char c2[8] = {0}; assert(pread(fd, c2, 7, 20) == 7 && std::memcmp(c2, "aaaaaaa", 7) == 0 && std::memcmp(priv + 20, "PRIVATE", 7) == 0 && std::memcmp(m + 20, "aaaaaaa", 7) == 0);   // 파일과 공유 매핑은 그대로
+    // ② 두 공유 매핑은 msync 없이도 서로의 쓰기를 본다
+    char* m2 = (char*)mmap(nullptr, content.size(), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); assert(m2 != MAP_FAILED && m2 != m);
+    m[100] = 'X'; assert(m2[100] == 'X'); m2[101] = 'Y'; assert(m[101] == 'Y');
+    munmap(m2, content.size()); munmap(priv, content.size()); munmap(m, content.size());
+    // ④ 정렬되지 않은 오프셋
+    assert(mmap(nullptr, ps, PROT_READ, MAP_SHARED, fd, 1) == MAP_FAILED);
+    close(fd); unlink(path);
+    // ③ 파일 끝이 페이지 중간
+    {   char p2[] = "/tmp/ds_mmap2_XXXXXX"; int f2 = mkstemp(p2); assert(f2 >= 0); std::string small(5000, 'z'); assert(write(f2, small.data(), small.size()) == 5000);
+        char* mm = (char*)mmap(nullptr, 2 * ps, PROT_READ | PROT_WRITE, MAP_SHARED, f2, 0); assert(mm != MAP_FAILED);
+        for (long i = 5000; i < 2 * ps && i < 8192; ++i) assert(mm[i] == 0);                                // 파일 끝 뒤 같은 페이지의 나머지는 0
+        mm[5100] = 'Q'; msync(mm, ps * 2, MS_SYNC); struct stat st; fstat(f2, &st); assert(st.st_size == 5000);                                  // 쓰기는 파일 크기를 늘리지 않는다
+        char tail[1] = {0}; assert(pread(f2, tail, 1, 5100) == 0);                                          // 읽어도 파일 끝이라 아무것도 없다
+        munmap(mm, 2 * ps); close(f2); unlink(p2); }
+    // ⑤ 세 가지 읽기 방법
+    {   char p3[] = "/tmp/ds_mmap3_XXXXXX"; int f3 = mkstemp(p3); assert(f3 >= 0); std::mt19937 rng(5); std::vector<unsigned char> data(1 << 20); for (auto& b : data) b = (unsigned char)rng();
+        assert(write(f3, data.data(), data.size()) == (ssize_t)data.size());
+        unsigned char* mm = (unsigned char*)mmap(nullptr, data.size(), PROT_READ, MAP_SHARED, f3, 0); assert(mm != MAP_FAILED);
+        long agree = 0; for (int i = 0; i < 3000; ++i) {
+            size_t off = rng() % data.size(), len = 1 + rng() % std::min<size_t>(5000, data.size() - off); std::vector<unsigned char> viaPread(len), viaRead(len);
+            assert(pread(f3, viaPread.data(), len, (off_t)off) == (ssize_t)len); assert(lseek(f3, (off_t)off, SEEK_SET) == (off_t)off); assert(read(f3, viaRead.data(), len) == (ssize_t)len);
+            assert(viaPread == viaRead && std::memcmp(mm + off, viaRead.data(), len) == 0 && std::memcmp(data.data() + off, mm + off, len) == 0); ++agree; }
+        assert(agree == 3000); munmap(mm, data.size()); close(f3); unlink(p3); }
+    // ⑥ 영속 로그
+    {   char p4[] = "/tmp/ds_maplog_XXXXXX"; int f4 = mkstemp(p4); assert(f4 >= 0); close(f4); unlink(p4); std::string lp = p4; std::vector<uint64_t> model; std::mt19937_64 rng(6); int sessions = 5; long total = 0;
+        for (int s = 0; s < sessions; ++s) {
+            MappedLog log(lp); assert(log.count() == model.size());                                       // 다시 열었더니 이전 항목이 그대로
+            for (uint64_t i = 0; i < log.count(); ++i) assert(log.items()[i] == model[i]);
+            int n = 50 + (int)(rng() % 400); for (int i = 0; i < n; ++i) { uint64_t v = rng(); log.append(v); model.push_back(v); ++total; }
+            if (s % 2 == 1) { log.stage(0xDEADBEEF); }                                                    // 커밋하지 않은 항목: 개수를 올리지 않았으므로 다시 열면 보이지 않는다
+            assert(log.count() == model.size());
+        }
+        { MappedLog log(lp); assert(log.count() == model.size() && log.hdr()->capacity >= log.count()); for (size_t i = 0; i < model.size(); ++i) assert(log.items()[i] == model[i]); }
+        unlink(lp.c_str()); assert(total > 500); }
+    std::cout << "MemoryMappedFile verified: shared/private semantics, EOF-page zero fill, three read paths agree on 3000 random reads, and a persistent log survived 5 close/reopen/grow cycles." << std::endl;
 #else
     std::cout << "MemoryMappedFile: POSIX-only demonstration (mmap)" << std::endl;
 #endif
     return 0;
 }
-// Time Complexity: 접근 시 페이지 폴트 O(1) (캐시에 있으면 복사 없음)
+// Time Complexity: 접근 시 페이지 폴트 O(1) (캐시에 있으면 복사 없음), 증설은 재매핑 O(1) + 새 페이지만 폴트
 // Space Complexity: 페이지 캐시 공유
 ```
 ## SharedMemory()
@@ -5817,51 +5980,107 @@ int main() {
 ## CopyOnWrite()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <memory>
-#include <string>
+#include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <random>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
 
 // 쓰기 시 복사(CoW): 복사본을 만든다고 해 놓고 실제 복사는 "쓰는 순간" 까지 미룬다.  fork 직후 부모와 자식은 같은 물리 페이지를 읽기 전용으로 공유하다가,
 // 어느 쪽이 쓰면 그 페이지만 복제한다 -> fork 가 빠르고 메모리를 아낀다.  사용자 공간에서도 문자열·버퍼에 같은 기법을 쓴다
+// 사용자 공간 CoW 문자열을 직접 만든다: 공유 블록 + 원자적 참조 횟수, 쓰기 직전 참조가 둘 이상이면 분리(detach).
+// 검증: ① 무작위 연산(복사·대입·쓰기·읽기·소멸) 20 000 번을 "핸들마다 독립된 std::string" 모형과 대조 — 모든 핸들의 내용이 같고, owners() 가 "같은 블록을 공유하는 핸들 수" 와 같고(모형이 공유 그룹을 따로 추적),
+//        분리 횟수와 살아 있는 블록 수가 모형과 같다  ② 스레드 8 개가 각자 복사본을 쓰기: 원본 핸들이 살아 있는 동안은 모두가 정확히 한 번씩 분리하고(8 번), 원본은 안 바뀌고, 소멸 뒤 블록이 하나도 안 남는다
+//        ③ (POSIX) 진짜 fork: 자식이 쓴 값은 부모에게 안 보이고, 부모가 먼저 써도 자식은 옛 값을 보며, MAP_SHARED 는 대조적으로 서로 보인다.  페이지 폴트 수: 쓰면 페이지마다 CoW 폴트가 난다
 class CowString {
-    std::shared_ptr<std::string> data;
+    struct Block { std::atomic<long> refs{1}; std::string data; explicit Block(std::string s) : data(std::move(s)) { ++alive; } ~Block() { --alive; } };
+    Block* b;
+    void release() { if (b->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) delete b; }
 public:
-    explicit CowString(std::string s) : data(std::make_shared<std::string>(std::move(s))) {}
-    CowString(const CowString&) = default;                               // 복사는 포인터 공유 O(1)
-    const std::string& str() const { return *data; }
-    long owners() const { return data.use_count(); }
+    static std::atomic<long> alive, detaches;
+    explicit CowString(std::string s) : b(new Block(std::move(s))) {}
+    CowString(const CowString& o) : b(o.b) { b->refs.fetch_add(1, std::memory_order_relaxed); }       // 복사는 포인터 공유 O(1)
+    CowString& operator=(const CowString& o) { if (this != &o) { o.b->refs.fetch_add(1, std::memory_order_relaxed); release(); b = o.b; } return *this; }
+    ~CowString() { release(); }
+    const std::string& str() const { return b->data; }
+    long owners() const { return b->refs.load(std::memory_order_acquire); }
     void set(size_t i, char c) {
-        if (data.use_count() > 1) data = std::make_shared<std::string>(*data);   // 공유 중이면 쓰기 직전에 분리(detach)
-        (*data)[i] = c;
+        if (b->refs.load(std::memory_order_acquire) > 1) { Block* nb = new Block(b->data); ++detaches; release(); b = nb; }      // 공유 중이면 쓰기 직전에 분리(detach)
+        b->data[i] = c;
     }
 };
+std::atomic<long> CowString::alive{0};
+std::atomic<long> CowString::detaches{0};
 
 int main() {
-    CowString a("hello"); CowString b = a;
-    assert(a.owners() == 2 && &a.str() == &b.str());                       // 복사 후에도 같은 버퍼 공유
-    b.set(0, 'J');
-    assert(a.str() == "hello" && b.str() == "Jello");                      // 쓰는 순간 분리 — 원본은 그대로
-    assert(a.owners() == 1 && b.owners() == 1 && &a.str() != &b.str());
+    {   CowString a("hello"); CowString b = a;
+        assert(a.owners() == 2 && &a.str() == &b.str());                       // 복사 후에도 같은 버퍼 공유
+        b.set(0, 'J'); assert(a.str() == "hello" && b.str() == "Jello" && a.owners() == 1 && b.owners() == 1 && &a.str() != &b.str()); }
+    assert(CowString::alive == 0);
+    // ① 모형과 대조
+    {   std::mt19937 rng(41); CowString::detaches = 0; std::vector<CowString> handles; std::vector<std::string> model; std::vector<int> group; int nextGroup = 0; long expectedDetaches = 0, writes = 0, shared = 0;
+        auto groupSize = [&](int g) { return (long)std::count(group.begin(), group.end(), g); };
+        handles.emplace_back(std::string("abcdefgh")); model.push_back("abcdefgh"); group.push_back(nextGroup++);
+        for (int step = 0; step < 20000; ++step) {
+            int op = (int)(rng() % 100); size_t i = rng() % handles.size();
+            if (op < 22 && handles.size() < 40) { handles.push_back(handles[i]); model.push_back(model[i]); group.push_back(group[i]); }              // 복사
+            else if (op < 30 && handles.size() > 1) { size_t j = rng() % handles.size(); handles[i] = handles[j]; model[i] = model[j]; group[i] = group[j]; }  // 대입
+            else if (op < 70) { size_t pos = rng() % model[i].size(); char c = (char)('A' + rng() % 26); if (groupSize(group[i]) > 1) { ++expectedDetaches; group[i] = nextGroup++; ++shared; } handles[i].set(pos, c); model[i][pos] = c; ++writes; }   // 쓰기
+            else if (op < 78 && handles.size() > 1) { handles.erase(handles.begin() + (long)i); model.erase(model.begin() + (long)i); group.erase(group.begin() + (long)i); }              // 소멸
+            else { assert(handles[i].str() == model[i]); }                                                                                                                                 // 읽기
+            if (step % 25 == 0) {
+                std::set<int> groups(group.begin(), group.end());
+                for (size_t k = 0; k < handles.size(); ++k) { assert(handles[k].str() == model[k] && handles[k].owners() == groupSize(group[k])); }
+                assert(CowString::alive == (long)groups.size() && CowString::detaches == expectedDetaches);
+            }
+        }
+        assert(shared > 300 && writes > 5000); }
+    assert(CowString::alive == 0);                                                                              // 모든 핸들이 사라지면 블록도 없다
+    // ② 스레드 8 개
+    {   CowString::detaches = 0; const int T = 8; CowString base(std::string(64, 'o')); std::vector<CowString> copies(T, base); std::vector<std::string> results(T); std::vector<std::thread> ts;
+        for (int t = 0; t < T; ++t) ts.emplace_back([&, t] { std::mt19937 r(t); std::string mine(64, 'o'); for (int i = 0; i < 2000; ++i) { size_t pos = r() % 64; char c = (char)('a' + r() % 26); copies[t].set(pos, c); mine[pos] = c; } results[t] = mine; });
+        for (auto& th : ts) th.join();
+        assert(CowString::detaches == T && base.str() == std::string(64, 'o') && base.owners() == 1);           // 원본 핸들이 살아 있어서 첫 쓰기마다 정확히 한 번씩 분리
+        for (int t = 0; t < T; ++t) { assert(copies[t].str() == results[t] && copies[t].owners() == 1); } }
+    assert(CowString::alive == 0);
 #if defined(__unix__) || defined(__APPLE__)
-    int* p = (int*)mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    *p = 100;
-    int fds[2]; assert(pipe(fds) == 0);
-    pid_t pid = fork();
-    if (pid == 0) {                                                        // 자식: 같은 가상 주소에 쓰면 자기 사본만 바뀐다
-        *p = 999; int seen = *p; (void)!write(fds[1], &seen, sizeof seen); _exit(0);
-    }
-    int childSaw = 0; assert(read(fds[0], &childSaw, sizeof childSaw) == sizeof childSaw);
-    wait(nullptr);
-    assert(childSaw == 999 && *p == 100);                                  // 부모의 값은 그대로 (페이지가 복제됨)
-    munmap(p, 4096);
+    // ③ 진짜 fork (스레드가 모두 끝난 뒤)
+    {   const long ps = sysconf(_SC_PAGESIZE); const int PAGES = 64;
+        char* priv = (char*)mmap(nullptr, PAGES * ps, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); char* shr = (char*)mmap(nullptr, ps, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        assert(priv != MAP_FAILED && shr != MAP_FAILED); for (int i = 0; i < PAGES; ++i) priv[i * ps] = 100; shr[0] = 1;
+        int toChild[2], fromChild[2]; assert(pipe(toChild) == 0 && pipe(fromChild) == 0);
+        pid_t pid = fork();
+        if (pid == 0) {                                                                                         // 자식
+            struct rusage r0, r1, r2; getrusage(RUSAGE_SELF, &r0); long sum = 0; for (int i = 0; i < PAGES; ++i) sum += priv[i * ps]; getrusage(RUSAGE_SELF, &r1);       // 읽기: 페이지를 공유
+            for (int i = 0; i < PAGES; ++i) { priv[i * ps] = 7; }
+            getrusage(RUSAGE_SELF, &r2);                                                                                  // 쓰기: 페이지마다 복제
+            long readFaults = r1.ru_minflt - r0.ru_minflt, writeFaults = r2.ru_minflt - r1.ru_minflt; (void)sum;
+            char go; (void)!read(toChild[0], &go, 1);                                                           // 부모가 자기 쓰기를 마칠 때까지 기다린다
+            long report[4] = {priv[0], shr[0], readFaults, writeFaults}; (void)!write(fromChild[1], report, sizeof report); _exit(0);
+        }
+        priv[0] = 55; shr[0] = 2;                                                                               // 부모가 자식의 쓰기 뒤에 쓴다 (자식이 읽기 전에)
+        char go = 1; (void)!write(toChild[1], &go, 1);
+        long report[4]; assert(read(fromChild[0], report, sizeof report) == (ssize_t)sizeof report); int status; waitpid(pid, &status, 0);
+        assert(report[0] == 7 && priv[0] == 55);                                                                // 비공개 매핑: 서로 상대의 쓰기가 안 보인다 (자식 7, 부모 55)
+        assert(report[1] == 2 && shr[0] == 2);                                                                  // 공유 매핑: 부모의 쓰기가 자식에게도 보인다
+        assert(report[3] >= PAGES && report[2] < PAGES / 2);                                                    // 쓰기는 페이지마다 CoW 폴트, 읽기는 거의 폴트 없음
+        munmap(priv, PAGES * ps); munmap(shr, ps); close(toChild[0]); close(toChild[1]); close(fromChild[0]); close(fromChild[1]);
+        std::cout << "CopyOnWrite verified: user-space CoW matched the value-semantics model (" << CowString::detaches << " detaches in the last phase), kernel CoW faulted " << report[3] << " times for " << PAGES << " written pages vs " << report[2] << " for reads." << std::endl; }
+#else
+    std::cout << "CopyOnWrite verified (user-space part)." << std::endl;
 #endif
-    std::cout << "CopyOnWrite: writer got its own copy, original untouched." << std::endl;
     return 0;
 }
 // Time Complexity: 복사 O(1), 첫 쓰기 O(크기)
@@ -5870,18 +6089,27 @@ int main() {
 ## ZeroCopy()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
-#include <cassert>
 #if defined(__linux__)
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/sendfile.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #endif
 
@@ -5889,32 +6117,57 @@ int main() {
 //  read+write: 디스크 -> 커널 버퍼 -> (복사) 사용자 버퍼 -> (복사) 커널 버퍼 -> 목적지 : 사용자 공간 복사 2번, 문맥 전환 4번
 //  sendfile  : 디스크 -> 커널 버퍼 -> 목적지                                          : 사용자 공간 복사 0번 (웹 서버가 정적 파일을 보내는 방식)
 // 같은 아이디어를 사용자 공간에서도 쓴다: string_view 로 부분 문자열을 복사 없이 가리킨다
+// 이 예제는 방법별로 (1) 결과가 같은지(체크섬) (2) 사용자 공간을 거친 바이트 수 (3) 시스템 호출 수를 센다:
+//  read/write 루프, mmap + write, sendfile(파일 -> 파일, 파일 -> 소켓), copy_file_range, splice(파일 -> 파이프 -> 파일); 이어서 writev(머리 + 본문을 이어 붙이지 않고 보내기) 와 string_view 토크나이저(복사 없음)
+uint64_t fnv(const std::string& s) { uint64_t h = 1469598103934665603ULL; for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; } return h; }
+std::string slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::ostringstream ss; ss << f.rdbuf(); return ss.str(); }
+std::vector<std::string_view> splitViews(std::string_view s, char sep) { std::vector<std::string_view> v; size_t i = 0; while (i <= s.size()) { size_t j = s.find(sep, i); if (j == std::string_view::npos) j = s.size(); v.push_back(s.substr(i, j - i)); i = j + 1; } return v; }
+std::vector<std::string> splitCopies(const std::string& s, char sep) { std::vector<std::string> v; size_t i = 0; while (i <= s.size()) { size_t j = s.find(sep, i); if (j == std::string::npos) j = s.size(); v.push_back(s.substr(i, j - i)); i = j + 1; } return v; }
+
 int main() {
-    std::string src = "/tmp/ds_zc_src.bin", dst1 = "/tmp/ds_zc_dst1.bin", dst2 = "/tmp/ds_zc_dst2.bin";
-    std::string payload(300000, 'x'); for (size_t i = 0; i < payload.size(); i += 97) payload[i] = char('a' + i % 26);
+    std::string src = "/tmp/ds_zc_src.bin"; std::string payload(300000, 'x'); for (size_t i = 0; i < payload.size(); i += 97) payload[i] = char('a' + i % 26);
     { std::ofstream f(src, std::ios::binary); f << payload; }
 #if defined(__linux__)
-    long userCopied = 0;                                             // 사용자 공간 버퍼를 거친 바이트 수
-    { int in = open(src.c_str(), O_RDONLY), out = open(dst1.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-      std::vector<char> buf(16384); ssize_t n;
-      while ((n = read(in, buf.data(), buf.size())) > 0) { userCopied += n; (void)!write(out, buf.data(), n); }          // 전통적인 방식
-      close(in); close(out); }
-    long viaSendfile = 0, userCopied2 = 0;
-    { int in = open(src.c_str(), O_RDONLY), out = open(dst2.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-      struct stat st; fstat(in, &st); off_t off = 0;
-      while (off < st.st_size) { ssize_t n = sendfile(out, in, &off, st.st_size - off); if (n <= 0) break; viaSendfile += n; }   // 커널 안에서만 이동
-      close(in); close(out); }
-    auto slurp = [](const std::string& p) { std::ifstream f(p, std::ios::binary); std::ostringstream ss; ss << f.rdbuf(); return ss.str(); };
-    assert(slurp(dst1) == payload && slurp(dst2) == payload);         // 결과는 동일
-    assert(userCopied == (long)payload.size() && userCopied2 == 0 && viaSendfile == (long)payload.size());     // 사용자 공간 복사: 전체 vs 0
-    std::remove(dst1.c_str()); std::remove(dst2.c_str());
+    const size_t N = payload.size(); const uint64_t want = fnv(payload); const size_t BUF = 16384; struct Stat { long userBytes = 0, calls = 0; }; Stat st[6]; const char* dst[6] = {"/tmp/ds_zc_d0", "/tmp/ds_zc_d1", "/tmp/ds_zc_d2", "/tmp/ds_zc_d3", "/tmp/ds_zc_d4", "/tmp/ds_zc_d5"};
+    auto openIn = [&] { return open(src.c_str(), O_RDONLY); }; auto openOut = [&](const char* p) { return open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644); };
+    {   int in = openIn(), out = openOut(dst[0]); std::vector<char> buf(BUF); ssize_t n;                                       // 0: read + write 루프
+        while ((n = read(in, buf.data(), buf.size())) > 0) { ++st[0].calls; st[0].userBytes += n; (void)!write(out, buf.data(), (size_t)n); ++st[0].calls; } ++st[0].calls; close(in); close(out); }
+    {   int in = openIn(), out = openOut(dst[1]); void* m = mmap(nullptr, N, PROT_READ, MAP_PRIVATE, in, 0); assert(m != MAP_FAILED);                      // 1: mmap + write (사용자 공간에 복사하지 않는다)
+        size_t off = 0; while (off < N) { ssize_t n = write(out, (char*)m + off, N - off); ++st[1].calls; assert(n > 0); off += (size_t)n; } munmap(m, N); close(in); close(out); }
+    {   int in = openIn(), out = openOut(dst[2]); off_t off = 0; while ((size_t)off < N) { ssize_t n = sendfile(out, in, &off, N - (size_t)off); ++st[2].calls; if (n <= 0) break; } close(in); close(out); }   // 2: sendfile (파일 -> 파일)
+    {   int in = openIn(), out = openOut(dst[3]); size_t left = N; while (left > 0) { ssize_t n = copy_file_range(in, nullptr, out, nullptr, left, 0); ++st[3].calls; if (n <= 0) break; left -= (size_t)n; } close(in); close(out); }   // 3: copy_file_range
+    {   int in = openIn(), out = openOut(dst[4]); int p[2]; assert(pipe(p) == 0); size_t done = 0;                                                      // 4: splice (파일 -> 파이프 -> 파일)
+        while (done < N) { ssize_t a = splice(in, nullptr, p[1], nullptr, std::min<size_t>(N - done, 65536), 0); ++st[4].calls; assert(a > 0); ssize_t left = a; while (left > 0) { ssize_t b = splice(p[0], nullptr, out, nullptr, (size_t)left, 0); ++st[4].calls; assert(b > 0); left -= b; } done += (size_t)a; }
+        close(p[0]); close(p[1]); close(in); close(out); }
+    {   int sv[2]; assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0); std::string got; got.reserve(N);                                              // 5: sendfile (파일 -> 소켓), 다른 스레드가 받는다
+        std::thread reader([&] { char b[8192]; ssize_t n; while ((n = recv(sv[1], b, sizeof b, 0)) > 0) got.append(b, (size_t)n); });
+        int in = openIn(); off_t off = 0; while ((size_t)off < N) { ssize_t n = sendfile(sv[0], in, &off, N - (size_t)off); ++st[5].calls; if (n <= 0) break; } close(in); shutdown(sv[0], SHUT_WR); reader.join();
+        assert(got.size() == N && fnv(got) == want); close(sv[0]); close(sv[1]); }
+    for (int i = 0; i < 5; ++i) { assert(fnv(slurp(dst[i])) == want); }                                                                              // 모든 방법의 결과가 같다
+    assert(st[0].userBytes == (long)N && st[0].calls == 2 * (long)((N + BUF - 1) / BUF) + 1);                                                          // read/write: 사용자 버퍼를 거친 바이트 N, 호출 2·ceil(N/16K)+1
+    assert(st[1].userBytes == 0 && st[2].userBytes == 0 && st[3].userBytes == 0 && st[4].userBytes == 0 && st[5].userBytes == 0);                      // 나머지: 사용자 공간 복사 0
+    assert(st[2].calls <= 3 && st[3].calls <= 3 && st[5].calls <= 3 && st[0].calls > 30);                                                              // 시스템 호출 수도 크게 줄어든다
+    for (int i = 0; i < 5; ++i) std::remove(dst[i]);
+    // writev: 머리와 본문을 이어 붙이지 않고 한 번에
+    {   std::string head = "HTTP/1.1 200 OK\r\nContent-Length: 300000\r\n\r\n"; int fd = open("/tmp/ds_zc_wv", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        struct iovec iov[2] = {{(void*)head.data(), head.size()}, {(void*)payload.data(), payload.size()}}; ssize_t n = writev(fd, iov, 2); close(fd); assert(n == (ssize_t)(head.size() + payload.size()));
+        std::string joined = head + payload; long concatCopies = (long)joined.size();                                                                   // 이어 붙이는 쪽은 사용자 공간 복사 head + body 바이트
+        assert(slurp("/tmp/ds_zc_wv") == joined && concatCopies == (long)(head.size() + payload.size())); std::remove("/tmp/ds_zc_wv"); }
+    std::cout << "ZeroCopy verified: 6 transfer methods produced identical bytes; read/write used " << st[0].calls << " syscalls and " << st[0].userBytes << " user-space bytes, sendfile used " << st[2].calls << " call(s) and 0." << std::endl;
 #endif
     std::remove(src.c_str());
-    std::string line = "key=value;other=thing";
-    std::string_view v(line); auto eq = v.find('='); auto semi = v.find(';');
-    std::string_view key = v.substr(0, eq), val = v.substr(eq + 1, semi - eq - 1);     // 복사 없이 같은 메모리를 가리킨다
-    assert(key == "key" && val == "value" && key.data() == line.data());
-    std::cout << "ZeroCopy: sendfile moved " << payload.size() << " bytes without a user-space buffer." << std::endl;
+    // 사용자 공간 제로 카피: string_view
+    std::string line = "key=value;other=thing;third=3"; std::string_view v(line); auto parts = splitViews(v, ';'); auto copies = splitCopies(line, ';');
+    assert(parts.size() == 3 && copies.size() == 3);
+    for (size_t i = 0; i < parts.size(); ++i) {
+        assert(parts[i] == copies[i] && parts[i].data() >= line.data() && parts[i].data() + parts[i].size() <= line.data() + line.size());                // 보기는 원래 버퍼 안을 가리킨다
+        assert(copies[i].data() < line.data() || copies[i].data() >= line.data() + line.size() || copies[i].empty());                                 // 복사본은 따로 할당된 메모리 (짧은 문자열 최적화로 객체 안에 있어도 line 버퍼 밖)
+    }
+    line[0] = 'K'; assert(parts[0] == "Key=value" && copies[0] == "key=value");                                                                      // 원본이 바뀌면 보기에는 보이고 복사본에는 안 보인다 (보기의 수명 위험)
+    std::mt19937 rng(8); std::string big; for (int i = 0; i < 2000; ++i) { big += std::to_string(rng() % 1000); big += (i % 7 == 0 ? ';' : ','); }
+    auto va = splitViews(big, ','); auto vb = splitCopies(big, ','); assert(va.size() == vb.size());
+    for (size_t i = 0; i < va.size(); ++i) { assert(va[i] == vb[i]); }   // 둘이 같은 토큰열
+    std::cout << "ZeroCopy verified (user-space views): " << va.size() << " tokens identical to the copying tokenizer, all views point into the original buffer." << std::endl;
     return 0;
 }
 // Time Complexity: O(n) 이동, 사용자 공간 복사 0
@@ -5924,18 +6177,27 @@ int main() {
 ## ProcessMemory()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <cassert>
+#if defined(__linux__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 // 프로세스 메모리 지도: 리눅스의 /proc/self/maps 는 프로세스의 가상 주소 영역(VMA)을 한 줄씩 보여 준다.
 //   시작-끝  권한(rwxp)  오프셋  장치  inode  경로      예) 55d0c8a00000-55d0c8a21000 r-xp ... /path/a.out   ...  [heap]   ...  [stack]
 // 코드는 r-xp, 읽기 전용 데이터는 r--p, 전역 변수는 rw-p, 스택은 [stack].  자기 변수의 주소가 어느 영역에 속하는지 확인할 수 있다
+// 이 예제는 지도를 읽는 것에 그치지 않고, 메모리 시스템 호출이 지도를 바꾸는 방식을 확인한다:
+//  ① 지도 불변식: 시작 < 끝, 주소 오름차순, 겹치지 않음, 권한 4 글자  ② mmap 한 8 페이지가 지도에 나타남(rw-p), 가운데 한 페이지를 mprotect(PROT_NONE) 하면 영역이 정확히 3 개로 쪼개지고(+2) 가운데만 ---p,
+//  munmap 하면 사라짐  ③ mincore: 만진 페이지만 상주(resident)  ④ 가상 크기는 mmap 즉시 늘지만 상주 크기(VmRSS)는 만져야 는다  ⑤ sbrk 가 [heap] 의 끝(brk)을 움직임  ⑥ 스택은 깊이 들어가면 아래로 자란다
 struct Region { uint64_t start, end; std::string perms, name; };
 std::vector<Region> readMaps() {
     std::ifstream f("/proc/self/maps"); std::vector<Region> out; std::string line;
@@ -5948,20 +6210,55 @@ std::vector<Region> readMaps() {
     return out;
 }
 const Region* find(const std::vector<Region>& maps, const void* p) { uint64_t a = (uint64_t)p; for (auto& r : maps) if (a >= r.start && a < r.end) return &r; return nullptr; }
+long statusKb(const char* key) { std::ifstream f("/proc/self/status"); std::string line; size_t n = std::strlen(key); while (std::getline(f, line)) { if (line.compare(0, n, key) == 0) return std::stol(line.substr(n + 1)); } return -1; }
 int global = 5;
 void code() {}
+uint64_t deepestAddress = 0; uint64_t stackStartBefore = 0, stackStartDeep = 0;
+void recurse(int depth) {
+    volatile char frame[64 * 1024]; frame[0] = (char)depth; frame[sizeof frame - 1] = 1;                // 페이지를 실제로 만지는 큰 스택 프레임
+    if (depth > 0) recurse(depth - 1);
+    else { deepestAddress = (uint64_t)&frame[0]; auto maps = readMaps(); const Region* s = find(maps, (const void*)deepestAddress); assert(s && s->name == "[stack]"); stackStartDeep = s->start; }
+}
 
 int main() {
 #if defined(__linux__)
-    auto maps = readMaps();
-    assert(!maps.empty());
+    auto maps = readMaps(); assert(!maps.empty());
+    for (size_t i = 0; i < maps.size(); ++i) { assert(maps[i].start < maps[i].end && maps[i].perms.size() == 4); if (i) assert(maps[i - 1].end <= maps[i].start); }          // ① 지도 불변식
     int local = 0; int* heap = new int(1);
     const Region *stack = find(maps, &local), *text = find(maps, (void*)&code), *data = find(maps, &global), *hp = find(maps, heap);
     assert(stack && stack->name == "[stack]" && stack->perms[0] == 'r' && stack->perms[1] == 'w' && stack->perms[2] == '-');   // 스택: 읽기+쓰기, 실행 불가
     assert(text && text->perms[2] == 'x' && text->perms[1] == '-');                   // 코드: 실행 가능, 쓰기 불가 (W^X)
     assert(data && data->perms[1] == 'w' && data->perms[2] == '-');                   // 전역 변수: 쓰기 가능, 실행 불가
     assert(hp && hp->perms[1] == 'w');                                                // 힙(brk 또는 mmap 영역)
-    std::cout << "ProcessMemory: stack=" << stack->name << " text perms=" << text->perms << " data perms=" << data->perms << " heap region=" << (hp->name.empty() ? "[anon]" : hp->name) << std::endl;
+    stackStartBefore = stack->start;
+    const std::string stackName = stack->name, textPerms = text->perms, dataPerms = data->perms, heapName = hp->name.empty() ? "[anon]" : hp->name;       // maps 를 다시 읽으면 위 포인터들이 무효가 되므로 필요한 값은 미리 복사
+    const long ps = sysconf(_SC_PAGESIZE); const int NP = 8;
+    // ② mmap -> mprotect 로 쪼개기 -> munmap
+    char* p = (char*)mmap(nullptr, NP * ps, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(p != MAP_FAILED);
+    maps = readMaps(); const Region* r = find(maps, p); assert(r && r->start <= (uint64_t)p && r->end >= (uint64_t)p + NP * ps && r->perms == "rw-p"); size_t countBefore = maps.size();
+    assert(mprotect(p + 3 * ps, ps, PROT_NONE) == 0);
+    maps = readMaps(); assert(maps.size() == countBefore + 2);                                                          // 영역이 3 개로 쪼개졌다
+    const Region *a = find(maps, p + 2 * ps), *mid = find(maps, p + 3 * ps), *c = find(maps, p + 4 * ps);
+    assert(a != mid && mid != c && a->perms == "rw-p" && mid->perms == "---p" && c->perms == "rw-p" && mid->start == (uint64_t)p + 3 * ps && mid->end == (uint64_t)p + 4 * ps);   // 가운데 한 페이지만 접근 금지
+    assert(munmap(p, NP * ps) == 0); maps = readMaps(); assert(find(maps, p) == nullptr && maps.size() <= countBefore - 1 + 1);
+    // ③ mincore: 만진 페이지만 상주
+    {   const int M = 16; char* q = (char*)mmap(nullptr, M * ps, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(q != MAP_FAILED);
+        int touched[] = {0, 2, 3, 7, 12}; for (int t : touched) q[t * ps] = 1;
+        unsigned char vec[M]; assert(mincore(q, M * ps, vec) == 0);
+        for (int i = 0; i < M; ++i) { bool want = std::find(std::begin(touched), std::end(touched), i) != std::end(touched); assert(((vec[i] & 1) != 0) == want); }
+        munmap(q, M * ps); }
+    // ④ 가상 크기 vs 상주 크기
+    {   long vm0 = statusKb("VmSize:"), rss0 = statusKb("VmRSS:"); const size_t BIG = 64u << 20;
+        char* big = (char*)mmap(nullptr, BIG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); assert(big != MAP_FAILED);
+        long vm1 = statusKb("VmSize:"), rss1 = statusKb("VmRSS:"); assert(vm1 - vm0 >= (long)(BIG >> 10) - 64 && rss1 - rss0 < 8 * 1024);                       // 만지기 전: 가상 크기만 +64MB
+        for (size_t i = 0; i < BIG; i += (size_t)ps) big[i] = 1;
+        long rss2 = statusKb("VmRSS:"); assert(rss2 - rss1 >= (long)(BIG >> 10) - 2048); munmap(big, BIG); }                                                         // 만진 뒤: 상주 크기 +64MB
+    // ⑤ sbrk
+    {   void* b0 = sbrk(0); void* old = sbrk((intptr_t)ps); if (old != (void*)-1) { void* b1 = sbrk(0); assert((uint64_t)b1 >= (uint64_t)old + (uint64_t)ps); maps = readMaps(); bool inHeap = false; for (auto& rg : maps) { if (rg.name == "[heap]" && rg.end >= (uint64_t)b1) inHeap = true; } assert(inHeap); sbrk(-(intptr_t)ps); } (void)b0; }
+    // ⑥ 스택은 깊이 들어가면 아래로 자란다
+    recurse(12); assert(stackStartDeep < stackStartBefore && stackStartBefore - stackStartDeep >= 12 * 64 * 1024 / 2);
+    std::cout << "ProcessMemory verified: stack=" << stackName << " text perms=" << textPerms << " data perms=" << dataPerms << " heap region=" << heapName
+              << "; mprotect split a VMA in 3, mincore matched touched pages, stack grew " << (stackStartBefore - stackStartDeep) / 1024 << " KB." << std::endl;
     delete heap;
 #else
     std::cout << "ProcessMemory: Linux-only demonstration (/proc/self/maps)" << std::endl;
