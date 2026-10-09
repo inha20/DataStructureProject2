@@ -577,7 +577,9 @@ int main(int argc, char* argv[]) {
 // 프레임 포인터 사슬(저장된 BP 들)을 따라가면 호출 스택 전체(복귀 주소들)를 복원할 수 있다 — 디버거의 backtrace 가 하는 일
 // 검증: ① 손으로 짠 프레임 배치  ② 무작위 호출/반환 20 000 번(깊이 ≤ 60, 인자 0~4 개, 지역 0~6 칸, 모든 칸에 고유한 값을 써 둠)을 오라클(프레임 벡터)과 대조: 매번 backtrace 가 호출 스택과 같고, 반환 값(복귀 주소)이 맞고,
 //        *모든* 프레임의 인자·지역 변수가 다른 호출에 의해 훼손되지 않으며, 프레임 크기의 합 = 스택 사용량(닫힌 식), bp − sp = 맨 위 프레임의 지역 칸 수
-//        ③ 균일한 프레임(인자 2, 지역 3 → 7 칸)에서 256 칸 스택은 정확히 36 번째 호출까지 되고 37 번째에서 스택 오버플로  ④ 프레임 k 까지 한꺼번에 풀어(longjmp 처럼) 나머지 프레임의 값이 그대로
+//        ③ 균일한 프레임(인자 2, 지역 3 → 7 칸)에서 256 칸 스택은 정확히 36 번째 호출까지 되고 37 번째에서 스택 오버플로,
+//        경계: 36 프레임이 꼭 맞는 252 칸은 36 번, 한 칸 모자란 251 칸은 35 번, 지역 변수가 없는 4 칸 프레임은 4 칸에 1 번·3 칸에 0 번(마지막 push 가 정확히 바닥에 닿는다)
+//        ④ 프레임 10 개일 때의 SP·BP 를 저장해 두고(setjmp) 25 개까지 쌓은 뒤 저장한 값을 한 번에 되돌리면(longjmp) ret 를 부르지 않고도 나머지 프레임의 값과 backtrace 가 그대로
 struct Machine {
     std::vector<uint64_t> mem; size_t sp, bp; const size_t base;           // 인덱스 = 주소 (낮은 주소 = 작은 인덱스), base = 스택의 맨 위
     explicit Machine(size_t words) : mem(words, 0), sp(words), bp(words), base(words) {}
@@ -638,13 +640,21 @@ int main() {
         if (step % 7 == 0 || frames.size() < 3) verify();
     }
     verify(); assert(calls > 5000 && rets > 4000 && maxDepth >= 30);
-    // ④ 프레임 k 까지 한꺼번에 풀기 (longjmp 처럼 저장해 둔 BP 를 따라 올라간다)
-    {   while (frames.size() < 25) { Frame f; f.ret = 0x2000 + frames.size(); f.args = {stamp++, stamp++}; mc.call(f.args, f.ret, 2); f.locals = {stamp++, stamp++}; mc.local(0) = f.locals[0]; mc.local(1) = f.locals[1]; frames.push_back(f); }
-        size_t k = 10; while (frames.size() > k) { mc.ret(frames.back().args.size()); frames.pop_back(); } verify(); assert(mc.backtrace().size() == k); }
+    // ④ 프레임 10 개 시점으로 한꺼번에 되돌리기 (longjmp 처럼 저장해 둔 SP·BP 를 그대로 대입한다 — ret 를 반복하지 않는다)
+    {   while (frames.size() < 10) { Frame f; f.ret = 0x3000 + frames.size(); f.args = {stamp++}; mc.call(f.args, f.ret, 1); f.locals = {stamp++}; mc.local(0) = f.locals[0]; frames.push_back(f); }
+        while (frames.size() > 10) { mc.ret(frames.back().args.size()); frames.pop_back(); }
+        const size_t savedSp = mc.sp, savedBp = mc.bp; const std::vector<uint64_t> savedTrace = mc.backtrace();                                             // setjmp
+        while (frames.size() < 25) { Frame f; f.ret = 0x2000 + frames.size(); f.args = {stamp++, stamp++}; mc.call(f.args, f.ret, 2); f.locals = {stamp++, stamp++}; mc.local(0) = f.locals[0]; mc.local(1) = f.locals[1]; frames.push_back(f); }
+        assert(mc.sp < savedSp && mc.backtrace().size() == 25);
+        mc.sp = savedSp; mc.bp = savedBp; frames.erase(frames.begin() + 10, frames.end());                                                                   // longjmp: 한 번에
+        verify(); assert(mc.backtrace().size() == 10 && mc.backtrace() == savedTrace); }
     // ③ 오버플로
     {   Machine small(256); int depth = 0; bool overflow = false;
         try { for (;; ++depth) small.call({1, 2}, 0xAA, 3); } catch (const std::overflow_error&) { overflow = true; }
-        assert(overflow && depth == 36 && 36 * 7 <= 256 && 37 * 7 > 256); }
+        assert(overflow && depth == 36 && 36 * 7 <= 256 && 37 * 7 > 256);
+        auto fits = [](size_t words, size_t locals) { Machine s(words); int d = 0; try { for (;; ++d) s.call({1, 2}, 0xAA, locals); } catch (const std::overflow_error&) {} return d; };   // 프레임이 몇 개 들어가나
+        assert(fits(252, 3) == 36 && fits(251, 3) == 35 && fits(253, 3) == 36 && fits(7, 3) == 1 && fits(6, 3) == 0);                                          // 꼭 맞는 크기와 한 칸 모자란 크기
+        assert(fits(4, 0) == 1 && fits(3, 0) == 0 && fits(8, 0) == 2); }                                                                                       // 지역 변수가 없으면 마지막 push(sp 1 → 0)가 경계를 가른다
     std::cout << "PushFrame: SP moved down by " << top - m.sp << " words; " << calls << " random calls and " << rets << " returns kept every frame intact and every backtrace exact (max depth " << maxDepth << ")" << std::endl;
     return 0;
 }
@@ -1351,7 +1361,7 @@ int main() {
     static_assert(sizeof(Rec24) == 24 && sizeof(Line) == 64, "크기가 포인터 증가폭을 정한다");
     // ③ 2차원 배열
     int m[3][4]; for (int i = 0; i < 3; i++) for (int j = 0; j < 4; j++) m[i][j] = i * 10 + j;
-    for (int i = 0; i < 3; i++) for (int j = 0; j < 4; j++) { assert(&m[i][j] == (int*)m + i * 4 + j && *(*(m + i) + j) == m[i][j]); }              // 행 우선 배치
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 4; j++) { assert((uintptr_t)&m[i][j] - (uintptr_t)&m[0][0] == (uintptr_t)((i * 4 + j) * sizeof(int)) && *(*(m + i) + j) == m[i][j]); }   // 행 우선 배치 (정수로 바꿔 셈하므로 부분 배열 m[0] 밖으로 포인터를 옮기지 않는다)
     int (*row)[4] = m; assert((char*)(row + 1) - (char*)row == 4 * sizeof(int) && (*(row + 2))[3] == 23);                              // 배열을 가리키는 포인터는 한 행씩 건너뛴다
     int* rows[3] = {m[0], m[1], m[2]}; assert(sizeof(rows) == 3 * sizeof(int*) && sizeof(m) == 12 * sizeof(int) && rows[1][2] == 12);   // 포인터 배열은 크기가 다른 별개의 구조
     // ④ const 의 위치와 타입 특성, 주소 크기, 멤버 포인터
@@ -4437,6 +4447,7 @@ int main() {
 ```cpp
 #include <algorithm>
 #include <cassert>
+#include <deque>
 #include <iostream>
 #include <list>
 #include <map>
@@ -4453,14 +4464,19 @@ int main() {
 // audit: host-dependent (getrusage 의 폴트 수는 THP·폴트 선읽기 설정에 따라 달라진다)
 // 페이지 폴트: 매핑되지 않았거나 메모리에 없는 페이지에 접근했을 때 CPU 가 일으키는 예외.  운영체제가 디스크에서 페이지를 읽어 오고(요구 페이징), 프레임이 모자라면 교체 알고리즘으로 희생 페이지를 고른다.
 //  FIFO 는 프레임을 늘려도 폴트가 오히려 늘어나는 벨레이디의 모순(Belady's anomaly)이 있고, LRU 는 스택 알고리즘이라 그런 일이 없다.  네 알고리즘(FIFO / LRU / Clock / 최적 OPT)을 구현해 성질을 확인한다.
+//  Clock(두 번째 기회)은 참조 비트가 켜진 페이지를 한 번 건너뛴다: 같은 알고리즘을 원형 배열과 회전하는 큐로 따로 짜서 맞추고(②), 손가락 위치·참조 비트 규칙을 닫힌 형태로 못 박는다(⑥).
 //  ① 고전 열 1,2,3,4,1,2,5,1,2,3,4,5: FIFO 는 프레임 3 개에서 9 번, 4 개에서 *10 번*(모순), LRU 는 10 → 8 번, OPT 는 7 → 6 번  ② 무작위 열 3000 개(프레임 1..8): LRU·OPT 의 폴트는 프레임이 늘면 *줄거나 같다*(스택 성질), OPT ≤ 다른 모든 알고리즘, 폴트 ≥ 서로 다른 페이지 수이고 프레임 ≥ 페이지 수면 정확히 같다
 //  ③ OPT(Belady 의 "가장 나중에 쓸 페이지 축출")가 *전수 탐색한 최소 폴트 수*와 같다 (페이지 ≤ 5, 길이 ≤ 9, 프레임 2~3 의 무작위 열 400 개)  ④ 무작위 열 20000 개를 뒤져 FIFO 의 벨레이디 모순 사례가 존재하고 LRU·OPT 에는 없음  ⑤ 순환 접근(프레임 F, 페이지 F+1): LRU/FIFO 는 *매 접근* 폴트, OPT 는 약 1/F
-//  ⑥ 실제 커널(Linux): 새로 mmap 한 익명 메모리의 페이지를 처음 만질 때마다 minor fault 가 한 번씩 늘고(getrusage), 두 번째 순회는 거의 폴트가 없다.
+//  ⑥ Clock 의 닫힌 형태: 고전 열에서 3 프레임 9 번·4 프레임 10 번, 1,2,3,4,2,5,2 (3 프레임)에서 Clock 5 번 대 FIFO 6 번(적중이 두 번째 기회를 준다), 1,2,3,4,5,6,4,7,4 에서 Clock 8 번(적재한 페이지의 참조 비트가 1 이어야 한다)
+//  ⑦ 실제 커널(Linux): 새로 mmap 한 익명 메모리의 페이지를 처음 만질 때마다 minor fault 가 한 번씩 늘고(getrusage), 두 번째 순회는 거의 폴트가 없다.
 long fifo(const std::vector<int>& refs, int frames) { std::list<int> q; std::set<int> in; long faults = 0; for (int p : refs) { if (in.count(p)) continue; ++faults; if ((int)q.size() == frames) { in.erase(q.front()); q.pop_front(); } q.push_back(p); in.insert(p); } return faults; }
 long lru(const std::vector<int>& refs, int frames) { std::vector<int> st; long faults = 0; for (int p : refs) { auto it = std::find(st.begin(), st.end(), p); if (it != st.end()) st.erase(it); else { ++faults; if ((int)st.size() == frames) st.pop_back(); } st.insert(st.begin(), p); } return faults; }
 long lruStamps(const std::vector<int>& refs, int frames) { std::map<int, long> last; long faults = 0, t = 0; for (int p : refs) { ++t; if (last.count(p)) { last[p] = t; continue; } ++faults; if ((int)last.size() == frames) { auto victim = last.begin(); for (auto it = last.begin(); it != last.end(); ++it) if (it->second < victim->second) victim = it; last.erase(victim); } last[p] = t; } return faults; }
 long clockAlg(const std::vector<int>& refs, int frames) { std::vector<int> page(frames, -1); std::vector<char> ref(frames, 0); int hand = 0; long faults = 0; for (int p : refs) { bool hit = false; for (int i = 0; i < frames; ++i) if (page[i] == p) { ref[i] = 1; hit = true; break; } if (hit) continue; ++faults;
         while (page[hand] != -1 && ref[hand]) { ref[hand] = 0; hand = (hand + 1) % frames; } page[hand] = p; ref[hand] = 1; hand = (hand + 1) % frames; } return faults; }              // 두 번째 기회
+long clockQueue(const std::vector<int>& refs, int frames) { std::deque<std::pair<int, bool>> q; long faults = 0;                                    // 같은 Clock 을 회전하는 큐로: 앞이 손가락이 가리키는 칸
+    for (int p : refs) { bool hit = false; for (auto& e : q) if (e.first == p) { e.second = true; hit = true; break; } if (hit) continue; ++faults;
+        if ((int)q.size() == frames) { while (q.front().second) { q.push_back({q.front().first, false}); q.pop_front(); } q.pop_front(); } q.push_back({p, true}); } return faults; }
 long opt(const std::vector<int>& refs, int frames) { std::set<int> in; long faults = 0; for (size_t i = 0; i < refs.size(); ++i) { int p = refs[i]; if (in.count(p)) continue; ++faults; if ((int)in.size() == frames) { int victim = -1; size_t farthest = 0; for (int q : in) { size_t nxt = refs.size(); for (size_t j = i + 1; j < refs.size(); ++j) if (refs[j] == q) { nxt = j; break; } if (victim < 0 || nxt > farthest) { victim = q; farthest = nxt; } } in.erase(victim); } in.insert(p); } return faults; }
 long bruteMin(const std::vector<int>& refs, size_t i, std::set<int> in, int frames) { while (i < refs.size() && in.count(refs[i])) ++i; if (i == refs.size()) return 0; long best = 1 << 30; if ((int)in.size() < frames) { std::set<int> n = in; n.insert(refs[i]); return 1 + bruteMin(refs, i + 1, n, frames); }
     for (int victim : in) { std::set<int> n = in; n.erase(victim); n.insert(refs[i]); best = std::min(best, 1 + bruteMin(refs, i + 1, n, frames)); } return best; }                    // 모든 희생 선택을 시도
@@ -4468,24 +4484,29 @@ long bruteMin(const std::vector<int>& refs, size_t i, std::set<int> in, int fram
 int main() {
     std::vector<int> classic = {1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5};
     assert(fifo(classic, 3) == 9 && fifo(classic, 4) == 10 && lru(classic, 3) == 10 && lru(classic, 4) == 8 && opt(classic, 3) == 7 && opt(classic, 4) == 6);                                       // ① 벨레이디의 모순
+    assert(clockAlg(classic, 3) == 9 && clockAlg(classic, 4) == 10 && clockQueue(classic, 3) == 9 && clockQueue(classic, 4) == 10);               // ⑥ Clock 의 닫힌 형태
+    std::vector<int> second = {1, 2, 3, 4, 2, 5, 2}, fresh = {1, 2, 3, 4, 5, 6, 4, 7, 4};
+    assert(clockAlg(second, 3) == 5 && fifo(second, 3) == 6 && lru(second, 3) == 5);                                                              // 4 를 들이고 2 를 만지면 2 는 한 번 건너뛰어진다 (FIFO 였다면 2 를 내쫓는다)
+    assert(clockAlg(fresh, 3) == 8 && lru(fresh, 3) == 7 && fifo(fresh, 3) == 8 && opt(fresh, 3) == 7);                                                                  // 적재한 4 도 참조 비트 1 로 시작해 한 바퀴를 버틴다
     std::mt19937 rng(1021); long anomalies = 0, lruAnoms = 0, optAnoms = 0;
     for (int it = 0; it < 3000; ++it) { int pages = 2 + (int)(rng() % 9), len = 20 + (int)(rng() % 120); std::vector<int> refs(len); for (int& r : refs) r = (int)(rng() % pages); std::set<int> distinct(refs.begin(), refs.end()); long prevLru = 1 << 30, prevOpt = 1 << 30;
-        for (int f = 1; f <= 8; ++f) { long fi = fifo(refs, f), lr = lru(refs, f), cl = clockAlg(refs, f), op = opt(refs, f); assert(lr == lruStamps(refs, f)); assert(op <= fi && op <= lr && op <= cl && (long)distinct.size() <= op && (long)distinct.size() <= fi && (long)distinct.size() <= lr && (long)distinct.size() <= cl);
+        for (int f = 1; f <= 8; ++f) { long fi = fifo(refs, f), lr = lru(refs, f), cl = clockAlg(refs, f), op = opt(refs, f); assert(lr == lruStamps(refs, f)); assert(cl == clockQueue(refs, f)); assert(op <= fi && op <= lr && op <= cl && (long)distinct.size() <= op && (long)distinct.size() <= fi && (long)distinct.size() <= lr && (long)distinct.size() <= cl);
             assert(lr <= prevLru && op <= prevOpt); prevLru = lr; prevOpt = op; if (f >= (int)distinct.size()) assert(fi == (long)distinct.size() && lr == (long)distinct.size() && op == (long)distinct.size() && cl == (long)distinct.size()); } }          // ② 스택 성질 + OPT 가 최소
     for (int it = 0; it < 400; ++it) { int pages = 2 + (int)(rng() % 4), len = 3 + (int)(rng() % 7), f = 2 + (int)(rng() % 2); std::vector<int> refs(len); for (int& r : refs) r = (int)(rng() % pages); assert(opt(refs, f) == bruteMin(refs, 0, {}, f)); }              // ③ OPT = 전수 탐색한 최소
     for (int it = 0; it < 20000; ++it) { std::vector<int> refs(30 + rng() % 40); for (int& r : refs) r = (int)(rng() % 7); for (int f = 1; f < 6; ++f) { if (fifo(refs, f + 1) > fifo(refs, f)) ++anomalies; if (lru(refs, f + 1) > lru(refs, f)) ++lruAnoms; if (opt(refs, f + 1) > opt(refs, f)) ++optAnoms; } }
     assert(anomalies > 0 && lruAnoms == 0 && optAnoms == 0);                                                                                                                                          // ④
     {   const int F = 8; std::vector<int> cyc; for (int rep = 0; rep < 200; ++rep) for (int p = 0; p <= F; ++p) cyc.push_back(p); long n = (long)cyc.size(); assert(lru(cyc, F) == n && fifo(cyc, F) == n && opt(cyc, F) <= n / F + F + 1); }                // ⑤
+    std::cout << "PageFault: the classic string gave FIFO 9 -> 10 faults when frames grew 3 -> 4 (Belady), LRU/OPT never grew over 3000 random strings, OPT matched exhaustive search, Clock matched an independent rotating-queue version and the closed forms, FIFO anomalies found: " << anomalies << std::endl;
 #if defined(__linux__)
     {   long page = sysconf(_SC_PAGESIZE); const int pages = 2000; auto minflt = [] { struct rusage ru; getrusage(RUSAGE_SELF, &ru); return ru.ru_minflt; };
         char* mem = (char*)mmap(nullptr, (size_t)pages * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(mem != MAP_FAILED);
 #if defined(MADV_NOHUGEPAGE)
         madvise(mem, (size_t)pages * page, MADV_NOHUGEPAGE);                                                                                                   // 투명 거대 페이지(THP)가 켜진 호스트는 2 MB 를 폴트 한 번에 채우므로 끈다
 #endif
-        long f0 = minflt(); for (int p = 0; p < pages; ++p) mem[(size_t)p * page] = 1; long f1 = minflt(); for (int p = 0; p < pages; ++p) mem[(size_t)p * page] = 2; long f2 = minflt();                // ⑥ 처음 만질 때마다 폴트
+        long f0 = minflt(); for (int p = 0; p < pages; ++p) mem[(size_t)p * page] = 1; long f1 = minflt(); for (int p = 0; p < pages; ++p) mem[(size_t)p * page] = 2; long f2 = minflt();                // ⑦ 처음 만질 때마다 폴트
         bool faultsOk = f1 - f0 >= pages && f1 - f0 <= pages + pages / 8 + 64 && f2 - f1 <= 64; if (!faultsOk) std::fprintf(stderr, "WARNING: first pass %ld faults, second pass %ld faults, %d pages\n", f1 - f0, f2 - f1, pages);
         assert(faultsOk); munmap(mem, (size_t)pages * page);
-        std::cout << "PageFault: the classic string gave FIFO 9 -> 10 faults when frames grew 3 -> 4 (Belady), LRU/OPT never grew over 3000 random strings, OPT matched exhaustive search, FIFO anomalies found: " << anomalies << ", and the kernel took " << f1 - f0 << " minor faults for the first touch of " << pages << " pages versus " << f2 - f1 << " on the second pass" << std::endl; }
+        std::cout << "PageFault (kernel): " << f1 - f0 << " minor faults for the first touch of " << pages << " pages versus " << f2 - f1 << " on the second pass" << std::endl; }
 #endif
     return 0;
 }

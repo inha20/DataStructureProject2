@@ -4221,15 +4221,21 @@ int main() {
 #include <map>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
-// Java 8 HashMap: 한 버킷(bin)의 연결 리스트에 이미 8개 이상 들어 있는데 하나를 더 넣을 때, 테이블 크기가 64 이상이면 트리(TreeBin, 레드-블랙 트리)로 바꾸고 64 미만이면 트리 대신 테이블을 두 배로 늘린다.
-// 해시가 몰려도 (또는 공격당해도) 한 bin 의 탐색이 O(n) -> O(log n) 이 된다. 크기 조정 때 나눈 조각이 6개 이하이거나 삭제로 6개 이하로 줄면 다시 리스트로 되돌린다.
-// 여기서는 그 규칙 전체를 따르는 해시맵 모형을 만든다 (bin 의 트리는 레드-블랙 대신 결정적 우선순위의 트립 — 기대 O(log n) 으로 같은 효과): 인덱스 = (h ^ h>>16) & (용량-1), 적재율 0.75 에서 두 배, 분할은 h & 옛 용량 비트
+// Java 8 HashMap: 한 버킷(bin)의 연결 리스트에 이미 8개 이상 들어 있는데 하나를 더 넣을 때, 테이블 크기가 64 이상이면 그 bin 을 트리(TreeNode 로 이루어진 레드-블랙 트리)로 바꾸고 64 미만이면 트리 대신 테이블을 두 배로 늘린다.
+// (TreeBin 은 ConcurrentHashMap 쪽 클래스 이름이다 — HashMap 의 트리 bin 노드는 HashMap.TreeNode. 이 항목의 제목은 통칭.)
+// 해시가 몰려도 (또는 공격당해도) 한 bin 의 탐색이 O(n) -> O(log n) 이 된다. 리스트로 되돌리는 경우는 두 가지다: ⓐ 크기 조정 때 트리 bin 을 둘로 나눈(split) 조각이 6개 이하(UNTREEIFY_THRESHOLD)이면 리스트로 — 6 은 *이 경우에만* 쓰인다.
+//   ⓑ 삭제(removeTreeNode)에서는 개수가 아니라 트리 *모양* 으로 정한다: 지우기 전 루트가 root.right == null, root.left == null, root.left.left == null 중 하나이면 리스트로 되돌린다.
+//   이 모형의 트리는 레드-블랙이 아니라 트립이라 ⓑ 의 모양 규칙을 흉내 낼 수 없으므로 *삭제로 6개 이하가 되면 되돌린다* 는 단순화를 쓴다 — 이 부분(⑤)은 JDK 와 다르다.
+// 여기서는 나머지 규칙을 따르는 해시맵 모형을 만든다 (bin 의 트리는 레드-블랙 대신 결정적 우선순위의 트립 — 기대 O(log n) 으로 같은 효과): 인덱스 = (h ^ h>>16) & (용량-1), 적재율 0.75 에서 두 배, 분할은 h & 옛 용량 비트
 // 검증: ① 규칙 함수(경계값)  ② 용량 16 에서 모든 키가 같은 해시일 때: 9번째 삽입은 크기 조정(32), 10번째는 크기 조정(64), 11번째에야 트리가 된다  ③ 해시가 몰린 / 고른 두 해시 함수로 std::map 과 40 000 번 대조(삽입·삭제·조회)하고 불변식:
-//        트리 bin 은 크기 ≥ 7, 리스트 bin 은 용량 ≥ 64 이면 크기 ≤ 9, 트립의 정렬·힙 성질, 총 개수  ④ 키 1 024 개가 한 bin 에 몰린 최악에서 리스트(treeify 끔) 평균 비교 ≈ N/2, 트리는 그것의 1/20 미만  ⑤ 삭제로 6개 이하가 되면 리스트로 복귀
+//        트리 bin 은 크기 ≥ 7, 리스트 bin 은 용량 ≥ 64 이면 크기 ≤ 10 (8 개 bin 에 9, 10 번째가 들어올 때마다 용량이 16 → 32 → 64 로 두 번 늘고 11 번째에야 트리), 트립의 정렬·힙 성질, 총 개수  ④ 키 1 024 개가 한 bin 에 몰린 최악에서 리스트(treeify 끔) 평균 비교 ≈ N/2, 트리는 그것의 1/20 미만
+//        ⑤ (모형의 단순화) 삭제로 6개 이하가 되면 리스트로 복귀  ⑥ 적재율 0.75: 충돌 없는 해시로 1..3000 개를 넣을 때 매번 용량 = n ≤ 0.75·용량 인 최소 2의 거듭제곱(13 번째에서 16 → 32 ...), 스프레드 h ^ h>>16: 낮은 16 비트가 0 인 해시도 고르게 흩어진다(없으면 전부 bin 0)
+//        ⑦ 크기 조정 때의 분할: 한 트리 bin 이 (7,6) (6,7) (9,5) (5,9) (7,7) 개로 갈라지면 7개 이상인 조각만 트리로 남고 6개 이하는 리스트가 된다 (UNTREEIFY_THRESHOLD = 6 은 이 분할에서만)
 const int TREEIFY_THRESHOLD = 8, UNTREEIFY_THRESHOLD = 6, MIN_TREEIFY_CAPACITY = 64;
-std::string binKind(int binSize, int tableCapacity, bool wasTree) {                // binSize: 새 원소를 넣기 *전* 의 크기 (트리였다면 현재 크기)
+std::string binKind(int binSize, int tableCapacity, bool wasTree) {                // binSize: 새 원소를 넣기 *전* 의 크기. wasTree 이면 크기 조정으로 나뉜 조각의 크기 (6 이하면 리스트)
     if (wasTree) return binSize <= UNTREEIFY_THRESHOLD ? "list" : "tree";
     if (binSize >= TREEIFY_THRESHOLD) return tableCapacity >= MIN_TREEIFY_CAPACITY ? "tree" : "resize";   // 용량이 작으면 트리 대신 테이블 확장
     return "list";
@@ -4301,6 +4307,7 @@ public:
     size_t size() const { return n; }
     size_t capacity() const { return table.size(); }
     size_t treeBins() const { size_t c = 0; for (auto& b : table) c += b.tree; return c; }
+    size_t maxBin() const { size_t m = 0; for (auto& b : table) m = std::max(m, b.size); return m; }
     size_t binSize(int key) const { return table[index(key, table.size())].size; }
     bool binIsTree(int key) const { return table[index(key, table.size())].tree; }
     bool valid() const {
@@ -4308,7 +4315,7 @@ public:
         for (auto& b : table) {
             total += b.size;
             if (b.tree) { size_t c = 0; if (!treapValid(b.root, -3000000000L, 3000000000L, c) || c != b.size || b.size <= (size_t)UNTREEIFY_THRESHOLD || !b.list.empty()) return false; }
-            else if (b.list.size() != b.size || b.root || (allowTree && table.size() >= (size_t)MIN_TREEIFY_CAPACITY && b.size > (size_t)TREEIFY_THRESHOLD + 1)) return false;
+            else if (b.list.size() != b.size || b.root || (allowTree && table.size() >= (size_t)MIN_TREEIFY_CAPACITY && b.size > (size_t)TREEIFY_THRESHOLD + 2)) return false;      // 용량 ≥ 64 의 리스트 bin 은 최대 10 개 (용량이 64 미만일 때 8 개를 넘긴 bin 은 삽입마다 용량이 두 배가 된다)
         }
         return total == n;
     }
@@ -4322,10 +4329,10 @@ int main() {
     // ② 모든 키가 같은 해시 (용량 16 에서 시작)
     {   JavaMap m([](int) { return 7u; }); for (int i = 0; i < 8; i++) m.put(i, i); assert(m.capacity() == 16 && !m.binIsTree(0) && m.binSize(0) == 8);
         m.put(8, 8); assert(m.capacity() == 32 && !m.binIsTree(0));                         // 9번째: 트리 대신 테이블 확장
-        m.put(9, 9); assert(m.capacity() == 64 && !m.binIsTree(0));                         // 10번째: 한 번 더 (용량이 아직 64 미만이었다)
+        m.put(9, 9); assert(m.capacity() == 64 && !m.binIsTree(0) && m.binSize(0) == 10 && m.valid());   // 10번째: 한 번 더 (용량이 아직 64 미만이었다) — 용량 64 인데도 리스트 bin 은 10 개
         m.put(10, 10); assert(m.capacity() == 64 && m.binIsTree(0) && m.treeBins() == 1 && m.valid());   // 11번째: 용량 64 이므로 드디어 트리
         for (int i = 0; i <= 10; i++) assert(m.get(i) && *m.get(i) == i);
-        // ⑤ 삭제로 6개 이하가 되면 리스트로
+        // ⑤ (모형의 단순화) 삭제로 6개 이하가 되면 리스트로 — JDK 는 삭제에서 트리 모양으로 정한다
         for (int i = 10; i >= 6; i--) { assert(m.remove(i)); assert(m.valid()); }
         assert(m.binSize(0) == 6 && !m.binIsTree(0) && m.treeBins() == 0 && m.size() == 6);
         for (int i = 0; i < 6; i++) assert(*m.get(i) == i); }
@@ -4343,6 +4350,25 @@ int main() {
         assert(m.valid()); for (auto& kv : ref) assert(*m.get(kv.first) == kv.second);
     }
     assert(treeSeen > 500);                                                                // 몰린 해시에서는 트리 bin 이 실제로 생겼다
+    // ⑥ 적재율 0.75 와 스프레드
+    {   JavaMap m([](int k) { return (uint32_t)k; }); size_t want = 16;                    // 항등 해시 + 연속 키: bin 마다 많아야 하나
+        for (int n = 1; n <= 3000; n++) { m.put(n - 1, n); while ((size_t)n > want * 3 / 4) want *= 2; assert(m.capacity() == want && m.maxBin() <= 1 && m.treeBins() == 0); }
+        assert(m.capacity() == 4096 && m.valid());
+        JavaMap sp([](int k) { return (uint32_t)k << 16; });                                // 낮은 16 비트가 모두 0: h ^ (h >> 16) 이 없으면 용량 ≤ 65536 에서 전부 bin 0
+        for (int k = 0; k < 1000; k++) sp.put(k, k);
+        assert(sp.capacity() == 2048 && sp.treeBins() == 0 && sp.maxBin() == 1 && sp.valid()); }
+    // ⑦ 크기 조정 때의 분할: hash 7 인 조각(lo 개) 과 hash 71 인 조각(hi 개)은 용량 16·32·64 에서는 같은 bin 7 이고 128 에서 갈라진다
+    for (auto lh : std::vector<std::pair<int, int>>{{7, 6}, {6, 7}, {9, 5}, {5, 9}, {7, 7}}) {
+        int lo = lh.first, hi = lh.second, S = lo + hi;
+        JavaMap m([lo, S](int k) { return k < lo ? 7u : k < S ? 71u : (uint32_t)(16 + (k - 100)); });             // 100 번 이상의 키는 서로 다른 bin 에 흩어지는 채움용
+        for (int k = 0; k < S; k++) m.put(k, k);
+        for (int k = 100; (int)m.size() < 48; k++) m.put(k, k);
+        assert(m.capacity() == 64 && m.binIsTree(0) && m.binSize(0) == (size_t)S && m.treeBins() == 1 && m.valid());      // 크기 조정 직전: S 개짜리 트리 bin
+        m.put(999, 0);                                                                          // 49 번째: 49 > 48 이라 용량 128 로 확장 → bin 이 (lo, hi) 로 갈라진다
+        assert(m.capacity() == 128 && m.binSize(0) == (size_t)lo && m.binSize(S - 1) == (size_t)hi);
+        assert(m.binIsTree(0) == (lo > UNTREEIFY_THRESHOLD) && m.binIsTree(S - 1) == (hi > UNTREEIFY_THRESHOLD) && m.treeBins() == (size_t)((lo > 6) + (hi > 6)) && m.valid());
+        for (int k = 0; k < S; k++) assert(m.get(k) && *m.get(k) == k);
+    }
     // ④ 최악: 키 1 024 개가 한 bin
     const int N = 1024; double avg[2];
     for (int variant = 0; variant < 2; variant++) {
