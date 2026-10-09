@@ -3735,31 +3735,75 @@ int main() {
 ## VirtualAddress()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
 
 // 가상 주소(x86-64, 4단계 페이징): 64비트 중 하위 48비트만 쓰고 [47:0] 을 9+9+9+9+12 비트로 나눈다.
 //   [47:39] PML4 인덱스  [38:30] PDPT 인덱스  [29:21] PD 인덱스  [20:12] PT 인덱스  [11:0] 페이지 내 오프셋(4KB)
 // 상위 16비트는 비트 47 의 복사여야 하는 "정규(canonical) 주소" 만 유효하다: 낮은 절반은 사용자, 높은 절반은 커널
+// 이 예제는 위 주장을 서로 다른 방법으로 대조한다:
+//  ① 비트 연산으로 쪼갠 필드 == 나눗셈/나머지로 구한 필드, 다시 합치면(부호 확장 포함) 원래 정규 주소, 쪼개기는 정규 주소 위에서 일대일(서로 다른 주소가 같은 (인덱스 4 개, 오프셋) 을 갖지 않는다)
+//  ② 정규 주소 판정 == "상위 17비트가 모두 같다" 라는 정의 == 부호 확장 후 같은지 == 구간 판정 [0, 2^47) ∪ [2^64-2^47, 2^64)
+//  ③ 축소 모형(워드 16비트, 주소 비트 8~12)에서 전수 조사: 정규 주소의 개수가 정확히 2^(주소 비트), 구멍(비정규)의 크기는 2^16 - 2^(주소 비트)
+//  ④ 5단계 페이징(57비트)은 PML5 인덱스 [56:48] 이 추가되고, 48비트 정규 주소는 57비트에서도 정규(포함 관계), 반대는 성립하지 않는다  ⑤ 이 프로세스의 실제 포인터(스택·힙·코드)가 사용자 절반의 정규 주소 (x86-64 에서)
 struct Split { unsigned pml4, pdpt, pd, pt, offset; };
 Split split(uint64_t va) { return {unsigned(va >> 39 & 0x1ff), unsigned(va >> 30 & 0x1ff), unsigned(va >> 21 & 0x1ff), unsigned(va >> 12 & 0x1ff), unsigned(va & 0xfff)}; }
-uint64_t compose(const Split& s) {
-    uint64_t va = (uint64_t)s.pml4 << 39 | (uint64_t)s.pdpt << 30 | (uint64_t)s.pd << 21 | (uint64_t)s.pt << 12 | s.offset;
-    if (va >> 47 & 1) va |= 0xffff000000000000ULL;                      // 부호 확장 (정규 주소)
-    return va;
+uint64_t signExtend(uint64_t va, int bits) {                                       // 하위 bits 비트를 부호 확장
+    uint64_t mask = (bits == 64) ? ~0ULL : ((1ULL << bits) - 1), low = va & mask;
+    return (low >> (bits - 1) & 1) ? (low | ~mask) : low;
 }
-bool canonical(uint64_t va) { uint64_t top = va >> 47; return top == 0 || top == 0x1ffff; }
+uint64_t compose(const Split& s) { return signExtend((uint64_t)s.pml4 << 39 | (uint64_t)s.pdpt << 30 | (uint64_t)s.pd << 21 | (uint64_t)s.pt << 12 | s.offset, 48); }
+bool canonical(uint64_t va, int bits = 48) { return signExtend(va, bits) == va; }
 
 int main() {
-    uint64_t va = 0x00007f1234567abcULL;
-    Split s = split(va);
+    uint64_t va = 0x00007f1234567abcULL; Split s = split(va);
     assert(s.offset == 0xabc && s.pt == 0x167 && s.pd == 0x1a2 && s.pdpt == 0x48 && s.pml4 == 0xfe);
-    assert(compose(s) == va);                                            // 쪼갠 뒤 다시 합치면 원래 주소
-    assert(canonical(va) && canonical(0xffff800000000000ULL));           // 사용자 영역 끝, 커널 영역 시작
+    assert(compose(s) == va);
+    assert(canonical(va) && canonical(0xffff800000000000ULL));                        // 사용자 영역 끝, 커널 영역 시작
     assert(!canonical(0x0000800000000000ULL) && !canonical(0x1234000000000000ULL));
-    int local; assert(canonical((uint64_t)&local) && (uint64_t)&local < 0x0000800000000000ULL);   // 사용자 포인터는 낮은 절반
-    std::cout << "VirtualAddress: 0x" << std::hex << va << " -> pml4=" << s.pml4 << " pdpt=" << s.pdpt << " pd=" << s.pd << " pt=" << s.pt << " off=" << s.offset << std::endl;
+    // ① 두 가지 방법과 일대일
+    std::mt19937_64 rng(48); long checked = 0, canon = 0;
+    for (int i = 0; i < 2000000; ++i) {
+        uint64_t x = rng(); if (i % 3 == 0) x = signExtend(x, 48);                    // 정규 주소를 충분히 섞는다
+        Split a = split(x);
+        assert(a.offset == x % 4096 && a.pt == (x / 4096) % 512 && a.pd == (x / (4096ULL * 512)) % 512 && a.pdpt == (x / (4096ULL * 512 * 512)) % 512 && a.pml4 == (x / (4096ULL * 512 * 512 * 512)) % 512);
+        if (canonical(x)) { assert(compose(a) == x); ++canon; }                         // 정규 주소는 쪼갰다 합치면 원래 주소 -> 쪼개기가 일대일
+        else assert(compose(a) != x);                                                  // 비정규 주소는 합쳐도 돌아오지 않는다
+        // ② 정규 주소 판정을 세 가지로
+        uint64_t top = x >> 47; bool byTop = (top == 0 || top == 0x1ffff);
+        bool byRange = (x < (1ULL << 47)) || (x >= (~0ULL - (1ULL << 47) + 1));
+        assert(canonical(x) == byTop && byTop == byRange);
+        ++checked;
+    }
+    assert(canon > 600000);
+    // ③ 축소 모형 전수 조사: 워드 16비트
+    for (int vaBits = 8; vaBits <= 12; ++vaBits) {
+        long count = 0, lowHalf = 0, highHalf = 0, hole = 0;
+        for (uint32_t x = 0; x < 65536; ++x) {
+            uint32_t m = (1u << vaBits) - 1, low = x & m; uint32_t ext = (low >> (vaBits - 1) & 1) ? (low | (0xffffu & ~m)) : low;
+            bool ok = (ext == x); count += ok; if (ok && x < (1u << (vaBits - 1))) ++lowHalf; if (ok && x >= 65536 - (1u << (vaBits - 1))) ++highHalf; hole += !ok;
+        }
+        assert(count == (1L << vaBits) && lowHalf == (1L << (vaBits - 1)) && highHalf == (1L << (vaBits - 1)) && hole == 65536 - (1L << vaBits));
+    }
+    // ④ 5단계 페이징
+    for (int i = 0; i < 200000; ++i) {
+        uint64_t x = signExtend(rng(), 48);
+        assert(canonical(x, 57) && canonical(x, 48));                                   // 48 비트 정규 주소는 57 비트에서도 정규
+        uint64_t y = signExtend(rng(), 57); uint64_t mid = y >> 47 & 0x3ff;                // 57 비트 정규 주소의 비트 [56:47]
+        assert(canonical(y, 57) && canonical(y, 48) == (mid == 0 || mid == 0x3ff));          // 48 비트에서도 정규일 조건: 그 10 비트가 모두 같다 (PML5 인덱스 + 비트 47)
+    }
+    assert(canonical(0x0000800000000000ULL, 57) && !canonical(0x0000800000000000ULL, 48));   // 2^47: 5단계에서는 사용자 영역, 4단계에서는 비정규
+    assert(canonical(0xff00000000000000ULL, 57) && !canonical(0xff00000000000000ULL, 48) && !canonical(0x0100000000000000ULL, 57));   // 2^56 은 57비트에서도 비정규
+    assert(512ULL * 512 * 512 * 512 * 4096 == (1ULL << 48) && 512ULL * 512 * 512 * 512 * 512 * 4096 == (1ULL << 57));          // 인덱스 4개(5개) × 오프셋 = 주소 공간 크기
+#if defined(__x86_64__)
+    int local = 0; int* heap = new int(1);                                            // ⑤ 실제 포인터
+    uint64_t addrs[3] = {(uint64_t)&local, (uint64_t)heap, (uint64_t)(void*)&main};
+    for (uint64_t a : addrs) assert(canonical(a) && a < (1ULL << 47));                // 사용자 포인터는 낮은 절반
+    delete heap;
+#endif
+    std::cout << "VirtualAddress verified on " << checked << " addresses (" << canon << " canonical): 0x" << std::hex << va << " -> pml4=" << s.pml4 << " pdpt=" << s.pdpt << " pd=" << s.pd << " pt=" << s.pt << " off=" << s.offset << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
@@ -3768,82 +3812,223 @@ int main() {
 ## PhysicalAddress()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <vector>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
 // 물리 주소: 실제 RAM 의 번호.  물리 메모리는 4KB "프레임" 으로 나뉘고, 운영체제는 프레임 비트맵(또는 버디 할당기)으로 빈 프레임을 관리한다.
 // 물리 주소 = 프레임 번호 << 12 | 페이지 내 오프셋.  여러 프로세스가 같은 프레임을 공유할 수 있어(공유 라이브러리, CoW) 프레임마다 참조 횟수를 둔다
+// 이 구현은 64 비트 워드 비트맵(1 = 사용 중)과 프레임별 참조 횟수를 함께 두고, 빈 프레임 찾기를 워드 단위 `ctz` 로 가속한다(64 프레임을 한 번에 건너뜀).
+//  alloc 은 가장 낮은 빈 프레임, allocContiguous(n, align) 는 정렬된 n 개 연속 프레임(DMA·큰 페이지용)의 가장 낮은 시작점을 돌려준다.  release 는 마지막 참조가 사라질 때만 프레임을 비운다
+// 검증: 프레임 수 3 가지(200, 1000, 4096) × 무작위 연산 30 000 번(alloc, 연속 할당, share, release) 을 "참조 횟수 배열만 쓰는 느린 기준" 과 결과·상태까지 대조 — 반환 프레임이 같고, 빈 프레임 수가 같고,
+//        비트맵 == (참조 횟수 > 0), 모든 공유가 사라지면 정확히 비워짐.  단편화: 512 프레임마다 하나씩만 쓰고 있으면 99.8% 가 비어도 정렬된 512 연속 할당은 실패하다가, 그 점유를 풀어 주면 성공
 class FrameAllocator {
-    std::vector<int> refs;                                              // 프레임별 참조 횟수 (0 = 비어 있음)
+    std::vector<uint64_t> bits; std::vector<uint16_t> refs; size_t n, freeCount;
+    bool used(size_t f) const { return bits[f >> 6] >> (f & 63) & 1; }
 public:
-    explicit FrameAllocator(size_t frames) : refs(frames, 0) {}
-    long alloc() { for (size_t i = 0; i < refs.size(); i++) if (refs[i] == 0) { refs[i] = 1; return i; } return -1; }
-    void share(size_t f) { refs[f]++; }
-    void release(size_t f) { assert(refs[f] > 0); refs[f]--; }
-    size_t freeFrames() const { size_t c = 0; for (int r : refs) c += r == 0; return c; }
+    explicit FrameAllocator(size_t frames) : bits((frames + 63) / 64, 0), refs(frames, 0), n(frames), freeCount(frames) {
+        if (frames % 64) bits.back() |= ~0ULL << (frames % 64);                     // 존재하지 않는 프레임은 사용 중으로 막아 둔다
+    }
+    long alloc() {
+        for (size_t w = 0; w < bits.size(); ++w) {
+            if (bits[w] == ~0ULL) continue;                                        // 64 프레임이 모두 사용 중이면 한 번에 건너뛴다
+            size_t f = w * 64 + (size_t)__builtin_ctzll(~bits[w]); refs[f] = 1; bits[w] |= 1ULL << (f & 63); --freeCount; return (long)f;
+        }
+        return -1;
+    }
+    long allocContiguous(size_t count, size_t align) {                             // 정렬된 연속 count 프레임 (처음 맞는 곳)
+        for (size_t s = 0; s + count <= n; s += align) {
+            bool ok = true; for (size_t i = 0; i < count && ok; ++i) ok = !used(s + i);
+            if (!ok) continue;
+            for (size_t i = 0; i < count; ++i) { refs[s + i] = 1; bits[(s + i) >> 6] |= 1ULL << ((s + i) & 63); }
+            freeCount -= count; return (long)s;
+        }
+        return -1;
+    }
+    void share(size_t f) { assert(refs[f] > 0); ++refs[f]; }
+    bool release(size_t f) { assert(refs[f] > 0); if (--refs[f] == 0) { bits[f >> 6] &= ~(1ULL << (f & 63)); ++freeCount; return true; } return false; }
+    size_t freeFrames() const { return freeCount; } int refCount(size_t f) const { return refs[f]; }
+    bool consistent() const { size_t fr = 0; for (size_t f = 0; f < n; ++f) { if (used(f) != (refs[f] > 0)) return false; fr += refs[f] == 0; } return fr == freeCount; }
     static uint64_t physAddr(size_t frame, unsigned offset) { return (uint64_t)frame << 12 | offset; }
+    static size_t frameOf(uint64_t pa) { return (size_t)(pa >> 12); } static unsigned offsetOf(uint64_t pa) { return (unsigned)(pa & 0xfff); }
+};
+
+struct Reference {                                                                // 참조 횟수 배열만으로 구한 느린 기준
+    std::vector<int> ref; explicit Reference(size_t n) : ref(n, 0) {}
+    long alloc() { for (size_t f = 0; f < ref.size(); ++f) if (ref[f] == 0) { ref[f] = 1; return (long)f; } return -1; }
+    long allocContiguous(size_t c, size_t a) { for (size_t s = 0; s + c <= ref.size(); s += a) { bool ok = true; for (size_t i = 0; i < c; ++i) ok &= ref[s + i] == 0; if (ok) { for (size_t i = 0; i < c; ++i) ref[s + i] = 1; return (long)s; } } return -1; }
+    size_t freeFrames() const { size_t c = 0; for (int r : ref) c += r == 0; return c; }
 };
 
 int main() {
-    FrameAllocator fa(4);                                                // 16KB 짜리 작은 RAM
-    long f0 = fa.alloc(), f1 = fa.alloc();
-    assert(f0 == 0 && f1 == 1 && fa.freeFrames() == 2);
-    assert(FrameAllocator::physAddr(f1, 0x234) == 0x1234);
-    fa.share(f0);                                                        // 두 프로세스가 프레임 0 을 공유 (참조 2)
-    fa.release(f0);
-    assert(fa.freeFrames() == 2);                                        // 아직 한 쪽이 쓰는 중이라 반환되지 않는다
-    fa.release(f0);
-    assert(fa.freeFrames() == 3);                                        // 마지막 참조가 사라져야 프레임이 비워진다
-    assert(fa.alloc() == 0);                                             // 재사용
-    fa.alloc(); fa.alloc();
-    assert(fa.alloc() == -1);                                            // 물리 메모리 고갈
-    std::cout << "PhysicalAddress: frame accounting verified." << std::endl;
+    // 원래 예: 4 프레임짜리 작은 RAM
+    {   FrameAllocator fa(4); long f0 = fa.alloc(), f1 = fa.alloc();
+        assert(f0 == 0 && f1 == 1 && fa.freeFrames() == 2 && FrameAllocator::physAddr(f1, 0x234) == 0x1234);
+        fa.share(f0); assert(!fa.release(f0) && fa.freeFrames() == 2);              // 아직 한 쪽이 쓰는 중이라 반환되지 않는다
+        assert(fa.release(f0) && fa.freeFrames() == 3 && fa.alloc() == 0);          // 마지막 참조가 사라져야 비워지고 재사용
+        fa.alloc(); fa.alloc(); assert(fa.alloc() == -1 && fa.consistent()); }      // 물리 메모리 고갈
+    // 주소 구성
+    std::mt19937_64 rng(1);
+    for (int i = 0; i < 100000; ++i) { size_t f = rng() & ((1ULL << 40) - 1); unsigned off = (unsigned)(rng() & 0xfff); uint64_t pa = FrameAllocator::physAddr(f, off); assert(FrameAllocator::frameOf(pa) == f && FrameAllocator::offsetOf(pa) == off && pa < (1ULL << 52)); }
+    // 차분 시험
+    long ops = 0, contiguousOk = 0, contiguousFail = 0, shares = 0;
+    for (size_t frames : {(size_t)200, (size_t)1000, (size_t)4096}) {
+        FrameAllocator fa(frames); Reference ref(frames); std::mt19937 r((uint32_t)frames); std::vector<size_t> live;                // live: 참조 하나당 항목 하나 (공유하면 같은 프레임이 여러 번)
+        for (int step = 0; step < 30000; ++step) {
+            int op = (int)(r() % 100); ++ops;
+            if (op < 45) { long a = fa.alloc(), b = ref.alloc(); assert(a == b); if (a >= 0) live.push_back((size_t)a); }
+            else if (op < 55) {
+                size_t cnt = 1 + r() % 16, align = (size_t)1 << (r() % 5); long a = fa.allocContiguous(cnt, align), b = ref.allocContiguous(cnt, align); assert(a == b);
+                if (a >= 0) { ++contiguousOk; assert((size_t)a % align == 0); for (size_t i = 0; i < cnt; ++i) live.push_back((size_t)a + i); } else ++contiguousFail;
+            } else if (op < 70 && !live.empty()) { size_t f = live[r() % live.size()]; fa.share(f); ref.ref[f]++; live.push_back(f); ++shares; }
+            else if (!live.empty()) { size_t i = r() % live.size(); size_t f = live[i]; live[i] = live.back(); live.pop_back(); bool freed = fa.release(f); ref.ref[f]--; assert(freed == (ref.ref[f] == 0)); }
+            assert(fa.freeFrames() == ref.freeFrames());
+            if (step % 1500 == 0) { assert(fa.consistent()); for (size_t f = 0; f < frames; ++f) assert((int)fa.refCount(f) == ref.ref[f]); }
+        }
+        for (size_t f : live) fa.release(f);
+        assert(fa.consistent() && fa.freeFrames() == frames);                          // 모든 공유가 사라지면 정확히 비워진다
+    }
+    assert(contiguousOk > 100 && contiguousFail > 10 && shares > 1000);
+    // 단편화: 512 프레임마다 하나만 쓰면 정렬된 512 연속 할당 실패
+    {   const size_t BLOCKS = 8, FR = BLOCKS * 512; FrameAllocator g(FR);
+        for (size_t b = 0; b < BLOCKS; ++b) { long x = g.allocContiguous(512, 512); assert(x == (long)(b * 512)); }                 // 512 프레임(=2MB) 블록 8 개를 차지했다가
+        for (size_t b = 0; b < BLOCKS; ++b) { for (size_t i = 1; i < 512; ++i) g.release(b * 512 + i); }                                    // 각 블록의 첫 프레임만 남기고 모두 해제
+        assert(g.freeFrames() == FR - BLOCKS && g.allocContiguous(512, 512) == -1);                                                         // 99.8% 가 비었는데도 큰 할당 실패 (외부 단편화)
+        g.release(0); assert(g.allocContiguous(512, 512) == 0); }                                                                           // 점유를 풀면 성공
+    std::cout << "PhysicalAddress verified: " << ops << " random ops matched the reference (" << contiguousOk << " contiguous allocations, " << contiguousFail << " refused, " << shares << " shares); bitmap == refcounts." << std::endl;
     return 0;
 }
-// Time Complexity: 할당 O(프레임 수) (비트맵 + 힌트로 O(1) 가능)
+// Time Complexity: alloc O(프레임 수 / 64) (비트맵 워드 단위 건너뛰기), 연속 할당 O(프레임 수 · 크기), 해제 O(1)
 // Space Complexity: O(프레임 수)
 ```
 ## AddressTranslation()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <list>
+#include <map>
+#include <random>
+#include <vector>
 
 // 주소 변환(MMU): 가상 주소를 (페이지 번호, 오프셋) 으로 나누고, 페이지 테이블 항목(PTE)에서 프레임 번호를 찾아 (프레임 번호 << 12 | 오프셋) 을 만든다.
 // PTE 에는 present(메모리에 있음), writable, user 비트가 있고, 위반하면 CPU 가 페이지 폴트(예외)를 일으킨다
-struct PTE { bool present = false, writable = false, user = false; uint32_t frame = 0; };
+// 이 구현은 실제 MMU 처럼 ① 접근 종류(읽기/쓰기/실행)와 NX 비트 ② x86 식 오류 코드(bit0 보호 위반인가, bit1 쓰기, bit2 사용자, bit4 명령어 인출) ③ accessed/dirty 비트 갱신(성공한 접근에서만, 쓰기에서 dirty)
+//  ④ TLB(세트 연관, 세트마다 LRU) 를 갖춘다.  OS 가 PTE 를 바꾸면 해당 TLB 항목을 무효화(INVLPG)해야 한다
+// 검증: 세 구현을 같은 무작위 연산열(map/unmap/protect/접근 40 000 번)에 적용해 결과를 맞춘다 — A: TLB 를 쓰는 MMU, B: TLB 없이 매번 테이블을 걷는 MMU, C: std::map 으로 짠 독립 기준.
+//        모든 접근에서 (상태, 물리 주소, 오류 코드) 가 같고, 마지막에 accessed/dirty 비트까지 같다.  D: INVLPG 를 빼먹은 MMU 는 낡은 변환 때문에 틀린 결과가 나온다(횟수 확인).
+//        TLB 닫힌 형태: 완전 연관 LRU 에서 P <= 항목 수인 순환 접근의 미스 = P, P = 항목 수 + 1 이면 전부 미스, 세트 연관에서는 같은 세트로 몰리면 용량이 남아도 전부 미스
+struct PTE { bool present = false, writable = false, user = false, nx = false, accessed = false, dirty = false; uint32_t frame = 0; };
+enum Access { READ, WRITE, EXEC };
 enum Status { OK, NOT_PRESENT, PROTECTION };
-struct Result { Status st; uint64_t pa; };
+struct Result { Status st; uint64_t pa; unsigned err; bool operator==(const Result& o) const { return st == o.st && pa == o.pa && err == o.err; } };
 
-Result translate(const std::vector<PTE>& table, uint64_t va, bool write, bool userMode) {
-    uint64_t page = va >> 12, off = va & 0xfff;
-    if (page >= table.size() || !table[page].present) return {NOT_PRESENT, 0};
-    const PTE& e = table[page];
-    if ((write && !e.writable) || (userMode && !e.user)) return {PROTECTION, 0};
-    return {OK, (uint64_t)e.frame << 12 | off};
-}
+unsigned errCode(bool protection, Access a, bool user) { return (protection ? 1u : 0u) | (a == WRITE ? 2u : 0u) | (user ? 4u : 0u) | (a == EXEC ? 16u : 0u); }
+bool allowed(const PTE& e, Access a, bool user) { return !((a == WRITE && !e.writable) || (user && !e.user) || (a == EXEC && e.nx)); }
+
+class Tlb {
+    struct Ent { uint64_t vpn; PTE pte; };
+    size_t sets, ways; std::vector<std::list<Ent>> s;
+public:
+    long hits = 0, misses = 0;
+    Tlb(size_t nsets, size_t nways) : sets(nsets), ways(nways), s(nsets ? nsets : 1) {}
+    bool enabled() const { return sets > 0; }
+    PTE* lookup(uint64_t vpn) {
+        if (!sets) return nullptr;
+        auto& set = s[vpn % sets];
+        for (auto it = set.begin(); it != set.end(); ++it) if (it->vpn == vpn) { set.splice(set.begin(), set, it); ++hits; return &set.front().pte; }
+        ++misses; return nullptr;
+    }
+    void insert(uint64_t vpn, const PTE& e) { if (!sets) return; auto& set = s[vpn % sets]; set.push_front({vpn, e}); if (set.size() > ways) set.pop_back(); }
+    void invalidate(uint64_t vpn) { if (!sets) return; s[vpn % sets].remove_if([&](const Ent& x) { return x.vpn == vpn; }); }
+    size_t capacity() const { return sets * ways; }
+};
+
+class Mmu {
+public:
+    std::vector<PTE> table; Tlb tlb; bool invlpg; long walks = 0;
+    Mmu(size_t pages, size_t sets, size_t ways, bool doInvlpg = true) : table(pages), tlb(sets, ways), invlpg(doInvlpg) {}
+    Result translate(uint64_t va, Access a, bool user) {
+        uint64_t page = va >> 12, off = va & 0xfff; PTE* e = tlb.lookup(page);
+        if (!e) {                                                                               // TLB 미스: 테이블 걷기
+            ++walks;
+            if (page >= table.size() || !table[page].present) return {NOT_PRESENT, 0, errCode(false, a, user)};
+            if (!allowed(table[page], a, user)) return {PROTECTION, 0, errCode(true, a, user)};
+            table[page].accessed = true; tlb.insert(page, table[page]); e = tlb.lookup(page); if (!e) { static PTE copy; copy = table[page]; e = &copy; }   // 성공한 접근만 TLB 에 채운다
+            if (a == WRITE && !table[page].dirty) table[page].dirty = true;
+            if (tlb.enabled()) { PTE* t = tlb.lookup(page); if (t) { t->accessed = true; t->dirty = table[page].dirty; } --tlb.hits; }
+            return {OK, (uint64_t)table[page].frame << 12 | off, 0};
+        }
+        if (!allowed(*e, a, user)) return {PROTECTION, 0, errCode(true, a, user)};              // 캐시된 권한으로 검사 (낡았으면 틀린다)
+        if (a == WRITE && !e->dirty) { e->dirty = true; if (page < table.size() && table[page].present) table[page].dirty = true; }   // 처음 쓰기: 테이블의 dirty 비트도 올린다
+        if (page < table.size() && table[page].present) table[page].accessed = true;
+        return {OK, (uint64_t)e->frame << 12 | off, 0};
+    }
+    void map(uint64_t page, uint32_t frame, bool w, bool u, bool nx) { PTE e; e.present = true; e.writable = w; e.user = u; e.nx = nx; e.frame = frame; table[page] = e; if (invlpg) tlb.invalidate(page); }
+    void unmap(uint64_t page) { table[page] = PTE(); if (invlpg) tlb.invalidate(page); }
+    void protect(uint64_t page, bool w, bool u, bool nx) { if (!table[page].present) return; table[page].writable = w; table[page].user = u; table[page].nx = nx; if (invlpg) tlb.invalidate(page); }
+};
+
+struct Oracle {                                                                                  // 독립 기준: 페이지 -> PTE 맵과 직접 쓴 진리표
+    std::map<uint64_t, PTE> m;
+    Result translate(uint64_t va, Access a, bool user) {
+        auto it = m.find(va >> 12); if (it == m.end() || !it->second.present) return {NOT_PRESENT, 0, errCode(false, a, user)};
+        PTE& e = it->second;
+        if (a == WRITE && !e.writable) return {PROTECTION, 0, errCode(true, a, user)};
+        if (user && !e.user) return {PROTECTION, 0, errCode(true, a, user)};
+        if (a == EXEC && e.nx) return {PROTECTION, 0, errCode(true, a, user)};
+        e.accessed = true; if (a == WRITE) e.dirty = true; return {OK, (uint64_t)e.frame << 12 | (va & 0xfff), 0};
+    }
+};
 
 int main() {
-    std::vector<PTE> pt(16);
-    pt[3] = {true, true, true, 7};                                       // 페이지 3 -> 프레임 7 (읽기/쓰기, 사용자)
-    pt[4] = {true, false, true, 9};                                      // 페이지 4 -> 프레임 9 (읽기 전용)
-    pt[5] = {true, true, false, 2};                                      // 페이지 5 -> 프레임 2 (커널 전용)
-    auto r = translate(pt, 3 * 4096 + 0x123, false, true);
-    assert(r.st == OK && r.pa == 7 * 4096 + 0x123);                      // 오프셋은 그대로, 페이지 번호만 프레임 번호로 바뀐다
-    assert(translate(pt, 4 * 4096, true, true).st == PROTECTION);        // 읽기 전용 페이지에 쓰기
-    assert(translate(pt, 4 * 4096, false, true).st == OK);
-    assert(translate(pt, 5 * 4096, false, true).st == PROTECTION);       // 사용자 모드에서 커널 페이지 접근
-    assert(translate(pt, 5 * 4096, false, false).st == OK);
-    assert(translate(pt, 9 * 4096, false, true).st == NOT_PRESENT);      // 매핑되지 않은 페이지 -> 페이지 폴트
-    std::cout << "AddressTranslation: 0x" << std::hex << (3 * 4096 + 0x123) << " -> 0x" << r.pa << std::endl;
+    // 원래 예
+    {   Mmu mmu(16, 0, 0); mmu.map(3, 7, true, true, false); mmu.map(4, 9, false, true, false); mmu.map(5, 2, true, false, false);
+        Result r = mmu.translate(3 * 4096 + 0x123, READ, true); assert(r.st == OK && r.pa == 7 * 4096 + 0x123);
+        assert(mmu.translate(4 * 4096, WRITE, true).st == PROTECTION && mmu.translate(4 * 4096, READ, true).st == OK);
+        assert(mmu.translate(5 * 4096, READ, true).st == PROTECTION && mmu.translate(5 * 4096, READ, false).st == OK);
+        Result nf = mmu.translate(9 * 4096, READ, true); assert(nf.st == NOT_PRESENT && nf.err == 4);                       // P=0, U=1
+        Result pf = mmu.translate(4 * 4096, WRITE, true); assert(pf.err == (1u | 2u | 4u)); }                              // P=1, W=1, U=1
+    // 세 구현 차분 + 낡은 TLB
+    const size_t PAGES = 48; long accesses = 0, faultsNP = 0, faultsProt = 0, staleWrong = 0;
+    {   Mmu A(PAGES, 4, 4), B(PAGES, 0, 0), D(PAGES, 4, 4, false); Oracle C; std::mt19937 rng(77);
+        for (int step = 0; step < 40000; ++step) {
+            uint64_t page = rng() % PAGES; int op = (int)(rng() % 100);
+            if (op < 8) { uint32_t fr = (uint32_t)(rng() % 1000); bool w = rng() % 2, u = rng() % 2, nx = rng() % 3 == 0; A.map(page, fr, w, u, nx); B.map(page, fr, w, u, nx); D.map(page, fr, w, u, nx); PTE e; e.present = true; e.writable = w; e.user = u; e.nx = nx; e.frame = fr; C.m[page] = e; }
+            else if (op < 12) { A.unmap(page); B.unmap(page); D.unmap(page); C.m.erase(page); }
+            else if (op < 18) { bool w = rng() % 2, u = rng() % 2, nx = rng() % 3 == 0; A.protect(page, w, u, nx); B.protect(page, w, u, nx); D.protect(page, w, u, nx); auto it = C.m.find(page); if (it != C.m.end()) { it->second.writable = w; it->second.user = u; it->second.nx = nx; } }
+            else {
+                uint64_t va = (rng() % (PAGES + 4)) * 4096 + rng() % 4096; Access a = (Access)(rng() % 3); bool user = rng() % 2; ++accesses;
+                Result ra = A.translate(va, a, user), rb = B.translate(va, a, user), rc = C.translate(va, a, user), rd = D.translate(va, a, user);
+                assert(ra == rb && rb == rc); faultsNP += rc.st == NOT_PRESENT; faultsProt += rc.st == PROTECTION; if (!(rd == rc)) ++staleWrong;
+            }
+        }
+        for (uint64_t p = 0; p < PAGES; ++p) {                                                  // accessed/dirty 비트까지 같다 (TLB 가 쓰기 비트를 테이블에 반영)
+            const PTE& x = A.table[p]; const PTE& y = B.table[p]; auto it = C.m.find(p);
+            assert(x.present == y.present && x.accessed == y.accessed && x.dirty == y.dirty && x.writable == y.writable && x.frame == y.frame);
+            if (it != C.m.end()) assert(it->second.accessed == x.accessed && it->second.dirty == x.dirty && it->second.present == x.present);
+        }
+        assert(A.tlb.hits > 5000 && A.walks < B.walks && staleWrong > 100 && faultsNP > 1000 && faultsProt > 1000);          // TLB 는 걷기를 줄이고, INVLPG 없는 쪽은 틀린다
+    }
+    // TLB 닫힌 형태
+    {   auto misses = [](size_t sets, size_t ways, const std::vector<uint64_t>& pages, int reps) {
+            Tlb t(sets, ways); long m = 0; for (int r = 0; r < reps; ++r) for (uint64_t p : pages) { if (!t.lookup(p)) { ++m; t.insert(p, PTE()); } } return m; };
+        std::vector<uint64_t> p16, p17, same; for (uint64_t i = 0; i < 16; ++i) p16.push_back(i); for (uint64_t i = 0; i < 17; ++i) p17.push_back(i); for (uint64_t i = 0; i < 3; ++i) same.push_back(i * 4);
+        assert(misses(1, 16, p16, 50) == 16);                                                    // 완전 연관: 항목 수만큼의 페이지를 순환 -> 처음 한 번씩만 미스
+        assert(misses(1, 16, p17, 50) == 17 * 50);                                               // 한 페이지 더 -> LRU 가 매번 가장 오래된 것을 내쫓아 전부 미스
+        assert(misses(4, 2, same, 50) == 3 * 50);                                                // 용량 8 이지만 세 페이지가 같은 세트(번호 % 4 == 0) -> 2 방향을 넘어 전부 미스
+        std::vector<uint64_t> spread = {0, 1, 2, 3, 4, 5}; assert(misses(4, 2, spread, 50) == 6);   // 같은 용량에서 고르게 퍼지면 처음 6 번만
+        assert(Tlb(16, 4).capacity() * 4096 == 256 * 1024ULL); }                                  // TLB 도달 범위(reach) = 항목 수 x 페이지 크기
+    std::cout << "AddressTranslation verified: " << accesses << " accesses (" << faultsNP << " not-present, " << faultsProt << " protection faults) agreed across TLB/no-TLB/oracle; skipping INVLPG gave " << staleWrong << " stale results." << std::endl;
     return 0;
 }
-// Time Complexity: O(1) (한 단계 테이블)
-// Space Complexity: O(페이지 수)
+// Time Complexity: TLB 적중 O(방향 수), 미스 O(1) (한 단계 테이블)
+// Space Complexity: O(페이지 수 + TLB 항목 수)
 ```
 ## Paging()
 ### 대표코드
@@ -3880,55 +4065,143 @@ int main() {
 ## PageTable()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <memory>
+#include <array>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 
-// 4단계 페이지 테이블: 각 단계는 512 개 항목의 배열이고, 하위 단계 테이블이 필요할 때만 만든다 (기수 트리).
-// 변환은 인덱스 4번으로 4개 테이블을 차례로 따라가는 것 (그래서 TLB 가 필요하다).  연속한 페이지들은 상위 테이블을 공유한다
-struct Table { std::unique_ptr<Table> next[512]; int64_t frame[512]; Table() { for (auto& f : frame) f = -1; } };
+// 페이지 테이블: 가상 주소를 물리 주소로 옮기는 표.  한 장짜리 배열은 주소 공간(2^36 페이지)에 비례해 너무 크므로 x86-64 는 4단계 기수 트리(PML4 -> PDPT -> PD -> PT)를 쓴다.
+// 테이블은 4KB 한 프레임이고 항목(8바이트) 512 개 — 쓰이는 구간에 대해서만 하위 테이블을 만들어 희소한 주소 공간을 싸게 표현한다.  PD/PDPT 단계에서 PS(Page Size) 비트를 켜면 거기가 잎이 되어 2MB/1GB 큰 페이지가 된다
+// 이 구현은 시뮬레이션한 물리 메모리(프레임 = 항목 512 개 배열) 위에 실제 x86-64 항목 형식(bit0 P, bit1 RW, bit2 US, bit7 PS, bit63 NX, [51:12] 프레임)으로 만들고
+//  map(4KB/2MB/1GB, 정렬·겹침 검사), unmap(비게 된 테이블은 위로 올라가며 회수), protect, walk(메모리 접근 횟수 포함) 를 지원한다
+// 검증: ① 무작위 연산 20 000 번(군집한 주소 6 곳)을 std::map 으로 짠 독립 기준(구간 겹침 검사 포함)과 대조 — map 성공 여부, walk 결과(성공 여부·물리 주소·페이지 크기·플래그)가 같고 성공한 walk 의 메모리 접근 수는 정확히 4 - 레벨
+//        ② 테이블 프레임 수 == 기준의 매핑에서 직접 센 값(루트 1 + 서로 다른 PML4/PDPT/PD 접두사 수) — 실패한 map 이 빈 테이블을 남기지 않고 unmap 이 회수  ③ 모두 지우면 프레임 1 개(루트)만 남고 루트가 비어 있음
+//        ④ 닫힌 형태: 정렬된 1GB 구역을 4KB 페이지로 채우면 테이블 프레임이 정확히 1+1+1+512 = 515, 2MB 페이지로 채우면 3, 1GB 페이지면 2  ⑤ 정렬되지 않은 큰 페이지·겹치는 매핑 거절
+const uint64_t P = 1, RW = 2, US = 4, PS = 128, NXBIT = 1ULL << 63, ADDR = 0x000ffffffffff000ULL;
+struct Walk { bool ok = false; uint64_t pa = 0, flags = 0; int level = -1, accesses = 0; };
+inline uint64_t sizeOfLevel(int level) { return 4096ULL << (9 * level); }
+inline unsigned idx(uint64_t va, int level) { return unsigned(va >> (12 + 9 * level) & 0x1ff); }
+
 class PageTable {
-    Table root; int nodes = 1;
-    static unsigned idx(uint64_t va, int level) { return va >> (12 + 9 * level) & 0x1ff; }       // level 3 = PML4 ... 0 = PT
+    std::vector<std::array<uint64_t, 512>> mem; std::vector<int> count; std::vector<uint32_t> freeList; std::vector<char> inUse; size_t inUseFrames = 0;
+    uint32_t allocFrame() {
+        uint32_t f; if (!freeList.empty()) { f = freeList.back(); freeList.pop_back(); } else { f = (uint32_t)mem.size(); mem.emplace_back(); count.push_back(0); inUse.push_back(0); }
+        mem[f].fill(0); count[f] = 0; inUse[f] = 1; ++inUseFrames; return f;
+    }
+    void freeFrame(uint32_t f) { assert(count[f] == 0); inUse[f] = 0; freeList.push_back(f); --inUseFrames; }
 public:
-    void map(uint64_t va, int64_t frame) {
-        Table* t = &root;
-        for (int lv = 3; lv > 0; lv--) { auto& n = t->next[idx(va, lv)]; if (!n) { n.reset(new Table()); nodes++; } t = n.get(); }
-        t->frame[idx(va, 0)] = frame;
+    PageTable() { allocFrame(); }                                                              // 프레임 0 = PML4 (CR3)
+    size_t framesInUse() const { return inUseFrames; }
+    bool rootEmpty() const { return count[0] == 0; }
+    bool map(uint64_t va, uint64_t pa, uint64_t flags, int level = 0) {
+        uint64_t sz = sizeOfLevel(level); if (va % sz || pa % sz) return false;                // 큰 페이지는 크기에 정렬돼야 한다
+        uint32_t f = 0;
+        for (int l = 3; l > level; --l) {
+            uint64_t e = mem[f][idx(va, l)];
+            if (!(e & P)) { uint32_t nf = allocFrame(); mem[f][idx(va, l)] = ((uint64_t)nf << 12) | P | RW | US; ++count[f]; f = nf; }   // 없으면 하위 테이블을 만든다 (allocFrame 이 벡터를 키울 수 있어 참조를 쥐고 있으면 안 된다)
+            else if (e & PS) return false;                                                       // 위쪽에 큰 페이지가 이미 있다: 겹침
+            else f = (uint32_t)((e & ADDR) >> 12);
+        }
+        uint64_t& leaf = mem[f][idx(va, level)]; if (leaf & P) return false;                    // 이미 매핑됨(작은 페이지들이 있는 하위 테이블 포함)
+        leaf = (pa & ADDR) | flags | P | (level > 0 ? PS : 0); ++count[f]; return true;
     }
-    int64_t translate(uint64_t va) const {
-        const Table* t = &root;
-        for (int lv = 3; lv > 0; lv--) { t = t->next[idx(va, lv)].get(); if (!t) return -1; }
-        int64_t f = t->frame[idx(va, 0)];
-        return f < 0 ? -1 : (f << 12 | (va & 0xfff));
+    Walk walk(uint64_t va) const {
+        Walk w; uint32_t f = 0;
+        for (int l = 3; l >= 0; --l) {
+            uint64_t e = mem[f][idx(va, l)]; ++w.accesses;                                      // 테이블 항목 하나를 읽는 것이 메모리 접근 한 번
+            if (!(e & P)) return w;
+            if (l == 0 || (e & PS)) { w.ok = true; w.level = l; w.flags = e & ~ADDR & ~(uint64_t)PS; w.pa = ((e & ADDR) & ~(sizeOfLevel(l) - 1)) | (va & (sizeOfLevel(l) - 1)); return w; }
+            f = (uint32_t)((e & ADDR) >> 12);
+        }
+        return w;
     }
-    void unmap(uint64_t va) {
-        Table* t = &root;
-        for (int lv = 3; lv > 0; lv--) { t = t->next[idx(va, lv)].get(); if (!t) return; }
-        t->frame[idx(va, 0)] = -1;
+    bool unmap(uint64_t va) {
+        uint32_t path[4]; int pidx[4]; uint32_t f = 0; int l = 3;
+        for (;; --l) {
+            path[l] = f; pidx[l] = (int)idx(va, l); uint64_t e = mem[f][pidx[l]]; if (!(e & P)) return false;
+            if (l == 0 || (e & PS)) break;
+            f = (uint32_t)((e & ADDR) >> 12);
+        }
+        mem[f][pidx[l]] = 0; --count[f];
+        while (l < 3 && count[path[l]] == 0) { freeFrame(path[l]); ++l; mem[path[l]][pidx[l]] = 0; --count[path[l]]; }      // 비게 된 테이블은 위로 올라가며 회수
+        return true;
     }
-    int nodeCount() const { return nodes; }
+    bool protect(uint64_t va, uint64_t flags) {
+        uint32_t f = 0;
+        for (int l = 3; l >= 0; --l) { uint64_t& e = mem[f][idx(va, l)]; if (!(e & P)) return false; if (l == 0 || (e & PS)) { e = (e & (ADDR | PS)) | flags | P; return true; } f = (uint32_t)((e & ADDR) >> 12); }
+        return false;
+    }
+};
+
+struct Mapping { uint64_t pa, flags; int level; };
+struct Oracle {                                                                                  // 독립 기준: 정렬된 구간의 맵
+    std::map<uint64_t, Mapping> m;
+    const std::pair<const uint64_t, Mapping>* find(uint64_t va) const { auto it = m.upper_bound(va); if (it == m.begin()) return nullptr; --it; return (va - it->first < sizeOfLevel(it->second.level)) ? &*it : nullptr; }
+    bool overlaps(uint64_t base, uint64_t size) const {                                      // 주소 공간 끝에서 덧셈이 넘치지 않도록 뺄셈으로 비교
+        auto it = m.lower_bound(base); if (it != m.end() && it->first - base < size) return true;
+        if (it != m.begin()) { --it; if (base - it->first < sizeOfLevel(it->second.level)) return true; } return false;
+    }
+    size_t expectedFrames() const {                                                              // 루트 + 서로 다른 PML4/PDPT/PD 접두사 수 (잎이 있는 만큼)
+        std::set<uint64_t> p3, p2, p1; for (auto& kv : m) { uint64_t va = kv.first; p3.insert(va >> 39); if (kv.second.level <= 1) p2.insert(va >> 30); if (kv.second.level == 0) p1.insert(va >> 21); }
+        return 1 + p3.size() + p2.size() + p1.size();
+    }
 };
 
 int main() {
-    PageTable pt;
-    pt.map(0x0000000000400000ULL, 11);                                   // 코드
-    assert(pt.nodeCount() == 4);                                         // 루트 + PDPT + PD + PT
-    pt.map(0x0000000000401000ULL, 12);                                   // 바로 다음 페이지: 같은 PT 를 공유 -> 노드 추가 없음
-    assert(pt.nodeCount() == 4);
-    pt.map(0x00007ffffffff000ULL, 99);                                   // 스택 근처: 완전히 다른 가지 -> 노드 3개 추가
-    assert(pt.nodeCount() == 7);
-    assert(pt.translate(0x0000000000400123ULL) == (11LL << 12 | 0x123));
-    assert(pt.translate(0x00007ffffffff008ULL) == (99LL << 12 | 0x8));
-    assert(pt.translate(0x0000000000500000ULL) == -1);                   // 매핑 없음
-    pt.unmap(0x0000000000400000ULL);
-    assert(pt.translate(0x0000000000400123ULL) == -1 && pt.translate(0x0000000000401000ULL) == (12LL << 12));
-    std::cout << "PageTable: 3 mappings use " << pt.nodeCount() << " table pages (flat table would need 2^36 entries)" << std::endl;
+    // 원래 구조 확인: 4KB 한 장
+    {   PageTable pt; uint64_t va = 0x00007f1234567000ULL; assert(pt.map(va, 0x1000, RW | US) && pt.framesInUse() == 4);
+        Walk w = pt.walk(va + 0xabc); assert(w.ok && w.pa == 0x1abc && w.level == 0 && w.accesses == 4 && (w.flags & RW) && (w.flags & US));
+        assert(!pt.walk(va + 0x1000).ok && pt.unmap(va) && pt.framesInUse() == 1 && pt.rootEmpty()); }
+    // 닫힌 형태
+    {   PageTable a; for (uint64_t i = 0; i < 512 * 512; ++i) assert(a.map((1ULL << 30) + i * 4096, i * 4096, RW));            // 정렬된 1GB 구역을 4KB 페이지로
+        assert(a.framesInUse() == 1 + 1 + 1 + 512);
+        PageTable b; for (uint64_t i = 0; i < 512; ++i) assert(b.map((1ULL << 30) + i * (2ULL << 20), i * (2ULL << 20), RW, 1)); assert(b.framesInUse() == 3);   // 2MB 페이지
+        PageTable c; assert(c.map(1ULL << 30, 0, RW, 2) && c.framesInUse() == 2);                                                                                  // 1GB 페이지
+        Walk w = b.walk((1ULL << 30) + 5 * (2ULL << 20) + 0x1234); assert(w.ok && w.level == 1 && w.accesses == 3 && w.pa == 5 * (2ULL << 20) + 0x1234);
+        Walk g = c.walk((1ULL << 30) + 0x12345678); assert(g.ok && g.level == 2 && g.accesses == 2 && g.pa == 0x12345678);
+        assert(a.walk((1ULL << 30) + 777 * 4096).accesses == 4);
+        for (uint64_t i = 0; i < 512 * 512; ++i) { assert(a.unmap((1ULL << 30) + i * 4096)); }
+        assert(a.framesInUse() == 1 && a.rootEmpty()); }
+    // ⑤ 거절
+    {   PageTable pt; assert(!pt.map(0x1000, 0, RW, 1) && !pt.map(0, 0x1000, RW, 1) && !pt.map(0x200000, 0x1000, RW, 1));       // 정렬이 안 맞는 2MB
+        assert(pt.map(0x200000, 0x400000, RW, 1) && !pt.map(0x201000, 0x1000, RW, 0) && !pt.map(0x200000, 0, RW, 1) && pt.framesInUse() == 3);   // 큰 페이지 안쪽에 작은 페이지, 같은 곳에 두 번
+        assert(pt.map(0x400000, 0x1000, RW, 0) && !pt.map(0x400000, 0x600000, RW, 1) && pt.framesInUse() == 4); }              // 하위 테이블이 있는 곳에 큰 페이지
+    // 무작위 차분 시험
+    std::mt19937_64 rng(4096); const uint64_t bases[6] = {0x00007f0000000000ULL, 0x0000000000400000ULL, 0x00007ffc00000000ULL, 0xffff800000000000ULL, 0xffffffff80000000ULL, 0x0000123400000000ULL};
+    PageTable pt; Oracle ora; long maps = 0, mapRejected = 0, walks = 0, hits = 0, bigPages = 0;
+    for (int step = 0; step < 20000; ++step) {
+        int op = (int)(rng() % 100); uint64_t base = bases[rng() % 6];
+        int lvl = (op < 50) ? 0 : (op < 70 ? 1 : (op < 74 ? 2 : 0)); uint64_t sz = sizeOfLevel(lvl);
+        uint64_t va = base + ((rng() % (lvl == 0 ? 2048 : lvl == 1 ? 600 : 3)) * sz);                         // 군집한 주소
+        if (op < 74) {
+            uint64_t pa = (rng() % 100000) * sz & 0x000fffffffffffffULL & ~(sz - 1), fl = (rng() % 2 ? RW : 0) | (rng() % 2 ? US : 0) | (rng() % 4 == 0 ? NXBIT : 0);
+            bool want = va % sz == 0 && !ora.overlaps(va, sz); bool got = pt.map(va, pa, fl, lvl); assert(got == want); ++maps;
+            if (got) { ora.m[va] = {pa, fl, lvl}; bigPages += lvl > 0; } else ++mapRejected;
+        } else if (op < 84) {
+            uint64_t q = va + (rng() % 8) * 4096; auto f = ora.find(q); bool want = f != nullptr; uint64_t target = f ? f->first : q;
+            bool got = pt.unmap(target); assert(got == want); if (f) ora.m.erase(target);
+        } else if (op < 88) {
+            auto f = ora.find(va); uint64_t fl = (rng() % 2 ? RW : 0) | (rng() % 2 ? US : 0); bool got = pt.protect(va, fl); assert(got == (f != nullptr));
+            if (f) { ora.m[f->first].flags = fl; }
+        } else {
+            uint64_t q = va + rng() % sz; Walk w = pt.walk(q); auto f = ora.find(q); ++walks; assert(w.ok == (f != nullptr));
+            if (f) { ++hits; uint64_t lsz = sizeOfLevel(f->second.level); assert(w.level == f->second.level && w.accesses == 4 - f->second.level && w.pa == ((f->second.pa & ~(lsz - 1)) | (q & (lsz - 1)))); assert((w.flags & (RW | US | NXBIT)) == (f->second.flags & (RW | US | NXBIT))); }
+            else assert(w.accesses >= 1 && w.accesses <= 4);
+        }
+        if (step % 200 == 0) assert(pt.framesInUse() == ora.expectedFrames());                           // 테이블 프레임 수 == 직접 센 값
+    }
+    assert(pt.framesInUse() == ora.expectedFrames());
+    std::vector<uint64_t> all; for (auto& kv : ora.m) all.push_back(kv.first); for (uint64_t v : all) assert(pt.unmap(v));
+    assert(pt.framesInUse() == 1 && pt.rootEmpty() && maps > 8000 && mapRejected > 500 && hits > 500 && bigPages > 500);                 // 모두 지우면 루트만
+    std::cout << "PageTable verified: " << maps << " maps (" << mapRejected << " rejected overlaps/alignments, " << bigPages << " huge pages) and " << walks << " walks matched the oracle; 1GB of 4KB pages needs exactly 515 table frames." << std::endl;
     return 0;
 }
-// Time Complexity: 변환 O(4) = O(1), 매핑 O(4)
-// Space Complexity: O(매핑된 영역에 비례하는 테이블 수)
+// Time Complexity: map/unmap/walk 모두 O(4) = O(1) (레벨 수), 메모리 접근은 레벨 수만큼
+// Space Complexity: O(사용 중인 구간에 필요한 테이블 수) — 희소한 주소 공간에서 한 장짜리 배열(512GB)보다 훨씬 작다
 ```
 ## PageFault()
 ### 대표코드
