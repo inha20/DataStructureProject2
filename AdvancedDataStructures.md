@@ -448,6 +448,7 @@ int main() {
 #include <cstdint>
 #include <iostream>
 #include <random>
+#include <string>
 #include <vector>
 #include <cassert>
 
@@ -504,7 +505,17 @@ struct WaveletMatrix {
     size_t count(size_t l, size_t r, uint32_t lo, uint32_t hi) const { return countLess(l, r, hi) - countLess(l, r, lo); }
 };
 
+std::string levelBits(const WaveletMatrix& w) {                         // 그림: 레벨마다 비트열(위에서 아래로 최상위 비트부터)과 0 의 개수 — 0 은 앞으로, 1 은 뒤로 안정 분할되어 다음 레벨이 된다
+    std::string s; for (int b = 0; b < w.B; ++b) { s += "level " + std::to_string(b) + ": "; for (size_t i = 0; i < w.n; ++i) s += w.lv[b].ones[i + 1] - w.lv[b].ones[i] ? '1' : '0'; s += " zeros=" + std::to_string(w.lv[b].zeros) + "\n"; }
+    return s;
+}
 int main() {
+    {   const std::vector<uint32_t> s = {5, 1, 4, 3, 7, 0, 6, 2}; WaveletMatrix w(s, 3);                // 값 0..7 (3 비트) 8 개
+        const std::string pic = "level 0: 10101010 zeros=4\nlevel 1: 01010011 zeros=4\nlevel 2: 10101010 zeros=4\n";
+        assert(levelBits(w) == pic);                                                                    // 레벨 0 은 각 값의 최상위 비트(5=101 -> 1, 1=001 -> 0, ...), 0 인 값 4 개가 앞으로 가고 나머지가 뒤로 간다
+        for (size_t i = 0; i < s.size(); ++i) assert(w.access(i) == s[i]);                              // 각 레벨의 비트를 이어 읽으면 값이 복원된다 (access(2): 1 -> 0 -> 0 = 100 = 4)
+        assert(w.rank(4, 8) == 1 && w.rank(4, 2) == 0 && w.rank(7, 8) == 1);
+        std::cout << pic; }
     std::mt19937 rng(6); const int n = 3000, B = 10; std::vector<uint32_t> s(n);
     for (auto& x : s) x = rng() % (1u << B);
     WaveletMatrix wm(s, B);

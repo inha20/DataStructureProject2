@@ -160,6 +160,7 @@ int main() {
 #include <cstdint>
 #include <iostream>
 #include <numeric>
+#include <string>
 #include <vector>
 
 // 패딩: 각 멤버를 자신의 정렬에 맞추려고 컴파일러가 사이에 빈 바이트를 끼운다.  구조체 전체 크기는 가장 큰 정렬의 배수가 된다.  규칙은 두 줄이다 — 멤버 i 의 오프셋 = 앞 멤버 끝을 align_i 의 배수로 올림,  전체 크기 = 마지막 멤버 끝을 max(align) 의 배수로 올림.
@@ -192,7 +193,16 @@ struct Packed { char a; int64_t b; char c; };        // 패딩 없음 = 10
 #pragma pack(pop)
 struct alignas(16) Wide { char a; };                 // 정렬 16 → 크기 16
 
+std::string byteMap(const std::vector<Member>& m) {                        // 그림: 구조체의 바이트 지도 — 멤버를 선언 순서대로 a b c.. 로 표시하고 '.' 은 패딩
+    Layout L = layout(m); std::string s(L.size, '.');
+    for (size_t i = 0; i < m.size(); ++i) for (size_t k = 0; k < m[i].size; ++k) s[L.offset[i] + k] = (char)('a' + i);
+    return s;
+}
 int main() {
+    {   std::vector<Member> bad = {{1, 1}, {8, 8}, {1, 1}}, good = {{8, 8}, {1, 1}, {1, 1}};              // struct Bad { char; int64; char; }  vs  struct Good { int64; char; char; }
+        assert(byteMap(bad) == "a.......bbbbbbbbc......." && byteMap(good) == "aaaaaaaabc......");          // 같은 멤버인데 순서만 바꿔 24 바이트 -> 16 바이트: 패딩 14 -> 6 바이트
+        assert(layout(bad).size == 24 && layout(good).size == 16 && sortedSize(bad) == 16);               // 정렬이 큰 멤버부터 놓으면 최소(sortedSize == 전수 탐색의 최솟값)
+        std::cout << byteMap(bad) << "\n" << byteMap(good) << "\n"; }
     using Types = TypeList<char, short, int, double, Arr3>; int combos = 0;
     forEachType(Types{}, [&](auto a) { using A = decltype(a);
         forEachType(Types{}, [&](auto b) { using B = decltype(b);
@@ -1924,6 +1934,7 @@ int main() {
 #include <random>
 #include <set>
 #include <utility>
+#include <string>
 #include <vector>
 
 // 자유 리스트 할당기: 비어 있는 구멍(hole)을 주소순으로 유지한다.  요청이 오면 어떤 구멍을 쓸지가 정책이다.
@@ -2033,7 +2044,19 @@ bool same(const std::vector<Hole>& a, const std::vector<Hole>& b) {
     return true;
 }
 
+std::string holeMap(const std::vector<Hole>& holes, size_t total) {                              // 그림: 한 글자 = 1 바이트, '.' 은 빈 구멍, '#' 은 사용 중
+    std::string m(total, '#'); for (const Hole& h : holes) for (size_t i = 0; i < h.size; ++i) m[h.off + i] = '.';
+    return m;
+}
 int main() {
+    {   const std::vector<Hole> start = {{0, 10}, {20, 5}, {30, 20}};                                 // 구멍 3 개: 크기 10, 5, 20 (사이는 사용 중)
+        assert(holeMap(start, 50) == "..........##########.....#####....................");
+        ListFreeList f1(start), f2(start), f3(start);
+        assert(f1.alloc(4, FIRST) == 0 && f2.alloc(4, BEST) == 20 && f3.alloc(4, WORST) == 30);         // 4 바이트 요청: 처음 맞는 구멍 / 가장 꼭 맞는 구멍 / 가장 큰 구멍
+        assert(holeMap(f1.snapshot(), 50) == "####......##########.....#####....................");     // first-fit: 앞쪽 구멍을 깎는다
+        assert(holeMap(f2.snapshot(), 50) == "..........##############.#####....................");     // best-fit: 5 짜리가 1 짜리 부스러기가 되어 남는다
+        assert(holeMap(f3.snapshot(), 50) == "..........##########.....#########................");     // worst-fit: 큰 구멍을 깎아 큰 구멍을 계속 쓸 수 있게 한다
+        std::cout << holeMap(start, 50) << "\n" << holeMap(f1.snapshot(), 50) << "\n" << holeMap(f2.snapshot(), 50) << "\n" << holeMap(f3.snapshot(), 50) << "\n"; }
     // 원래 예: 구멍 {0,100} {150,30} {300,60} {500,200}
     auto make = [] { return ListFreeList(std::vector<Hole>{{0, 100}, {150, 30}, {300, 60}, {500, 200}}); };
     { ListFreeList a = make(), b = make(), c = make();
@@ -2264,6 +2287,7 @@ int main() {
 #include <map>
 #include <random>
 #include <set>
+#include <string>
 #include <vector>
 
 // 버디 할당기(리눅스 페이지 할당기): 메모리를 2의 거듭제곱 크기 블록으로 관리한다.  요청은 가장 가까운 큰 2의 거듭제곱으로 올리고(내부 단편화),
@@ -2322,7 +2346,23 @@ void checkInvariants(const Buddy& b) {
     for (int k = 0; k <= b.orders(); ++k) assert(b.list(k) == want[k]);                                                // 빈 블록 집합 == 유일한 극대 분해 (곧 완전 병합 + 겹침 없음)
 }
 
+std::string buddyMap(const Buddy& b) {                                                         // 그림: 한 글자 = 최소 블록 1 개. 숫자 = 할당된 블록의 차수, 소문자 = 빈 블록의 차수(a=0, b=1, ..)
+    const size_t units = b.heapSize() / b.unit(); std::string m(units, '?');
+    for (const auto& kv : b.blocks()) for (size_t i = 0; i < ((size_t)1 << kv.second); ++i) m[kv.first / b.unit() + i] = (char)('0' + kv.second);
+    for (int o = 0; o <= b.orders(); ++o) for (size_t off : b.list(o)) for (size_t i = 0; i < ((size_t)1 << o); ++i) m[off / b.unit() + i] = (char)('a' + o);
+    assert(m.find('?') == std::string::npos);                                                     // 할당 블록 + 빈 블록이 힙 전체를 빈틈없이 덮는다
+    return m;
+}
 int main() {
+    {   Buddy b(16, 4);                                                                               // 최소 블록 16 바이트, 차수 0..4 -> 힙 256 바이트 = 16 칸
+        long a = b.alloc(16), d = b.alloc(10), c2 = b.alloc(20), c = b.alloc(60); (void)d;               // 16 B(차수 0) · 10 B(0) · 20 B(1: 32 B) · 60 B(2: 64 B)
+        assert(a == 0 && c2 == 32 && c == 64 && buddyMap(b) == "00112222dddddddd");                       // 큰 블록을 반으로 쪼개며 내려간다: 남은 오른쪽 절반(128 B, 차수 3)은 d
+        std::string maps = buddyMap(b) + "\n";
+        b.release(0);  assert(buddyMap(b) == "a0112222dddddddd"); maps += buddyMap(b) + "\n";             // A 반납: 버디(16 B)가 아직 할당 중이라 합쳐지지 않는다
+        b.release(16); assert(buddyMap(b) == "bb112222dddddddd"); maps += buddyMap(b) + "\n";             // D 반납: 버디 A 가 비어 있으니 32 B 로 합쳐진다
+        b.release(32); assert(buddyMap(b) == "cccc2222dddddddd"); maps += buddyMap(b) + "\n";             // 20 B 블록 반납: 합쳐서 64 B
+        b.release(64); assert(buddyMap(b) == "eeeeeeeeeeeeeeee" && b.freeBlocks(4) == 1); maps += buddyMap(b) + "\n";   // 마지막 반납: 연쇄 병합으로 256 B 한 덩어리
+        std::cout << maps; }
     // 원래 예
     {   Buddy b(64, 4); int oa, ob, oc;
         long a = b.alloc(100, &oa); assert(a == 0 && oa == 1);                                  // 100B -> 128B 블록

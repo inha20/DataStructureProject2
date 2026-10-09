@@ -738,6 +738,7 @@ int main() {
 #include <numeric>
 #include <random>
 #include <set>
+#include <string>
 #include <vector>
 
 // 멱집합(Power Set): P(A) = A 의 모든 부분집합의 집합, 크기 2^|A|. 원소마다 "넣는다/안 넣는다" 두 갈래이므로 n 비트 이진수 0 .. 2ⁿ−1 이 곧 부분집합 하나하나이다(i 번째 비트가 1 이면 i 번째 원소 포함). 열거 방법 셋: (1) 비트마스크 반복 — 가장 단순하고 순서가 이진수 세기, (2) 재귀 — 원소 하나를 넣고/빼고 갈라 깊이 우선으로, (3) 이중화 — 빈 집합으로 시작해 새 원소 x 를 볼 때마다 지금까지의 모든 부분집합에 x 를 더한 복사본을 이어 붙인다(크기가 두 배로). 그레이 코드 순서로 열거하면 이웃한 부분집합이 정확히 원소 하나만 다르다.
@@ -750,7 +751,15 @@ std::vector<Subset> byDoubling(const std::vector<int>& a) { std::vector<Subset> 
 std::vector<Subset> byGray(const std::vector<int>& a) { std::vector<Subset> out; for (unsigned i = 0; i < (1u << a.size()); i++) { unsigned g = i ^ (i >> 1); Subset s; for (std::size_t j = 0; j < a.size(); j++) if (g >> j & 1) s.push_back(a[j]); out.push_back(s); } return out; }
 std::set<Subset> asSet(const std::vector<Subset>& v) { std::set<Subset> s; for (auto x : v) { std::sort(x.begin(), x.end()); s.insert(x); } return s; }
 unsigned long long binom(int n, int k) { unsigned long long r = 1; for (int i = 1; i <= k; i++) r = r * (n - k + i) / i; return r; }
+std::string show(const Subset& s) { std::string r = "{"; for (std::size_t i = 0; i < s.size(); ++i) r += (i ? "," : "") + std::to_string(s[i]); return r + "}"; }
+std::string joined(const std::vector<Subset>& v) { std::string r; for (std::size_t i = 0; i < v.size(); ++i) r += (i ? " " : "") + show(v[i]); return r; }
 int main() {
+    {   const std::vector<int> a = {1, 2, 3};                                                         // 그림: {1,2,3} 의 부분집합 8 개 — 비트마스크 순서와 그레이 코드 순서, 그리고 크기별 층
+        assert(joined(byMask(a)) == "{} {1} {2} {1,2} {3} {1,3} {2,3} {1,2,3}");                      // 마스크 i 의 i 번째 비트 = 원소 포함 여부
+        assert(joined(byGray(a)) == "{} {1} {1,2} {2} {2,3} {1,2,3} {1,3} {3}");                      // 이웃한 부분집합은 원소 하나만 넣고 뺀 차이
+        std::string levels; for (std::size_t k = 0; k <= a.size(); ++k) { std::vector<Subset> row; for (const auto& s : byMask(a)) if (s.size() == k) row.push_back(s); levels += "size " + std::to_string(k) + ": " + joined(row) + "\n"; }
+        assert(levels == "size 0: {}\nsize 1: {1} {2} {3}\nsize 2: {1,2} {1,3} {2,3}\nsize 3: {1,2,3}\n");   // 층별 개수 1 3 3 1 = 이항계수
+        std::cout << levels; }
     for (int n = 0; n <= 12; n++) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 1); auto m = byMask(a), d = byDoubling(a), g = byGray(a); std::vector<Subset> r; Subset cur; recur(a, 0, cur, r);                                       // ①
         assert(m.size() == (1u << n) && d.size() == m.size() && g.size() == m.size() && r.size() == m.size() && asSet(m).size() == m.size()); assert(asSet(m) == asSet(d) && asSet(m) == asSet(g) && asSet(m) == asSet(r));
         std::vector<unsigned long long> bySize(n + 1, 0); for (auto& s : m) bySize[s.size()]++; for (int k = 0; k <= n; k++) assert(bySize[k] == binom(n, k));                                                          // ②
@@ -1617,7 +1626,13 @@ public:
     bool tailClean() const { return n_ % 64 == 0 || (w_.back() >> (n_ % 64)) == 0; } };
 BitSet fromModel(const std::vector<bool>& m) { BitSet b(m.size()); for (std::size_t i = 0; i < m.size(); i++) if (m[i]) b.set(i); return b; }
 bool same(const BitSet& b, const std::vector<bool>& m) { if (b.size() != m.size()) return false; for (std::size_t i = 0; i < m.size(); i++) if (b.test(i) != m[i]) return false; return b.tailClean(); }
+std::string bitRow(const BitSet& b) { std::string s; for (std::size_t i = 0; i < b.size(); ++i) s += b.test(i) ? '1' : '.'; return s; }       // 그림: 칸 i 가 1 이면 i 가 집합의 원소
 int main() {
+    {   BitSet A(10), B(10); for (int i : {1, 3, 5, 7}) A.set(i); for (int i : {3, 4, 5, 6}) B.set(i);   // A = {1,3,5,7}, B = {3,4,5,6}
+        auto op = [&](char c) { BitSet r = A; if (c == '|') r |= B; else if (c == '&') r &= B; else if (c == '^') r ^= B; else r.andNot(B); return bitRow(r); };
+        assert(bitRow(A) == ".1.1.1.1.." && bitRow(B) == "...1111...");
+        assert(op('|') == ".1.11111.." && op('&') == "...1.1...." && op('^') == ".1..1.11.." && op('-') == ".1.....1.." && bitRow(~A) == "1.1.1.1.11");    // 합·교·대칭차·차·여집합: 워드 단위 한 번의 비트 연산
+        std::cout << "A     " << bitRow(A) << "\nB     " << bitRow(B) << "\nA|B   " << op('|') << "\nA&B   " << op('&') << "\nA^B   " << op('^') << "\nA\\B   " << op('-') << "\n~A    " << bitRow(~A) << "\n"; }
     std::mt19937 rng(33); { BitSet b(200); std::bitset<200> ref; for (int step = 0; step < 30000; step++) { std::size_t i = rng() % 200; int op = (int)(rng() % 4); if (op == 0) { b.set(i); ref.set(i); } else if (op == 1) { b.reset(i); ref.reset(i); } else if (op == 2) { b.flip(i); ref.flip(i); } else assert(b.test(i) == ref.test(i));   // ①
           assert(b.count() == ref.count() && b.any() == ref.any() && b.none() == ref.none() && b.all() == ref.all() && b.tailClean()); } b.setAll(); ref.set(); assert(b.all() && ref.all() && b.count() == 200); b.clear(); assert(b.none()); }
     for (int n : {1, 2, 63, 64, 65, 127, 128, 129, 200, 300}) { assert(BitSet(n).words() == (std::size_t)((n + 63) / 64));                                                                                                                       // ⑥
@@ -2236,6 +2251,7 @@ int main() {
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <vector>
 
 // 그레이 코드(Gray Code): 연속한 두 코드가 정확히 한 비트만 다른 이진수 배열. n 비트의 반사 이진 그레이 코드(reflected binary Gray code)는 i 번째 코드가 `g(i) = i ^ (i >> 1)` 이다. 만드는 법(반사): n−1 비트의 코드열을 쓰고, 그 뒤에 같은 열을 거꾸로 쓴 다음, 앞쪽 절반에는 맨 앞에 0, 뒤쪽 절반에는 1 을 붙인다. 역변환(코드 → 번호)은 상위 비트부터의 누적 XOR: `i = g ^ (g >> 1) ^ (g >> 2) ^ …` (로그 번의 시프트로도 가능).
@@ -2245,7 +2261,20 @@ uint32_t gray(uint32_t i) { return i ^ (i >> 1); }
 uint32_t grayInverse(uint32_t g) { uint32_t i = 0; for (; g; g >>= 1) i ^= g; return i; }                                                                        // 누적 XOR
 uint32_t grayInverseLog(uint32_t g) { g ^= g >> 16; g ^= g >> 8; g ^= g >> 4; g ^= g >> 2; g ^= g >> 1; return g; }                                          // 로그 번의 시프트
 std::vector<uint32_t> reflect(int n) { std::vector<uint32_t> g{0}; for (int b = 0; b < n; b++) { std::size_t m = g.size(); for (std::size_t i = m; i-- > 0;) g.push_back(g[i] | (1u << b)); } return g; }
+std::string bits(uint32_t x, int n) { std::string s; for (int b = n - 1; b >= 0; --b) s += (x >> b & 1) ? '1' : '0'; return s; }
+std::string grayTable(int n) {                                                                    // 그림: i, 이진수, 그레이 코드, 이전 코드와 달라진 비트(0 이 가장 오른쪽)
+    std::string t;
+    for (uint32_t i = 0; i < (1u << n); ++i) {
+        t += "i=" + std::to_string(i) + " bin=" + bits(i, n) + " gray=" + bits(gray(i), n);
+        if (i) { uint32_t d = gray(i) ^ gray(i - 1); int b = 0; while (!(d >> b & 1)) ++b; t += " flip=" + std::to_string(b); }
+        t += "\n";
+    }
+    return t;
+}
 int main() {
+    {   const std::string pic = "i=0 bin=000 gray=000\ni=1 bin=001 gray=001 flip=0\ni=2 bin=010 gray=011 flip=1\ni=3 bin=011 gray=010 flip=0\n"
+                                "i=4 bin=100 gray=110 flip=2\ni=5 bin=101 gray=111 flip=0\ni=6 bin=110 gray=101 flip=1\ni=7 bin=111 gray=100 flip=0\n";
+        assert(grayTable(3) == pic); std::cout << pic; }                                              // 바뀌는 비트가 0 1 0 2 0 1 0 (눈금자 수열): 매 걸음 정확히 한 비트
     for (int n = 1; n <= 20; n++) { uint32_t N = 1u << n; std::vector<bool> seen(N, false); for (uint32_t i = 0; i < N; i++) { uint32_t g = gray(i); assert(g < N && !seen[g]); seen[g] = true; assert(grayInverse(g) == i && grayInverseLog(g) == i); uint32_t nxt = gray((i + 1) % N); assert(__builtin_popcount(g ^ nxt) == 1); } }   // ① 원형까지
     for (int n = 1; n <= 12; n++) { auto r = reflect(n); assert(r.size() == (std::size_t)1 << n); for (uint32_t i = 0; i < r.size(); i++) assert(r[i] == gray(i)); }                                                                                  // ②
     for (int n = 1; n <= 16; n++) { uint32_t N = 1u << n; std::vector<uint32_t> flips(n, 0); for (uint32_t i = 1; i < N; i++) { uint32_t diff = gray(i) ^ gray(i - 1); assert(diff == (1u << __builtin_ctz(i))); flips[__builtin_ctz(i)]++; } for (int j = 0; j < n; j++) assert(flips[j] == (1u << (n - 1 - j))); }   // ③ 눈금자 수열
@@ -2445,7 +2474,22 @@ long long queensDlx(int n) { DLX d(2 * n, 2 * (2 * n - 1)); int id = 0; for (int
 long long queensMask(int n, int row, unsigned cols, unsigned d1, unsigned d2) { if (row == n) return 1; long long c = 0; unsigned avail = ~(cols | d1 | d2) & ((1u << n) - 1); while (avail) { unsigned b = avail & -avail; avail -= b; c += queensMask(n, row + 1, cols | b, (d1 | b) << 1, (d2 | b) >> 1); } return c; }
 // 스도쿠(크기 N = B²): 후보 (r, c, 숫자 d) 마다 행 하나 — 네 가지 제약: 칸마다 숫자 하나, 행마다 각 숫자 하나, 열마다, 상자마다
 DLX makeSudoku(int B, const std::string& givens) { int N = B * B; DLX d(4 * N * N, 0); int id = 0; for (int r = 0; r < N; r++) for (int c = 0; c < N; c++) for (int v = 0; v < N; v++) { char g = givens.empty() ? '.' : givens[r * N + c]; if (g != '.' && g != '0' && g - '1' != v) continue; int box = (r / B) * B + c / B; d.addRow(id++, {r * N + c, N * N + r * N + v, 2 * N * N + c * N + v, 3 * N * N + box * N + v}); } return d; }
+std::string coverPicture(const std::vector<std::vector<int>>& sets, int cols, const std::vector<int>& chosen) {            // 그림: 행 = 부분집합, x = 그 열(원소)을 덮음, < = 정확 덮개에 뽑힌 행
+    std::string s = "    "; for (int c = 0; c < cols; ++c) s += " " + std::to_string(c); s += "\n";
+    for (std::size_t r = 0; r < sets.size(); ++r) {
+        s += "r" + std::to_string(r) + "  "; for (int c = 0; c < cols; ++c) s += std::string(" ") + (std::find(sets[r].begin(), sets[r].end(), c) != sets[r].end() ? 'x' : '.');
+        if (std::find(chosen.begin(), chosen.end(), (int)r) != chosen.end()) s += " <";
+        s += "\n";
+    }
+    return s;
+}
 int main() {
+    {   const std::vector<std::vector<int>> sets = {{0, 3, 6}, {0, 3}, {3, 4, 6}, {2, 4, 5}, {1, 2, 5, 6}, {1, 6}};      // Knuth 의 예: 열 0..6 을 겹침 없이 정확히 한 번씩 덮는 행 고르기
+        DLX d(7, 0); d.wantFirst = true; for (std::size_t i = 0; i < sets.size(); i++) d.addRow((int)i, sets[i]); d.search();
+        std::vector<int> sol = d.firstSolution; std::sort(sol.begin(), sol.end());
+        const std::string pic = "     0 1 2 3 4 5 6\nr0   x . . x . . x\nr1   x . . x . . . <\nr2   . . . x x . x\nr3   . . x . x x . <\nr4   . x x . . x x\nr5   . x . . . . x <\n";
+        assert(d.solutions == 1 && (sol == std::vector<int>{1, 3, 5}) && coverPicture(sets, 7, sol) == pic);       // 유일한 해 r1 + r3 + r5: 열마다 < 표시된 행의 x 가 정확히 하나
+        std::cout << pic; }
     { DLX d(7, 0); const std::vector<std::vector<int>> sets = {{0, 3, 6}, {0, 3}, {3, 4, 6}, {2, 4, 5}, {1, 2, 5, 6}, {1, 6}}; for (size_t i = 0; i < sets.size(); i++) d.addRow(i, sets[i]); d.wantFirst = true; d.search(); assert(d.solutions == 1); auto sol = d.firstSolution; std::sort(sol.begin(), sol.end()); assert(sol == std::vector<int>({1, 3, 5})); }          // ① {B, D, F}
     const long long expect[9] = {0, 1, 0, 0, 2, 10, 4, 40, 92}; for (int n = 4; n <= 8; n++) { long long a = queensDlx(n), b = queensMask(n, 0, 0, 0, 0); assert(a == b && a == expect[n]); }                                                                      // ② N-퀸
     { DLX d = makeSudoku(2, ""); d.search(); assert(d.solutions == 288); }                                                                                                                                                                        // ③ 4×4 스도쿠 해 288 개
@@ -2540,7 +2584,16 @@ int main() {
 // 검증: n ≤ 9 에서 ① 개수가 Bell 수와 같고 블록 수별 개수가 S(n, k) ② 모든 분할이 정의를 만족(블록 비어 있지 않음, 서로소, 합집합 = 전체) ③ 서로 다름 ④ 분할 ↔ 동치 관계(같은 블록이면 관련)가 일대일: 분할에서 만든 관계는 동치 관계이고 다시 동치류를 구하면 같은 분할
 std::vector<std::vector<int>> all;
 void gen(std::vector<int>& a, int i, int n, int maxUsed) { if (i == n) { all.push_back(a); return; } for (int b = 0; b <= maxUsed + 1; b++) { a[i] = b; gen(a, i + 1, n, std::max(maxUsed, b)); } }
+std::string blocksOf(const std::vector<int>& rgs) {                                              // 그림: 제한 성장 문자열 -> 블록 (원소 i 가 속한 블록 번호가 rgs[i])
+    int k = *std::max_element(rgs.begin(), rgs.end()) + 1; std::string s;
+    for (int b = 0; b < k; ++b) { s += "{"; bool first = true; for (std::size_t i = 0; i < rgs.size(); ++i) if (rgs[i] == b) { s += (first ? "" : " ") + std::to_string(i); first = false; } s += "}"; }
+    return s;
+}
 int main() {
+    {   all.clear(); std::vector<int> a(3, 0); gen(a, 1, 3, 0); std::string pic;                         // 그림: 원소 3 개(0,1,2)의 분할 B(3) = 5 개
+        for (const auto& r : all) { std::string code; for (int b : r) code += std::to_string(b); pic += code + " " + blocksOf(r) + "\n"; }
+        assert(all.size() == 5 && pic == "000 {0 1 2}\n001 {0 1}{2}\n010 {0 2}{1}\n011 {0}{1 2}\n012 {0}{1}{2}\n");   // 새 블록 번호는 지금까지의 최댓값 + 1 이하만 허용: 이름만 다른 같은 분할이 중복되지 않는다
+        std::cout << pic; all.clear(); }
     long long bell[10] = {1, 1, 2, 5, 15, 52, 203, 877, 4140, 21147};
     for (int n = 1; n <= 9; n++) { all.clear(); std::vector<int> a(n, 0); gen(a, 1, n, 0); assert((long long)all.size() == bell[n]);                                                                                 // ① Bell 수
         std::vector<std::vector<long long>> S(n + 1, std::vector<long long>(n + 1, 0)); S[0][0] = 1; for (int i = 1; i <= n; i++) for (int k = 1; k <= i; k++) S[i][k] = k * S[i - 1][k] + S[i - 1][k - 1]; std::vector<long long> byBlocks(n + 1, 0); std::set<std::vector<std::vector<int>>> distinct;

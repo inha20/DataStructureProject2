@@ -899,6 +899,7 @@ int main() {
 #include <iostream>
 #include <queue>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -933,7 +934,17 @@ std::vector<long long> bellmanFordOracle(const Grid& g, int s, bool diag) {     
     return d;
 }
 
+std::string terrainPicture(const Grid& g, int s, int t, const std::vector<int>& path) {            // 그림: 숫자 = 그 칸에 들어가는 비용(0 은 벽 '#'), * = 최소 비용 경로, S/G = 시작/목표
+    std::string out; std::vector<char> on(g.R * g.C, 0); for (int v : path) on[v] = 1;
+    for (int r = 0; r < g.R; ++r) { for (int c = 0; c < g.C; ++c) { int v = r * g.C + c; out += v == s ? 'S' : v == t ? 'G' : on[v] ? '*' : g.cost[v] ? (char)('0' + g.cost[v]) : '#'; } out += "\n"; }
+    return out;
+}
 int main() {
+    {   Grid g{3, 5, {1, 1, 1, 1, 1,  1, 9, 9, 9, 1,  1, 1, 2, 1, 1}};                                      // 가운데 줄은 진창(비용 9), 아랫줄 가운데는 비용 2
+        Res r = dijkstra(g, 1 * 5 + 0, 1 * 5 + 4, false, true);                                              // 왼쪽 가운데 -> 오른쪽 가운데, 4 방향
+        const std::string pic = "*****\nS999G\n11211\n";
+        assert(r.dist == 60 && terrainPicture(g, 5, 9, r.path) == pic);                                      // 진창을 곧장 가로지르면 9+9+9+1 = 28 칸 비용(280), 위로 돌아가면 6 칸 비용(60)
+        std::cout << pic << "cost=" << r.dist << " settled=" << r.settled << std::endl; }                    // 아랫길은 1+1+2+1+1+1 = 7 칸 비용이라 유일 최적은 윗길
     // ① 손으로 확인한 모양: 위로 우회하면 비용 1+1+1, 곧장 가운데 9 칸을 지나면 9 — 우회가 이긴다
     {   Grid g{2, 3, {1, 1, 1, 1, 9, 1}}; Res r = dijkstra(g, 3, 5, false, true);                           // (1,0) → (1,2): 왼쪽 → 위 → 오른쪽 x2 → 아래 vs 가운데 9
         assert(r.dist == (1 + 1 + 1 + 1) * 10 && r.path.size() == 5);
@@ -1311,7 +1322,17 @@ Res astar(const Grid& g, P s, P t, double hw) {                            // hw
 bool validPath(const Grid& g, const std::vector<P>& p, long cost) {
     long c = 0; for (size_t i = 0; i < p.size(); i++) { if (!g.ok(p[i].first, p[i].second)) return false; if (i) { int dr = std::abs(p[i].first - p[i - 1].first), dc = std::abs(p[i].second - p[i - 1].second); if (dr > 1 || dc > 1 || !(dr + dc)) return false; if (!g.diag && dr + dc != 1) return false;
         if (dr && dc && (!g.ok(p[i - 1].first, p[i].second) || !g.ok(p[i].first, p[i - 1].second))) return false; c += dr && dc ? 14 : 10; } } return c == cost; }
+std::string pathPicture(const Grid& g, P s, P t, const std::vector<P>& path) {         // 그림: S 시작, G 목표, * 경로, # 벽
+    std::vector<std::string> m = g.w; for (P p : path) m[p.first][p.second] = '*'; m[s.first][s.second] = 'S'; m[t.first][t.second] = 'G';
+    std::string out; for (const auto& row : m) out += row + "\n"; return out;
+}
 int main() {
+    {   Grid g{5, 7, {"...#...", ".#.#.#.", ".#...#.", ".#####.", "......."}}; g.diag = false;                // 위쪽 길은 막다른 길이고 왼쪽 열 -> 아래 줄이 유일한 최단 경로
+        Res a = astar(g, {0, 0}, {4, 6}, 1.0), d = astar(g, {0, 0}, {4, 6}, 0.0);                          // A*(휴리스틱 1 배) 와 Dijkstra(0 배)
+        const std::string pic = "S..#...\n*#.#.#.\n*#...#.\n*#####.\n******G\n";
+        assert(pathPicture(g, {0, 0}, {4, 6}, a.path) == pic && a.cost == 100 && d.cost == 100);          // 10 칸 x 비용 10
+        assert(pathPicture(g, {0, 0}, {4, 6}, d.path) == pic && a.expanded < d.expanded);                   // 같은 경로, 하지만 A* 는 목표 쪽 칸만 파서 덜 펼친다
+        std::cout << pic << "expanded: A*=" << a.expanded << " Dijkstra=" << d.expanded << std::endl; }
     std::mt19937 gen(2); long aExp = 0, dExp = 0, solved = 0, suboptimal = 0;
     for (int t = 0; t < 400; t++) {
         Grid g{28, 28, std::vector<std::string>(28, std::string(28, '.'))}; g.diag = t % 2; for (auto& row : g.w) for (auto& ch : row) if (gen() % 100 < 25) ch = '#';
@@ -1597,7 +1618,17 @@ bool pathClear(const Grid& g, const std::vector<P>& p) {                   // �
     for (size_t i = 1; i < p.size(); i++) for (int k = 0; k <= 400; k++) { double f = k / 400.0, y = (p[i - 1].first + 0.5) * (1 - f) + (p[i].first + 0.5) * f, x = (p[i - 1].second + 0.5) * (1 - f) + (p[i].second + 0.5) * f; if (g.blocked((int)std::floor(y + 1e-9), (int)std::floor(x + 1e-9)) && g.blocked((int)std::floor(y - 1e-9), (int)std::floor(x - 1e-9))) return false; }
     return true;
 }
+std::string waypoints(const std::vector<P>& path) {                                  // 그림: 경로 위의 점 목록 (행,열)
+    std::string s; for (std::size_t i = 0; i < path.size(); ++i) s += (i ? "->" : "") + std::string("(") + std::to_string(path[i].first) + "," + std::to_string(path[i].second) + ")";
+    return s;
+}
 int main() {
+    {   Grid open{5, 8, std::vector<std::string>(5, std::string(8, '.'))};                              // 장애물 없는 5x8 판
+        Res th = search(open, {0, 0}, {4, 7}, true), ga = search(open, {0, 0}, {4, 7}, false);
+        assert(waypoints(th.path) == "(0,0)->(4,7)" && std::fabs(th.cost - std::hypot(4.0, 7.0)) < 1e-9);   // Theta*: 시선이 통하므로 시작-목표가 곧장 이어진 한 선분 (길이 = 직선거리)
+        assert(ga.path.size() == 8 && std::fabs(ga.cost - (4 * std::sqrt(2.0) + 3)) < 1e-9);               // 격자 A*: 대각 4 칸 + 직선 3 칸 = 7 걸음, 직선보다 길다
+        assert(th.cost < ga.cost);
+        std::cout << waypoints(th.path) << "  cost=" << th.cost << "\n" << waypoints(ga.path) << "  cost=" << ga.cost << std::endl; }
     std::mt19937 gen(5); int solved = 0, better = 0, worse = 0; double sumTheta = 0, sumGrid = 0; long tExp = 0, aExp = 0;
     for (int t = 0; t < 250; t++) {
         Grid g{26, 26, std::vector<std::string>(26, std::string(26, '.'))}; for (auto& row : g.w) for (auto& ch : row) if (gen() % 100 < 22) ch = '#';
@@ -3683,7 +3714,25 @@ std::vector<int> dfsSolve(const Maze& m, int s, int t) {                        
     std::vector<int> r; while (!path.empty()) { r.push_back(path.top()); path.pop(); } std::reverse(r.begin(), r.end()); return r; }
 int bfsLen(const Maze& m, int s, int t) { std::vector<int> d(m.H * m.W, -1); std::queue<int> q; d[s] = 0; q.push(s); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 0; k < 4; k++) if (m.open[u] >> k & 1) { int v = (u / m.W + DR[k]) * m.W + u % m.W + DC[k]; if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } } } return d[t]; }
 int rightHand(const Maze& m, int s, int t, int limit) { int u = s, heading = 2, steps = 0; while (u != t && steps < limit) { for (int turn : {1, 0, 3, 2}) { int d = (heading + turn) % 4; if (m.open[u] >> d & 1) { u = (u / m.W + DR[d]) * m.W + u % m.W + DC[d]; heading = d; steps++; break; } } } return u == t ? steps : -1; }      // 오른쪽 → 직진 → 왼쪽 → 뒤 순서
+std::string render(const Maze& m, const std::vector<int>& path) {                       // 그림: + - | 는 벽, 칸 안의 * 는 풀이 경로 (칸 하나가 3 글자 + 벽 1 글자)
+    std::vector<char> on(m.H * m.W, 0); for (int c : path) on[c] = 1;
+    std::string s = "+"; for (int c = 0; c < m.W; ++c) s += "---+"; s += "\n";
+    for (int r = 0; r < m.H; ++r) {
+        std::string mid = "|", low = "+";
+        for (int c = 0; c < m.W; ++c) { int a = m.id(r, c); mid += on[a] ? " * " : "   "; mid += (m.open[a] >> 1 & 1) ? " " : "|"; low += (m.open[a] >> 2 & 1) ? "   +" : "---+"; }
+        s += mid + "\n" + low + "\n";
+    }
+    return s;
+}
 int main() {
+    {   Maze m{3, 4, std::vector<int>(12, 0)};                                                             // 손으로 판 3x4 미로: 칸 번호 = 행*4+열
+        for (int a : {0, 1, 2}) carve(m, a, 1);                                                           // 윗줄 0-1-2-3 을 동쪽으로 뚫는다
+        for (int a : {0, 4}) carve(m, a, 2);                                                              // 0 -> 4 -> 8 을 남쪽으로
+        for (int a : {8, 9, 10}) carve(m, a, 1);                                                          // 아랫줄 8-9-10-11
+        carve(m, 3, 2); carve(m, 7, 3); carve(m, 6, 3);                                                   // 3 -> 7, 7 -> 6, 6 -> 5 : 막다른 가지
+        std::vector<int> sol = dfsSolve(m, 0, 11); assert((sol == std::vector<int>{0, 4, 8, 9, 10, 11}) && bfsLen(m, 0, 11) == 5);
+        const std::string pic = "+---+---+---+---+\n| *             |\n+   +---+---+   +\n| * |           |\n+   +---+---+---+\n| *   *   *   * |\n+---+---+---+---+\n";
+        assert(render(m, sol) == pic); std::cout << pic; }                                                // 12 칸 벽 11 개를 뚫은 완전 미로(순환 없음)라 경로가 하나뿐
     std::mt19937 g(2); int perfect = 0, braidedLonger = 0, braided = 0;
     for (int t = 0; t < 60; t++) {
         int H = 6 + g() % 10, W = 6 + g() % 10; Maze m = generate(H, W, g); int passages = 0; for (int c = 0; c < H * W; c++) passages += __builtin_popcount(m.open[c]); assert(passages / 2 == H * W - 1);                                        // 트리: 간선 수 = 칸 수 − 1
@@ -4068,7 +4117,16 @@ double stepCost(int dr, int dc) { return dr && dc ? 10 * std::sqrt(2.0) : 10.0; 
 std::vector<double> trueDist(int goal) { std::vector<double> d(R * C, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[goal] = 0; pq.push({0, goal}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if (!dr && !dc) continue; int r = u / C, c = u % C; if (!stepOk(r, c, dr, dc)) continue; int v = (r + dr) * C + c + dc; if (du + stepCost(dr, dc) < d[v]) { d[v] = du + stepCost(dr, dc); pq.push({d[v], v}); } } } return d; }
 double astar(int s, int t, const std::vector<double>& h, long& expanded, bool& reopened) { std::vector<double> g(R * C, 1e18); std::vector<int> closed(R * C, 0); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; g[s] = 0; pq.push({h[s], s}); expanded = 0; reopened = false;
     while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); if (f > g[u] + h[u] + 1e-9) continue; if (closed[u]) reopened = true; closed[u] = 1; expanded++; if (u == t) return g[u]; for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if (!dr && !dc) continue; int r = u / C, c = u % C; if (!stepOk(r, c, dr, dc)) continue; int v = (r + dr) * C + c + dc; double ng = g[u] + stepCost(dr, dc); if (ng < g[v]) { g[v] = ng; pq.push({ng + h[v], v}); } } } return -1; }
+std::string levelSet(int n, const std::function<int(int, int)>& h) {                                 // 그림: 가운데 칸(0)이 목표, 숫자는 그 칸에서 목표까지의 휴리스틱 값 (같은 값끼리 이은 선이 "등고선")
+    std::string s; for (int r = 0; r < n; ++r) { for (int c = 0; c < n; ++c) s += (char)('0' + h(r - n / 2, c - n / 2)); s += "\n"; }
+    return s;
+}
 int main() {
+    {   auto manhattan = [](int dr, int dc) { return std::abs(dr) + std::abs(dc); }; auto chebyshev = [](int dr, int dc) { return std::max(std::abs(dr), std::abs(dc)); };
+        const std::string md = "6543456\n5432345\n4321234\n3210123\n4321234\n5432345\n6543456\n", cd = "3333333\n3222223\n3211123\n3210123\n3211123\n3222223\n3333333\n";
+        assert(levelSet(7, manhattan) == md && levelSet(7, chebyshev) == cd);                                // 4 방향 이동의 정확한 거리인 맨해튼은 마름모 등고선, 8 방향(비용 같게)의 체비쇼프는 정사각형 등고선
+        for (int dr = -3; dr <= 3; ++dr) for (int dc = -3; dc <= 3; ++dc) assert(chebyshev(dr, dc) <= manhattan(dr, dc));        // 체비쇼프 <= 맨해튼: 8 방향 격자에서는 맨해튼이 과대 추정(비허용)이다
+        std::cout << md << "--\n" << cd; }
     std::mt19937 rng(5); const char* names[6] = {"zero", "chebyshev", "euclid", "octile", "manhattan", "true"}; long totalExp[6] = {0}; int maps = 0, manhattanWorse = 0, manhattanInadmissible = 0, manhattanInconsistent = 0;
     for (int m = 0; m < 30; m++) {
         w.assign(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 18) ch = '#'; int s = 0, t = R * C - 1; w[0][0] = w[R - 1][C - 1] = '.'; std::vector<double> td = trueDist(t); if (td[s] >= 1e17) continue; maps++;
