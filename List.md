@@ -865,7 +865,7 @@ int main() {
 
 // 상한(UpperBound): 정렬된 배열에서 키보다 큰 첫 위치(없으면 n)를 찾는다. 키와 같은 원소들의 바로 뒤다. 하한과 한 쌍으로 쓰인다: [lower_bound, upper_bound) 는 키와 같은 원소의 구간(equal_range)이고 그 길이가 개수다 — 같은 값을 세는 것이 O(n) 이 아니라 O(log n) 이 된다. 정수에서는 upper(k) == lower(k+1) 이다.
 // 활용: 구간 개수 질의 count(lo ≤ x ≤ hi) = upper(hi) − lower(lo); 바닥(floor, 키 이하의 최댓값) = upper(k) − 1, 천장(ceil, 키 이상의 최솟값) = lower(k); 가장 가까운 값 찾기; 같은 키의 뒤에 넣어 안정적으로 삽입하기(먼저 들어온 같은 키가 앞에 남는다). 구현은 a[mid] ≤ key(= !(key < a[mid])) 이면 lo = mid+1, 아니면 hi = mid 로 줄이는 한 가지 형태다.
-// 검증: ① 모든 n ≤ 40(중복 포함)과 모든 키에서 std::upper_bound 와 같고, 앞은 모두 ≤ 키, 뒤는 모두 > 키 ② equal_range 길이 == std::count, 정수에서 upper(k) == lower(k+1), 하한 ≤ 상한 ③ 구간 개수 질의 2000 번이 무차별 계산과 같음 ④ floor/ceil/최근접이 무차별 계산과 같음 ⑤ 상한 위치 삽입이 안정적(같은 키의 도착 순서 유지) ⑥ 내림차순 비교자.
+// 검증: ① n = 0..40 각각에 대해 무작위 정렬 배열 4 개(중복 포함)와 그 값 범위 주변의 모든 키에서 std::upper_bound 와 같고, 앞은 모두 ≤ 키, 뒤는 모두 > 키 ② equal_range 길이 == std::count, 정수에서 upper(k) == lower(k+1), 하한 ≤ 상한 ③ 구간 개수 질의 2000 번이 무차별 계산과 같음 ④ floor/ceil/최근접이 무차별 계산과 같음 ⑤ 상한 위치 삽입이 안정적(같은 키의 도착 순서 유지) ⑥ 내림차순 비교자.
 template <class T, class Less = std::less<T>> std::size_t upperBound(const std::vector<T>& a, const T& key, Less less = Less()) {
     std::size_t lo = 0, hi = a.size(); while (lo < hi) { std::size_t mid = lo + (hi - lo) / 2; if (!less(key, a[mid])) lo = mid + 1; else hi = mid; } return lo; }
 template <class T, class Less = std::less<T>> std::size_t lowerBound(const std::vector<T>& a, const T& key, Less less = Less()) {
@@ -887,7 +887,7 @@ int main() {
       for (std::size_t i = 1; i < v.size(); i++) assert(v[i - 1].key < v[i].key || (v[i - 1].key == v[i].key && v[i - 1].order < v[i].order)); }
     { std::vector<int> d = {9, 7, 7, 5, 3, 3, 1}; assert(upperBound(d, 7, std::greater<int>()) == 3 && upperBound(d, 8, std::greater<int>()) == 1 && upperBound(d, 3, std::greater<int>()) == 6 && upperBound(d, 0, std::greater<int>()) == 7 && upperBound(d, 10, std::greater<int>()) == 0);   // ⑥
       std::vector<int> e; assert(upperBound(e, 1) == 0 && lowerBound(e, 1) == 0); }
-    std::cout << "UpperBound: results equalled std::upper_bound for every n<=40 with duplicates; [lower, upper) gave the occurrence count in O(log n); range-count, floor, ceil and nearest-value queries matched brute force; insertion at the upper bound was stable" << std::endl; return 0;
+    std::cout << "UpperBound: results equalled std::upper_bound for 4 random sorted arrays with duplicates at every length n<=40 and every key around their value range; [lower, upper) gave the occurrence count in O(log n); range-count, floor, ceil and nearest-value queries matched brute force; insertion at the upper bound was stable" << std::endl; return 0;
 }
 // Time Complexity: O(log N)
 // Space Complexity: O(1)

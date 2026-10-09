@@ -8644,6 +8644,7 @@ int main() {
 ```cpp
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <queue>
 #include <random>
 #include <set>
@@ -8651,7 +8652,8 @@ int main() {
 #include <cassert>
 
 // 작은 세상 네트워크(Watts–Strogatz): 링 격자(각 정점이 양옆 k/2 개와 연결)의 간선을 확률 β 로 무작위 재배선한다.
-// 몇 개의 지름길만으로 평균 경로 길이가 급격히 짧아지지만(여섯 단계 분리) 군집 계수는 높게 유지된다
+// 몇 개의 지름길만으로 평균 경로 길이가 급격히 짧아지지만(작은 세상 현상) 군집 계수는 높게 유지된다
+// 검증: 재배선 후에도 간선 수 = n·k/2 보존(옛 간선을 지우고 새 간선 하나), 인접 집합이 대칭이고 자기 루프 없음, 연결 그래프(평균 경로는 모든 쌍이 닿을 때만 센다), 새 간선이 약 β·E = 200 개이고 대부분 링 거리 > 20 인 먼 지름길, 그 위에서 평균 경로 L 이 절반 미만으로 급감하고 군집 계수는 C/C0 ≈ (1−β)³ 로 남는다
 typedef std::vector<std::set<int>> G;
 G ring(int n, int k) { G g(n); for (int i = 0; i < n; i++) for (int j = 1; j <= k / 2; j++) { g[i].insert((i + j) % n); g[(i + j) % n].insert(i); } return g; }
 void rewire(G& g, int k, double beta, std::mt19937& rng) {
@@ -8678,20 +8680,27 @@ double avgPath(const G& g) {
     for (size_t s = 0; s < g.size(); s++) {
         std::vector<int> d(g.size(), -1); std::queue<int> q; q.push(s); d[s] = 0;
         while (!q.empty()) { int u = q.front(); q.pop(); for (int v : g[u]) if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } }
-        for (size_t t = 0; t < g.size(); t++) if (t != s && d[t] > 0) { total += d[t]; pairs++; }
+        for (size_t t = 0; t < g.size(); t++) if (t != s) { assert(d[t] > 0); total += d[t]; pairs++; }               // 연결 그래프여야 한다: 닿지 않는 쌍을 조용히 건너뛰지 않는다
     }
     return double(total) / pairs;
 }
+bool simpleSymmetric(const G& g) { for (int i = 0; i < (int)g.size(); i++) for (int v : g[i]) if (v == i || !g[v].count(i)) return false; return true; }   // 자기 루프 없음 + 대칭
+size_t edgeCount(const G& g) { size_t s = 0; for (auto& a : g) s += a.size(); return s / 2; }
+bool connected(const G& g) { std::vector<char> seen(g.size(), 0); std::queue<int> q; q.push(0); seen[0] = 1; size_t cnt = 1; while (!q.empty()) { int u = q.front(); q.pop(); for (int v : g[u]) if (!seen[v]) { seen[v] = 1; cnt++; q.push(v); } } return cnt == g.size(); }
 
 int main() {
-    std::mt19937 rng(91);
+    std::mt19937 rng(92);
     const int n = 400, k = 10;
     G lattice = ring(n, k), sw = ring(n, k);
     rewire(sw, k, 0.1, rng);
     double c0 = clustering(lattice), l0 = avgPath(lattice), c1 = clustering(sw), l1 = avgPath(sw);
+    assert(simpleSymmetric(lattice) && simpleSymmetric(sw) && edgeCount(lattice) == (size_t)n * k / 2 && edgeCount(sw) == (size_t)n * k / 2 && connected(lattice) && connected(sw));   // 재배선은 간선 수를 보존한다
+    int added = 0, far = 0; for (int i = 0; i < n; i++) for (int v : sw[i]) if (v > i && !lattice[i].count(v)) { added++; far += std::min(v - i, n - (v - i)) > 20; }   // 새로 생긴 간선: 약 β·E 개, 대부분 링 위에서 먼 지름길
+    assert(added >= 150 && added <= 250 && far * 10 >= added * 8);
+    assert(std::abs(c1 / c0 - 0.729) < 0.1);                       // C/C0 ≈ (1 − β)³ = 0.729
     assert(l1 < 0.5 * l0);                                          // 평균 경로 길이가 절반 이하로 급감
     assert(c1 > 0.5 * c0);                                          // 군집 계수는 크게 줄지 않는다
-    std::cout << "lattice: C=" << c0 << " L=" << l0 << " | beta=0.1: C=" << c1 << " L=" << l1 << std::endl;
+    std::cout << "lattice: C=" << c0 << " L=" << l0 << " | beta=0.1: C=" << c1 << " L=" << l1 << " | " << added << " new edges (" << far << " far shortcuts), edge count " << edgeCount(sw) << " preserved, connected" << std::endl;
     return 0;
 }
 // Time Complexity: 평균 경로 O(n·(n + E))

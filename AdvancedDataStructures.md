@@ -6164,12 +6164,12 @@ int main() {
 // HNSW(Hierarchical Navigable Small World, Malkov–Yashunin): 벡터 검색의 사실상 표준 근사 색인. 점들을 "근접 그래프"(각 점이 가까운 점 M 개와 연결)로 잇고, 그 위에 성기게 샘플링한 상위 층을 여러 겹 쌓는다.
 // 층 l 에 오를 확률은 e^(-l/mL) 로 기하급수적으로 줄어(mL = 1/ln M) 층이 스킵 리스트처럼 작동한다. 질의: 맨 위 층에서 탐욕적으로 질의에 가까운 노드로 이동 -> 한 층 내려가 그 노드에서 다시 이동 ...
 // -> 0층에서는 ef 크기의 후보 목록을 유지하며 넓게 탐색(best-first). 삽입은 질의와 같은 방식으로 이웃을 찾고, 연결할 M 개를 고를 때 "이미 고른 이웃보다 나에게 더 가까운 후보만" 남기는 휴리스틱으로 다양한 방향의 간선을 보존한다
-// 거리 계산 횟수가 N 이 아니라 대략 log N 에 비례해 늘어나는 것이 핵심이다. 아래는 정확한 전수 탐색에 대한 recall 과 거리 계산 횟수로 검증한다
+// 핵심은 거리 계산 횟수가 N 보다 훨씬 느리게(부선형) 늘어난다는 점이다 — 저차원에서는 대략 log N 으로 보고되지만 이 16 차원 군집 데이터에서는 N 이 5 배일 때 약 2.3 배 정도로 관측되며, 아래는 "log N" 을 증명하지 않고 부선형임을 확인한다.\n// 검증: ① 정확한 전수 탐색에 대한 recall@10 (ef=10/32/128 에서 각각 0.95/0.99/0.995 이상)  ② 층이 실제로 여러 겹 생겼다 (최상층 >= 2)  ③ 위 층이 비용을 줄인다 — 같은 점·같은 코드로 만든 평평한 NSW(상위 층 없음)보다, 그리고 같은 그래프에서 상위 층 하강을 생략한 질의보다 거리 계산이 적고, 삽입 때의 거리 계산도 평평한 NSW 보다 적다\n//  ④ N = 1000 / 3000 / 5000 에서 ef=32 의 거리 계산이 N 에 비해 부선형으로 늘어난다 (전수 탐색은 5 배, 여기서는 3 배 미만)  ⑤ 차수 상한과 0층 연결성
 const int D = 16;
 typedef std::array<float, D> Pt; typedef std::pair<float, int> PI;
 struct HNSW {
     int M = 12, M0 = 24, efC = 80; double mL = 1.0 / std::log(12.0);
-    std::vector<Pt> pts; std::vector<std::vector<std::vector<int>>> nb; int entry = -1, maxL = -1; std::mt19937 rng{42}; long evals = 0;
+    std::vector<Pt> pts; std::vector<std::vector<std::vector<int>>> nb; int entry = -1, maxL = -1; std::mt19937 rng{42}; long evals = 0; bool flat = false;      // flat: 상위 층 없이 모든 점을 0층에만 넣는 비교용 NSW
     std::vector<int> vis; int epoch = 0;
     float dq(const Pt& q, int b) { evals++; float s = 0; for (int i = 0; i < D; i++) s += (q[i] - pts[b][i]) * (q[i] - pts[b][i]); return s; }
     std::vector<PI> searchLayer(const Pt& q, int ep, int ef, int layer) {          // best-first: 후보 최소 힙 + 결과 최대 힙(크기 ef)
@@ -6190,7 +6190,7 @@ struct HNSW {
         return res;
     }
     void insert(const Pt& p) {
-        int id = pts.size(); pts.push_back(p); int l = (int)(-std::log(std::uniform_real_distribution<double>(1e-12, 1.0)(rng)) * mL); nb.emplace_back(l + 1);
+        int id = pts.size(); pts.push_back(p); int l = (int)(-std::log(std::uniform_real_distribution<double>(1e-12, 1.0)(rng)) * mL); if (flat) l = 0; nb.emplace_back(l + 1);
         if (entry < 0) { entry = id; maxL = l; return; }
         int ep = entry;
         for (int ly = maxL; ly > l; ly--) ep = searchLayer(p, ep, 1, ly)[0].second;           // 위 층: 탐욕 이동
@@ -6202,34 +6202,49 @@ struct HNSW {
         }
         if (l > maxL) { maxL = l; entry = id; }
     }
-    std::vector<int> search(const Pt& q, int k, int ef) {
-        int ep = entry; for (int ly = maxL; ly > 0; ly--) ep = searchLayer(q, ep, 1, ly)[0].second;
+    std::vector<int> search(const Pt& q, int k, int ef, bool descend = true) {      // descend=false: 상위 층 하강을 생략하고 진입점에서 바로 0층 탐색 (비교용)
+        int ep = entry; if (descend) for (int ly = maxL; ly > 0; ly--) ep = searchLayer(q, ep, 1, ly)[0].second;
         auto r = searchLayer(q, ep, std::max(ef, k), 0); std::vector<int> out; for (int i = 0; i < k && i < (int)r.size(); i++) out.push_back(r[i].second); return out;
     }
 };
 
 int main() {
-    std::mt19937 g(3); std::normal_distribution<float> N(0, 1); int n = 3000, C = 20;
+    std::mt19937 g(3); std::normal_distribution<float> N(0, 1); const int C = 20, Q = 200, k = 10, n = 3000, NBIG = 5000, efs[3] = {10, 32, 128};
     std::vector<Pt> centers(C); for (auto& c : centers) for (auto& x : c) x = N(g) * 4;
     auto sample = [&]() { Pt p = centers[g() % C]; for (auto& x : p) x += N(g); return p; };
-    HNSW h; for (int i = 0; i < n; i++) h.insert(sample());
+    std::vector<Pt> data, qs; for (int i = 0; i < NBIG; i++) data.push_back(sample()); for (int t = 0; t < Q; t++) qs.push_back(sample());
+    struct Res { double rec[3], ev[3]; };
+    auto measure = [&](HNSW& h, bool descend) {                            // 지금까지 넣은 점들에 대한 정확한 10-NN 과 비교한 recall, 질의당 평균 거리 계산 횟수 (삽입 때 센 evals 는 보존)
+        Res r = {{0, 0, 0}, {0, 0, 0}}; int m = (int)h.pts.size(); long keep = h.evals;
+        for (int t = 0; t < Q; t++) {
+            std::vector<PI> all; for (int i = 0; i < m; i++) { float d = 0; for (int j = 0; j < D; j++) d += (qs[t][j] - data[i][j]) * (qs[t][j] - data[i][j]); all.push_back({d, i}); }
+            std::partial_sort(all.begin(), all.begin() + k, all.end()); std::vector<int> exact; for (int i = 0; i < k; i++) exact.push_back(all[i].second);
+            for (int e = 0; e < 3; e++) { h.evals = 0; auto res = h.search(qs[t], k, efs[e], descend); r.ev[e] += h.evals; int hit = 0; for (int a : res) hit += std::find(exact.begin(), exact.end(), a) != exact.end(); r.rec[e] += (double)hit / k; }
+        }
+        for (int e = 0; e < 3; e++) { r.rec[e] /= Q; r.ev[e] /= Q; } h.evals = keep; return r; };
+    HNSW h, hf; hf.flat = true;                                            // 같은 점·같은 코드, 다른 것은 상위 층 유무뿐 (hf: 상위 층 없는 평평한 NSW)
+    for (int i = 0; i < 1000; i++) h.insert(data[i]);
+    Res r1 = measure(h, true);                                             // N = 1000
+    for (int i = 1000; i < n; i++) h.insert(data[i]);
+    for (int i = 0; i < n; i++) hf.insert(data[i]);
+    long buildH = h.evals, buildF = hf.evals;
     for (size_t i = 0; i < h.pts.size(); i++) for (size_t ly = 0; ly < h.nb[i].size(); ly++) assert((int)h.nb[i][ly].size() <= (ly == 0 ? h.M0 : h.M));      // 차수 상한
     std::vector<int> seen(n, 0), st = {h.entry}; seen[h.entry] = 1; int reach = 1;                    // 0층 연결성
     while (!st.empty()) { int c = st.back(); st.pop_back(); for (int e : h.nb[c][0]) if (!seen[e]) { seen[e] = 1; reach++; st.push_back(e); } }
     assert(reach >= n * 0.99);
-    int Q = 200, k = 10; double rec[3] = {0, 0, 0}; int efs[3] = {10, 32, 128}; long ev[3] = {0, 0, 0};
-    for (int t = 0; t < Q; t++) {
-        Pt q = sample(); std::vector<PI> all; for (int i = 0; i < n; i++) { float d = 0; for (int j = 0; j < D; j++) d += (q[j] - h.pts[i][j]) * (q[j] - h.pts[i][j]); all.push_back({d, i}); }
-        std::partial_sort(all.begin(), all.begin() + k, all.end()); std::vector<int> exact; for (int i = 0; i < k; i++) exact.push_back(all[i].second);
-        for (int e = 0; e < 3; e++) { h.evals = 0; auto r = h.search(q, k, efs[e]); ev[e] += h.evals; int hit = 0; for (int a : r) hit += std::find(exact.begin(), exact.end(), a) != exact.end(); rec[e] += (double)hit / k; }
-    }
-    for (int e = 0; e < 3; e++) rec[e] /= Q;
-    assert(rec[0] <= rec[1] + 1e-9 && rec[1] <= rec[2] + 1e-9 && rec[2] >= 0.95 && rec[1] >= 0.85);        // ef 를 키우면 recall 이 오른다
-    assert((double)ev[1] / Q < n / 4.0);                                   // ef=32 에서도 전수 탐색(N 번)의 1/4 미만
-    std::cout << "HNSW: n=" << n << ", layers " << h.maxL + 1 << ", recall@10 ef=10/32/128: " << rec[0] << "/" << rec[1] << "/" << rec[2] << ", avg distance evals " << ev[0] / Q << "/" << ev[1] / Q << "/" << ev[2] / Q << " (flat: " << n << ")" << std::endl;
+    Res a = measure(h, true), nd = measure(h, false), f = measure(hf, true);   // 계층 + 하강 / 같은 그래프에서 하강 생략 / 평평한 그래프
+    assert(h.maxL >= 2 && hf.maxL == 0);                                    // 층이 실제로 여러 겹 생겼다 (기대 최상층 ln n / ln 12 ≈ 3)
+    assert(a.rec[0] <= a.rec[1] + 1e-9 && a.rec[1] <= a.rec[2] + 1e-9 && a.rec[0] >= 0.95 && a.rec[1] >= 0.99 && a.rec[2] >= 0.995);        // ef 를 키우면 recall 이 오른다
+    assert(a.ev[1] < n / 10.0);                                             // ef=32 에서도 전수 탐색(N 번)의 1/10 미만
+    for (int e = 0; e < 3; e++) assert(a.ev[e] * 1.05 < f.ev[e] && a.ev[e] * 1.05 < nd.ev[e]);   // 위 층이 질의 비용을 줄인다 (평평한 NSW 보다, 그리고 같은 그래프에서 하강을 생략한 것보다)
+    assert(buildH < buildF);                                                // 삽입도 위 층 하강 덕에 더 싸다 (같은 점들)
+    for (int i = n; i < NBIG; i++) h.insert(data[i]);
+    Res r5 = measure(h, true);                                              // N = 5000
+    assert(r5.rec[1] >= 0.98 && r5.ev[1] < 3.0 * r1.ev[1]);                 // N 이 5 배가 되어도 거리 계산은 3 배 미만 (전수 탐색은 5 배)
+    std::cout << "HNSW: n=" << n << ", layers " << h.maxL + 1 << ", recall@10 ef=10/32/128: " << a.rec[0] << "/" << a.rec[1] << "/" << a.rec[2] << ", avg distance evals " << a.ev[0] << "/" << a.ev[1] << "/" << a.ev[2] << " (flat scan: " << n << "; flat NSW without upper layers: " << f.ev[0] << "/" << f.ev[1] << "/" << f.ev[2] << "; same graph without the descent: " << nd.ev[0] << "/" << nd.ev[1] << "/" << nd.ev[2] << "), build evals " << buildH << " vs flat " << buildF << "; ef=32 evals at n=1000/3000/5000: " << r1.ev[1] << "/" << a.ev[1] << "/" << r5.ev[1] << std::endl;
     return 0;
 }
-// Time Complexity: 삽입·질의 평균 O(log N) 거리 계산 (경험적)
+// Time Complexity: 질의·삽입 평균 거리 계산이 N 에 대해 부선형 (저차원에서는 대략 O(log N) 으로 보고, 이 16 차원 군집 데이터는 N 이 5 배일 때 약 2.3 배로 관측 — 경험적, 보장 아님)
 // Space Complexity: O(N·(D + M))
 ```
 ## IVFIndex()
