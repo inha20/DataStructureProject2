@@ -8,16 +8,16 @@
 |----|-----:|-----:|-----:|-----:|-----:|-----:|-----:|
 | AdvancedDataStructures | 16 | 116 | 33 | 16 | 0 | 0 | 9 |
 | Graph | 17 | 106 | 7 | 13 | 1 | 0 | 0 |
-| Hash | 16 | 75 | 2 | 11 | 0 | 0 | 2 |
+| Hash | 16 | 75 | 2 | 13 | 0 | 0 | 2 |
 | List | 11 | 78 | 5 | 1 | 0 | 0 | 4 |
-| Memory | 17 | 112 | 2 | 13 | 21 | 21 | 11 |
+| Memory | 17 | 112 | 2 | 15 | 24 | 23 | 16 |
 | PathFinding | 17 | 102 | 11 | 2 | 0 | 0 | 0 |
 | Queue | 11 | 53 | 2 | 2 | 0 | 0 | 6 |
 | Set | 17 | 104 | 14 | 25 | 0 | 0 | 4 |
 | Stack | 10 | 50 | 2 | 4 | 1 | 0 | 4 |
 | String | 18 | 68 | 2 | 6 | 0 | 0 | 1 |
 | Tree | 17 | 121 | 5 | 9 | 0 | 0 | 0 |
-| **합계** | 167 | 985 | 85 | 102 | 23 | 21 | 41 |
+| **합계** | 167 | 985 | 85 | 106 | 26 | 23 | 46 |
 
 표시: `↗File.md#N` 은 링크형 요약(정본이 File.md Part N), `[gcc]` `[posix]` `[linux]` `[threads]` 는 위 표의 이식성 표지다. POSIX·Linux 코드는 `#if` 가드로 감싸 다른 환경에서도 컴파일되고, GCC/Clang 확장을 쓰는 항목은 MSVC에서 따로 손봐야 한다.
 
@@ -217,11 +217,11 @@
 
 ### Part 15. 최신 연구 (2)
 
-`SwissTable`, `LearnedHash`
+`SwissTable` [gcc], `LearnedHash`
 
 ### Part 16. 해시 성능 시각화 (10)
 
-`CollisionVisualization`, `BucketDistribution`, `ProbeSequence` [gcc], `ResizeAnimation`, `ChainGrowth`, `ClusterFormation`, `AvalancheEffect`, `HashQualityEvaluation`, `CacheLocality`, `MemoryLayout`
+`CollisionVisualization`, `BucketDistribution`, `ProbeSequence` [gcc], `ResizeAnimation`, `ChainGrowth`, `ClusterFormation`, `AvalancheEffect`, `HashQualityEvaluation`, `CacheLocality`, `MemoryLayout` [gcc]
 
 ## List
 
@@ -277,7 +277,7 @@
 
 ### Part 2. 프로세스 메모리 (4)
 
-`TextSegment` [linux], `DataSegment`, `EnvironmentVariable`, `CommandLineArgument`
+`TextSegment` [linux], `DataSegment` [posix][linux][threads], `EnvironmentVariable` [posix][linux], `CommandLineArgument`
 
 ### Part 3. 스택 메모리 (8)
 
@@ -289,7 +289,7 @@
 
 ### Part 5. 포인터와 참조 (4)
 
-`Pointer`, `Reference`, `SmartPointer`, `Aliasing`
+`Pointer`, `Reference`, `SmartPointer` [threads], `Aliasing`
 
 ### Part 6. 메모리 할당기 (6)
 
@@ -305,7 +305,7 @@
 
 ### Part 9. 가상 메모리 (8)
 
-`VirtualAddress`, `PhysicalAddress`, `AddressTranslation`, `Paging`, `PageTable`, `PageFault` [posix][linux], `TLBLookup`, `MemoryMapping` [posix][linux]
+`VirtualAddress`, `PhysicalAddress` [gcc], `AddressTranslation`, `Paging` [gcc], `PageTable`, `PageFault` [posix][linux], `TLBLookup`, `MemoryMapping` [posix][linux]
 
 ### Part 10. 메모리 보호 (6)
 
@@ -321,11 +321,11 @@
 
 ### Part 13. 파일과 메모리 (4)
 
-`MemoryMappedFile` [posix], `SharedMemory` [posix][linux], `CopyOnWrite` [posix], `ZeroCopy` [posix][linux]
+`MemoryMappedFile` [posix], `SharedMemory` [posix][linux], `CopyOnWrite` [posix][threads], `ZeroCopy` [posix][linux][threads]
 
 ### Part 14. 운영체제 (5)
 
-`ProcessMemory` [linux], `ThreadLocalStorage` [threads], `KernelMemory` [gcc][posix][linux], `UserMemory` [posix][linux], `NUMAMemory`
+`ProcessMemory` [posix][linux], `ThreadLocalStorage` [threads], `KernelMemory` [gcc][posix][linux], `UserMemory` [posix][linux], `NUMAMemory`
 
 ### Part 15. 현대 시스템 (6)
 
@@ -333,7 +333,7 @@
 
 ### Part 16. 연구 주제 (12)
 
-`GarbageFirstGC`, `ZGC`, `ShenandoahGC`, `RegionBasedMemory`, `EscapeAnalysis`, `OwnershipTypeSystem`, `PersistentHeap` [threads], `TransactionalMemory` [threads], `CapabilityPointer`, `CHERIArchitecture`, `MemoryTagging`, `HardwareMemorySafety`
+`GarbageFirstGC`, `ZGC`, `ShenandoahGC` [threads], `RegionBasedMemory`, `EscapeAnalysis`, `OwnershipTypeSystem`, `PersistentHeap` [threads], `TransactionalMemory` [threads], `CapabilityPointer`, `CHERIArchitecture`, `MemoryTagging`, `HardwareMemorySafety`
 
 ### 부록: 부록 (17)
 

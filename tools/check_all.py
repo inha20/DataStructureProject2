@@ -4,7 +4,7 @@
   python3 -I tools/check_all.py
 
   1. tools/test_tools.py        the tooling's own tests
-  2. audit.py (static)          every book's structure is OK, 0 placeholders, 0 thin, 0 shallow entries
+  2. audit.py (static)          every book's structure is OK, 0 placeholders, 0 thin, 0 shallow, 0 weak entries
   3. linkcheck.py               cross-references and the duplicate-heading classification
   4. drift.py                   quoted complexity of link-type copies vs their canonical entry
   5. complexity_lint.py         every entry carries Time/Space comments
@@ -25,10 +25,10 @@ def run(label, *argv):
 
 def main():
     results = [run('tools self-tests', 'test_tools.py')[0]]
-    ok, out = run('static audit', 'audit.py', '--list-thin', '--list-shallow')
-    total = re.search(r'TOTAL blocks=(\d+) placeholders=(\d+) thin=(\d+) shallow=(\d+)', out)
+    ok, out = run('static audit', 'audit.py', '--list-thin', '--list-shallow', '--list-weak')
+    total = re.search(r'TOTAL blocks=(\d+) placeholders=(\d+) thin=(\d+) shallow=(\d+) weak=(\d+)', out)
     structure_bad = [l for l in out.split('\n') if re.match(r'^\w+\s+\d+\s+\d+\s+\d+\s+\d+', l) and not l.rstrip().endswith('OK')]
-    if not total or total.group(2, 3, 4) != ('0', '0', '0') or structure_bad:
+    if not total or total.group(2, 3, 4, 5) != ('0', '0', '0', '0') or structure_bad:
         print('FAIL static audit contract'); print('     ' + (total.group(0) if total else 'no TOTAL line')); [print('     ' + l) for l in structure_bad]
         ok = False
     results.append(ok)

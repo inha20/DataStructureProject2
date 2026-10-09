@@ -154,7 +154,7 @@
 | `IsConnected` | 4 | O(V + E) | O(V + E) |
 | `ArticulationPoint` | 4 | O(V + E) | O(V) |
 | `Bridge` | 4 | O(V + E) | O(V + E) |
-| `DetectCycle` | 5 | O(V + E) | O(V) |
+| `DetectCycle` | 5 | O(V + E) | O(V + E) |
 | `DetectCycleDFS` | 5 | O(V + E) | O(V) |
 | `DetectCycleBFS` | 5 | O(V + E)  (girth 는 모든 루트에서 BFS 하므로 O(V · (V + E))) | O(V + E) |
 | `DetectCycleUnionFind` | 5 | O(E α(V)) | O(V) |
@@ -186,13 +186,13 @@
 | `IDDFS` | 10 | O(b^d) | O(d) |
 | `IDAStar` | 10 | O(b^d) (휴리스틱이 좋을수록 지수의 밑이 작아진다) | O(d) |
 | `ThetaStar` | 10 | A* 와 같고 이웃마다 시선 검사 O(경로 길이) | O(V) |
-| `FordFulkerson` | 11 | O(VE^2) with BFS (Edmonds-Karp) | O(V^2) |
-| `EdmondsKarp` | 11 | O(V E^2) | O(V^2) for matrix |
-| `Dinic` | 11 | O(V^2 * E) | O(V + E) |
+| `FordFulkerson` | 11 | O(E · f) (f = 최대 유량, 정수 용량), 경로 선택 규칙이 정해지지 않으면 유사 다항 시간 | O(V + E) |
+| `EdmondsKarp` | 11 | O(V E²) (증가 O(VE) 번 × BFS O(E)) | O(V + E) |
+| `Dinic` | 11 | O(V² E), 단위 용량 이분 그래프 O(E √V) | O(V + E) |
 | `PushRelabel` | 11 | FIFO 선택 O(V³), 최고 높이 우선 선택 O(V² √E) | O(V + E) |
 | `MinCostMaxFlow` | 11 | O(F · SPFA) 또는 O(F · E log V) (F = 총 유량) | O(V + E) |
 | `BipartiteMatching` | 12 | O(V · E) | O(V + E) |
-| `HungarianAlgorithm` | 12 | O(N^3) | O(N^2) |
+| `HungarianAlgorithm` | 12 | O(n² m) | O(n m) (입력 표 포함, 알고리즘 자체는 O(n + m)) |
 | `HopcroftKarp` | 12 | O(E √V) | O(V + E) |
 | `BlossomAlgorithm` | 12 | O(V³) (최대 V/2 번의 증가 경로 탐색, 각각 O(V²) 이하) — 고급 구현은 O(√V · E) | O(V + E) |
 | `Tarjan` | 13 | O(V + E) | O(V) |
@@ -204,13 +204,13 @@
 | `BipartiteGraph` | 14 | O(V + E)  (서로소 집합 판정은 O(E α(V))) | O(V + E) |
 | `DirectedGraph` | 14 | 간선 추가 O(1), 뒤집기 O(V + E), 행렬 곱 O(n³) | O(V + E) |
 | `UndirectedGraph` | 14 | 간선 추가 O(1), 연결 요소 O(V + E) | O(V + E) |
-| `WeightedGraph` | 14 | Dijkstra O(E log V), Bellman-Ford O(V·E) | O(V + E) |
+| `WeightedGraph` | 14 | Dijkstra O(E log V), Bellman-Ford O(V·E), Floyd–Warshall O(V³) | O(V + E) |
 | `UnweightedGraph` | 14 | BFS O(V + E) | O(V) |
 | `CompleteGraph` | 14 | 신장 트리 개수 O(n³) (행렬식), 열거는 지수 | O(n²) |
 | `SparseGraph` | 14 | 인접 리스트 순회 O(V + E), 인접 행렬 순회 O(V²) | 인접 리스트 O(V + E), 인접 행렬 O(V²) |
 | `DenseGraph` | 14 | 삼각형 O(V²·V/64), 전이적 폐쇄 O(V³/64) | O(V²/64) 워드 |
 | `PlanarGraph` | 14 | 필요조건 검사 O(1), 완전한 평면성 판정 O(V) | O(1) |
-| `Multigraph` | 14 | 오일러 경로 O(V + E) | O(V + E) |
+| `Multigraph` | 14 | 판정 O(V + E), 오일러 경로 O(V + E) | O(V + E) |
 | `Hypergraph` | 14 | 2-section 변환 O(Σ\|e\|²) | O(V·E) 연관 행렬 |
 | `RandomGraph` | 15 | 생성 O(n²) | O(n) |
 | `GridGraph` | 15 | BFS O(R·C) | O(R·C) |
@@ -219,19 +219,19 @@
 | `ScaleFreeGraph` | 15 | O(n·m) | O(n·m) |
 | `SmallWorldGraph` | 15 | 평균 경로 O(n·(n + E)) | O(n·k) |
 | `DependencyGraph` | 16 | 순서·단계·증분 O(V + E), 축약 O(E · V / 64) | O(V + E) (축약은 O(V²/64) 비트) |
-| `KnowledgeGraph` | 16 | 질의 O(\|facts\|) (색인을 두면 O(결과)), 닫힘 O(V·\|facts\|) | O(\|facts\|) |
-| `SocialNetworkGraph` | 16 | 추천 O(Σ 친구의 차수), 경로 O(V + E) | O(V + E) |
+| `KnowledgeGraph` | 16 | 색인 질의 O(결과), 닫힘 O(V·\|facts\|), 규칙 고정점 O(반복 횟수 · \|facts\|) | O(\|facts\|) (색인 두 벌) |
+| `SocialNetworkGraph` | 16 | 추천 O(Σ 친구의 차수), 경로 O(V + E), 삼각형 O(d²) | O(V + E) |
 | `CallGraph` | 16 | O(V + E) | O(V + E) |
-| `StateTransitionGraph` | 16 | O(S + T) | O(S) |
-| `ControlFlowGraph` | 16 | O(명령 수) | O(블록 수) |
-| `DataFlowGraph` | 16 | 고정점까지 O(블록 수 · 변수 수 · 반복 횟수) | O(블록 수 · 변수 수) |
+| `StateTransitionGraph` | 16 | 도달성·교착 O(S + T), Moore 최소화 O(k · n² )(최악), Hopcroft 는 O(k · n log n) | O(S + T) |
+| `ControlFlowGraph` | 16 | 블록 구성 O(명령 수), 반복 지배자 O(블록 수² · 반복) — Lengauer-Tarjan 은 O(E α) | O(블록 수) |
+| `DataFlowGraph` | 16 | 고정점까지 O(블록 수 · 변수 수 · 반복 횟수)  (비트마스크로 집합 연산 O(1)) | O(블록 수 · 변수 수) |
 | `BayesianNetwork` | 16 | 열거 O(2^n), 변수 제거 O(n · 2^w) (w = 제거 순서가 만든 최대 범위 크기) | O(2^w) |
-| `NeuralGraph` | 16 | 순전파·역전파 모두 O(연산 수) | O(연산 수) |
+| `NeuralGraph` | 16 | 순전파·역전파 모두 O(연산 수) — 입력이 n 개인 스칼라 출력의 전체 기울기가 순방향 모드는 O(n · 연산 수), 역방향 모드는 O(연산 수) 한 번 | O(연산 수) |
 | `PageRank` | 16 | O(iter · (V + E)), iter ≈ log ε / log d | O(V + E) |
 | `BFS vs DFS` | 0 | BFS, DFS 모두 O(V + E) | BFS O(가장 넓은 층), DFS O(가장 깊은 경로) |
 | `DAG가 중요한 이유` | 0 | 위상 정렬 O(V + E), DAG 위의 DP O(V + E), 비트셋 폐쇄 O(V·E/64) | O(V + E) |
 | `Prim vs Kruskal` | 0 | Kruskal O(E log E), Prim 이진 힙 O(E log V), Prim 배열 O(V²) | O(V + E) |
-| `Dijkstra vs A*` | 0 | Dijkstra O(E log V), A* 는 휴리스틱에 따라 훨씬 적은 확장 | O(V) |
+| `Dijkstra vs A*` | 0 | Dijkstra O(E log V), A* 는 휴리스틱에 따라 훨씬 적은 확장 (일관적이면 Dijkstra 이하) | O(V) |
 | `Union-Find 시간복잡도` | 0 | m 번의 연산에 O(m · α(n)) (랭크 + 경로 압축), 압축만: O(m log n), 랭크만: find 당 O(log n) | O(n) |
 
 ## Hash
@@ -243,14 +243,14 @@
 | `Search` | 1 | 평균 O(1 + α), 최악 O(n) | O(1) |
 | `Delete` | 1 | 평균 O(1 + α), 최악 O(n) | O(1) |
 | `Resize` | 1 | 삽입 분할상환 O(1), 확장 1회는 O(n) | O(n) |
-| `Rehash` | 1 | O(n) | O(n) |
+| `Rehash` | 1 | 한꺼번에 O(n), 점진적이면 연산당 O(최대 사슬 길이) | O(n) (점진적일 때 재해시 중에는 두 테이블) |
 | `LoadFactor` | 1 | O(1) | O(1) |
 | `DivisionMethod` | 2 | O(1) | O(1) |
 | `MultiplicationMethod` | 2 | O(1) | O(1) |
 | `UniversalHashing` | 2 | O(1) | O(1) |
 | `FNV` | 2 | O(len) | O(1) |
 | `MurmurHash` | 2 | O(len) | O(1) |
-| `xxHash` | 2 | O(len) | O(1) |
+| `xxHash` | 2 | O(len) | O(1)  (스트리밍 상태 48 바이트) |
 | `SipHash` | 2 | O(len) | O(1) |
 | `Chaining` | 3 | 평균 O(1 + α), 최악 O(n) | O(n + m) |
 | `OpenAddressing` | 3 | 평균 O(1/(1-α)), 최악 O(m) | O(m) |
@@ -275,8 +275,8 @@
 | `Chord` | 7 | 조회 O(log N) 홉 | 노드당 O(log N) finger |
 | `Kademlia` | 7 | 조회 O(log N) 라운드 | 노드당 O(K log N) |
 | `Consistent Hashing이 분산 시스템에서 중요한 이유` | 7 | 링 조회 O(log(N·V)), 랑데부 O(N), 모듈로 O(1) | O(N·V) |
-| `MD5` | 8 | O(len) | O(len)  (구현의 편의상 패딩 사본을 만든다) |
-| `SHA256` | 8 | O(len) | O(len) |
+| `MD5` | 8 | O(len) | O(1)  (스트리밍 상태 64 바이트 버퍼) |
+| `SHA256` | 8 | O(len) | O(1)  (스트리밍 상태 64 바이트 버퍼) |
 | `HMAC` | 8 | O(len) | O(len) |
 | `MerkleDamgard` | 8 | O(len) | O(len) |
 | `암호학적 해시와 일반 해시의 차이` | 8 | SHA-256 O(n), 충돌 탐색 O(2^(b/2)), 원상 탐색 O(2^b) (b = 자른 비트 수) | O(2^(b/2)) (충돌 탐색의 표) |
@@ -291,7 +291,7 @@
 | `LRUCache` | 10 | get/put/erase O(1) 기대, 스택 거리 오라클은 O(n log n) | O(capacity) |
 | `LFUCache` | 10 | get/put O(1) | O(capacity) |
 | `HashDoS` | 11 | 공격 시 삽입 n 개 O(n²), 키 있는 해시 O(n) 기대, 트리화 O(n log n) | O(n) |
-| `Salting` | 11 | O(rounds)  (비용을 의도적으로 키움) | O(1) |
+| `Salting` | 11 | O(반복 횟수)  (비용을 의도적으로 키움) | O(1) |
 | `ConcurrentHashMap` | 12 | 평균 O(1) (서로 다른 구역은 병렬, 같은 구역의 읽기도 병렬), snapshot 은 O(n) 에 전 구역 잠금 | O(n) |
 | `LockFreeHashTable` | 12 | 평균 O(1), 락 없이 진행 보장(lock-free) | O(고정 용량) |
 | `BloomFilter` | 13 | add / mayContain O(k), 합집합 O(m/64) | O(m) 비트 |
@@ -423,31 +423,31 @@
 | `Pointer` | 5 | O(1) | O(1) |
 | `Reference` | 5 | O(1) | O(1) |
 | `SmartPointer` | 5 | unique_ptr O(1), shared_ptr 복사 O(1) (원자적 카운터) | shared_ptr 은 제어 블록 추가 |
-| `Aliasing` | 5 | O(1), memmove O(n) | O(1) |
-| `MemoryPool` | 6 | 할당·해제 O(1) | O(블록 크기 · 개수) |
-| `ObjectPool` | 6 | acquire/release 평균 O(1) | O(최대 동시 객체 수) |
-| `FreeList` | 6 | 할당 O(구멍 수), 해제 O(구멍 수 log 구멍 수) | O(구멍 수) |
-| `SlabAllocator` | 6 | 할당 O(슬랩 수) (구현의 단순화), 실제 커널은 리스트로 O(1) | O(슬랩 수 · 슬랩 크기) |
-| `BuddyAllocator` | 6 | 할당·해제 O(log N) (order 수) | O(블록 수) |
-| `ArenaAllocator` | 6 | 할당 O(1), 해제 O(1) (전체) | O(용량) |
-| `MarkSweep` | 7 | O(살아있는 객체 + 힙 전체) (마크 + 스윕) | O(깊이) 마크 스택 |
-| `MarkCompact` | 7 | O(힙 크기) · 3~4 패스 | O(1) 추가 (forwarding 주소는 객체 헤더에 저장) |
-| `CopyingGC` | 7 | O(살아있는 객체) | O(힙) · 2 (두 공간) |
-| `GenerationalGC` | 7 | minor GC 는 young 크기 + 기억 집합에 비례 | O(기억 집합) |
+| `Aliasing` | 5 | 비트 캐스트 O(1) (memcpy 가 한 명령으로 바뀐다), 기수 정렬 O(n), memmove O(n) | O(1) |
+| `MemoryPool` | 6 | 할당 O(1) (덩어리가 필요하면 덩어리 크기), 해제 O(덩어리 수) (owns 검증 포함 — 검증을 빼면 O(1)) | O(블록 크기 · 개수) |
+| `ObjectPool` | 6 | acquire O(1) 평균(덩어리 증설 시 O(덩어리 크기)), release O(덩어리 수) (소유 확인 포함) | O(최대 동시 객체 수) |
+| `FreeList` | 6 | 벡터 구현 할당 O(구멍 수)·해제 O(구멍 수), 인덱스 구현 best/worst-fit 할당 O(log 구멍 수)·해제 O(log 구멍 수) (first-fit 은 선형) | O(구멍 수) |
+| `SlabAllocator` | 6 | 할당·해제 O(1) (슬랩 머리말은 주소 마스크로 찾고, 리스트 이동은 이중 연결 리스트) | O(슬랩 수 · 4096) |
+| `BuddyAllocator` | 6 | 할당·해제 O(차수) = O(log N) (집합 연산 포함 O(log N · log 블록 수)) | O(블록 수) |
+| `ArenaAllocator` | 6 | 할당 O(1) (덩어리 증설 시 O(덩어리 크기)), rollback/reset O(되돌릴 객체 수 + 덩어리 수) | O(용량) |
+| `MarkSweep` | 7 | 마크 O(살아있는 객체와 참조), 스윕 O(힙 전체), 할당 O(자유 블록 수) | O(깊이) 마크 스택 (포인터 역전 표시는 O(1)) |
+| `MarkCompact` | 7 | O(힙 크기) · 4 패스 (표시 + 주소 계산 + 갱신 + 이동), 두 손가락은 표시 뒤 O(셀 수) 한 번 | O(1) 추가 (forwarding 주소는 객체 헤더에 저장), 표시 스택 O(깊이) |
+| `CopyingGC` | 7 | O(살아있는 객체) (쓰레기는 방문하지 않는다), 할당 O(1) | O(힙) · 2 (두 공간), 큐/스택 없이 scan 포인터 하나로 BFS |
+| `GenerationalGC` | 7 | minor GC 는 살아있는 young + 기억 집합(또는 더러운 카드)에 비례, major GC 는 살아있는 전체 | O(기억 집합) 또는 O(카드 수) |
 | `ReferenceCountingGC` | 7 | decref 연쇄 해제 O(해제되는 객체), 순환 수집 O(객체 + 참조) | 객체당 카운터 하나 |
-| `IncrementalGC` | 7 | 조각당 O(1) 작업, 전체 O(힙) | O(회색 작업 목록) |
+| `IncrementalGC` | 7 | 조각당 O(예산), 한 사이클 O(힙), 장벽 O(1) | O(회색 작업 목록) |
 | `ConcurrentGC` | 7 | O(스냅샷 크기 + 장벽 기록 수) | O(SATB 큐) |
 | `CacheLine` | 8 | O(1) 주소 분해 | O(1) |
 | `CacheHit` | 8 | 접근 O(ways) | O(캐시 라인 수) |
-| `CacheMiss` | 8 | O(trace · ways) | O(라인 수) |
+| `CacheMiss` | 8 | 시뮬레이션 O(접근 수 · 방향 수), 스택 거리 O(n log n) (Fenwick) | O(캐시 라인 수) |
 | `CacheFriendlyTraversal` | 8 | O(N²) 접근, 미스 수가 다르다 | O(1) |
 | `CacheBlocking` | 8 | O(N³) 연산은 동일, 캐시 미스는 O(N³/ (B·L)) 로 감소 | O(1) |
 | `FalseSharing` | 8 | O(iters) | 패딩으로 캐시 라인 하나씩 낭비 |
 | `VirtualAddress` | 9 | O(1) | O(1) |
-| `PhysicalAddress` | 9 | 할당 O(프레임 수) (비트맵 + 힌트로 O(1) 가능) | O(프레임 수) |
-| `AddressTranslation` | 9 | O(1) (한 단계 테이블) | O(페이지 수) |
-| `Paging` | 9 | O(1) 계산 | 다단계 테이블 O(사용 영역) |
-| `PageTable` | 9 | 변환 O(4) = O(1), 매핑 O(4) | O(매핑된 영역에 비례하는 테이블 수) |
+| `PhysicalAddress` | 9 | alloc O(프레임 수 / 64) (비트맵 워드 단위 건너뛰기), 연속 할당 O(프레임 수 · 크기), 해제 O(1) | O(프레임 수) |
+| `AddressTranslation` | 9 | TLB 적중 O(방향 수), 미스 O(1) (한 단계 테이블) | O(페이지 수 + TLB 항목 수) |
+| `Paging` | 9 | 시뮬레이션 O(트레이스 길이 · 프레임 수) (LRU 리스트 구현은 O(1)/접근) | O(프레임 수) |
+| `PageTable` | 9 | map/unmap/walk 모두 O(4) = O(1) (레벨 수), 메모리 접근은 레벨 수만큼 | O(사용 중인 구간에 필요한 테이블 수) — 희소한 주소 공간에서 한 장짜리 배열(512GB)보다 훨씬 작다 |
 | `PageFault` | 9 | FIFO/LRU O(n · 프레임), OPT O(n² · 프레임) (비교용) | O(프레임) |
 | `TLBLookup` | 9 | 조회 O(1) | O(TLB 항목 수) |
 | `MemoryMapping` | 9 | 매핑 O(1), 쪽 접근은 처음 만질 때 폴트 한 번 | 만진 쪽 수만큼 물리 메모리 |
@@ -455,7 +455,7 @@
 | `ExecuteOnlyMemory` | 10 | 코드 생성 O(길이), 호출 O(1) | O(페이지) |
 | `MemoryProtection` | 10 | O(1) | 가드 페이지 1개 (4KB) |
 | `StackCanary` | 10 | O(1) 검사 | 프레임당 8바이트 |
-| `ASLR` | 10 | O(1) | O(1) |
+| `ASLR` | 10 | O(1) (모형의 한 번 뽑기) | O(1) |
 | `DEP` | 10 | O(1) | O(1) |
 | `AtomicOperation` | 11 | O(1) 연산 (경합 시 캐시 라인 이동 비용) | O(1) |
 | `CompareAndSwap` | 11 | 루프당 O(1), 경합 시 재시도 | O(N) 노드 풀 + O(1) 카운터 |
@@ -467,50 +467,50 @@
 | `WildPointer` | 12 | 검사 O(log N) | O(할당 수) |
 | `DoubleFree` | 12 | O(log 블록 수) | O(블록 수) |
 | `UseAfterFree` | 12 | 할당·해제·접근 O(1) | O(힙 크기 + Q) |
-| `BufferOverflow` | 12 | 검사 O(레드존 크기) | 할당당 2 · 레드존 |
+| `BufferOverflow` | 12 | 접근 검사 O(접근 크기), 할당·해제 O(1) (격리 큐 제외) | 힙 크기 / 8 (그림자) + 할당당 2 · 레드존 |
 | `HeapCorruption` | 12 | 할당 O(1), 검증 O(블록 수) | 블록당 헤더 12B + 푸터 4B (16B 정렬) |
-| `MemoryMappedFile` | 13 | 접근 시 페이지 폴트 O(1) (캐시에 있으면 복사 없음) | 페이지 캐시 공유 |
+| `MemoryMappedFile` | 13 | 접근 시 페이지 폴트 O(1) (캐시에 있으면 복사 없음), 증설은 재매핑 O(1) + 새 페이지만 폴트 | 페이지 캐시 공유 |
 | `SharedMemory` | 13 | 접근 O(1), 동기화는 프로세스 수에 비례한 경쟁 | 공유 영역 1벌 (프로세스 수와 무관) |
 | `CopyOnWrite` | 13 | 복사 O(1), 첫 쓰기 O(크기) | 쓰기가 일어나기 전까지 공유 |
 | `ZeroCopy` | 13 | O(n) 이동, 사용자 공간 복사 0 | O(1) 사용자 버퍼 |
 | `ProcessMemory` | 14 | O(영역 수) | O(영역 수) |
-| `ThreadLocalStorage` | 14 | 접근 O(1) (세그먼트 레지스터 기준 오프셋) | 스레드 수 · 변수 크기 |
+| `ThreadLocalStorage` | 14 | 접근 O(1) (세그먼트 레지스터 기준 오프셋; 동적 키는 벡터 색인) | 스레드 수 · 변수 크기 |
 | `KernelMemory` | 14 | O(1) 주소 검증 | O(1) |
 | `UserMemory` | 14 | 매핑·해제 O(1), 만진 페이지는 페이지당 O(1) 결함 | 예약은 무료, 만진 페이지(RSS)만 비용 |
 | `NUMAMemory` | 14 | O(접근 기록 + 페이지 × 노드²) | O(페이지 × 노드) |
-| `GPUMemory` | 15 | O(32) | O(1) |
+| `GPUMemory` | 15 | O(32) (워프 한 번) | O(1) |
 | `UnifiedMemory` | 15 | 접근당 O(1) (검증 오라클은 O(n²)) | O(페이지 수) |
 | `PersistentMemory` | 15 | 검증 O(단계 · 2^dirty) | O(1) 로그 |
-| `HugePage` | 15 | O(1) | 페이지 테이블 크기가 1/512 로 감소 |
-| `RDMA` | 15 | O(n) 복사 (NIC 가 DMA) | 등록된 영역(고정 메모리) |
+| `HugePage` | 15 | TLB 적중 O(log 항목) (시뮬레이션), 압축 O(프레임 수) | O(항목 수), 페이지 테이블 O(매핑 크기 / 4KB · 8B) |
+| `RDMA` | 15 | 연산당 O(1) 검사 (NIC 가 처리), 시뮬레이션은 사건 수 · log | 등록한 영역 크기 |
 | `MemoryCompression` | 15 | 압축 O(n · 창 크기), 복원 O(n) | O(n) |
 | `GarbageFirstGC` | 16 | 수집 O(CSet 생존 객체 + 기억 집합 항목), 선택 O(R log R) | O(영역 수 + 기억 집합) |
-| `ZGC` | 16 | 빠른 경로 O(1) 비교, 느린 경로 O(1) 조회 | 포인터 상위 비트 + 전달 테이블 |
-| `ShenandoahGC` | 16 | 접근마다 포인터 한 번 더 (간접 참조 비용) | 객체당 포인터 하나 |
+| `ZGC` | 16 | 로드 장벽 빠른 경로 O(1) 비교, 느린 경로 O(1) 조회(+재배치 시 객체 복사), 정지 시간은 루트 수에 비례 | 포인터 상위 비트 + 페이지별 전달 표 (다음 표시가 끝나면 해제) |
+| `ShenandoahGC` | 16 | 접근마다 포인터 한 번 더 (간접 참조 비용), 쓰기는 수집 집합 객체에 처음 쓸 때 복사 O(객체 크기) | 객체당 포인터 하나 (+ 이동 중에는 옛 사본과 새 사본) |
 | `RegionBasedMemory` | 16 | 할당 O(1), 닫기 O(등록된 소멸자 + 덩어리 수) | O(요청 합 + 덩어리 내부 조각) |
-| `EscapeAnalysis` | 16 | O(문장 수 · 반복) | O(변수 수) |
-| `OwnershipTypeSystem` | 16 | O(1) 검사 | O(1) |
+| `EscapeAnalysis` | 16 | 고정점 반복 O(반복 · 문장 수 · site 수) | O(변수 · site 수) |
+| `OwnershipTypeSystem` | 16 | O(1) 런타임 검사, 정적 검사기 O(문장 수² · 참조 수) (설명용) | O(1) / O(변수 수) |
 | `PersistentHeap` | 16 | 삽입·삭제·조회 기대 O(log N) 시간과 O(log N) 새 노드 | 버전마다 O(log N) 추가 (공유) |
-| `TransactionalMemory` | 16 | 트랜잭션당 O(읽기 + 쓰기 집합), 충돌 시 재시도 | O(읽기·쓰기 집합) |
-| `CapabilityPointer` | 16 | O(1) 검사 | 포인터당 base·length·perms 추가 (CHERI 는 128비트 포인터) |
-| `CHERIArchitecture` | 16 | O(1) | 16바이트당 태그 1비트 (약 0.8%) |
-| `MemoryTagging` | 16 | O(1) 검사 | 16바이트당 4비트 (3%) |
+| `TransactionalMemory` | 16 | 읽기 O(1) (+ 쓰기 집합 조회), 커밋 O(쓰기 집합 · log + 읽기 집합) | 트랜잭션당 O(읽기 집합 + 쓰기 집합), 변수당 한 워드(버전 + 잠금 비트) |
+| `CapabilityPointer` | 16 | O(1) 검사 (하드웨어) | 포인터당 base·length·perms 추가 (CHERI 는 128비트 포인터 + 태그 1비트) |
+| `CHERIArchitecture` | 16 | 저장·읽기 O(1), 회수 훑기 O(메모리 / 16) | 16바이트당 태그 1비트 (약 0.8%) |
+| `MemoryTagging` | 16 | O(1) 검사 (걸친 칸 수) | 16바이트당 4비트 (3%) |
 | `HardwareMemorySafety` | 16 | O(1) 판정 | O(1) |
 | `Stack vs Heap` | 0 | 스택 할당·해제 O(1), 힙 first-fit 은 블록 수에 비례 | 스택은 제한적(MB), 힙은 큼 |
 | `Pointer vs Reference` | 0 | O(1) 접근, 포인터 산술 O(1) | 포인터 8B, 참조는 구현 의존(보통 포인터 하나) |
 | `malloc vs new` | 0 | 할당기에 따라 다름 | O(n) |
 | `free vs delete` | 0 | delete 는 소멸자 비용 포함 | O(1) |
 | `Shared Pointer의 순환 참조` | 0 | O(1) | 누수 시 영구 점유 |
-| `왜 캐시 미스가 성능을 떨어뜨리는가?` | 0 | O(1) | O(1) |
-| `페이지 교체 알고리즘(LRU, Clock)` | 0 | LRU 접근당 O(프레임) (리스트), Clock 은 분할상환 O(1) | O(프레임 수) |
-| `Virtual Memory가 필요한 이유` | 0 | O(log 매핑 수) | O(매핑 수) |
-| `메모리 단편화(Fragmentation)` | 0 | 압축 O(N) | O(N) |
+| `왜 캐시 미스가 성능을 떨어뜨리는가?` | 0 | O(1) 공식, 시뮬레이션 O(접근 수 · 방향 수) | O(캐시 라인 수) |
+| `페이지 교체 알고리즘(LRU, Clock)` | 0 | LRU 접근당 O(1) (리스트 + 해시), Clock 은 분할상환 O(1) 이고 적중 때 순서 변경이 없다 | O(프레임 수) |
+| `Virtual Memory가 필요한 이유` | 0 | 접근 O(1) (적중), 폴트 O(프레임 수) (Clock) | O(프로세스 수 · 가상 페이지 수 + 스왑 크기) |
+| `메모리 단편화(Fragmentation)` | 0 | 압축 O(N), 할당 O(구멍 수) | O(N) |
 | `False Sharing이란?` | 0 | 분석 O(이벤트 수 × 라인당 조각 수) | 패딩만큼 증가 |
 | `NUMA 구조 이해하기` | 0 | BFS O(n(n+간선)), 분배 전수 O(5^n) | O(n²) |
 | `C, C++, Java, Python의 메모리 관리 비교` | 0 | O(V + E) | O(V) |
 | `JVM 메모리 구조` | 0 | minor GC 는 Young 크기에 비례 | O(힙) |
-| `CPython 객체 모델` | 0 | append 분할상환 O(1) | 용량이 길이보다 약 12.5% 크다 |
-| `Rust Ownership와 Borrow Checker` | 0 | O(문장 수 · 참조 수) | O(참조 수) |
+| `CPython 객체 모델` | 0 | append 분할상환 O(1), 참조 횟수 갱신 O(1), 순환 수집 O(컨테이너 수 + 참조 수) | 용량이 길이보다 약 12.5% 크다, 객체당 머리말 16바이트 |
+| `Rust Ownership와 Borrow Checker` | 0 | 데이터 흐름 O(노드 수 · 변수 수), 경로 열거는 O(2^분기 수 · 문장 수) | O(노드 수 · 변수 수) |
 | `CUDA 메모리 계층` | 0 | 시뮬레이션 O(사이클 × 워프) | O(워프 수 + 타일) |
 | `현대 CPU 캐시 계층(L1/L2/L3)` | 0 | O(접근 수 · 단계 수 · ways) | O(캐시 크기) |
 
@@ -860,7 +860,7 @@
 | `Anagram` | 2 | 판별 O(n), 윈도 탐색 O(\|text\| + \|pattern\|), 그룹핑 O(총 길이) (서명·해시) / O(총 길이 · log 길이) (정렬) | O(알파벳) (판별), O(총 길이) (그룹핑) |
 | `RunLengthEncoding` | 2 | O(n) | O(n) |
 | `ASCII부터 Unicode까지` | 3 | 부호화·복호화 O(1)/코드 포인트 | O(1) |
-| `UTF-8과 UTF-16의 차이` | 3 | O(1) | O(1) |
+| `UTF-8과 UTF-16의 차이` | 3 | O(1) (글자당) | O(1) |
 | `UTF8Validate` | 3 | O(n) | O(1) |
 | `Rope` | 4 | 색인·분할·삽입·삭제·붙이기 O(log n) | O(n), 편집마다 O(log n) 새 노드 (나머지는 공유) |
 | `GapBuffer` | 4 | 커서 근처 삽입/삭제 O(1), 이동 O(거리) | O(n + gap) |
@@ -887,7 +887,7 @@
 | `SubstringHash` | 10 | 전처리 O(n), 비교 O(1), 최장 공통 부분 문자열 O((n + m) log min(n, m)) | O(n) |
 | `LongestCommonSubstring` | 10 | O(\|a\| log σ + \|b\| log σ) | O(\|a\|) |
 | `LZW` | 11 | O(n log D) | O(D)  (사전 크기) |
-| `BurrowsWheelerTransform` | 11 | 순진한 구현 O(n² log n), 접미사 배열 기반 O(n log n) | O(n) |
+| `BurrowsWheelerTransform` | 11 | 정의대로 O(n² log n), 접미사 배열(배증) O(n log² n), SA-IS 로 O(n) | O(n) |
 | `MoveToFront` | 11 | O(n·σ) (σ ≤ 256) | O(σ) |
 | `Huffman` | 11 | O(n + σ log σ) | O(σ) |
 | `Levenshtein` | 12 | O(n·m), 띠 O(n·k), 비트 병렬 O(n·⌈m/64⌉) | O(n·m) (연산열 필요 시), 거리만 O(min(n, m)) |
@@ -898,15 +898,15 @@
 | `RegexNFA` | 13 | 매칭 O(n·m) (n = 텍스트, m = 정규식 크기) | O(m) |
 | `Lexer` | 14 | O(n) (문자마다 상수 번 앞을 본다) | O(토큰 수) |
 | `RecursiveDescentParser` | 14 | O(n) | O(중첩 깊이) |
-| `InvertedIndex` | 15 | 색인 O(총 토큰 수 log V), AND 질의 O(\|a\| + \|b\|) | O(총 토큰 수) |
+| `InvertedIndex` | 15 | 색인 O(총 토큰 수 log V), AND 질의 O(\|짧은 목록\| · log(\|긴 목록\| / \|짧은 목록\|)) | O(총 토큰 수) |
 | `NGramIndex` | 15 | 질의 O(\|q\| · 평균 포스팅 길이) | O(총 n-gram 수) |
 | `TFIDF` | 15 | 색인 O(총 토큰), 질의 O(질의 단어의 색인 목록 길이 합) | O(고유 (단어, 문서) 쌍) |
-| `문자열 알고리즘의 생물정보학 활용` | 16 | O(n) (k-mer 세기 O(n·k)) | O(고유 k-mer 수) |
+| `문자열 알고리즘의 생물정보학 활용` | 16 | O(n) (k-mer 세기 O(n·k), 롤링은 O(n)) | O(고유 k-mer 수) |
 | `NeedlemanWunsch` | 16 | O(n·m) | O(n·m) (점수만 O(min(n, m)), Hirschberg 로 정렬도 O(n + m)) |
 | `SmithWaterman` | 16 | O(n·m) | O(n·m) |
 | `BytePairEncoding` | 17 | 학습 O(병합 수 · 코퍼스 크기), 추론 O(병합 수 · 단어 길이) | O(어휘) |
 | `WordPiece` | 17 | 추론 O(L²) (L = 단어 길이), 학습 O(병합 수 · 코퍼스) | O(어휘) |
-| `SentencePiece` | 17 | O(n · 최대 조각 길이) | O(n) |
+| `SentencePiece` | 17 | Viterbi O(n · 최대 조각 길이), k-최선 O(n · L · k log k), EM 한 번은 O(코퍼스 · L) | O(n) |
 | `TokenizeLLM` | 17 | O(병합 수 · 단어 길이) (실제 구현은 우선순위 큐로 O(n log n)) | O(어휘 + n) |
 | `EmbeddingLookup` | 17 | 조회 O(d), 원-핫 행렬곱 O(V·d) | O(V·d) |
 | `Detokenize` | 17 | O(총 길이) | O(총 길이) |
@@ -966,7 +966,7 @@
 | `RotateRight` | 6 | O(1) | O(1) |
 | `RotateLeftRight` | 6 | O(1) | O(1) |
 | `RotateRightLeft` | 6 | O(1) | O(1) |
-| `RBInsert` | 7 | O(log N) | O(log N) stack |
+| `RBInsert` | 7 | 삽입 O(log n) (회전 ≤ 2, 색 바꾸기는 분할상환 O(1)) | O(n) |
 | `RBDelete` | 7 | O(log N), 삭제 후 회전은 최대 3번 | O(N) |
 | `FixViolation` | 7 | O(log N), 회전은 삽입당 최대 2번 | O(1) 추가 공간 |
 | `Recolor` | 7 | 삽입당 재색칠 분할상환 O(1), 최악 O(log N) | O(1) |
@@ -974,7 +974,7 @@
 | `TwoThreeTree` | 7 | 탐색·삽입 O(log N) (높이 log3 N ~ log2 N) | O(N) |
 | `TwoThreeFourTree` | 7 | 탐색·삽입 O(log N), 삽입은 하향 한 번 | O(N) |
 | `LeftLeaningRedBlackTree` | 7 | 삽입·삭제·탐색 O(log N) | O(N) |
-| `BinaryHeap` | 8 | O(log N) for push/pop, O(N) for buildHeap | O(N) |
+| `BinaryHeap` | 8 | push·pop O(log n), top O(1), build O(n) | O(n) |
 | `HeapInsert` | 8 | O(log N) (평균 O(1)) | O(1) |
 | `HeapDelete` | 8 | O(log N) | O(1) |
 | `Heapify` | 8 | heapify O(log N), build-heap O(N) | O(1) |
@@ -988,20 +988,20 @@
 | `MinMaxHeap` | 8 | min/max O(1), push·popMin·popMax O(log N) | O(N) |
 | `TrieInsert() & TrieSearch` | 9 | O(L) | O(총 문자 수 · 알파벳) — 노드당 26 개의 간선 슬롯 |
 | `TrieDelete` | 9 | O(L) | O(L) (경로 저장) |
-| `RadixTree` | 9 | 삽입·검색 O(L) | O(단어 수) 노드 + 레이블 |
+| `RadixTree` | 9 | 삽입·검색·삭제 O(L · σ) (σ = 한 노드의 자식 수 탐색, std::map 이면 L log σ) | O(단어 수) 노드 + 레이블 (노드 ≤ 2n + 1) |
 | `GeneralTree` | 9 | 자식 추가 O(1) (마지막 자식 포인터), 순회 O(N) | O(N) |
 | `NaryTree` | 9 | 인덱스 계산 O(1), N-ary 힙 삽입 O(log_N n), 삭제 O(N log_N n) | O(N) 배열 |
 | `SuffixTrie` | 10 | 구성 O(N²), 검색 O(M) | O(N²) 노드 (서로 다른 부분 문자열 수에 비례) |
 | `SuffixTree` | 10 | 이 구성 O(n²), Ukkonen O(n); 검색 O(m + 출현 수) | O(n) 노드 (레이블은 부분 문자열 복사; 인덱스 쌍으로 두면 O(n)) |
 | `PatriciaTrie` | 10 | 삽입·검색 O(키 길이 비트 수) | O(n) |
-| `TernarySearchTree` | 10 | O(L + log σ) 평균 (σ = 알파벳 크기) | O(총 글자 수) 노드 · 3 포인터 |
+| `TernarySearchTree` | 10 | 삽입·검색 O(L + log σ) 평균 (σ = 알파벳 크기), 와일드카드 O(노드 수) 최악 | O(총 글자 수) 노드 · 3 포인터 |
 | `SuffixArray` | 10 | 구성 O(n log n), LCP O(n), 패턴 검색 O(m log n) | O(n) |
 | `SegmentTree` | 11 | build O(N), update/query/maxRight O(log N) | O(N) |
 | `FenwickTree` | 11 | build O(N), add/prefix O(log N) | O(N) |
 | `KDTree` | 11 | 구성 O(n log n), 최근접 평균 O(log n) | O(n) |
 | `QuadTree` | 11 | 삽입 O(깊이), 범위 질의 평균 O(log n + k) | O(n) |
 | `Octree` | 11 | 삽입 O(깊이), 반경 질의 평균 O(log n + k) | O(n) |
-| `BSPTree` | 11 | 구성 O(n²) 최악 (좋은 분할선을 고르면 O(n log n)), 순회 O(n) | O(n) (분할로 최대 O(n²)) |
+| `BSPTree` | 11 | 구성 O(n²) 최악 (좋은 분할선을 고르면 O(n log n) 기대), 순회 O(조각 수) | O(조각 수) (분할로 최대 O(n²)) |
 | `RangeQuery` | 12 | 전처리 O(n log n), 질의 O(1) | O(n log n) |
 | `LazyPropagation` | 12 | 갱신·질의 O(log n) | O(n) |
 | `RangeUpdate` | 12 | O(log n) | O(n) |
@@ -1012,7 +1012,7 @@
 | `SplayTree` | 13 | 분할상환 O(log N), 작업 집합 크기 w 에서 O(log w) | O(N) |
 | `Treap` | 13 | 기대 O(log N) | O(N) |
 | `CartesianTree` | 13 | 구성 O(n), RMQ 는 트리 높이에 비례 (LCA 전처리 후 O(1)) | O(n) |
-| `ScapegoatTree` | 13 | 삽입 분할상환 O(log N), 검색 O(log N) | O(N) (노드에 균형 정보 없음) |
+| `ScapegoatTree` | 13 | 삽입·삭제 분할상환 O(log N), 검색 O(log N) | O(N) (노드에 균형 정보 없음) |
 | `OrderStatisticTree` | 13 | select·rank·삽입·삭제 기대 O(log N) | O(N) (노드당 크기 필드 하나) |
 | `WeightBalancedTree` | 13 | O(log N) | O(N) |
 | `ZipTree` | 13 | 기대 O(log N) | O(N) (랭크는 작은 정수) |
@@ -1039,5 +1039,5 @@
 | `VanEmdeBoasTree` | 16 | 모든 연산 O(log log U) | O(N log log U) (lazy 할당; 즉시 할당하면 O(U)) |
 | `트리 순회의 재귀와 반복 구현` | 0 | 세 방식 모두 O(N) (Morris 는 간선을 최대 3번 지남) | 재귀 O(h) 호출 스택, 반복 O(h) 명시적 스택, Morris O(1) |
 | `Binary Tree vs BST` | 0 | 이진 트리 탐색 O(N), BST 탐색 O(높이) (평균 O(log N), 최악 O(N)) | O(N) |
-| `BST vs AVL vs Red-Black` | 0 | BST 최악 O(N), AVL·레드-블랙 O(log N) | O(N) |
+| `BST vs AVL vs Red-Black` | 0 | BST 최악 O(N), AVL·LLRB O(log N) | O(N) |
 | `Segment Tree vs Fenwick Tree` | 0 | 둘 다 점 갱신·질의 O(log N); 펜윅은 상수가 작고 세그먼트 트리는 연산 종류가 자유롭다 | 펜윅 N, 세그먼트 트리 2N (재귀 구현은 4N) |
