@@ -578,6 +578,7 @@ int main() {
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <queue>
 #include <random>
@@ -596,7 +597,21 @@ struct BitMatrix { int n, words; std::vector<uint64_t> a; explicit BitMatrix(int
 typedef std::vector<std::vector<long long>> Dense;
 Dense mul(const Dense& x, const Dense& y) { int n = (int)x.size(); Dense r(n, std::vector<long long>(n, 0)); for (int i = 0; i < n; i++) for (int k = 0; k < n; k++) if (x[i][k]) for (int j = 0; j < n; j++) r[i][j] += x[i][k] * y[k][j]; return r; }
 long long walks(const std::vector<std::set<int>>& adj, int from, int to, int len) { if (len == 0) return from == to; long long c = 0; for (int w : adj[from]) c += walks(adj, w, to, len - 1); return c; }
+std::string matrixPicture(int n, const std::function<long long(int, int)>& at) {       // 그림: 행 i, 열 j 칸 = A[i][j] (0 은 '.')
+    std::string s = " "; for (int j = 0; j < n; ++j) s += " " + std::to_string(j); s += "\n";
+    for (int i = 0; i < n; ++i) { s += std::to_string(i); for (int j = 0; j < n; ++j) s += " " + (at(i, j) ? std::to_string(at(i, j)) : std::string(".")); s += "\n"; }
+    return s;
+}
 int main() {
+    {   BitMatrix m(5); for (auto [u, v] : std::vector<std::pair<int, int>>{{0, 1}, {0, 2}, {1, 3}, {2, 3}, {4, 0}}) m.set(u, v);                    // 0->1  0->2  1->3  2->3  4->0
+        auto bit = [&](const BitMatrix& b) { return [&b](int i, int j) -> long long { return b.has(i, j); }; };
+        assert(matrixPicture(5, bit(m)) == "  0 1 2 3 4\n0 . 1 1 . .\n1 . . . 1 .\n2 . . . 1 .\n3 . . . . .\n4 1 . . . .\n");          // 행 i 에 1 이 있는 열 = i 의 나가는 이웃
+        BitMatrix reach = m.closure();                                                                                                  // 워셜 전이 폐쇄: 도달 가능성
+        assert(matrixPicture(5, bit(reach)) == "  0 1 2 3 4\n0 . 1 1 1 .\n1 . . . 1 .\n2 . . . 1 .\n3 . . . . .\n4 1 1 1 1 .\n");
+        Dense a(5, std::vector<long long>(5, 0)); for (int i = 0; i < 5; ++i) for (int j = 0; j < 5; ++j) a[i][j] = m.has(i, j); Dense a2 = mul(a, a);
+        const std::string sq = "  0 1 2 3 4\n0 . . . 2 .\n1 . . . . .\n2 . . . . .\n3 . . . . .\n4 . 1 1 . .\n";
+        assert(matrixPicture(5, [&](int i, int j) { return a2[i][j]; }) == sq);                                                         // A²[i][j] = i 에서 j 로 가는 길이 2 인 걸음 수 (0->3 은 1 또는 2 를 거쳐 2 가지)
+        std::cout << matrixPicture(5, bit(m)) << matrixPicture(5, bit(reach)) << sq; }
     std::mt19937 rng(11);
     for (int rep = 0; rep < 200; rep++) { int n = 1 + (int)(rng() % 70); bool directed = rep % 2; BitMatrix m(n); std::vector<std::set<int>> adj(n); for (int k = 0, e = (int)(rng() % (3 * n)); k < e; k++) { int u = (int)(rng() % n), v = (int)(rng() % n); if (u == v) continue; if (rng() % 4) { m.set(u, v); adj[u].insert(v); if (!directed) { m.set(v, u); adj[v].insert(u); } } else { m.clear(u, v); adj[u].erase(v); if (!directed) { m.clear(v, u); adj[v].erase(u); } } }   // ①
         for (int u = 0; u < n; u++) { std::vector<int> nb = m.neighbors(u); assert(std::vector<int>(adj[u].begin(), adj[u].end()) == nb && m.degree(u) == (int)adj[u].size()); for (int v = 0; v < n; v++) assert(m.has(u, v) == (adj[u].count(v) > 0)); if (!directed) for (int v = 0; v < n; v++) assert(m.has(u, v) == m.has(v, u)); assert(!m.has(u, u)); }
@@ -840,7 +855,17 @@ Result bfs(const std::vector<std::vector<int>>& adj, const std::vector<int>& sou
 std::vector<std::vector<int>> floyd(const std::vector<std::vector<int>>& adj) { int n = (int)adj.size(); const int INF = 1 << 28; std::vector<std::vector<int>> d(n, std::vector<int>(n, INF)); for (int i = 0; i < n; i++) { d[i][i] = 0; for (int j : adj[i]) d[i][j] = std::min(d[i][j], 1); } for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) if (d[i][k] + d[k][j] < d[i][j]) d[i][j] = d[i][k] + d[k][j]; for (auto& row : d) for (int& x : row) if (x >= INF) x = -1; return d; }
 std::vector<int> zeroOneBfs(const std::vector<std::vector<std::pair<int, int>>>& adj, int s) { int n = (int)adj.size(); std::vector<int> d(n, 1 << 28); std::deque<int> dq; d[s] = 0; dq.push_back(s); while (!dq.empty()) { int u = dq.front(); dq.pop_front(); for (auto [v, w] : adj[u]) if (d[u] + w < d[v]) { d[v] = d[u] + w; if (w == 0) dq.push_front(v); else dq.push_back(v); } } return d; }
 std::vector<int> dijkstra(const std::vector<std::vector<std::pair<int, int>>>& adj, int s) { int n = (int)adj.size(); std::vector<int> d(n, 1 << 28); std::set<std::pair<int, int>> pq; d[s] = 0; pq.insert({0, s}); while (!pq.empty()) { auto [du, u] = *pq.begin(); pq.erase(pq.begin()); for (auto [v, w] : adj[u]) if (du + w < d[v]) { pq.erase({d[v], v}); d[v] = du + w; pq.insert({d[v], v}); } } return d; }
+std::string layers(const Result& r) {                                  // 그림: 층(거리)별 정점과 그 부모 — "v<-p" 는 p 가 v 를 처음 발견했다는 뜻
+    std::string s; int maxd = 0; for (int d : r.dist) maxd = std::max(maxd, d);
+    for (int d = 0; d <= maxd; ++d) { s += "d=" + std::to_string(d) + ":"; for (int v : r.order) if (r.dist[v] == d) s += " " + std::to_string(v) + (r.parent[v] >= 0 ? "<-" + std::to_string(r.parent[v]) : ""); s += "\n"; }
+    std::string un; for (std::size_t v = 0; v < r.dist.size(); ++v) if (r.dist[v] < 0) un += " " + std::to_string(v);
+    return un.empty() ? s : s + "unreached:" + un + "\n";
+}
 int main() {
+    {   std::vector<std::vector<int>> g = {{1, 2}, {3}, {3, 4}, {5}, {5}, {}, {}};           // 0->1,2  1->3  2->3,4  3->5  4->5,  정점 6 은 외톨이
+        Result r = bfs(g, {0}); const std::string pic = "d=0: 0\nd=1: 1<-0 2<-0\nd=2: 3<-1 4<-2\nd=3: 5<-3\nunreached: 6\n";
+        assert(layers(r) == pic && r.order == std::vector<int>({0, 1, 2, 3, 4, 5}));               // 3 은 1 이 먼저 발견했으므로 2 의 간선 2->3 은 트리에 들지 않는다
+        std::cout << pic; }
     std::mt19937 rng(17);
     for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 14); bool directed = rep % 2; std::vector<std::vector<int>> adj(n); for (int k = 0, m = (int)(rng() % (3 * n)); k < m; k++) { int u = (int)(rng() % n), v = (int)(rng() % n); if (u == v) continue; adj[u].push_back(v); if (!directed) adj[v].push_back(u); }
         auto fw = floyd(adj); int s = (int)(rng() % n); Result r = bfs(adj, {s}); for (int v = 0; v < n; v++) assert(r.dist[v] == fw[s][v]);                                                                                          // ①
@@ -862,6 +887,7 @@ int main() {
 ```cpp
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -878,7 +904,21 @@ enum Kind { Tree, Back, Forward, Cross };
 Kind classify(const Dfs& r, int u, int v) { if (r.parent[v] == u && r.d[v] > r.d[u]) return Tree; if (r.d[v] <= r.d[u] && r.f[u] <= r.f[v]) return Back; if (r.d[u] < r.d[v] && r.f[v] < r.f[u]) return Forward; return Cross; }      // 구간의 포함 관계로 판정
 bool hasCycleKahn(const std::vector<std::vector<int>>& adj) { int n = (int)adj.size(); std::vector<int> in(n, 0); for (auto& l : adj) for (int v : l) in[v]++; std::vector<int> q; for (int v = 0; v < n; v++) if (!in[v]) q.push_back(v); std::size_t h = 0; for (; h < q.size(); h++) for (int v : adj[q[h]]) if (--in[v] == 0) q.push_back(v); return (int)q.size() != n; }
 int weakComponents(const std::vector<std::vector<int>>& adj) { int n = (int)adj.size(); std::vector<int> p(n); std::iota(p.begin(), p.end(), 0); auto find = [&](int x) { while (p[x] != x) x = p[x] = p[p[x]]; return x; }; int c = n; for (int u = 0; u < n; u++) for (int v : adj[u]) { int a = find(u), b = find(v); if (a != b) { p[a] = b; c--; } } return c; }
+std::string timeline(const std::vector<std::vector<int>>& adj, const Dfs& r) {      // 그림: 발견/종료 시각 구간 막대(괄호 정리) + 간선 종류
+    static const char* const name[] = {"tree", "back", "forward", "cross"}; std::string s; int span = 2 * (int)adj.size(); char head[32];
+    for (std::size_t v = 0; v < adj.size(); ++v) {
+        std::snprintf(head, sizeof head, "v%zu [%2d,%2d] ", v, r.d[v], r.f[v]); s += head;
+        for (int t = 1; t <= span; ++t) s += (r.d[v] <= t && t <= r.f[v]) ? '#' : '.';
+        s += "\n";
+    }
+    for (std::size_t u = 0; u < adj.size(); ++u) for (int v : adj[u]) s += std::to_string(u) + "->" + std::to_string(v) + " " + name[classify(r, (int)u, v)] + "\n";
+    return s;
+}
 int main() {
+    {   std::vector<std::vector<int>> g = {{1, 2, 3}, {3}, {3}, {0}, {3}};                       // 0->1,2,3  1->3  2->3  3->0  4->3
+        const std::string pic = "v0 [ 1, 8] ########..\nv1 [ 2, 5] .####.....\nv2 [ 6, 7] .....##...\nv3 [ 3, 4] ..##......\nv4 [ 9,10] ........##\n"
+                                "0->1 tree\n0->2 tree\n0->3 forward\n1->3 tree\n2->3 cross\n3->0 back\n4->3 cross\n";
+        assert(timeline(g, dfsForest(g)) == pic); std::cout << pic; }                                // 막대가 서로 겹치지 않거나 완전히 포함된다: 괄호 정리. 포함되는 쌍이 곧 조상-자손
     std::mt19937 rng(18); int sawForward = 0, sawCross = 0, sawBack = 0;
     for (int rep = 0; rep < 400; rep++) { int n = 1 + (int)(rng() % 12); bool directed = rep % 2; std::vector<std::vector<int>> adj(n); std::set<std::pair<int, int>> seen; for (int k = 0, m = (int)(rng() % (3 * n)); k < m; k++) { int u = (int)(rng() % n), v = (int)(rng() % n); if (u == v) continue; auto key = directed ? std::make_pair(u, v) : std::make_pair(std::min(u, v), std::max(u, v)); if (!seen.insert(key).second) continue; adj[u].push_back(v); if (!directed) adj[v].push_back(u); }
         Dfs r = dfsForest(adj); std::vector<int> times; for (int v = 0; v < n; v++) { times.push_back(r.d[v]); times.push_back(r.f[v]); assert(r.d[v] < r.f[v]); } std::sort(times.begin(), times.end()); for (int i = 0; i < 2 * n; i++) assert(times[i] == i + 1);                  // ① 시각은 1..2V 의 순열
@@ -2920,7 +2960,24 @@ void allKahn(int n, const std::vector<unsigned>& pred, unsigned done, std::vecto
     for (int v = 0; v < n; ++v) if (!(done >> v & 1) && (pred[v] & ~done) == 0) { cur.push_back(v); allKahn(n, pred, done | 1u << v, cur, out); cur.pop_back(); }
 }
 
+std::string layerPicture(int n, const Edges& e) {                      // 그림: 라운드마다 "진입 차수가 0 이 된 정점들" — 끝나고 남은 정점이 있으면 사이클(또는 그 하류)
+    std::vector<std::vector<int>> adj(n); std::vector<int> indeg(n, 0); for (auto [a, b] : e) { adj[a].push_back(b); ++indeg[b]; }
+    std::vector<int> cur, nxt; for (int v = 0; v < n; ++v) if (!indeg[v]) cur.push_back(v);
+    std::string s; int done = 0;
+    for (int round = 1; !cur.empty(); ++round) {
+        nxt.clear(); s += "L" + std::to_string(round) + ":";
+        for (int u : cur) { s += " " + std::to_string(u); ++done; for (int v : adj[u]) if (--indeg[v] == 0) nxt.push_back(v); }
+        s += "\n"; cur.swap(nxt);
+    }
+    if (done < n) { s += "stuck:"; for (int v = 0; v < n; ++v) if (indeg[v] > 0) s += " " + std::to_string(v); s += "\n"; }
+    return s;
+}
 int main() {
+    {   Edges dag = {{0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4}, {5, 2}};                              // 0->1,2  1->3  2->3  3->4  5->2
+        const std::string pic = "L1: 0 5\nL2: 1 2\nL3: 3\nL4: 4\n";
+        assert(layerPicture(6, dag) == pic && kahnLayers(6, dag).rounds == 4);                      // 라운드 수 = 가장 긴 경로(0->1->3->4)의 정점 수
+        assert(layerPicture(4, {{0, 1}, {1, 2}, {2, 1}, {2, 3}}) == "L1: 0\nstuck: 1 2 3\n");        // 1<->2 사이클: 둘 다 진입 차수가 영영 0 이 안 되고, 그 하류인 3 도 못 나온다
+        std::cout << pic; }
     // ① 손으로 확인한 모양: 다이아몬드, 사이클, 외톨이, 자기 루프
     {   Edges d = {{0, 1}, {0, 2}, {1, 3}, {2, 3}};
         KahnResult r = kahnLayers(4, d);
@@ -3498,7 +3555,21 @@ bool isMinimumForest(int n, const std::vector<Edge>& E, const std::vector<int>& 
     return true;
 }
 
+std::string kruskalTrace(int n, std::vector<Edge> E) {                 // 그림: 가벼운 간선부터 하나씩 — 두 끝이 이미 한 성분이면 건너뛴다(사이클)
+    std::sort(E.begin(), E.end(), lighter); Dsu d(n); int comps = n; long long total = 0; std::string s;
+    for (const Edge& e : E) {
+        if (comps == 1) break;
+        bool take = d.unite(e.u, e.v);
+        s += "w=" + std::to_string(e.w) + " " + std::to_string(e.u) + "-" + std::to_string(e.v) + (take ? " take\n" : " skip (cycle)\n");
+        if (take) { --comps; total += e.w; }
+    }
+    return s + "stop: " + std::to_string(comps) + " component(s), total " + std::to_string(total) + "\n";
+}
 int main() {
+    {   std::vector<Edge> E = {{0, 1, 10, 0}, {0, 2, 6, 1}, {0, 3, 5, 2}, {1, 3, 15, 3}, {2, 3, 4, 4}};
+        const std::string pic = "w=4 2-3 take\nw=5 0-3 take\nw=6 0-2 skip (cycle)\nw=10 0-1 take\nstop: 1 component(s), total 19\n";
+        assert(kruskalTrace(4, E) == pic && kruskal(4, E).weight == 19);                            // 0-2 는 이미 2-3-0 으로 이어져 있어 건너뛴다. 15 짜리 간선은 훑지도 않는다
+        std::cout << pic; }
     // ① 손으로 확인한 모양: 고전 예제 → 4 + 5 + 10 = 19, 네 번째 간선(10) 에서 성분이 1 개가 되어 멈춘다 (15 는 훑지 않는다)
     {   std::vector<Edge> E = {{0, 1, 10, 0}, {0, 2, 6, 1}, {0, 3, 5, 2}, {1, 3, 15, 3}, {2, 3, 4, 4}};
         std::size_t scanned = 0;
@@ -4395,6 +4466,7 @@ int main() {
 ```cpp
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -4421,7 +4493,20 @@ struct DSU {
     }
     int height() const { int h = 0; for (size_t v = 0; v < p.size(); v++) { int d = 0; for (int x = (int)v; p[x] != x; x = p[x]) d++; h = std::max(h, d); } return h; }
 };
+std::string forestPicture(const DSU& d) {                              // 그림: 루트마다 한 그루, 자식은 두 칸 들여쓰기
+    int n = (int)d.p.size(); std::vector<std::vector<int>> kids(n); for (int v = 0; v < n; ++v) if (d.p[v] != v) kids[d.p[v]].push_back(v);
+    std::string s; std::function<void(int, int)> go = [&](int u, int depth) { s += std::string((std::size_t)depth * 2, ' ') + std::to_string(u) + "\n"; for (int c : kids[u]) go(c, depth + 1); };
+    for (int v = 0; v < n; ++v) if (d.p[v] == v) go(v, 0);
+    return s;
+}
 int main() {
+    {   DSU naive(5, NAIVE), ranked(5, RANK), flat(5, NAIVE, true);                                    // 같은 합치기 순서 (0,1) (1,2) (2,3) (3,4)
+        for (int i = 0; i < 4; i++) { naive.unite(i, i + 1); ranked.unite(i, i + 1); flat.unite(i, i + 1); }
+        assert(forestPicture(naive) == "4\n  3\n    2\n      1\n        0\n" && naive.height() == 4);       // 무조건 왼쪽 루트를 오른쪽 밑에 달면 길이 4 의 사슬
+        assert(forestPicture(ranked) == "0\n  1\n  2\n  3\n  4\n" && ranked.height() == 1);               // 랭크가 큰 쪽 밑에 달면 별 모양 (높이 1)
+        assert(forestPicture(flat) == "4\n  3\n    2\n      1\n        0\n");                              // 경로 압축은 find 를 할 때 비로소 일어난다
+        flat.find(0); assert(forestPicture(flat) == "4\n  0\n  1\n  2\n  3\n" && flat.height() == 1);     // find(0) 한 번으로 지나온 정점이 모두 루트 직속이 되었다
+        std::cout << forestPicture(naive) << "--\n" << forestPicture(ranked) << "--\n" << forestPicture(flat); }
     std::mt19937 rng(3); int worstRank = 0, worstSize = 0;
     for (int t = 0; t < 300; t++) {
         int n = 2 + rng() % 400; DSU r(n, RANK), s(n, SIZE), c(n, RANK, true);
@@ -4490,6 +4575,7 @@ int main() {
 #include <climits>
 #include <cstdint>
 #include <deque>
+#include <cstdio>
 #include <iostream>
 #include <numeric>
 #include <queue>
@@ -4616,7 +4702,22 @@ std::vector<ll> bellman(const Graph& g, int s) {                                
     return d;
 }
 
+std::string pathTable(const Result& r) {                               // 그림: 정점마다 최단 거리와, pred 를 거슬러 올라가 만든 경로
+    std::string s; char buf[48];
+    for (std::size_t v = 0; v < r.dist.size(); ++v) {
+        if (r.dist[v] >= INF) { s += "v" + std::to_string(v) + "  unreachable\n"; continue; }
+        std::string path; for (int x = (int)v; x >= 0; x = r.pred[x]) path = std::to_string(x) + (path.empty() ? "" : ">" + path);
+        std::snprintf(buf, sizeof buf, "v%zu %3lld  ", v, (long long)r.dist[v]); s += buf + path + "\n";
+    }
+    return s;
+}
 int main() {
+    {   Graph g(5); g[0] = {{1, 4}, {2, 1}}; g[1] = {{3, 1}}; g[2] = {{1, 2}, {3, 5}};                // 0->1(4) 0->2(1) 1->3(1) 2->1(2) 2->3(5),  정점 4 는 외톨이
+        Result r = dijkstraLazy(g, 0);
+        const std::string pic = "v0   0  0\nv1   3  0>2>1\nv2   1  0>2\nv3   4  0>2>1>3\nv4  unreachable\n";
+        assert(pathTable(r) == pic);                                                                  // 0->1 직행(4)보다 0->2->1(1+2=3)이 가볍다: 먼저 확정한 2 를 거쳐 갱신된다
+        assert(r.relaxations == 5 && r.pops == 6);                                                    // 갱신 5 번(1:4->3, 3:6->4 포함), 큐에서 꺼낸 6 개 중 2 개는 낡은 항목이라 버렸다
+        std::cout << pic; }
     // ① 손으로 확인한 모양: 0→1:10, 0→2:3, 2→1:1 은 0→2→1 (4), 직전 정점 배열까지
     {   Graph g(4); g[0] = {{1, 10}, {2, 3}}; g[2] = {{1, 1}};
         Result r = dijkstraLazy(g, 0);
@@ -4895,6 +4996,7 @@ int main() {
 #include <cassert>
 #include <climits>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <numeric>
 #include <queue>
@@ -4973,7 +5075,25 @@ bool checkPaths(int n, const std::vector<Edge>& E, const FW& f) {               
     return true;
 }
 
+std::string distMatrix(const Matrix& d) {                              // 그림: 거리 행렬 (닿을 수 없는 칸 INF 는 '.')
+    std::string s = "  "; char buf[48]; int n = (int)d.size();
+    for (int j = 0; j < n; ++j) { std::snprintf(buf, sizeof buf, "%4d", j); s += buf; }
+    s += "\n";
+    for (int i = 0; i < n; ++i) {
+        std::snprintf(buf, sizeof buf, "%-2d", i); s += buf;
+        for (int j = 0; j < n; ++j) { if (d[i][j] >= INF) std::snprintf(buf, sizeof buf, "%4s", "."); else std::snprintf(buf, sizeof buf, "%4lld", (long long)d[i][j]); s += buf; }
+        s += "\n";
+    }
+    return s;
+}
 int main() {
+    {   std::vector<Edge> E = {{0, 1, 3}, {1, 2, 1}, {2, 3, 2}, {0, 3, 10}};                           // 0->1(3) 1->2(1) 2->3(2) 0->3(10)
+        FW f = floydWarshall(4, E);
+        const std::string pic = "     0   1   2   3\n0    0   3   4   6\n1    .   0   1   3\n2    .   .   0   2\n3    .   .   .   0\n";
+        assert(distMatrix(f.d) == pic && !f.negCycle);                                                  // 0->3 은 직행(10)보다 0->1->2->3(6)이 가볍다. 되돌아가는 길이 없는 칸은 '.'
+        std::vector<int> route; for (int x = 0; x != 3; x = f.next[x][3]) route.push_back(x); route.push_back(3);
+        assert((route == std::vector<int>{0, 1, 2, 3}));                                                // next 표를 따라가면 경로가 복원된다
+        std::cout << pic; }
     // ① 손으로 확인한 모양: 0→1:5, 1→2:3 이면 d[0][2] = 8, 경로 0,1,2 ; 반대 방향은 닿지 않는다
     {   std::vector<Edge> E = {{0, 1, 5}, {1, 2, 3}};
         FW f = floydWarshall(3, E);
@@ -6782,7 +6902,16 @@ int bruteMinAugment(int n, const Graph& g) {                                    
     return -1;
 }
 
+std::string sccPicture(const Scc& r) {                                 // 그림: 강연결 성분 번호별 정점 — 번호는 "싱크부터" 매겨져 응축 그래프의 역위상 순서가 된다
+    std::string s; for (int c = 0; c < r.comps; ++c) { s += "C" + std::to_string(c) + ":"; for (std::size_t v = 0; v < r.comp.size(); ++v) if (r.comp[v] == c) s += " " + std::to_string(v); s += "\n"; }
+    return s;
+}
 int main() {
+    {   Graph g(7); g[0] = {1}; g[1] = {2}; g[2] = {0, 3}; g[3] = {4}; g[4] = {5}; g[5] = {3}; g[6] = {5};      // 사이클 0-1-2 와 3-4-5, 2->3 과 6->5 가 둘을 잇는다
+        Scc r = tarjan(g); const std::string pic = "C0: 3 4 5\nC1: 0 1 2\nC2: 6\n";
+        assert(sccPicture(r) == pic);                                                                          // {3,4,5} 가 가장 먼저 닫힌다(싱크 성분)
+        for (std::size_t u = 0; u < g.size(); ++u) for (int v : g[u]) assert(r.comp[u] >= r.comp[v]);          // 모든 간선은 번호가 큰 성분에서 작은 성분으로만 간다
+        std::cout << pic; }
     // ① 손으로 확인한 모양: 0→1→2→0 은 한 요소, 3→2 는 따로 → 요소 2 개, 번호는 역위상 (싱크 {0,1,2} 가 먼저 = 0)
     {   Graph g = {{1}, {2}, {0}, {2}};
         Scc s = tarjan(g);
@@ -8242,7 +8371,16 @@ struct Grid {
 };
 long long binom(int n, int k) { long long r = 1; for (int i = 1; i <= k; ++i) r = r * (n - k + i) / i; return r; }
 
+std::string distPicture(const Grid& g, const std::vector<std::vector<int>>& dist) {      // 그림: 벽은 '#', 칸은 시작점에서의 칸 수(36 이상은 순환), 못 가는 칸은 '?'
+    std::string s;
+    for (int r = 0; r < g.R; ++r) { for (int c = 0; c < g.C; ++c) s += g.cell[r][c] == '#' ? '#' : dist[r][c] < 0 ? '?' : "0123456789abcdefghijklmnopqrstuvwxyz"[dist[r][c] % 36]; s += "\n"; }
+    return s;
+}
 int main() {
+    {   Grid g(3, 4); g.cell[0] = "...#"; g.cell[1] = "##.#"; g.cell[2] = "....";                       // 위쪽 길을 돌아 아래쪽 줄로 내려가는 미로
+        assert(distPicture(g, g.bfs(0, 0)) == "012#\n##3#\n6545\n");                                      // (2,0) 까지 6 칸: 위 줄 -> 가운데 통로 -> 아래 줄을 거꾸로
+        assert(distPicture(g, g.bfs(0, 0, true)) == "012#\n##3#\n1232\n");                                // 토러스(가장자리가 이어짐)에서는 위로 한 칸 넘어가면 바로 (2,0): 6 -> 1
+        std::cout << distPicture(g, g.bfs(0, 0)) << "--\n" << distPicture(g, g.bfs(0, 0, true)); }
     for (int R = 1; R <= 9; ++R) for (int C = 1; C <= 9; ++C) {                                                                                            // ① 빈 격자 전수
         Grid g(R, C); long edges2 = 0; int d2 = 0, d3 = 0, d4 = 0, d1 = 0, d0 = 0;
         for (int r = 0; r < R; ++r) for (int c = 0; c < C; ++c) { auto nb = g.neighbors(r, c); edges2 += (long)nb.size(); int d = (int)nb.size(); (d == 0 ? d0 : d == 1 ? d1 : d == 2 ? d2 : d == 3 ? d3 : d4)++;

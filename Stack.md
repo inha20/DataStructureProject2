@@ -848,7 +848,29 @@ bool evalTree(const std::vector<E>& p, int i, long long& out) {
     long long r; if (e.op == '+') r = a + b; else if (e.op == '-') r = a - b; else if (e.op == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return false; r = a * b; } else if (e.op == '/') { if (!b) return false; r = a / b; } else if (e.op == '%') { if (!b) return false; r = a % b; } else { if (b < 0) return false; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return false; r *= a; } }
     if (r > (1LL << 50) || r < -(1LL << 50)) return false; out = r; return true;
 }
+std::string shuntingTrace(const std::string& s) {                      // 그림: 토큰을 하나 읽을 때마다 (출력, 연산자 스택) — 한 자리 숫자·이항 연산자·괄호만 다루는 단순판
+    std::string out, st, trace;
+    auto row = [&](const std::string& tok) { trace += tok + " | out=" + out + " | stack=" + st + "\n"; };
+    for (char c : s) {
+        if (c == ' ') continue;
+        if (isdigit((unsigned char)c)) out += c;                                                     // 숫자는 곧장 출력
+        else if (c == '(') st += c;
+        else if (c == ')') { while (st.back() != '(') { out += st.back(); st.pop_back(); } st.pop_back(); }           // 여는 괄호까지 꺼내 출력하고 괄호는 버린다
+        else { while (!st.empty() && st.back() != '(' && (prec(st.back()) > prec(c) || (prec(st.back()) == prec(c) && !rightAssoc(c)))) { out += st.back(); st.pop_back(); } st += c; }
+        row(std::string(1, c));
+    }
+    while (!st.empty()) { out += st.back(); st.pop_back(); }
+    return trace + "end | out=" + out + " | stack=\n";
+}
 int main() {
+    {   const std::string expr = "3+4*2/(1-5)^2^3";                                                     // 위키백과의 고전 예: 우선순위 + 괄호 + 우결합 ^
+        const std::string pic = "3 | out=3 | stack=\n+ | out=3 | stack=+\n4 | out=34 | stack=+\n* | out=34 | stack=+*\n2 | out=342 | stack=+*\n/ | out=342* | stack=+/\n"
+                                "( | out=342* | stack=+/(\n1 | out=342*1 | stack=+/(\n- | out=342*1 | stack=+/(-\n5 | out=342*15 | stack=+/(-\n) | out=342*15- | stack=+/\n"
+                                "^ | out=342*15- | stack=+/^\n2 | out=342*15-2 | stack=+/^\n^ | out=342*15-2 | stack=+/^^\n3 | out=342*15-23 | stack=+/^^\nend | out=342*15-23^^/+ | stack=\n";
+        assert(shuntingTrace(expr) == pic);                                                           // '/' 는 같은 우선순위의 '*' 를 먼저 꺼내고(좌결합), 두 번째 '^' 는 첫 '^' 를 꺼내지 않는다(우결합)
+        std::vector<std::string> tokens; assert(toPostfix(expr, tokens)); std::string joined; for (const auto& t : tokens) joined += t;
+        assert(joined == "342*15-23^^/+");                                                            // 본 구현(toPostfix)도 같은 후위식
+        std::cout << pic; }
     std::mt19937 rng(11); int checked = 0, evaluated = 0;
     for (int t = 0; t < 4000; t++) { std::vector<E> pool; int root = gen(pool, 1 + rng() % 5, rng); std::string infix = infixOf(pool, root, rng); std::vector<std::string> want, got; postfixOf(pool, root, want);
         assert(toPostfix(infix, got) && got == want); checked++;                                                                                                                       // ① 트리의 후위 순회와 정확히 같다
@@ -1343,6 +1365,7 @@ int main() {
 #include <iostream>
 #include <random>
 #include <stack>
+#include <string>
 #include <vector>
 #include <cassert>
 
@@ -1362,7 +1385,26 @@ template <class Pred> std::vector<int> nearest(const std::vector<int>& a, Dir di
 template <class Pred> std::vector<int> brute(const std::vector<int>& a, Dir dir, Pred pred) {
     int n = a.size(); std::vector<int> res(n, -1); for (int i = 0; i < n; i++) { if (dir == NEXT) { for (int j = i + 1; j < n; j++) if (pred(a[j], a[i])) { res[i] = j; break; } } else { for (int j = i - 1; j >= 0; j--) if (pred(a[j], a[i])) { res[i] = j; break; } } } return res;
 }
+std::string monoTrace(const std::vector<int>& a) {                     // 그림: 오른쪽에서 왼쪽으로 훑으며 "다음으로 큰 값" 을 찾는 스택의 변화 (스택은 바닥 -> 꼭대기 값)
+    std::stack<int> st; std::string trace; std::vector<int> pops;
+    for (int i = (int)a.size() - 1; i >= 0; --i) {
+        std::string popped;
+        while (!st.empty() && !(a[st.top()] > a[i])) { popped += (popped.empty() ? "" : " ") + std::to_string(a[st.top()]); st.pop(); }     // 꼭대기가 이 값보다 크지 않으면 영영 답이 될 수 없다
+        std::string next = st.empty() ? "-" : std::to_string(a[st.top()]); st.push(i);
+        std::vector<int> vals; for (std::stack<int> c = st; !c.empty(); c.pop()) vals.insert(vals.begin(), a[c.top()]);
+        std::string s; for (int v : vals) s += (s.empty() ? "" : " ") + std::to_string(v);
+        trace += "a[" + std::to_string(i) + "]=" + std::to_string(a[i]) + " popped=[" + popped + "] next=" + next + " stack=[" + s + "]\n";
+    }
+    return trace;
+}
 int main() {
+    {   const std::vector<int> a = {2, 1, 2, 4, 3};
+        const std::string pic = "a[4]=3 popped=[] next=- stack=[3]\na[3]=4 popped=[3] next=- stack=[4]\na[2]=2 popped=[] next=4 stack=[4 2]\n"
+                                "a[1]=1 popped=[] next=2 stack=[4 2 1]\na[0]=2 popped=[1 2] next=4 stack=[4 2]\n";
+        assert(monoTrace(a) == pic);                                                                  // 스택은 바닥에서 꼭대기로 갈수록 값이 작아진다(단조). 새 값에 가려진 후보는 한 번 꺼내지면 끝
+        std::vector<int> want = nearest(a, NEXT, [](int c, int v) { return c > v; });                  // 같은 알고리즘의 본 구현: 다음으로 큰 값의 위치
+        assert((want == std::vector<int>{3, 2, 3, -1, -1}));
+        std::cout << pic; }
     std::mt19937 rng(21); long popsMax = 0;
     auto greater = [](int c, int v) { return c > v; }; auto greaterEq = [](int c, int v) { return c >= v; }; auto less = [](int c, int v) { return c < v; }; auto lessEq = [](int c, int v) { return c <= v; };
     int strictDiffers = 0;

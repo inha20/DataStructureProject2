@@ -294,7 +294,22 @@ Node* reverseKGroup(Node* head, int k) {                                        
     int len = 0; for (Node* c = head; c; c = c->next) len++; Node dummy(0, head); Node* tail = &dummy;
     for (int g = 0; g + k <= len; g += k) { Node *first = tail->next, *prev = nullptr, *cur = first; for (int i = 0; i < k; i++) { Node* nx = cur->next; cur->next = prev; prev = cur; cur = nx; } tail->next = prev; first->next = cur; tail = first; }
     Node* res = dummy.next; dummy.next = nullptr; return res; }
+std::string reverseTrace(const std::vector<int>& v) {                  // 그림: 뒤집은 부분(prev) | 아직 안 본 부분(cur) — 화살표를 하나씩 되돌리며 정점이 prev 쪽으로 넘어간다
+    Node* cur = build(v); Node* prev = nullptr; std::string s; int step = 0;
+    auto line = [&]() {
+        s += "step " + std::to_string(step++) + ": [";
+        for (const Node* p = prev; p; p = p->next) s += (p == prev ? "" : " ") + std::to_string(p->val);
+        s += "] | [";
+        for (const Node* p = cur; p; p = p->next) s += (p == cur ? "" : " ") + std::to_string(p->val);
+        s += "]\n";
+    };
+    line();
+    while (cur) { Node* next = cur->next; cur->next = prev; prev = cur; cur = next; line(); }
+    destroy(prev); return s;
+}
 int main() {
+    {   const std::string pic = "step 0: [] | [1 2 3 4]\nstep 1: [1] | [2 3 4]\nstep 2: [2 1] | [3 4]\nstep 3: [3 2 1] | [4]\nstep 4: [4 3 2 1] | []\n";
+        assert(reverseTrace({1, 2, 3, 4}) == pic && Node::live == 0); std::cout << pic; }              // 매 단계 prev 는 이미 뒤집힌 접두사, cur 는 남은 접미사: 노드는 하나도 새로 만들지 않는다
     std::mt19937 rng(7);
     for (int n = 0; n <= 40; n++) { std::vector<int> a(n); for (int& x : a) x = (int)(rng() % 100); std::vector<int> ref = a; std::reverse(ref.begin(), ref.end()); long sw = reverseArray(a); assert(a == ref && sw == n / 2); }   // ①
     for (int n = 0; n <= 30; n++) { std::vector<int> v(n); std::iota(v.begin(), v.end(), 1); std::vector<int> rv(v.rbegin(), v.rend());                                                // ②
@@ -2759,6 +2774,7 @@ int main() {
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <random>
 #include <set>
@@ -2806,7 +2822,27 @@ struct SkipList {
         for (const Node* y = head->next[0]; y; y = y->next[0]) if ((int)y->next.size() > level) return false; return true;
     }
 };
+std::string levelsPicture(const SkipList& s) {                         // 그림: 맨 아래 줄이 전체, 위 줄일수록 듬성듬성한 "고속도로" (점은 그 줄에 없는 키)
+    std::vector<int> keys; for (const SkipList::Node* x = s.head->next[0]; x; x = x->next[0]) keys.push_back(x->key);
+    std::string out; char buf[16];
+    for (int lv = s.level - 1; lv >= 0; --lv) {
+        std::snprintf(buf, sizeof buf, "L%d:", lv + 1); out += buf; const SkipList::Node* x = s.head->next[lv];
+        for (int k : keys) { if (x && x->key == k) { std::snprintf(buf, sizeof buf, "%3d", k); x = x->next[lv]; } else std::snprintf(buf, sizeof buf, "%3s", "."); out += buf; }
+        out += "\n";
+    }
+    return out;
+}
 int main() {
+    {   SkipList demo(5); for (int k : {9, 3, 12, 1, 5, 7, 15, 11}) demo.insert(k);                       // 키 8 개, 층 높이는 동전 던지기(시드 고정)
+        const std::string pic = levelsPicture(demo);
+        assert(pic == "L3:  .  3  .  .  .  .  .  .\nL2:  .  3  5  .  9 11  . 15\nL1:  1  3  5  7  9 11 12 15\n");   // std::mt19937 은 표준이 출력값까지 정하므로 시드가 같으면 어느 플랫폼에서나 같은 그림
+        std::vector<int> all; for (const SkipList::Node* x = demo.head->next[0]; x; x = x->next[0]) all.push_back(x->key);
+        assert((all == std::vector<int>{1, 3, 5, 7, 9, 11, 12, 15}));                                   // 맨 아래 줄 = 정렬된 전체
+        for (int lv = 1; lv < demo.level; ++lv) {                                                      // 위 줄의 키는 모두 바로 아래 줄에도 있다 (부분 수열)
+            const SkipList::Node* up = demo.head->next[lv]; const SkipList::Node* lo = demo.head->next[lv - 1];
+            for (; up; up = up->next[lv]) { while (lo && lo->key != up->key) lo = lo->next[lv - 1]; assert(lo); }
+        }
+        std::cout << pic; }
     SkipList sl(7); std::set<int> ref; std::mt19937 rng(3);
     for (int step = 0; step < 40000; step++) {
         int key = rng() % 5000, op = rng() % 3;
@@ -2908,7 +2944,16 @@ template <int B> struct Unrolled {
     }
     bool check() const { size_t sum = 0, cnt = 0; for (Node* x = head; x; x = x->next) { cnt++; sum += x->n; if (x->n > B || x->n < 1) return false; if ((head->next) && x->n < B / 2) return false; } return sum == total && cnt == nodes; }
 };
+template <int B> std::string shape(const Unrolled<B>& u) {            // 그림: 노드 하나 = [배열], 노드 안은 연속 메모리라 캐시에 유리하고 노드 수는 n/B 쯤
+    std::string s; for (const typename Unrolled<B>::Node* x = u.head; x; x = x->next) { s += "["; for (int i = 0; i < x->n; ++i) s += (i ? " " : "") + std::to_string(x->a[i]); s += "]"; }
+    return s;
+}
 int main() {
+    {   Unrolled<4> u; for (int v = 1; v <= 4; ++v) u.insert(u.total, v); assert(shape(u) == "[1 2 3 4]");              // 노드가 가득 찰 때까지는 한 노드
+        u.insert(u.total, 5); assert(shape(u) == "[1 2][3 4 5]");                                                  // 5 번째: 꽉 찬 노드를 반으로 쪼갠다
+        u.insert(u.total, 6); u.insert(u.total, 7); assert(shape(u) == "[1 2][3 4][5 6 7]");
+        u.erase(3); assert(shape(u) == "[1 2][3 5 6 7]");                                                          // 4 를 지우니 노드가 B/2 미만 -> 이웃과 합쳐진다
+        std::cout << shape(u) << "\n"; }
     const int B = 16; Unrolled<B> u; std::vector<int> ref; std::mt19937 rng(5); size_t maxNodes = 0;
     for (int step = 0; step < 40000; step++) {
         int op = rng() % 5; if (op < 3 || ref.empty()) { size_t i = rng() % (ref.size() + 1); int v = rng(); u.insert(i, v); ref.insert(ref.begin() + i, v); } else { size_t i = rng() % ref.size(); u.erase(i); ref.erase(ref.begin() + i); }
@@ -2944,7 +2989,16 @@ struct GapBuffer {
     std::string text() const { return b.substr(0, gs) + b.substr(ge); }
     size_t cursor() const { return gs; } size_t length() const { return b.size() - (ge - gs); }
 };
+std::string gapPicture(const GapBuffer& g) { return g.b.substr(0, g.gs) + "[" + std::string(g.ge - g.gs, '.') + "]" + g.b.substr(g.ge); }       // 그림: 대괄호 안이 틈(커서 위치), 점 하나가 빈 칸 하나
 int main() {
+    {   GapBuffer d; for (char c : std::string("Hello world")) d.insert(c);                           // 처음 8 칸이 차면 두 배로 늘어난다
+        assert(gapPicture(d) == "Hello world[.....]" && d.b.size() == 16 && d.copies == 0);
+        d.moveTo(5); assert(gapPicture(d) == "Hello[.....] world" && d.copies == 6);                  // 커서 이동 = 틈 반대편으로 글자를 옮기는 것 (옮긴 거리만큼만 복사)
+        d.insert(','); assert(gapPicture(d) == "Hello,[....] world");                                   // 커서 자리 입력은 틈 한 칸을 쓰는 것뿐 (이동 없음)
+        d.moveTo(12); d.insert('!'); assert(gapPicture(d) == "Hello, world![...]" && d.copies == 12);
+        GapBuffer e; for (char c : std::string("Hello wo")) e.insert(c); assert(gapPicture(e) == "Hello wo[]");                 // 틈이 0 칸: 다음 입력에서 틈을 새로 연다
+        e.insert('r'); assert(gapPicture(e) == "Hello wor[.......]" && e.b.size() == 16);
+        std::cout << gapPicture(d) << "\n" << gapPicture(e) << "\n"; }
     GapBuffer g; for (char c : std::string("Hello world")) g.insert(c);
     g.moveTo(5); g.insert(','); g.moveTo(g.text().size()); g.insert('!');
     assert(g.text() == "Hello, world!"); g.moveTo(5); g.erase(); assert(g.text() == "Hell, world!");
@@ -2987,7 +3041,18 @@ struct PT {
     std::string text() const { std::string r; for (auto& p : pieces) r += (p.add ? added : orig).substr(p.start, p.len); return r; }
     size_t length() const { size_t n = 0; for (auto& p : pieces) n += p.len; return n; }
 };
+std::string piecePicture(const PT& d) {                                // 그림: 조각 목록 — 문서는 조각을 이어 붙인 것이고, orig 과 added 두 버퍼는 한 번 쓰면 바뀌지 않는다
+    std::string s;
+    for (std::size_t i = 0; i < d.pieces.size(); ++i) { const Piece& p = d.pieces[i]; s += (i ? " | " : "") + std::string(p.add ? "add" : "orig") + "[" + std::to_string(p.start) + "," + std::to_string(p.start + p.len) + ")=\"" + (p.add ? d.added : d.orig).substr(p.start, p.len) + "\""; }
+    return s;
+}
 int main() {
+    {   PT v("Hello world"); assert(piecePicture(v) == "orig[0,11)=\"Hello world\"");
+        v.insert(5, ","); assert(piecePicture(v) == "orig[0,5)=\"Hello\" | add[0,1)=\",\" | orig[5,11)=\" world\"");             // 가운데 삽입 = 조각을 둘로 쪼개고 사이에 새 조각
+        v.insert(0, ">> "); assert(piecePicture(v) == "add[1,4)=\">> \" | orig[0,5)=\"Hello\" | add[0,1)=\",\" | orig[5,11)=\" world\"");
+        v.erase(10, 3); assert(piecePicture(v) == "add[1,4)=\">> \" | orig[0,5)=\"Hello\" | add[0,1)=\",\" | orig[5,6)=\" \" | orig[9,11)=\"ld\"" && v.text() == ">> Hello, ld");   // 삭제 = 조각에서 범위만 빼기: 글자는 지워지지 않는다
+        assert(v.orig == "Hello world" && v.added == ",>> ");
+        std::cout << piecePicture(v) << "\n"; }
     PT d("Hello world"); auto undo = d.pieces;                             // 조각 목록의 복사본 = 문서의 한 시점
     d.insert(5, ","); d.insert(0, ">> ");
     assert(d.text() == ">> Hello, world" && d.orig == "Hello world");        // 원본은 그대로

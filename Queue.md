@@ -496,6 +496,7 @@ int main() {
 #include <iostream>
 #include <queue>
 #include <random>
+#include <string>
 #include <vector>
 #include <cassert>
 
@@ -521,7 +522,25 @@ template <unsigned LOG> void stress(unsigned seed) {
     }
     assert(CAP == 1 || laps > 50);                                                                                                                                                            // 수십 바퀴 감아 돌았다
 }
+template <unsigned LOG> std::string ringPicture(const CircularQueue<LOG>& q) {   // 그림: 배열 칸마다 값(빈 칸 '.'), 아래 줄 F = 맨 앞 칸, W = 다음에 쓸 칸 — 논리적 순서는 배열 끝에서 앞으로 되감긴다
+    const std::size_t cap = q.capacity(); std::vector<int> v = q.toVector(); std::vector<std::string> cell(cap, "."); char buf[16];
+    for (std::size_t i = 0; i < v.size(); ++i) cell[(q.frontIndex() + i) % cap] = std::to_string(v[i]);
+    std::string r1 = "slot", r2 = "val ", r3 = "    ", w; const std::size_t wr = (q.frontIndex() + q.size()) % cap;
+    for (std::size_t i = 0; i < cap; ++i) {
+        std::snprintf(buf, sizeof buf, "%3zu", i); r1 += buf; std::snprintf(buf, sizeof buf, "%3s", cell[i].c_str()); r2 += buf;
+        w = i == q.frontIndex() && i == wr ? "FW" : i == q.frontIndex() ? "F" : i == wr ? "W" : ""; std::snprintf(buf, sizeof buf, "%3s", w.c_str()); r3 += buf;
+    }
+    while (!r3.empty() && r3.back() == ' ') r3.pop_back();
+    return r1 + "\n" + r2 + "\n" + r3 + "\n";
+}
 int main() {
+    {   CircularQueue<3> r; for (int x = 1; x <= 6; ++x) r.enqueue(x); int out; for (int i = 0; i < 3; ++i) r.dequeue(out);          // 용량 8 칸: 1..6 을 넣고 3 개를 뺀다
+        assert(ringPicture(r) == "slot  0  1  2  3  4  5  6  7\nval   .  .  .  4  5  6  .  .\n               F        W\n");
+        for (int x = 7; x <= 10; ++x) r.enqueue(x);                                                    // 7 8 은 배열 끝, 9 10 은 되감겨 앞쪽 칸에 들어간다
+        const std::string wrap = "slot  0  1  2  3  4  5  6  7\nval   9 10  .  4  5  6  7  8\n            W  F\n";
+        assert(ringPicture(r) == wrap && (r.toVector() == std::vector<int>{4, 5, 6, 7, 8, 9, 10}));  // 물리 배열은 뒤죽박죽이지만 논리 순서는 4..10
+        r.enqueue(11); assert(ringPicture(r) == "slot  0  1  2  3  4  5  6  7\nval   9 10 11  4  5  6  7  8\n              FW\n" && !r.enqueue(12));   // 가득 차면 맨 앞 칸 = 쓸 칸
+        std::cout << wrap; }
     stress<0>(1); stress<1>(2); stress<2>(3); stress<3>(4); stress<4>(5); stress<5>(6); stress<6>(7);                                                                                          // ① 용량 1..64
     for (std::size_t n : {1u, 2u, 8u, 64u, 1024u}) for (std::size_t i = 0; i < 5000; i++) assert((i % n) == (i & (n - 1)));                                                                         // ② 마스크 == 나머지 (n 이 2 의 거듭제곱일 때)
     { CircularQueue<3> q; int v; for (int i = 0; i < 8; i++) assert(q.enqueue(i)); assert(!q.enqueue(8)); assert(q.dequeue(v) && v == 0 && q.enqueue(8) && !q.enqueue(9)); /* ④ 꺼낸 즉시 그 칸을 다시 쓴다 */ for (int i = 0; i < 100; i++) { assert(q.dequeue(v)); assert(q.enqueue(i)); } assert(q.size() == 8); }          // ⑤
@@ -1377,6 +1396,7 @@ int main() {
 #include <queue>
 #include <random>
 #include <utility>
+#include <string>
 #include <vector>
 #include <cassert>
 
@@ -1391,7 +1411,16 @@ std::vector<std::vector<int>> multiSource(const std::vector<std::vector<char>>& 
     while (!q.empty()) { auto [r, c] = q.front(); q.pop(); for (int k = 0; k < 4; k++) { int nr = r + dr[k], nc = c + dc[k]; if (nr >= 0 && nr < R && nc >= 0 && nc < C && !wall[nr][nc] && dist[nr][nc] < 0) { dist[nr][nc] = dist[r][c] + 1; q.push({nr, nc}); enq++; } } }
     if (enqueued) *enqueued = enq; return dist;
 }
+std::string waveMap(const std::vector<std::vector<char>>& wall, const std::vector<std::vector<int>>& dist) {      // 그림: 벽 '#', 칸은 가장 가까운 출발점까지의 거리, 닿지 못하면 '?'
+    std::string s; for (std::size_t r = 0; r < wall.size(); ++r) { for (std::size_t c = 0; c < wall[r].size(); ++c) s += wall[r][c] ? '#' : dist[r][c] < 0 ? '?' : "0123456789abcdefghijklmnopqrstuvwxyz"[dist[r][c] % 36]; s += "\n"; }
+    return s;
+}
 int main() {
+    {   std::vector<std::vector<char>> wall(3, std::vector<char>(7, 0)); wall[0][3] = wall[1][3] = 1;      // 가운데 세로 벽 (맨 아래 줄만 열려 있다)
+        auto dist = multiSource(wall, {{0, 0}, {2, 6}});                                                  // 출발점 두 곳을 한꺼번에 거리 0 으로 큐에 넣는다
+        assert(waveMap(wall, dist) == "012#432\n123#321\n2343210\n");                                    // 두 파도가 만나는 곳(2,2)·(2,3) 근처에서 갈린다: 각 칸은 더 가까운 출발점의 거리
+        assert(waveMap(wall, multiSource(wall, {{0, 0}})) == "012#89a\n123#789\n2345678\n");              // 출발점이 하나뿐이면 오른쪽 칸들이 8~10 으로 멀다 (a = 10)
+        std::cout << waveMap(wall, dist); }
     std::mt19937 rng(5); long cells = 0;
     for (int t = 0; t < 1500; t++) { int R = 1 + rng() % 12, C = 1 + rng() % 12; std::vector<std::vector<char>> wall(R, std::vector<char>(C, 0)); for (auto& row : wall) for (char& w : row) w = rng() % 4 == 0; std::vector<std::pair<int, int>> src; int S = 1 + rng() % 4; for (int i = 0; i < S; i++) src.push_back({(int)(rng() % R), (int)(rng() % C)});
         long enq = 0; auto multi = multiSource(wall, src, &enq); long reached = 0;
@@ -1442,7 +1471,23 @@ std::vector<int> viaBlocks(const std::vector<int>& a, int k) {
     return res;
 }
 std::vector<int> brute(const std::vector<int>& a, int k) { std::vector<int> res; if (k < 1 || (std::size_t)k > a.size()) return res; for (std::size_t i = 0; i + k <= a.size(); i++) res.push_back(*std::max_element(a.begin() + i, a.begin() + i + k)); return res; }
+std::string windowTrace(const std::vector<int>& a, int k) {            // 그림: 한 칸 나아갈 때마다 덱(앞이 현재 창의 최댓값) — 값이 아니라 인덱스를 담고, 새 값 이하의 후보는 뒤에서 버린다
+    std::deque<int> dq; std::string trace;
+    for (int i = 0; i < (int)a.size(); ++i) {
+        if (!dq.empty() && dq.front() == i - k) dq.pop_front();
+        while (!dq.empty() && a[dq.back()] <= a[i]) dq.pop_back();
+        dq.push_back(i);
+        std::string body; for (int idx : dq) body += (body.empty() ? "" : " ") + std::to_string(a[idx]);
+        trace += "i=" + std::to_string(i) + " a=" + std::to_string(a[i]) + " dq=[" + body + "] max=" + (i >= k - 1 ? std::to_string(a[dq.front()]) : std::string("-")) + "\n";
+    }
+    return trace;
+}
 int main() {
+    {   const std::vector<int> a = {1, 3, -1, -3, 5, 3, 6, 7};                                        // 고전 예, 창 크기 3
+        const std::string pic = "i=0 a=1 dq=[1] max=-\ni=1 a=3 dq=[3] max=-\ni=2 a=-1 dq=[3 -1] max=3\ni=3 a=-3 dq=[3 -1 -3] max=3\n"
+                                "i=4 a=5 dq=[5] max=5\ni=5 a=3 dq=[5 3] max=5\ni=6 a=6 dq=[6] max=6\ni=7 a=7 dq=[7] max=7\n";
+        assert(windowTrace(a, 3) == pic && (viaDeque(a, 3) == std::vector<int>{3, 3, 5, 5, 6, 7}));  // 덱은 앞에서 뒤로 값이 줄어든다 -> 앞이 최댓값. i=4 에서 5 가 들어오면 -1, -3 은 영영 최댓값이 못 되므로 버려진다
+        std::cout << pic; }
     std::mt19937 rng(6); long worstPops = 0;
     for (int t = 0; t < 3000; t++) { int n = rng() % 40; std::vector<int> a(n); for (int& x : a) x = (int)(rng() % 21) - 10; int k = (int)(rng() % (n + 3)) - 1; long pu, po; std::size_t peak;
         auto want = brute(a, k); assert(viaDeque(a, k, &pu, &po, &peak) == want && viaMultiset(a, k) == want && viaBlocks(a, k) == want);                                           // ① ②
