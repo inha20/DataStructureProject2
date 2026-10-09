@@ -1539,350 +1539,973 @@ int main() {
 ## Aliasing()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <cassert>
+#include <iostream>
+#include <random>
+#include <set>
+#include <type_traits>
+#include <vector>
 
 // 앨리어싱: 서로 다른 이름이 같은 메모리를 가리키는 것.  컴파일러는 "다른 타입의 포인터는 같은 메모리를 가리키지 않는다"(엄격한 앨리어싱 규칙)고
 // 가정해 최적화하므로, float 비트를 uint32_t* 로 읽는 reinterpret_cast 는 정의되지 않은 동작이다.  안전한 방법은 memcpy (컴파일러가 한 명령으로 최적화한다)
+// 이 예제는 "비트를 안전하게 들여다보는" 도구를 직접 만들고 독립 기준과 맞춰 본다.
+//  ① floatBits/bitsFloat/bitCast: memcpy 로 만든 비트 캐스트.  IEEE-754 를 손으로 해석(decodeFloat)한 값이 하드웨어 float 값과 같은지, frexp 가 말하는 지수·가수와 같은지 4 000 000 개 패턴 이상으로 확인
+//  ② ULP: 양의 유한 float 에서 비트 패턴 +1 은 nextafter 와 같다 (비트 패턴이 곧 순서)
+//  ③ 단조 키: 부호 비트가 1 이면 전체 반전, 0 이면 최상위 비트 설정 -> 부호 없는 정수 순서가 float 순서가 된다.  기수 정렬로 std::sort 와 같은 결과가 나오는지 확인
+//  ④ 겹침: overlaps 를 바이트 집합의 교집합과 모든 (a, na, b, nb) 조합에서 대조 (빈 구간은 아무것과도 겹치지 않는다 — 그 검사를 뺀 판본의 오류도 센다)
+//  ⑤ memmove: 겹침 방향에 따라 앞/뒤에서 복사하는 직접 구현을 std::memmove 와 모든 (src, dst, n) 조합에서 대조, 앞에서만 복사하면 정확히 "dst 가 src 안쪽에 놓인" 경우만 틀림
+//  ⑥ 같은 타입 포인터 앨리어싱은 합법이라, 두 포인터가 같으면 결과가 달라진다 (컴파일러가 *b 를 레지스터에 캐시하지 못하는 이유)
 uint32_t floatBits(float f) { uint32_t u; std::memcpy(&u, &f, sizeof u); return u; }
 float bitsFloat(uint32_t u) { float f; std::memcpy(&f, &u, sizeof f); return f; }
 
-bool overlaps(const void* a, size_t na, const void* b, size_t nb) {
-    auto x = (uintptr_t)a, y = (uintptr_t)b; return x < y + nb && y < x + na;
+template <class To, class From> To bitCast(const From& f) {          // C++20 std::bit_cast 와 같은 일을 C++17 에서
+    static_assert(sizeof(To) == sizeof(From) && std::is_trivially_copyable<To>::value && std::is_trivially_copyable<From>::value, "크기가 같고 trivially copyable 이어야 한다");
+    To t; std::memcpy(&t, &f, sizeof t); return t;
 }
 
+bool overlapsNoEmptyCheck(const void* a, size_t na, const void* b, size_t nb) {
+    auto x = (uintptr_t)a, y = (uintptr_t)b; return x < y + nb && y < x + na;
+}
+bool overlaps(const void* a, size_t na, const void* b, size_t nb) { return na && nb && overlapsNoEmptyCheck(a, na, b, nb); }
+
+// IEEE-754 binary32 를 부호·지수·가수 필드로 손수 해석 (정규수 1.m×2^(e-127), 비정규수 0.m×2^-126)
+double decodeFloat(uint32_t u) {
+    int s = (int)(u >> 31), e = (int)((u >> 23) & 0xff); uint32_t m = u & 0x7fffffu; double v;
+    if (e == 0xff) return m ? std::nan("") : (s ? -INFINITY : INFINITY);
+    if (e == 0) v = std::ldexp((double)m, -149);                         // m × 2^-149
+    else v = std::ldexp((double)(m | 0x800000u), e - 150);              // (2^23 + m) × 2^(e-150)
+    return s ? -v : v;
+}
+
+uint32_t sortKey(float f) { uint32_t u = floatBits(f); return (u & 0x80000000u) ? ~u : (u | 0x80000000u); }
+void radixSortFloats(std::vector<float>& a) {                               // 키를 8 비트씩 4 번 계수 정렬 (안정)
+    std::vector<uint32_t> k(a.size()), t(a.size());
+    for (size_t i = 0; i < a.size(); ++i) k[i] = sortKey(a[i]);
+    for (int pass = 0; pass < 4; ++pass) {
+        size_t cnt[257] = {0}; int sh = pass * 8;
+        for (uint32_t x : k) ++cnt[((x >> sh) & 0xff) + 1];
+        for (int i = 0; i < 256; ++i) cnt[i + 1] += cnt[i];
+        for (uint32_t x : k) t[cnt[(x >> sh) & 0xff]++] = x;
+        k.swap(t);
+    }
+    for (size_t i = 0; i < a.size(); ++i) { uint32_t x = k[i]; a[i] = bitsFloat((x & 0x80000000u) ? (x & 0x7fffffffu) : ~x); }
+}
+
+void* myMemmove(void* d, const void* s, size_t n) {
+    unsigned char* dp = (unsigned char*)d; const unsigned char* sp = (const unsigned char*)s;
+    if (n == 0 || dp == sp) return d;
+    if (dp < sp || dp >= sp + n) { for (size_t i = 0; i < n; ++i) dp[i] = sp[i]; }          // 앞에서 뒤로: 겹쳐도 아직 안 읽은 바이트를 안 덮는다
+    else for (size_t i = n; i-- > 0;) dp[i] = sp[i];                                              // dst 가 src 안쪽: 뒤에서 앞으로
+    return d;
+}
+void forwardCopy(unsigned char* d, const unsigned char* s, size_t n) { for (size_t i = 0; i < n; ++i) d[i] = s[i]; }
+void addTwice(int* a, const int* b) { *a += *b; *a += *b; }
+
 int main() {
-    assert(floatBits(1.0f) == 0x3f800000u);                           // IEEE-754: 1.0f 의 비트 패턴
-    assert(floatBits(-2.0f) == 0xc0000000u);
-    assert(bitsFloat(0x40490fdbu) > 3.14159f && bitsFloat(0x40490fdbu) < 3.1416f);   // 비트 패턴 -> π
-    int v = 5; int* p = &v; int* q = &v;                               // 같은 타입의 앨리어싱은 합법: 한쪽을 바꾸면 다른 쪽에도 보인다
-    *p = 6; assert(*q == 6);
+    // 원래 예: 비트 패턴과 겹침
+    assert(floatBits(1.0f) == 0x3f800000u && floatBits(-2.0f) == 0xc0000000u && floatBits(0.0f) == 0u && floatBits(-0.0f) == 0x80000000u);
+    assert(bitsFloat(0x40490fdbu) > 3.14159f && bitsFloat(0x40490fdbu) < 3.1416f);
+    int v = 5; int* p = &v; int* q = &v; *p = 6; assert(*q == 6);                       // 같은 타입의 앨리어싱은 합법
     char buf[10] = "abcdefghi";
     assert(overlaps(buf, 5, buf + 3, 5) && !overlaps(buf, 3, buf + 5, 3));
-    std::memmove(buf + 2, buf, 5);                                      // 영역이 겹치면 memcpy 가 아니라 memmove
+    std::memmove(buf + 2, buf, 5);
     assert(std::memcmp(buf, "ababcdeh", 8) == 0);
-    std::cout << "Aliasing verified: 1.0f bits = " << std::hex << floatBits(1.0f) << std::endl;
+
+    // ① 바이트로 본 객체 표현 + 비트 캐스트의 왕복 + 직접 해석
+    uint32_t one = 1; unsigned char first; std::memcpy(&first, &one, 1); bool little = (first == 1);
+    unsigned char fb[4]; float f1 = 1.0f; std::memcpy(fb, &f1, 4);                       // unsigned char* 는 어떤 객체든 읽을 수 있다 (앨리어싱 규칙의 예외)
+    assert(little ? (fb[3] == 0x3f && fb[2] == 0x80 && fb[1] == 0 && fb[0] == 0) : (fb[0] == 0x3f && fb[1] == 0x80));
+    struct Pair { int32_t a, b; }; Pair pr{1, 2}; int64_t as64 = bitCast<int64_t>(pr);
+    assert(as64 == (little ? (int64_t)1 | ((int64_t)2 << 32) : ((int64_t)1 << 32) | 2) && bitCast<Pair>(as64).b == 2);
+    assert(bitCast<uint64_t>(1.0) == 0x3ff0000000000000ull && bitCast<double>(0x4000000000000000ull) == 2.0);
+    long checked = 0, normals = 0, denorm = 0, specials = 0;
+    auto check = [&](uint32_t u) {
+        float f = bitsFloat(u); assert(floatBits(f) == u || std::isnan(f));
+        double d = decodeFloat(u); ++checked;
+        if (std::isnan(f)) { assert(std::isnan(d)); ++specials; return; }
+        assert(d == (double)f && std::signbit(d) == std::signbit(f));                          // 손으로 해석한 값 == 하드웨어 값 (부호 있는 0 포함)
+        int e = (int)((u >> 23) & 0xff);
+        if (std::isinf(f)) { ++specials; return; }
+        if (e == 0) { ++denorm; return; }
+        ++normals; int ex; double fr = std::frexp(d, &ex);                                      // d = fr × 2^ex, 0.5 <= |fr| < 1
+        assert(ex == e - 126 && std::ldexp(std::fabs(fr) * 2 - 1, 23) == (double)(u & 0x7fffffu));
+    };
+    for (uint32_t u = 0; u < (1u << 14); ++u) { check(u); check(0x80000000u | u); check(0x7f800000u - 8192 + u); check(0xff800000u - 8192 + u); }    // 0 근방, 무한대 근방 모두 빠짐없이
+    for (uint32_t u = 0; u < 0xffffff00u; u += 1021) check(u);                                              // 나머지 전 범위를 소수 간격으로
+    std::mt19937 rng(20240601u);
+    for (int i = 0; i < 600000; ++i) check((uint32_t)rng());
+    assert(normals > 3000000 && denorm > 30000 && specials > 20000);
+
+    // ② 비트 패턴 +1 == 다음 float (양의 유한수)
+    for (int i = 0; i < 400000; ++i) {
+        uint32_t u = (uint32_t)rng() & 0x7fffffffu; if (u >= 0x7f7fffffu) continue;
+        assert(bitsFloat(u + 1) == std::nextafter(bitsFloat(u), INFINITY) && bitsFloat(u + 1) > bitsFloat(u));
+    }
+
+    // ③ 정렬 키: 부호 없는 정수 순서 == float 순서
+    std::vector<float> a;
+    for (int i = 0; i < 100000; ++i) {
+        float f = bitsFloat((uint32_t)rng()); if (std::isnan(f)) continue;
+        a.push_back(f); if (i % 7 == 0) a.push_back(std::round(f)); if (i % 11 == 0) a.push_back(-0.0f), a.push_back(0.0f);
+    }
+    for (int i = 0; i < 500000; ++i) {
+        float x = a[rng() % a.size()], y = a[rng() % a.size()];
+        if (x < y) { assert(sortKey(x) < sortKey(y)); }
+        if (x > y) { assert(sortKey(x) > sortKey(y)); }
+    }
+    std::vector<float> ref = a, rs = a; std::sort(ref.begin(), ref.end()); radixSortFloats(rs);
+    assert(rs.size() == ref.size()); for (size_t i = 0; i < rs.size(); ++i) assert(rs[i] == ref[i]);
+    assert(floatBits(rs.front()) >= 0x80000000u && std::is_sorted(rs.begin(), rs.end()));
+
+    // ④ 겹침 판정: 모든 (a, na, b, nb) 를 바이트 집합의 교집합과 대조
+    const int N = 14; unsigned char arena[N]; long cases = 0, naiveWrong = 0;
+    for (int x = 0; x <= N; ++x) for (int nx = 0; x + nx <= N; ++nx) for (int y = 0; y <= N; ++y) for (int ny = 0; y + ny <= N; ++ny) {
+        std::set<int> sa, sb; for (int i = 0; i < nx; ++i) sa.insert(x + i); for (int i = 0; i < ny; ++i) sb.insert(y + i);
+        bool truth = false; for (int i : sa) if (sb.count(i)) truth = true;
+        bool got = overlaps(arena + x, nx, arena + y, ny); assert(got == truth); ++cases;
+        if (overlapsNoEmptyCheck(arena + x, nx, arena + y, ny) != truth) { ++naiveWrong; assert(nx == 0 || ny == 0); }
+    }
+    assert(cases == 14400 && naiveWrong > 0);
+
+    // ⑤ memmove: 모든 (src, dst, n) 조합 (24 바이트 영역)
+    const int M = 24; long moves = 0, forwardBroken = 0;
+    for (int s = 0; s < M; ++s) for (int d = 0; d < M; ++d) for (int n = 0; s + n <= M && d + n <= M; ++n) {
+        unsigned char base[M], expect[M], mine[M], lib[M], fwd[M];
+        for (int i = 0; i < M; ++i) base[i] = (unsigned char)(i + 1);
+        std::memcpy(expect, base, M); for (int i = 0; i < n; ++i) expect[d + i] = base[s + i];                          // 기준: 원본에서 읽은 값을 쓴다
+        std::memcpy(mine, base, M); myMemmove(mine + d, mine + s, n); assert(std::memcmp(mine, expect, M) == 0);
+        std::memcpy(lib, base, M); std::memmove(lib + d, lib + s, n); assert(std::memcmp(lib, expect, M) == 0);
+        std::memcpy(fwd, base, M); forwardCopy(fwd + d, fwd + s, n);
+        bool hazard = n > 0 && s < d && d < s + n;                                                                            // 앞에서 복사하면 덮어쓰는 경우
+        assert((std::memcmp(fwd, expect, M) != 0) == hazard); forwardBroken += hazard; ++moves;
+    }
+    assert(moves == 5476 && forwardBroken > 0);
+
+    // ⑥ 앨리어싱 때문에 컴파일러가 *b 를 캐시하지 못한다
+    int x = 3, y = 5; addTwice(&x, &y); assert(x == 13 && y == 5);                      // 서로 다른 객체: 3 + 5 + 5
+    int z = 3; addTwice(&z, &z); assert(z == 12);                                          // 같은 객체: 3 -> 6 -> 12
+    std::cout << "Aliasing verified: " << checked << " float patterns, " << cases << " overlap cases (" << naiveWrong << " wrong without the empty check), "
+              << moves << " memmove cases (" << forwardBroken << " broken by forward copy)" << std::endl;
     return 0;
 }
-// Time Complexity: O(1), memmove O(n)
+// Time Complexity: 비트 캐스트 O(1) (memcpy 가 한 명령으로 바뀐다), 기수 정렬 O(n), memmove O(n)
 // Space Complexity: O(1)
 ```
 # Part 6. 메모리 할당기
 ## MemoryPool()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
 #include <set>
-#include <cassert>
+#include <vector>
 
-// 메모리 풀: 같은 크기의 블록 N 개를 한 번에 확보해 두고 자유 리스트로 나눠 준다.  빈 블록의 앞부분에 "다음 빈 블록" 포인터를 저장하므로 추가 메모리가 없고,
+// 메모리 풀: 같은 크기의 블록을 덩어리(chunk) 단위로 확보해 두고 자유 리스트로 나눠 준다.  빈 블록의 앞부분에 "다음 빈 블록" 포인터를 저장하므로 추가 메모리가 없고,
 // 할당·해제가 모두 O(1) 포인터 교환이다.  크기가 같아서 외부 단편화가 없다.  malloc 의 탐색·병합 비용이 없어 게임·네트워크 서버에서 많이 쓴다
+// 이 구현의 성질: 풀이 비었을 때만 덩어리를 하나 더 받는다(상한 maxChunks 가 있으면 nullptr).  블록은 16 바이트 단위로 올려 항상 16 바이트 정렬.
+//  해제된 블록에는 표식(magic)을 남겨 같은 블록의 이중 해제와 풀 밖/블록 경계가 아닌 포인터를 거절한다(휴리스틱: 사용자가 같은 값을 직접 쓰면 속는다).
+// 검증: 무작위 할당/해제 200 000 번을 std::set 으로 대조 — 서로 다른 블록, 정렬, 덩어리 안, 블록마다 다른 무늬를 채워 서로 덮어쓰지 않음, 자유 리스트 길이 == 전체 - 사용 중(순환·외부 포인터 없음),
+//        덩어리 수 == ceil(최대 동시 사용 / 덩어리당 블록 수) (풀은 줄지 않는다), 시스템 호출 수 == 덩어리 수
 class MemoryPool {
-    char* mem; void* head = nullptr; size_t blockSize, count, used = 0;
-public:
-    MemoryPool(size_t block, size_t n) : blockSize(block < sizeof(void*) ? sizeof(void*) : block), count(n) {
-        mem = new char[blockSize * count];
-        for (size_t i = count; i-- > 0;) { void* b = mem + i * blockSize; *(void**)b = head; head = b; }   // 모든 블록을 리스트로 연결
+    static const uint64_t FREE_MAGIC = 0xF4EEF4EEF4EEF4EEull;
+    struct Node { Node* next; uint64_t magic; };
+    std::vector<unsigned char*> chunks; Node* head = nullptr;
+    size_t blockSize, perChunk, maxChunks, used = 0, total = 0;
+    bool grow() {
+        if (chunks.size() >= maxChunks) return false;
+        unsigned char* c = new unsigned char[blockSize * perChunk]; chunks.push_back(c); ++systemCalls; total += perChunk;
+        for (size_t i = perChunk; i-- > 0;) { Node* n = (Node*)(c + i * blockSize); n->magic = FREE_MAGIC; n->next = head; head = n; }   // 주소 오름차순으로 나눠 주도록 역순으로 연결
+        return true;
     }
-    ~MemoryPool() { delete[] mem; }
-    void* alloc() { if (!head) return nullptr; void* b = head; head = *(void**)b; used++; return b; }
-    void release(void* b) { *(void**)b = head; head = b; used--; }
-    size_t inUse() const { return used; }
-    bool owns(void* p) const { return (char*)p >= mem && (char*)p < mem + blockSize * count; }
+public:
+    long systemCalls = 0;
+    MemoryPool(size_t block, size_t per, size_t maxCh = (size_t)-1) : blockSize((std::max(block, sizeof(Node)) + 15) & ~size_t(15)), perChunk(per), maxChunks(maxCh) {}
+    MemoryPool(const MemoryPool&) = delete; MemoryPool& operator=(const MemoryPool&) = delete;
+    ~MemoryPool() { for (unsigned char* c : chunks) delete[] c; }
+    void* alloc() { if (!head && !grow()) return nullptr; Node* n = head; head = n->next; n->magic = 0; ++used; return n; }
+    bool owns(const void* p) const {                                                                   // 풀 안이고 블록 경계인가
+        for (unsigned char* c : chunks) if ((const unsigned char*)p >= c && (const unsigned char*)p < c + blockSize * perChunk) return ((const unsigned char*)p - c) % blockSize == 0;
+        return false;
+    }
+    bool release(void* p) {
+        if (!owns(p)) return false;
+        Node* n = (Node*)p; if (n->magic == FREE_MAGIC) return false;                                 // 이미 해제된 블록
+        n->magic = FREE_MAGIC; n->next = head; head = n; --used; return true;
+    }
+    size_t inUse() const { return used; } size_t capacity() const { return total; } size_t chunkCount() const { return chunks.size(); } size_t block() const { return blockSize; }
+    size_t freeListLength(std::set<const void*>* seen = nullptr) const {                                // 검증용: 자유 리스트를 끝까지 걷는다
+        size_t n = 0; for (Node* x = head; x; x = x->next) { if (++n > total) return n; if (seen && !seen->insert(x).second) return total + 1; if (x->magic != FREE_MAGIC) return total + 1; }
+        return n;
+    }
 };
 
 int main() {
-    MemoryPool pool(32, 4);
-    void* b[4]; std::set<void*> distinct;
-    for (int i = 0; i < 4; i++) { b[i] = pool.alloc(); assert(b[i] && pool.owns(b[i])); distinct.insert(b[i]); }
-    assert(distinct.size() == 4);                                  // 서로 다른 블록
-    assert(pool.alloc() == nullptr && pool.inUse() == 4);          // 풀이 가득 차면 nullptr
-    pool.release(b[1]); pool.release(b[3]);
-    assert(pool.alloc() == b[3] && pool.alloc() == b[1]);          // 가장 최근에 반환된 블록이 먼저 재사용 (LIFO, 캐시에 따뜻함)
-    assert(((uintptr_t)b[0] - (uintptr_t)b[1]) % 32 == 0);          // 블록 크기 간격
-    std::cout << "MemoryPool verified: O(1) alloc/free, LIFO reuse." << std::endl;
+    // 원래 예: 작은 풀
+    {   MemoryPool pool(32, 4, 1);
+        void* b[4]; std::set<void*> distinct;
+        for (int i = 0; i < 4; i++) { b[i] = pool.alloc(); assert(b[i] && pool.owns(b[i])); distinct.insert(b[i]); }
+        assert(distinct.size() == 4 && pool.alloc() == nullptr && pool.inUse() == 4);                  // 서로 다른 블록, 가득 차면 nullptr
+        pool.release(b[1]); pool.release(b[3]);
+        assert(pool.alloc() == b[3] && pool.alloc() == b[1]);                                         // 가장 최근에 반환된 블록이 먼저 (LIFO)
+        assert((uintptr_t)b[1] - (uintptr_t)b[0] == 32 && pool.block() == 32);
+        assert(!pool.release((char*)b[0] + 8) && !pool.release(&pool) && pool.inUse() == 4);          // 블록 경계가 아닌 포인터, 풀 밖 포인터
+        assert(pool.release(b[0]) && !pool.release(b[0]) && pool.inUse() == 3);                       // 이중 해제 거절
+    }
+    // 크기 올림과 상한
+    { MemoryPool tiny(1, 3); assert(tiny.block() == 16); void* p = tiny.alloc(); assert((uintptr_t)p % 16 == 0); MemoryPool odd(40, 3); assert(odd.block() == 48); }
+    { MemoryPool cap(24, 4, 2); std::vector<void*> v; void* p; while ((p = cap.alloc())) v.push_back(p); assert(v.size() == 8 && cap.chunkCount() == 2 && cap.capacity() == 8);
+      assert(cap.release(v[5]) && cap.alloc() == v[5] && cap.alloc() == nullptr); }
+
+    // 차분 시험: 무작위 할당/해제
+    for (int cfg = 0; cfg < 3; ++cfg) {
+        size_t blk = cfg == 0 ? 16 : cfg == 1 ? 56 : 200, per = cfg == 0 ? 7 : cfg == 1 ? 16 : 3;
+        MemoryPool pool(blk, per); std::mt19937 rng(77 + cfg);
+        std::map<unsigned char*, unsigned char> live; size_t peak = 0; long allocs = 0, frees = 0;
+        for (int step = 0; step < 70000; ++step) {
+            bool doAlloc = live.empty() || (rng() % 100 < (step % 20000 < 10000 ? 60u : 40u));     // 늘었다 줄었다 하는 부하
+            if (doAlloc) {
+                unsigned char* p = (unsigned char*)pool.alloc(); assert(p && !live.count(p) && (uintptr_t)p % 16 == 0 && pool.owns(p));
+                unsigned char tag = (unsigned char)(1 + rng() % 250); std::fill(p, p + pool.block(), tag); live[p] = tag; ++allocs;   // 블록 전체를 무늬로 채운다
+                peak = std::max(peak, live.size());
+            } else {
+                auto it = live.begin(); std::advance(it, rng() % live.size());
+                for (size_t i = 0; i < pool.block(); ++i) assert(it->first[i] == it->second);                          // 다른 블록이나 자유 리스트가 이 블록을 덮어쓰지 않았다
+                assert(pool.release(it->first)); live.erase(it); ++frees;
+            }
+            assert(pool.inUse() == live.size());
+            if (step % 997 == 0) { std::set<const void*> seen; assert(pool.freeListLength(&seen) == pool.capacity() - pool.inUse()); for (auto& kv : live) assert(!seen.count(kv.first)); }
+        }
+        for (auto& kv : live) for (size_t i = 0; i < pool.block(); ++i) assert(kv.first[i] == kv.second);
+        assert(pool.chunkCount() == (peak + per - 1) / per && pool.capacity() == pool.chunkCount() * per && pool.systemCalls == (long)pool.chunkCount());
+        assert(allocs - frees == (long)live.size() && peak > 100);
+        std::vector<unsigned char*> rest; for (auto& kv : live) rest.push_back(kv.first); for (auto p : rest) assert(pool.release(p));
+        std::set<const void*> seen; assert(pool.inUse() == 0 && pool.freeListLength(&seen) == pool.capacity());           // 전부 돌려주면 자유 리스트가 전체
+    }
+    std::cout << "MemoryPool verified: 3 pool shapes x 70000 random ops, no overlap, free list intact, chunks = ceil(peak/chunk)." << std::endl;
     return 0;
 }
-// Time Complexity: 할당·해제 O(1)
+// Time Complexity: 할당 O(1) (덩어리가 필요하면 덩어리 크기), 해제 O(덩어리 수) (owns 검증 포함 — 검증을 빼면 O(1))
 // Space Complexity: O(블록 크기 · 개수)
 ```
 ## ObjectPool()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <new>
+#include <random>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// 객체 풀: 메모리 풀 위에 "객체 생명주기" 를 얹는다.  acquire 는 배치 new 로 생성자를, release 는 소멸자를 부르고 메모리는 풀에 남겨 재사용한다.
+// 객체 풀: 메모리 풀 위에 "객체 생명주기" 를 얹는다.  acquire 는 배치 new 로 생성자를, release 는 소멸자를 부르고 메모리(슬롯)는 풀에 남겨 재사용한다.
 // 생성 비용이 큰 객체(연결, 스레드, 버퍼)를 재사용하는 데 쓰이고, 반환되지 않은 객체의 수로 누수를 바로 알 수 있다
+// 이 구현: 슬롯 덩어리의 크기를 1, 2, 4, 8 ... 로 두 배씩 늘리고(주소가 안 바뀐다) 슬롯마다 live 표시를 둔다.  자유 슬롯 스택은 LIFO.
+//  ① 생성자가 예외를 던지면 슬롯을 되돌려 놓고 개수가 변하지 않는다  ② 같은 객체를 두 번 release 하거나 풀 밖 포인터를 release 하면 거절한다
+//  ③ 풀이 소멸할 때 아직 살아 있는 객체는 소멸자를 호출한다 (누수 없이)  ④ alignas(64) 객체도 정렬이 맞는다
+// 검증: 생성/소멸 횟수와 살아 있는 id 집합을 계측 클래스로 추적하며 무작위 acquire/release 100 000 번을 std::map 모형과 대조 — 값 보존, 슬롯 재사용(LIFO), 용량 == 2^덩어리 - 1
 template <class T>
 class ObjectPool {
-    std::vector<void*> freeList; std::vector<std::unique_ptr<unsigned char[]>> chunks; size_t live = 0;
-public:
-    template <class... A> T* acquire(A&&... args) {
-        if (freeList.empty()) { chunks.emplace_back(new unsigned char[sizeof(T) + alignof(T)]); void* raw = chunks.back().get(); size_t space = sizeof(T) + alignof(T); freeList.push_back(std::align(alignof(T), sizeof(T), raw, space)); }
-        void* slot = freeList.back(); freeList.pop_back(); live++;
-        return new (slot) T(std::forward<A>(args)...);
+    struct Slot { alignas(T) unsigned char buf[sizeof(T)]; bool live; };
+    std::vector<std::unique_ptr<Slot[]>> chunks; std::vector<size_t> sizes; std::vector<Slot*> freeStack; size_t live = 0;
+    void grow() {
+        size_t n = chunks.empty() ? 1 : sizes.back() * 2; chunks.emplace_back(new Slot[n]); sizes.push_back(n);
+        for (size_t i = n; i-- > 0;) { chunks.back()[i].live = false; freeStack.push_back(&chunks.back()[i]); }   // 낮은 주소가 먼저 나가도록 역순으로 쌓는다
     }
-    void release(T* obj) { obj->~T(); freeList.push_back(obj); live--; }
-    size_t liveCount() const { return live; }
-    size_t chunkCount() const { return chunks.size(); }
+    Slot* slotOf(T* obj) const {
+        for (size_t c = 0; c < chunks.size(); ++c) { Slot* s = chunks[c].get(); if ((unsigned char*)obj >= (unsigned char*)s && (unsigned char*)obj < (unsigned char*)(s + sizes[c]) && (unsigned char*)obj == s[((unsigned char*)obj - (unsigned char*)s) / sizeof(Slot)].buf) return &s[((unsigned char*)obj - (unsigned char*)s) / sizeof(Slot)]; }
+        return nullptr;
+    }
+public:
+    ObjectPool() = default; ObjectPool(const ObjectPool&) = delete; ObjectPool& operator=(const ObjectPool&) = delete;
+    ~ObjectPool() { for (size_t c = 0; c < chunks.size(); ++c) for (size_t i = 0; i < sizes[c]; ++i) if (chunks[c][i].live) reinterpret_cast<T*>(chunks[c][i].buf)->~T(); }
+    template <class... A> T* acquire(A&&... args) {
+        if (freeStack.empty()) grow();
+        Slot* s = freeStack.back(); freeStack.pop_back();
+        try { T* obj = new (s->buf) T(std::forward<A>(args)...); s->live = true; ++live; return obj; }
+        catch (...) { freeStack.push_back(s); throw; }                                              // 생성 실패: 슬롯을 돌려놓고 예외를 그대로 전달
+    }
+    bool release(T* obj) {
+        Slot* s = slotOf(obj); if (!s || !s->live) return false;
+        obj->~T(); s->live = false; freeStack.push_back(s); --live; return true;
+    }
+    size_t liveCount() const { return live; } size_t chunkCount() const { return chunks.size(); }
+    size_t capacity() const { size_t n = 0; for (size_t s : sizes) n += s; return n; }
 };
 
 int constructed = 0, destroyed = 0;
+std::map<int, int> alive;                                            // id -> 값 (계측: 살아 있는 객체)
 struct Conn { std::string host; explicit Conn(std::string h) : host(std::move(h)) { constructed++; } ~Conn() { destroyed++; } };
+struct Tracked {
+    int id, value; static int nextId;
+    explicit Tracked(int v) : id(nextId++), value(v) { if (v < 0) throw std::invalid_argument("negative"); alive[id] = v; ++constructed; }
+    ~Tracked() { assert(alive.count(id) && alive[id] == value); alive.erase(id); ++destroyed; }      // 소멸 시점에 값이 보존돼 있어야 한다
+};
+int Tracked::nextId = 1;
+struct alignas(64) Wide { char c[64]; };
 
 int main() {
-    ObjectPool<Conn> pool;
-    Conn* a = pool.acquire("alpha");
-    Conn* b = pool.acquire("beta");
-    assert(a->host == "alpha" && b->host == "beta" && pool.liveCount() == 2 && constructed == 2);
-    pool.release(a);                                               // 소멸자는 호출되지만 메모리는 풀에 남는다
-    assert(destroyed == 1 && pool.liveCount() == 1);
-    Conn* c = pool.acquire("gamma");
-    assert(c == a && c->host == "gamma");                          // 같은 자리를 재사용 -> 새 할당 없음
-    assert(pool.chunkCount() == 2);
-    pool.release(b); pool.release(c);
-    assert(pool.liveCount() == 0 && constructed == destroyed);     // 생성 수 == 소멸 수 -> 누수 없음
-    std::cout << "ObjectPool: " << constructed << " constructed, " << pool.chunkCount() << " chunks" << std::endl;
+    // 원래 예
+    {   ObjectPool<Conn> pool; constructed = destroyed = 0;
+        Conn* a = pool.acquire("alpha"); Conn* b = pool.acquire("beta");
+        assert(a->host == "alpha" && b->host == "beta" && pool.liveCount() == 2 && constructed == 2);
+        assert(pool.release(a) && destroyed == 1 && pool.liveCount() == 1);                         // 소멸자는 불리지만 슬롯은 남는다
+        Conn* c = pool.acquire("gamma"); assert(c == a && c->host == "gamma");                       // 같은 자리를 재사용
+        assert(!pool.release(a + 5) && pool.release(b) && pool.release(c) && !pool.release(c) && pool.liveCount() == 0 && constructed == destroyed);
+    }
+    // 예외 안전: 생성자가 던지면 슬롯이 새지 않는다
+    {   constructed = destroyed = 0; alive.clear(); ObjectPool<Tracked> pool;
+        Tracked* ok = pool.acquire(1); assert(pool.capacity() == 1);
+        try { pool.acquire(-5); assert(false); } catch (const std::invalid_argument&) {}                // 이 시도가 덩어리를 늘렸지만(1 -> 3) 슬롯은 자유 상태로 돌아왔다
+        assert(pool.liveCount() == 1 && pool.capacity() == 3 && constructed == 1 && alive.size() == 1);
+        Tracked* again = pool.acquire(2); Tracked* third = pool.acquire(3);                              // 되돌린 슬롯까지 써도 더 늘지 않는다
+        assert(again != ok && third != ok && again != third && again->value == 2 && pool.liveCount() == 3 && pool.capacity() == 3 && pool.chunkCount() == 2);
+        assert(constructed == 3 && destroyed == 0);
+    }
+    assert(destroyed == 3 && alive.empty());                                                        // 풀이 소멸하며 살아 있던 세 객체를 소멸
+    // 정렬
+    {   ObjectPool<Wide> wp; std::vector<Wide*> ws; for (int i = 0; i < 40; ++i) { ws.push_back(wp.acquire()); assert((uintptr_t)ws.back() % 64 == 0); }
+        for (Wide* w : ws) assert(wp.release(w)); }
+    // 차분 시험
+    {   constructed = destroyed = 0; alive.clear(); Tracked::nextId = 1;
+        ObjectPool<Tracked> pool; std::mt19937 rng(2024);
+        std::map<Tracked*, int> model; size_t peak = 0; long reused = 0; std::vector<Tracked*> lastFreed;
+        for (int step = 0; step < 100000; ++step) {
+            bool doAcq = model.empty() || rng() % 100 < (step % 30000 < 15000 ? 58u : 42u);
+            if (doAcq) {
+                int v = (int)(rng() % 100000);
+                Tracked* t = pool.acquire(v); assert(t->value == v && !model.count(t)); model[t] = v; peak = std::max(peak, model.size());
+                if (!lastFreed.empty() && t == lastFreed.back()) { ++reused; }
+                lastFreed.clear();         // 직전에 반환한 슬롯이 바로 재사용되는가 (LIFO)
+            } else {
+                auto it = model.begin(); std::advance(it, rng() % model.size());
+                assert(it->first->value == it->second); Tracked* p = it->first; assert(pool.release(p)); model.erase(it); lastFreed.assign(1, p);
+                assert(!pool.release(p));                                                            // 이중 해제 거절
+            }
+            assert(pool.liveCount() == model.size() && alive.size() == model.size());
+        }
+        for (auto& kv : model) assert(kv.first->value == kv.second);
+        assert(constructed - destroyed == (int)model.size() && pool.capacity() >= peak);
+        size_t cap = pool.capacity(); assert(cap == ((size_t)1 << pool.chunkCount()) - 1 && (cap - 1) / 2 < peak);   // 용량은 2^k - 1, 최대 동시 개수를 처음 넘는 값
+        assert(reused > 1000);
+        for (auto& kv : model) pool.release(kv.first);
+        assert(pool.liveCount() == 0 && alive.empty() && constructed == destroyed);
+    }
+    std::cout << "ObjectPool verified: " << constructed << " constructions all matched by destructions, slots reused LIFO, exception-safe." << std::endl;
     return 0;
 }
-// Time Complexity: acquire/release 평균 O(1)
+// Time Complexity: acquire O(1) 평균(덩어리 증설 시 O(덩어리 크기)), release O(덩어리 수) (소유 확인 포함)
 // Space Complexity: O(최대 동시 객체 수)
 ```
 ## FreeList()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
-#include <vector>
 #include <cassert>
+#include <cstddef>
+#include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
 
-// 자유 리스트 할당기: 비어 있는 구멍(hole)을 주소순 리스트로 유지한다.  요청이 오면 어떤 구멍을 쓸지가 정책이다.
-//   first-fit: 처음 맞는 구멍 (빠름)   best-fit: 가장 작게 맞는 구멍 (남는 조각이 가장 작음, 아주 작은 조각이 많이 생김)   worst-fit: 가장 큰 구멍 (남는 조각이 큼)
-// 해제할 때는 인접한 구멍과 병합해 외부 단편화를 줄인다
-struct Hole { size_t off, size; };
+// 자유 리스트 할당기: 비어 있는 구멍(hole)을 주소순으로 유지한다.  요청이 오면 어떤 구멍을 쓸지가 정책이다.
+//   first-fit: 주소가 가장 낮은 맞는 구멍 (빠름)   best-fit: 가장 작게 맞는 구멍 (남는 조각이 가장 작음, 아주 작은 조각이 많이 생김)   worst-fit: 가장 큰 구멍 (남는 조각이 큼)
+// 해제할 때는 인접한 구멍과 병합해 외부 단편화를 줄이고, 구멍과 겹치는 해제(이중 해제)는 거절한다
+// 세 가지 구현을 같은 연산열에 적용해 서로 맞춘다:  ① ListFreeList: 주소순 벡터 (선형 탐색, 원래 구현)
+//   ② IndexedFreeList: 주소 맵 + (크기, 주소) 집합 -> best/worst-fit 이 O(log n)  ③ BitmapOracle: 바이트마다 사용 여부를 둔 독립 기준 (구멍을 비트맵에서 매번 새로 계산)
+// 검증: 크기 1024 의 힙에서 정책마다 무작위 할당/해제/잘못된 해제 20 000 번 — 반환 주소가 세 구현에서 모두 같고, 구멍은 정렬·비어 있지 않음·서로 인접하지 않음(완전 병합), 자유 바이트 합이 같다
 enum Policy { FIRST, BEST, WORST };
-class FreeList {
+struct Hole { size_t off, size; };
+
+class ListFreeList {
 public:
     std::vector<Hole> holes;
+    explicit ListFreeList(size_t total) { holes.push_back({0, total}); }
+    explicit ListFreeList(std::vector<Hole> h) : holes(std::move(h)) {}
     long alloc(size_t n, Policy p) {
+        if (n == 0) return -1;
         int pick = -1;
         for (size_t i = 0; i < holes.size(); i++) {
             if (holes[i].size < n) continue;
-            if (pick < 0 || (p == BEST && holes[i].size < holes[pick].size) || (p == WORST && holes[i].size > holes[pick].size)) pick = i;
+            if (pick < 0 || (p == BEST && holes[i].size < holes[pick].size) || (p == WORST && holes[i].size > holes[pick].size)) pick = (int)i;     // 크기가 같으면 앞의(낮은 주소) 구멍 유지
             if (p == FIRST) break;
         }
         if (pick < 0) return -1;
-        size_t off = holes[pick].off;
-        holes[pick].off += n; holes[pick].size -= n;
+        size_t off = holes[pick].off; holes[pick].off += n; holes[pick].size -= n;
         if (holes[pick].size == 0) holes.erase(holes.begin() + pick);
-        return off;
+        return (long)off;
     }
-    void release(size_t off, size_t n) {
-        holes.push_back({off, n});
-        std::sort(holes.begin(), holes.end(), [](const Hole& a, const Hole& b) { return a.off < b.off; });
-        for (size_t i = 0; i + 1 < holes.size();) {                 // 인접한 구멍 병합
-            if (holes[i].off + holes[i].size == holes[i + 1].off) { holes[i].size += holes[i + 1].size; holes.erase(holes.begin() + i + 1); } else i++;
-        }
+    bool release(size_t off, size_t n, size_t total) {
+        if (n == 0 || off + n > total) return false;
+        size_t i = std::lower_bound(holes.begin(), holes.end(), off, [](const Hole& h, size_t o) { return h.off < o; }) - holes.begin();
+        if (i > 0 && holes[i - 1].off + holes[i - 1].size > off) return false;                       // 앞 구멍과 겹침
+        if (i < holes.size() && off + n > holes[i].off) return false;                                  // 뒤 구멍과 겹침
+        bool left = i > 0 && holes[i - 1].off + holes[i - 1].size == off, right = i < holes.size() && off + n == holes[i].off;
+        if (left && right) { holes[i - 1].size += n + holes[i].size; holes.erase(holes.begin() + i); }
+        else if (left) holes[i - 1].size += n;
+        else if (right) { holes[i].off = off; holes[i].size += n; }
+        else holes.insert(holes.begin() + i, {off, n});
+        return true;
     }
+    std::vector<Hole> snapshot() const { return holes; }
     double fragmentation() const { size_t tot = 0, mx = 0; for (auto& h : holes) { tot += h.size; mx = std::max(mx, h.size); } return tot ? 1.0 - double(mx) / tot : 0; }
 };
 
+class IndexedFreeList {
+    std::map<size_t, size_t> byOff; std::set<std::pair<size_t, size_t>> bySize;
+    void put(size_t off, size_t size) { byOff[off] = size; bySize.insert({size, off}); }
+    void drop(std::map<size_t, size_t>::iterator it) { bySize.erase({it->second, it->first}); byOff.erase(it); }
+public:
+    explicit IndexedFreeList(size_t total) { put(0, total); }
+    long alloc(size_t n, Policy p) {
+        if (n == 0) return -1;
+        std::map<size_t, size_t>::iterator it = byOff.end();
+        if (p == FIRST) { for (auto j = byOff.begin(); j != byOff.end(); ++j) if (j->second >= n) { it = j; break; } }
+        else if (p == BEST) { auto k = bySize.lower_bound({n, 0}); if (k != bySize.end()) it = byOff.find(k->second); }                // 크기 >= n 중 가장 작은 것, 같으면 낮은 주소
+        else { if (!bySize.empty() && bySize.rbegin()->first >= n) { auto k = bySize.lower_bound({bySize.rbegin()->first, 0}); it = byOff.find(k->second); } }   // 가장 큰 크기 중 낮은 주소
+        if (it == byOff.end()) return -1;
+        size_t off = it->first, size = it->second; drop(it); if (size > n) put(off + n, size - n);
+        return (long)off;
+    }
+    bool release(size_t off, size_t n, size_t total) {
+        if (n == 0 || off + n > total) return false;
+        auto next = byOff.lower_bound(off);
+        if (next != byOff.begin()) { auto prev = std::prev(next); if (prev->first + prev->second > off) return false; }
+        if (next != byOff.end() && off + n > next->first) return false;
+        size_t start = off, size = n;
+        if (next != byOff.begin()) { auto prev = std::prev(next); if (prev->first + prev->second == off) { start = prev->first; size += prev->second; drop(prev); } }
+        if (next != byOff.end() && off + n == next->first) { size += next->second; drop(next); }
+        put(start, size); return true;
+    }
+    std::vector<Hole> snapshot() const { std::vector<Hole> v; for (auto& kv : byOff) v.push_back({kv.first, kv.second}); return v; }
+    bool consistent() const { if (byOff.size() != bySize.size()) return false; for (auto& kv : byOff) if (!bySize.count({kv.second, kv.first})) return false; return true; }
+};
+
+class BitmapOracle {
+    std::vector<char> used;
+public:
+    explicit BitmapOracle(size_t total) : used(total, 0) {}
+    std::vector<Hole> holes() const {                                                    // 매번 바이트 표에서 극대 빈 구간을 새로 구한다
+        std::vector<Hole> v; for (size_t i = 0; i < used.size();) { if (used[i]) { ++i; continue; } size_t j = i; while (j < used.size() && !used[j]) ++j; v.push_back({i, j - i}); i = j; }
+        return v;
+    }
+    long alloc(size_t n, Policy p) {
+        if (n == 0) return -1;
+        long best = -1; size_t bestLen = 0;
+        for (const Hole& h : holes()) {
+            if (h.size < n) continue;
+            bool better = best < 0 || (p == BEST && h.size < bestLen) || (p == WORST && h.size > bestLen);
+            if (better) { best = (long)h.off; bestLen = h.size; if (p == FIRST) break; }
+        }
+        if (best >= 0) for (size_t i = 0; i < n; ++i) used[best + i] = 1;
+        return best;
+    }
+    bool release(size_t off, size_t n) {                                                // 구간 전체가 사용 중일 때만 유효
+        if (n == 0 || off + n > used.size()) return false;
+        for (size_t i = 0; i < n; ++i) if (!used[off + i]) return false;
+        for (size_t i = 0; i < n; ++i) { used[off + i] = 0; }
+        return true;
+    }
+    size_t freeBytes() const { size_t f = 0; for (char c : used) f += !c; return f; }
+};
+
+bool same(const std::vector<Hole>& a, const std::vector<Hole>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) { if (a[i].off != b[i].off || a[i].size != b[i].size) return false; }
+    return true;
+}
+
 int main() {
-    auto make = [] { FreeList f; f.holes = {{0, 100}, {150, 30}, {300, 60}, {500, 200}}; return f; };
-    FreeList a = make(), b = make(), c = make();
-    assert(a.alloc(25, FIRST) == 0);                                 // 첫 구멍(0, 크기 100)
-    assert(b.alloc(25, BEST) == 150);                                // 가장 딱 맞는 구멍(150, 크기 30) -> 남는 조각 5
-    assert(c.alloc(25, WORST) == 500);                               // 가장 큰 구멍(500, 크기 200)
-    assert(b.holes[1].size == 5);                                    // best-fit 이 남긴 아주 작은 조각
-    assert(a.alloc(1000, FIRST) == -1);                              // 외부 단편화: 전체 합은 390 이지만 연속 1000 은 없다
-    FreeList d; d.holes = {{0, 10}};
-    d.release(10, 10); d.release(30, 10);                            // 인접 병합: [0,20) 과 [30,40)
-    assert(d.holes.size() == 2 && d.holes[0].size == 20);
-    d.release(20, 10);                                               // 가운데를 채우면 세 구멍이 하나로
-    assert(d.holes.size() == 1 && d.holes[0].size == 40);
-    assert(make().fragmentation() > 0.4);
-    std::cout << "FreeList: first-fit=0, best-fit=150, worst-fit=500" << std::endl;
+    // 원래 예: 구멍 {0,100} {150,30} {300,60} {500,200}
+    auto make = [] { return ListFreeList(std::vector<Hole>{{0, 100}, {150, 30}, {300, 60}, {500, 200}}); };
+    { ListFreeList a = make(), b = make(), c = make();
+      assert(a.alloc(25, FIRST) == 0 && b.alloc(25, BEST) == 150 && c.alloc(25, WORST) == 500);
+      assert(b.holes[1].size == 5 && a.alloc(1000, FIRST) == -1);                                 // best-fit 이 남긴 5 짜리 조각, 총 390 이어도 연속 1000 은 없다
+      ListFreeList d(std::vector<Hole>{{0, 10}}); assert(d.release(10, 10, 100) && d.release(30, 10, 100) && d.holes.size() == 2 && d.holes[0].size == 20);
+      assert(d.release(20, 10, 100) && d.holes.size() == 1 && d.holes[0].size == 40);
+      assert(!d.release(5, 3, 100) && !d.release(35, 10, 100) && !d.release(95, 10, 100) && !d.release(50, 0, 100));   // 겹침, 범위 밖, 크기 0
+      assert(make().fragmentation() > 0.4); }
+
+    // 세 구현 차분 시험
+    const size_t TOTAL = 1024; long failedWithSpace[3] = {0, 0, 0}, okAllocs[3] = {0, 0, 0}, badRelease = 0;
+    for (int pol = 0; pol < 3; ++pol) {
+        Policy p = (Policy)pol; ListFreeList L(TOTAL); IndexedFreeList I(TOTAL); BitmapOracle O(TOTAL);
+        std::mt19937 rng(900 + pol); std::vector<Hole> live;
+        for (int step = 0; step < 20000; ++step) {
+            int r = (int)(rng() % 100);
+            if (r < 52 || live.empty()) {
+                size_t n = (rng() % 4 == 0) ? 1 + rng() % 120 : 1 + rng() % 24;
+                long a = L.alloc(n, p), b = I.alloc(n, p), c = O.alloc(n, p); assert(a == b && b == c);
+                if (a >= 0) { live.push_back({(size_t)a, n}); ++okAllocs[pol]; }
+                else if (O.freeBytes() >= n) ++failedWithSpace[pol];                            // 자유 공간 합은 충분한데 연속 구간이 없어서 실패 (외부 단편화)
+            } else if (r < 94) {
+                size_t k = rng() % live.size(); Hole h = live[k]; live.erase(live.begin() + k);
+                bool a = L.release(h.off, h.size, TOTAL), b = I.release(h.off, h.size, TOTAL), c = O.release(h.off, h.size); assert(a && b && c);
+            } else {                                                                              // 잘못된 해제: 아무 구간이나
+                size_t off = rng() % TOTAL, n = 1 + rng() % 30;
+                bool c = O.release(off, n);
+                if (c) {                                                                          // 우연히 사용 중인 구간이었다면 실제 해제가 일어난 것이니 모형을 맞춘다
+                    bool a = L.release(off, n, TOTAL), b = I.release(off, n, TOTAL); assert(a && b);
+                    std::vector<Hole> rest;                                                       // 살아 있는 블록 목록에서 해당 구간을 도려낸다
+                    for (const Hole& h : live) { size_t lo = h.off, hi = h.off + h.size; if (hi <= off || lo >= off + n) { rest.push_back(h); continue; }
+                        if (lo < off) { rest.push_back({lo, off - lo}); }
+                        if (hi > off + n) { rest.push_back({off + n, hi - off - n}); } }
+                    live.swap(rest);
+                } else { bool a = L.release(off, n, TOTAL), b = I.release(off, n, TOTAL); assert(!a && !b); ++badRelease; }
+            }
+            if (step % 50 == 0) {
+                std::vector<Hole> hl = L.snapshot(), hi = I.snapshot(), ho = O.holes();
+                assert(same(hl, ho) && same(hi, ho) && I.consistent());                           // 세 구현의 구멍 목록이 완전히 같다 (비트맵 기준이면 정의상 병합돼 있다)
+                size_t sum = 0; for (size_t i = 0; i < hl.size(); ++i) { assert(hl[i].size > 0); if (i) assert(hl[i - 1].off + hl[i - 1].size < hl[i].off); sum += hl[i].size; }
+                assert(sum == O.freeBytes());
+            }
+        }
+        for (const Hole& h : live) assert(L.release(h.off, h.size, TOTAL) && I.release(h.off, h.size, TOTAL));
+        assert(L.holes.size() == 1 && L.holes[0].off == 0 && L.holes[0].size == TOTAL && I.snapshot().size() == 1);        // 모두 돌려주면 구멍 하나
+    }
+    assert(okAllocs[0] > 5000 && failedWithSpace[0] + failedWithSpace[1] + failedWithSpace[2] > 100 && badRelease > 100);
+    std::cout << "FreeList verified: list == indexed == bitmap oracle; allocs ok first/best/worst = " << okAllocs[0] << "/" << okAllocs[1] << "/" << okAllocs[2]
+              << ", fragmentation failures " << failedWithSpace[0] << "/" << failedWithSpace[1] << "/" << failedWithSpace[2] << std::endl;
     return 0;
 }
-// Time Complexity: 할당 O(구멍 수), 해제 O(구멍 수 log 구멍 수)
+// Time Complexity: 벡터 구현 할당 O(구멍 수)·해제 O(구멍 수), 인덱스 구현 best/worst-fit 할당 O(log 구멍 수)·해제 O(log 구멍 수) (first-fit 은 선형)
 // Space Complexity: O(구멍 수)
 ```
 ## SlabAllocator()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <bitset>
-#include <memory>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <new>
+#include <random>
+#include <set>
+#include <vector>
 
 // 슬랩 할당기(리눅스 커널): 한 종류의 객체만 담는 "슬랩(고정 크기 페이지)" 여러 개를 관리한다.  슬랩은 부분(partial)·가득(full)·빈(empty) 상태로 나뉘고
 // 할당은 부분 슬랩에서 우선한다 -> 슬랩을 거의 가득 채워 쓰고 빈 슬랩은 반환하므로 단편화가 적다.  객체를 미리 초기화해 두면 생성 비용도 줄인다
+// 이 구현은 커널 방식을 따른다:  ① 슬랩은 4096 바이트로 정렬된 한 덩어리이고 머리말(Slab, 40B) + 빈 객체 번호표(bufctl, 객체 밖에 둔다) + 객체들로 구성
+//  ② 해제할 때 포인터의 아래 12 비트를 지우면 슬랩 머리말 주소가 나온다 -> 슬랩을 찾는 탐색이 없어 해제 O(1)  ③ 머리말의 리스트 3 개(partial/full/empty)는 이중 연결 리스트라 상태 이동도 O(1)
+//  ④ 슬랩 색칠(cache coloring): 새 슬랩마다 첫 객체의 시작 위치를 16 바이트씩 밀어 서로 다른 슬랩의 같은 번호 객체가 캐시 세트 하나에 몰리지 않게 한다
+//  ⑤ 생성자는 슬랩을 만들 때 객체마다 한 번, 소멸자는 슬랩을 반환할 때 한 번 호출 — 객체를 돌려줄 때는 "생성된 상태"로 복원해야 한다  ⑥ 빈 슬랩은 keepEmpty 개까지만 보유
+// 검증: 5 가지 객체 크기에서 무작위 할당/해제 40 000 번 — 객체 무늬 격리, 객체 간격·경계 정렬, 슬랩 수 == 모형, 부분 슬랩이 있으면 새 슬랩을 만들지 않음, 불변식(리스트 소속·번호표 사슬 길이·사용 수 합),
+//        생성자 호출 수 == 슬랩 수 × 슬랩당 객체 수 (소멸자도 같음), 색깔이 0, 1, 2, ... 순환, 이중 해제·경계 밖·다른 캐시의 포인터 거절
 class SlabCache {
-    static const int PER_SLAB = 8;
-    struct Slab { std::unique_ptr<char[]> mem; std::bitset<PER_SLAB> used; int count = 0; };
-    size_t objSize; std::vector<std::unique_ptr<Slab>> slabs;
 public:
-    long created = 0, destroyed = 0;
-    explicit SlabCache(size_t sz) : objSize(sz) {}
+    static const size_t SLAB_SIZE = 4096;
+private:
+    enum { PARTIAL, FULL, EMPTY, NOLIST = 9 };
+    static const uint16_t ALLOCATED = 0xFFFE, END = 0xFFFD;
+    struct Slab { Slab *prev, *next; SlabCache* owner; uint16_t inuse, freeHead, color, total; uint8_t state; };      // 32 바이트 머리말
+    Slab* lists[3] = {nullptr, nullptr, nullptr}; size_t counts[3] = {0, 0, 0};
+    size_t objSize, perSlab, baseOff, colors, nextColor = 0, keepEmpty; void (*ctor)(void*); void (*dtor)(void*);
+    std::set<Slab*> known;                                               // 검증용: 우리가 만든 슬랩 (해제 시 임의 포인터의 머리말을 읽지 않기 위해)
+    static uint16_t* bufctl(Slab* s) { return reinterpret_cast<uint16_t*>(s + 1); }
+    unsigned char* objBase(Slab* s) const { return reinterpret_cast<unsigned char*>(s) + baseOff + (size_t)s->color * 16; }
+    void unlink(Slab* s) { if (s->prev) s->prev->next = s->next; else lists[s->state] = s->next; if (s->next) s->next->prev = s->prev; --counts[s->state]; s->prev = s->next = nullptr; s->state = NOLIST; }
+    void linkTo(Slab* s, int st) { s->state = (uint8_t)st; s->prev = nullptr; s->next = lists[st]; if (lists[st]) lists[st]->prev = s; lists[st] = s; ++counts[st]; }
+    Slab* newSlab() {
+        void* raw = ::operator new(SLAB_SIZE, std::align_val_t(SLAB_SIZE));
+        Slab* s = new (raw) Slab{nullptr, nullptr, this, 0, 0, (uint16_t)nextColor, (uint16_t)perSlab, NOLIST};
+        nextColor = (nextColor + 1) % colors;
+        for (size_t i = 0; i < perSlab; ++i) bufctl(s)[i] = (uint16_t)(i + 1 == perSlab ? END : i + 1);
+        if (ctor) for (size_t i = 0; i < perSlab; ++i) { ctor(objBase(s) + i * objSize); ++ctorCalls; }
+        known.insert(s); linkTo(s, EMPTY); ++created; return s;
+    }
+    void destroySlab(Slab* s) {
+        if (s->state != NOLIST) { unlink(s); }
+        known.erase(s);
+        if (dtor) for (size_t i = 0; i < perSlab; ++i) { dtor(objBase(s) + i * objSize); ++dtorCalls; }
+        ::operator delete(s, std::align_val_t(SLAB_SIZE)); ++destroyed;
+    }
+public:
+    long created = 0, destroyed = 0, ctorCalls = 0, dtorCalls = 0;
+    SlabCache(size_t size, void (*c)(void*) = nullptr, void (*d)(void*) = nullptr, size_t keep = 1) : objSize((size + 7) & ~size_t(7)), keepEmpty(keep), ctor(c), dtor(d) {
+        size_t n = (SLAB_SIZE - sizeof(Slab)) / (objSize + 2);
+        for (;; --n) { baseOff = (sizeof(Slab) + 2 * n + 7) & ~size_t(7); if (baseOff + n * objSize <= SLAB_SIZE) break; }
+        perSlab = n; colors = (SLAB_SIZE - baseOff - n * objSize) / 16 + 1; assert(perSlab >= 1 && perSlab < END);
+    }
+    SlabCache(const SlabCache&) = delete; SlabCache& operator=(const SlabCache&) = delete;
+    ~SlabCache() { while (!known.empty()) destroySlab(*known.begin()); }
     void* alloc() {
-        Slab* s = nullptr;
-        for (auto& x : slabs) if (x->count < PER_SLAB && (!s || x->count > s->count)) s = x.get();   // 가장 찬 부분 슬랩 우선
-        if (!s) { slabs.emplace_back(new Slab{std::unique_ptr<char[]>(new char[objSize * PER_SLAB]), {}, 0}); s = slabs.back().get(); created++; }
-        for (int i = 0; i < PER_SLAB; i++) if (!s->used[i]) { s->used[i] = 1; s->count++; return s->mem.get() + i * objSize; }
-        return nullptr;
+        Slab* s = lists[PARTIAL] ? lists[PARTIAL] : lists[EMPTY] ? lists[EMPTY] : newSlab();                // 부분 -> 빈 -> 새 슬랩 순서
+        uint16_t idx = s->freeHead; s->freeHead = bufctl(s)[idx]; bufctl(s)[idx] = ALLOCATED; ++s->inuse;
+        unlink(s); linkTo(s, s->inuse == s->total ? FULL : PARTIAL); ++live;
+        return objBase(s) + (size_t)idx * objSize;
     }
-    void release(void* p) {
-        for (size_t k = 0; k < slabs.size(); k++) {
-            char* base = slabs[k]->mem.get();
-            if ((char*)p >= base && (char*)p < base + objSize * PER_SLAB) {
-                slabs[k]->used[((char*)p - base) / objSize] = 0; slabs[k]->count--;
-                int empties = 0; for (auto& x : slabs) empties += x->count == 0;
-                if (slabs[k]->count == 0 && empties > 1) { slabs.erase(slabs.begin() + k); destroyed++; }     // 빈 슬랩은 하나만 남기고 반환
-                return;
+    bool release(void* p) {
+        Slab* s = reinterpret_cast<Slab*>(reinterpret_cast<uintptr_t>(p) & ~(uintptr_t)(SLAB_SIZE - 1));    // 아래 12 비트를 지우면 슬랩
+        if (!known.count(s)) return false;
+        ptrdiff_t off = (unsigned char*)p - objBase(s); if (off < 0 || (size_t)off % objSize || (size_t)off / objSize >= perSlab) return false;
+        size_t idx = (size_t)off / objSize; if (bufctl(s)[idx] != ALLOCATED) return false;                  // 이중 해제
+        bufctl(s)[idx] = s->freeHead; s->freeHead = (uint16_t)idx; --s->inuse; --live;
+        unlink(s);
+        if (s->inuse == 0) { if (counts[EMPTY] >= keepEmpty) destroySlab(s); else linkTo(s, EMPTY); } else linkTo(s, PARTIAL);
+        return true;
+    }
+    void shrink() { while (lists[EMPTY]) destroySlab(lists[EMPTY]); }
+    long live = 0;
+    size_t slabCount() const { return known.size(); } size_t perSlabObjects() const { return perSlab; } size_t colorCount() const { return colors; } size_t objectSize() const { return objSize; }
+    size_t count(int list) const { return counts[list]; }
+    size_t slabIdOf(const void* p) const { return reinterpret_cast<uintptr_t>(p) / SLAB_SIZE; }
+    unsigned colorOfSlabAt(const void* p) const { Slab* s = reinterpret_cast<Slab*>(reinterpret_cast<uintptr_t>(p) & ~(uintptr_t)(SLAB_SIZE - 1)); return s->color; }
+    void checkInvariants() const {                                                                         // 리스트 소속, 번호표 사슬, 사용 수
+        size_t seen = 0; long inuseSum = 0;
+        for (int st = 0; st < 3; ++st) {
+            size_t c = 0; Slab* prev = nullptr;
+            for (Slab* s = lists[st]; s; prev = s, s = s->next) {
+                ++c; assert(s->prev == prev && s->state == st && s->owner == this && known.count(s) && (uintptr_t)s % SLAB_SIZE == 0);
+                assert((st == EMPTY) == (s->inuse == 0) && (st == FULL) == (s->inuse == s->total));
+                size_t chain = 0, alloc = 0; for (uint16_t i = s->freeHead; i != END; i = bufctl(s)[i]) { assert(i < s->total && bufctl(s)[i] != ALLOCATED && ++chain <= s->total); }
+                for (size_t i = 0; i < s->total; ++i) alloc += bufctl(s)[i] == ALLOCATED;
+                assert(chain == (size_t)(s->total - s->inuse) && alloc == s->inuse); inuseSum += s->inuse;
+                assert(objBase(s) + perSlab * objSize <= (unsigned char*)s + SLAB_SIZE);                      // 객체들이 슬랩 안에 들어간다
             }
+            assert(c == counts[st]); seen += c;
         }
+        assert(seen == known.size() && inuseSum == live && counts[EMPTY] <= keepEmpty);
     }
-    size_t slabCount() const { return slabs.size(); }
 };
 
+static unsigned char CANARY = 0xAB;
+void canaryCtor(void* p) { std::memset(p, CANARY, 1); }              // 생성된 상태 = 첫 바이트가 표식 (객체 크기는 캐시가 안다)
+long dtorBad = 0; size_t gObjSize = 0;
+void canaryDtor(void* p) { if (*(unsigned char*)p != CANARY) ++dtorBad; }
+
 int main() {
-    SlabCache cache(128);
-    std::vector<void*> objs;
-    for (int i = 0; i < 20; i++) objs.push_back(cache.alloc());
-    assert(cache.slabCount() == 3 && cache.created == 3);          // 20개 -> 슬랩 3개 (8 + 8 + 4)
-    for (int i = 8; i < 16; i++) cache.release(objs[i]);           // 가운데 슬랩을 전부 반환
-    assert(cache.slabCount() == 3 || cache.slabCount() == 2);      // 빈 슬랩은 하나까지만 보유
-    void* again = cache.alloc();                                   // 부분 슬랩(가장 찬 슬랩)을 우선 사용
-    assert(again != nullptr);
-    for (int i = 0; i < 8; i++) cache.release(objs[i]);
-    for (int i = 16; i < 20; i++) cache.release(objs[i]);
-    cache.release(again);
-    assert(cache.slabCount() == 1);                                // 전부 반환하면 빈 슬랩 하나만 남는다
-    std::cout << "SlabAllocator: created=" << cache.created << " destroyed=" << cache.destroyed << " remaining=" << cache.slabCount() << std::endl;
+    // 원래 예: 128 바이트 객체
+    {   SlabCache cache(128); std::vector<void*> objs; assert(cache.perSlabObjects() == 31);
+        for (int i = 0; i < 70; i++) objs.push_back(cache.alloc());
+        assert(cache.slabCount() == 3 && cache.created == 3);                                            // 70 개 -> 슬랩 3 개 (31 + 31 + 8)
+        for (int i = 31; i < 62; i++) assert(cache.release(objs[i]));                                    // 가운데 슬랩을 통째로 반환
+        assert(cache.slabCount() == 3 && cache.count(2) == 1);                                           // 빈 슬랩은 keepEmpty = 1 개까지 보유
+        void* again = cache.alloc(); assert(cache.slabIdOf(again) == cache.slabIdOf(objs[69]));          // 부분 슬랩(마지막 슬랩)을 먼저 사용
+        for (int i = 0; i < 31; i++) { cache.release(objs[i]); }
+        for (int i = 62; i < 70; i++) { cache.release(objs[i]); }
+        assert(cache.release(again));
+        assert(cache.slabCount() == 1 && cache.live == 0);                                               // 전부 반환하면 빈 슬랩 하나만 남는다
+        cache.checkInvariants(); }
+    // 색칠: 새 슬랩마다 시작 위치가 16 바이트씩 밀린다
+    {   SlabCache c(40); assert(c.perSlabObjects() == 96 && c.colorCount() == 2); std::vector<void*> v; for (int i = 0; i < 96 * 7; ++i) v.push_back(c.alloc());
+        std::map<size_t, unsigned> seen; for (void* p : v) seen[c.slabIdOf(p)] = c.colorOfSlabAt(p);
+        unsigned cnt[2] = {0, 0}; assert(seen.size() == 7); for (auto& kv : seen) ++cnt[kv.second]; assert(cnt[0] == 4 && cnt[1] == 3);       // 슬랩 7 개 -> 색 0,1,0,1,0,1,0 (색이 2 가지: 남는 24 바이트 안에서 16 바이트씩)
+        assert((unsigned char*)v[1] - (unsigned char*)v[0] == 40 && ((uintptr_t)v[96] & 4095) - ((uintptr_t)v[0] & 4095) == 16);          // 객체 간격 40, 다음 슬랩의 첫 객체는 16 바이트 뒤
+        for (void* p : v) assert(c.release(p)); }
+    // 잘못된 해제
+    {   SlabCache a(64), b(64); void* p = a.alloc(); void* q = b.alloc(); int local = 0;
+        assert(!a.release(q) && !a.release(&local) && !a.release((char*)p + 8) && !a.release((char*)p - 64) && !a.release(nullptr));      // 다른 캐시, 스택, 경계가 아님
+        assert(a.release(p) && !a.release(p) && b.release(q)); a.checkInvariants(); }
+    // 생성자·소멸자 개수와 무작위 시험
+    for (int cfg = 0; cfg < 5; ++cfg) {
+        size_t sizes[5] = {8, 24, 128, 600, 2000}; size_t sz = sizes[cfg]; CANARY = (unsigned char)(0xA0 + cfg); dtorBad = 0;
+        std::mt19937 rng(5000 + cfg); long lastCtor, lastDtor;
+        {   SlabCache cache(sz, canaryCtor, canaryDtor, cfg % 3); std::map<unsigned char*, unsigned char> live; std::set<size_t> slabsNow; long steps = 40000; long newSlabsWhilePartial = 0;
+            for (long step = 0; step < steps; ++step) {
+                bool doAlloc = live.empty() || rng() % 100 < (step % 16000 < 8000 ? 60u : 40u);
+                if (doAlloc) {
+                    bool hadPartial = cache.count(0) > 0; size_t slabsBefore = cache.slabCount();
+                    unsigned char* p = (unsigned char*)cache.alloc(); assert(p && !live.count(p) && (uintptr_t)p % 8 == 0 && *p == CANARY);       // 생성된 상태로 나온다
+                    if (hadPartial && cache.slabCount() != slabsBefore) ++newSlabsWhilePartial;                                                    // 부분 슬랩이 있으면 새 슬랩은 필요 없다
+                    unsigned char tag = (unsigned char)(1 + rng() % 90); std::fill(p, p + cache.objectSize(), tag); live[p] = tag;
+                } else {
+                    auto it = live.begin(); std::advance(it, rng() % live.size()); unsigned char* p = it->first;
+                    for (size_t i = 0; i < cache.objectSize(); ++i) assert(p[i] == it->second);                                                    // 다른 객체·번호표가 이 객체를 덮어쓰지 않았다
+                    *p = CANARY; for (size_t i = 1; i < cache.objectSize(); ++i) p[i] = 0;                                                         // 생성된 상태로 복원해서 반환
+                    assert(cache.release(p)); live.erase(it);
+                }
+                if (step % 400 == 0) { cache.checkInvariants(); assert(cache.live == (long)live.size()); }
+            }
+            cache.checkInvariants(); assert(newSlabsWhilePartial == 0);
+            size_t per = cache.perSlabObjects(); assert(cache.ctorCalls == cache.created * (long)per && cache.dtorCalls == cache.destroyed * (long)per);
+            std::set<size_t> distinctSlabs; for (auto& kv : live) distinctSlabs.insert(cache.slabIdOf(kv.first)); assert(distinctSlabs.size() <= cache.slabCount() && cache.slabCount() <= distinctSlabs.size() + (size_t)(cfg % 3));      // 객체가 있는 슬랩 + 빈 슬랩(keepEmpty 이하)
+            for (auto& kv : live) { unsigned char* p = kv.first; for (size_t i = 0; i < cache.objectSize(); ++i) assert(p[i] == kv.second); *p = CANARY; for (size_t i = 1; i < cache.objectSize(); ++i) p[i] = 0; assert(cache.release(p)); }
+            cache.checkInvariants(); assert(cache.live == 0 && cache.slabCount() <= (size_t)(cfg % 3) && cache.count(0) == 0 && cache.count(1) == 0);   // 모두 돌려주면 빈 슬랩만 keepEmpty 개
+            if (cfg % 3 == 0) assert(cache.slabCount() == 0);
+            cache.shrink(); assert(cache.slabCount() == 0); lastCtor = cache.ctorCalls; lastDtor = cache.dtorCalls;
+        }
+        assert(lastCtor == lastDtor && dtorBad == 0 && lastCtor > 0);
+    }
+    std::cout << "SlabAllocator verified: header at address & ~4095, O(1) release, invariants hold over 5 object sizes x 40000 ops, ctor/dtor counts match slab counts." << std::endl;
     return 0;
 }
-// Time Complexity: 할당 O(슬랩 수) (구현의 단순화), 실제 커널은 리스트로 O(1)
-// Space Complexity: O(슬랩 수 · 슬랩 크기)
+// Time Complexity: 할당·해제 O(1) (슬랩 머리말은 주소 마스크로 찾고, 리스트 이동은 이중 연결 리스트)
+// Space Complexity: O(슬랩 수 · 4096)
 ```
 ## BuddyAllocator()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstring>
 #include <iostream>
+#include <map>
+#include <random>
 #include <set>
 #include <vector>
-#include <cassert>
 
 // 버디 할당기(리눅스 페이지 할당기): 메모리를 2의 거듭제곱 크기 블록으로 관리한다.  요청은 가장 가까운 큰 2의 거듭제곱으로 올리고(내부 단편화),
 // 큰 블록을 반으로 쪼개 쓰고, 해제할 때 "버디"(같은 부모에서 나온 짝, 주소가 offset ^ size)가 비어 있으면 합친다.  병합이 빠르고 외부 단편화에 강하다
+// 검증 ① 작은 힙(최소 16B, 128B 까지, 차수 0..3)에서 할당/해제로 닿을 수 있는 모든 상태를 전수 탐색: 그 수는 "이진 트리의 반사슬 개수" a(h) = 1 + a(h-1)² = 677 이어야 하고,
+//        모든 상태에서 (a) 빈 블록들이 빈 공간의 "유일한 극대 분해"와 같고(완전 병합) (b) 모든 차수 k 에 대해 "정렬된 빈 구간이 있으면 할당이 성공하고 없으면 실패" (c) 블록은 자기 크기에 정렬
+//      ② 큰 힙(16 B ~ 16 KB) 무작위 시험 40 000 번: 실제 메모리에 무늬를 써서 겹침이 없음을 확인, 내부 단편화 < 50% (최소 블록 초과 요청), 잘못된/이중 해제 거절
 class Buddy {
-    static const int MAX_ORDER = 4;                                 // 최소 블록 64B ... 최대 1024B (order 4)
-    std::set<size_t> freeLists[MAX_ORDER + 1];
-    static size_t sizeOf(int order) { return size_t(64) << order; }
+    int maxOrder; size_t minBlock; std::vector<std::set<size_t>> freeLists; std::map<size_t, int> allocated;
 public:
-    Buddy() { freeLists[MAX_ORDER].insert(0); }
+    Buddy(size_t minB, int maxO) : maxOrder(maxO), minBlock(minB), freeLists(maxO + 1) { freeLists[maxO].insert(0); }
+    size_t sizeOf(int order) const { return minBlock << order; }
+    int orderFor(size_t n) const { int k = 0; while (k <= maxOrder && sizeOf(k) < n) k++; return k; }     // maxOrder 보다 크면 불가능
     long alloc(size_t n, int* orderOut = nullptr) {
-        int k = 0; while (k <= MAX_ORDER && sizeOf(k) < n) k++;
-        if (k > MAX_ORDER) return -1;
-        int j = k; while (j <= MAX_ORDER && freeLists[j].empty()) j++;   // 쓸 수 있는 가장 작은 큰 블록
-        if (j > MAX_ORDER) return -1;
+        if (n == 0) return -1;
+        int k = orderFor(n); if (k > maxOrder) return -1;
+        int j = k; while (j <= maxOrder && freeLists[j].empty()) j++;                                       // 쓸 수 있는 가장 작은 큰 블록
+        if (j > maxOrder) return -1;
         size_t off = *freeLists[j].begin(); freeLists[j].erase(freeLists[j].begin());
-        while (j > k) { j--; freeLists[j].insert(off + sizeOf(j)); }     // 반으로 쪼개고 오른쪽 절반은 빈 블록으로
-        if (orderOut) *orderOut = k;
-        return off;
+        while (j > k) { j--; freeLists[j].insert(off + sizeOf(j)); }                                         // 반으로 쪼개고 오른쪽 절반은 빈 블록으로
+        allocated[off] = k; if (orderOut) *orderOut = k; return (long)off;
     }
-    void release(size_t off, int order) {
-        while (order < MAX_ORDER) {
-            size_t buddy = off ^ sizeOf(order);                         // 버디의 주소는 XOR 한 번
-            auto it = freeLists[order].find(buddy);
-            if (it == freeLists[order].end()) break;
-            freeLists[order].erase(it); off = std::min(off, buddy); order++;     // 합쳐서 한 단계 위로
+    bool release(size_t off) {
+        auto it = allocated.find(off); if (it == allocated.end()) return false;                             // 할당된 적 없거나 이미 해제됨
+        int order = it->second; allocated.erase(it);
+        while (order < maxOrder) {
+            size_t buddy = off ^ sizeOf(order);                                                             // 버디의 주소는 XOR 한 번
+            auto f = freeLists[order].find(buddy); if (f == freeLists[order].end()) break;
+            freeLists[order].erase(f); off = std::min(off, buddy); order++;                                  // 합쳐서 한 단계 위로
         }
-        freeLists[order].insert(off);
+        freeLists[order].insert(off); return true;
     }
     size_t freeBlocks(int order) const { return freeLists[order].size(); }
+    const std::set<size_t>& list(int order) const { return freeLists[order]; }
+    const std::map<size_t, int>& blocks() const { return allocated; }
+    int orders() const { return maxOrder; } size_t unit() const { return minBlock; } size_t heapSize() const { return sizeOf(maxOrder); }
 };
 
+// 독립 기준: 최소 블록 단위 사용표에서 극대 정렬 빈 블록 분해를 재귀로 구한다
+void decompose(const std::vector<char>& used, size_t unitOff, int order, std::vector<std::set<size_t>>& out, size_t unit) {
+    size_t len = (size_t)1 << order; bool allFree = true; for (size_t i = 0; i < len; ++i) if (used[unitOff + i]) { allFree = false; break; }
+    if (allFree) { out[order].insert(unitOff * unit); return; }
+    if (order == 0) return;
+    decompose(used, unitOff, order - 1, out, unit); decompose(used, unitOff + len / 2, order - 1, out, unit);
+}
+bool alignedFreeExists(const std::vector<char>& used, int order) {                                      // 크기 2^order 로 정렬된 완전히 빈 구간이 있는가
+    size_t len = (size_t)1 << order; for (size_t s = 0; s + len <= used.size(); s += len) { bool f = true; for (size_t i = 0; i < len && f; ++i) f = !used[s + i]; if (f) return true; } return false;
+}
+void checkInvariants(const Buddy& b) {
+    size_t units = (size_t)1 << b.orders(); std::vector<char> used(units, 0);
+    for (auto& kv : b.blocks()) {
+        size_t sz = b.sizeOf(kv.second); assert(kv.first % sz == 0 && kv.first + sz <= b.heapSize());                  // 크기에 정렬, 힙 안
+        for (size_t i = 0; i < sz / b.unit(); ++i) { assert(!used[kv.first / b.unit() + i]); used[kv.first / b.unit() + i] = 1; }
+    }
+    std::vector<std::set<size_t>> want(b.orders() + 1); decompose(used, 0, b.orders(), want, b.unit());
+    for (int k = 0; k <= b.orders(); ++k) assert(b.list(k) == want[k]);                                                // 빈 블록 집합 == 유일한 극대 분해 (곧 완전 병합 + 겹침 없음)
+}
+
 int main() {
-    Buddy b; int oa, ob, oc;
-    long a = b.alloc(100, &oa);                                      // 100B -> 128B 블록 (내부 단편화 28B)
-    assert(a == 0 && oa == 1);
-    long c = b.alloc(100, &ob);                                      // 이웃한 128B 블록
-    assert(c == 128 && ob == 1);
-    long d = b.alloc(300, &oc);                                      // 300B -> 512B 블록
-    assert(d == 512 && oc == 3);
-    assert(b.freeBlocks(2) == 1 && b.freeBlocks(1) == 0);            // 남은 빈 블록: [256, 512)
-    b.release(a, oa);
-    b.release(d, oc);
-    assert(b.freeBlocks(1) == 1);                                    // c 가 남아 있어 a 는 버디와 합쳐지지 못함
-    b.release(c, ob);                                                // 마지막 해제 -> 연쇄 병합
-    assert(b.freeBlocks(4) == 1 && b.freeBlocks(0) + b.freeBlocks(1) + b.freeBlocks(2) + b.freeBlocks(3) == 0);   // 다시 1024B 하나로
-    assert(b.alloc(2000) == -1);
-    std::cout << "BuddyAllocator: split on alloc, coalesce on free (buddy = addr XOR size)" << std::endl;
+    // 원래 예
+    {   Buddy b(64, 4); int oa, ob, oc;
+        long a = b.alloc(100, &oa); assert(a == 0 && oa == 1);                                  // 100B -> 128B 블록
+        long c = b.alloc(100, &ob); assert(c == 128 && ob == 1);
+        long d = b.alloc(300, &oc); assert(d == 512 && oc == 3);
+        assert(b.freeBlocks(2) == 1 && b.freeBlocks(1) == 0);
+        assert(b.release(a) && b.release(d) && b.freeBlocks(1) == 1);                            // c 가 남아 있어 a 는 버디와 합쳐지지 못함
+        assert(b.release(c) && b.freeBlocks(4) == 1 && b.freeBlocks(0) + b.freeBlocks(1) + b.freeBlocks(2) + b.freeBlocks(3) == 0);
+        assert(b.alloc(2000) == -1 && b.alloc(0) == -1 && !b.release(0) && !b.release(12345));
+    }
+    // ① 도달 가능한 모든 상태 전수 탐색 (최소 16B, 차수 0..3 = 8 칸)
+    {   Buddy start(16, 3); std::set<std::vector<std::pair<size_t, int>>> seen; std::vector<Buddy> stack{start}; long transitions = 0;
+        while (!stack.empty()) {
+            Buddy cur = stack.back(); stack.pop_back();
+            std::vector<std::pair<size_t, int>> key(cur.blocks().begin(), cur.blocks().end());
+            if (!seen.insert(key).second) continue;
+            checkInvariants(cur);
+            std::vector<char> used(8, 0); for (auto& kv : cur.blocks()) for (size_t i = 0; i < ((size_t)1 << kv.second); ++i) used[kv.first / 16 + i] = 1;
+            for (int k = 0; k <= 3; ++k) {                                                                                // 할당: 성공 <=> 정렬된 빈 구간이 존재
+                Buddy nxt = cur; long r = nxt.alloc(16 << k); bool exists = alignedFreeExists(used, k);
+                assert((r >= 0) == exists); ++transitions;
+                if (r >= 0) { assert((size_t)r % (16 << k) == 0); stack.push_back(nxt); }
+            }
+            for (auto& kv : cur.blocks()) { Buddy nxt = cur; assert(nxt.release(kv.first)); stack.push_back(nxt); ++transitions; }
+        }
+        long a = 2; for (int h = 1; h <= 3; ++h) a = 1 + a * a;                                                              // a(3) = 677
+        assert((long)seen.size() == a && a == 677 && transitions > 5000);
+    }
+    // ② 큰 힙 무작위 시험
+    {   Buddy b(16, 10); std::vector<unsigned char> mem(b.heapSize(), 0); std::mt19937 rng(31); struct Live { size_t off, req; unsigned char tag; }; std::vector<Live> live;
+        long okAllocs = 0, fails = 0, rejected = 0; double internalSum = 0, blockSum = 0;
+        for (int step = 0; step < 40000; ++step) {
+            int r = (int)(rng() % 100);
+            if (r < 52 || live.empty()) {
+                size_t n = (rng() % 8 == 0) ? 1 + rng() % 3000 : 1 + rng() % 200; int k;
+                long off = b.alloc(n, &k);
+                if (off < 0) { ++fails; continue; }
+                size_t sz = b.sizeOf(k); assert(sz >= n && (n <= 16 || sz < 2 * n));                                            // 내부 단편화는 절반 미만 (최소 블록 초과 요청)
+                unsigned char tag = (unsigned char)(1 + rng() % 250); std::fill(mem.begin() + off, mem.begin() + off + sz, tag);
+                live.push_back({(size_t)off, n, tag}); ++okAllocs; internalSum += sz - n; blockSum += sz;
+            } else if (r < 95) {
+                size_t i = rng() % live.size(); Live l = live[i]; live[i] = live.back(); live.pop_back();
+                size_t sz = b.sizeOf(b.blocks().at(l.off)); for (size_t j = 0; j < sz; ++j) assert(mem[l.off + j] == l.tag);     // 다른 블록이 내 블록을 덮어쓰지 않았다
+                assert(b.release(l.off)); assert(!b.release(l.off)); ++rejected;                                               // 이중 해제 거절
+            } else { size_t bogus = rng() % b.heapSize(); if (!b.blocks().count(bogus)) { assert(!b.release(bogus)); ++rejected; } }
+            if (step % 200 == 0) checkInvariants(b);
+        }
+        checkInvariants(b);
+        for (auto& l : live) assert(b.release(l.off));
+        assert(b.freeBlocks(10) == 1 && b.blocks().empty() && okAllocs > 8000 && fails > 100 && rejected > 8000);          // 모두 돌려주면 1 개의 최대 블록
+        std::cout << "BuddyAllocator verified: 677 reachable states checked, " << okAllocs << " random allocs, mean internal fragmentation " << (internalSum / blockSum) << std::endl;
+    }
     return 0;
 }
-// Time Complexity: 할당·해제 O(log N) (order 수)
+// Time Complexity: 할당·해제 O(차수) = O(log N) (집합 연산 포함 O(log N · log 블록 수))
 // Space Complexity: O(블록 수)
 ```
 ## ArenaAllocator()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <iostream>
 #include <memory>
 #include <new>
+#include <random>
+#include <stdexcept>
 #include <string>
-#include <cassert>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 // 아레나(범프) 할당기: 포인터 하나를 앞으로 밀기만 한다.  할당이 가장 빠르고(덧셈 한 번), 개별 해제는 없고 아레나 전체를 한 번에 비운다.
 // 컴파일러의 AST, 요청 하나를 처리하는 동안의 임시 객체, 게임의 프레임별 메모리에 적합.  mark/rollback 으로 부분 되돌리기도 가능
+// 이 구현: 덩어리(chunk)를 이어 붙이며 자라는 아레나 — 덩어리를 넘는 큰 요청은 전용 덩어리를 받고, reserved 상한을 넘으면 nullptr 를 돌려준다.
+//  make<T> 는 소멸자가 필요한 타입만 소멸자 목록에 올려 두었다가 rollback/reset/소멸 때 "만든 순서의 역순"으로 호출하고, 생성자가 예외를 던지면 사용량을 되돌려 놓는다
+// 검증: ① 한 덩어리 안에서 (크기, 정렬) 수열의 주소가 "직전 끝에서 정렬만큼만 올림"으로 정확히 결정  ② 덩어리 증설·큰 요청이 섞여도 구간이 서로 겹치지 않고 무늬가 보존  ③ 상한  ④ 소멸자 순서와
+//        cross-chunk rollback(덩어리는 유지되고 재사용)  ⑤ 예외 시 되돌림  ⑥ 같은 무작위 식 트리를 아레나/힙(unique_ptr)에 각각 만들어 계산 결과와 노드 수가 같음
 class Arena {
-    std::unique_ptr<unsigned char[]> buf; size_t cap, top = 0;
+    struct Chunk { unsigned char* mem; size_t cap, top; };
+    struct Dtor { void* obj; void (*fn)(void*); };
+    std::vector<Chunk> chunks; std::vector<Dtor> dtors; size_t cur = 0, chunkSize, limit, reservedBytes = 0;
+    void runDtors(size_t downTo) { while (dtors.size() > downTo) { Dtor d = dtors.back(); dtors.pop_back(); d.fn(d.obj); } }
 public:
-    explicit Arena(size_t n) : buf(new unsigned char[n]), cap(n) {}
+    struct Mark { size_t chunk, top, dtorCount; };
+    explicit Arena(size_t chunk = 4096, size_t maxReserved = (size_t)-1) : chunkSize(chunk), limit(maxReserved) {}
+    Arena(const Arena&) = delete; Arena& operator=(const Arena&) = delete;
+    ~Arena() { runDtors(0); for (Chunk& c : chunks) delete[] c.mem; }
     void* alloc(size_t n, size_t align = alignof(std::max_align_t)) {
-        uintptr_t cur = (uintptr_t)buf.get() + top;
-        uintptr_t aligned = (cur + align - 1) & ~(uintptr_t)(align - 1);
-        size_t newTop = aligned - (uintptr_t)buf.get() + n;
-        if (newTop > cap) return nullptr;
-        top = newTop;
-        return (void*)aligned;
+        assert(align && (align & (align - 1)) == 0); if (n == 0) n = 1;                                      // 크기 0 도 서로 다른 주소
+        for (size_t i = cur; i < chunks.size(); ++i) {
+            Chunk& c = chunks[i]; uintptr_t base = (uintptr_t)c.mem, a = (base + c.top + align - 1) & ~(uintptr_t)(align - 1);
+            if (a - base + n <= c.cap) { c.top = a - base + n; cur = i; return (void*)a; }                     // 덧셈 한 번 + 비교 한 번
+        }
+        size_t cap = std::max(chunkSize, n + align); if (reservedBytes + cap > limit) return nullptr;
+        chunks.push_back({new unsigned char[cap], cap, 0}); reservedBytes += cap; cur = chunks.size() - 1; return alloc(n, align);
     }
-    template <class T, class... A> T* make(A&&... a) { void* p = alloc(sizeof(T), alignof(T)); return p ? new (p) T(std::forward<A>(a)...) : nullptr; }
-    size_t mark() const { return top; }
-    void rollback(size_t m) { top = m; }
-    void reset() { top = 0; }
-    size_t used() const { return top; }
+    template <class T, class... A> T* make(A&&... a) {
+        Mark m = mark(); void* p = alloc(sizeof(T), alignof(T)); if (!p) return nullptr;
+        T* obj; try { obj = new (p) T(std::forward<A>(a)...); } catch (...) { rollback(m); throw; }              // 생성 실패: 사용량도 되돌린다
+        if (!std::is_trivially_destructible<T>::value) dtors.push_back({obj, [](void* q) { static_cast<T*>(q)->~T(); }});
+        return obj;
+    }
+    char* dup(const std::string& s) { char* p = (char*)alloc(s.size() + 1, 1); if (p) std::memcpy(p, s.c_str(), s.size() + 1); return p; }
+    Mark mark() const { return {chunks.empty() ? 0 : cur, chunks.empty() ? 0 : chunks[cur].top, dtors.size()}; }
+    void rollback(const Mark& m) {                                                                              // 표시 이후의 모든 객체를 만든 역순으로 소멸
+        runDtors(m.dtorCount); if (chunks.empty()) return;
+        for (size_t i = m.chunk + 1; i < chunks.size(); ++i) { chunks[i].top = 0; }
+        chunks[m.chunk].top = m.top; cur = m.chunk;
+    }
+    void reset() { rollback({0, 0, 0}); }
+    size_t used() const { size_t u = 0; for (const Chunk& c : chunks) u += c.top; return u; }
+    size_t reserved() const { return reservedBytes; } size_t chunkCount() const { return chunks.size(); } size_t pendingDtors() const { return dtors.size(); }
 };
 
+std::vector<int> dlog;
+struct Logged { int id; explicit Logged(int i) : id(i) {} ~Logged() { dlog.push_back(id); } };
+struct Boom { Boom() { throw std::runtime_error("boom"); } };
+struct Expr { int op; long val; Expr *l, *r; };                       // 0 상수, 1 +, 2 *, 3 -  (소멸자가 필요 없는 평범한 노드)
+struct HExpr { int op; long val; std::unique_ptr<HExpr> l, r; };
+long evalA(const Expr* e) { if (!e->op) return e->val; long a = evalA(e->l), b = evalA(e->r); return e->op == 1 ? a + b : e->op == 2 ? (a * b) % 1000003 : a - b; }
+long evalH(const HExpr* e) { if (!e->op) return e->val; long a = evalH(e->l.get()), b = evalH(e->r.get()); return e->op == 1 ? a + b : e->op == 2 ? (a * b) % 1000003 : a - b; }
+Expr* buildA(Arena& ar, std::mt19937& g, int depth, long& n) { ++n; if (depth == 0 || g() % 5 == 0) return ar.make<Expr>(Expr{0, (long)(g() % 100), nullptr, nullptr});
+    int op = 1 + (int)(g() % 3); Expr* l = buildA(ar, g, depth - 1, n); Expr* r = buildA(ar, g, depth - 1, n); return ar.make<Expr>(Expr{op, 0, l, r}); }
+std::unique_ptr<HExpr> buildH(std::mt19937& g, int depth, long& n) { ++n; if (depth == 0 || g() % 5 == 0) return std::unique_ptr<HExpr>(new HExpr{0, (long)(g() % 100), nullptr, nullptr});
+    int op = 1 + (int)(g() % 3); auto l = buildH(g, depth - 1, n); auto r = buildH(g, depth - 1, n); return std::unique_ptr<HExpr>(new HExpr{op, 0, std::move(l), std::move(r)}); }
+
 int main() {
-    Arena a(1024);
-    char* c = (char*)a.alloc(1, 1);
-    double* d = (double*)a.alloc(sizeof(double), alignof(double));
-    assert((uintptr_t)d % alignof(double) == 0 && (char*)d > c);       // 패딩을 넣어 정렬을 맞춘다
-    size_t m = a.mark();
-    int* tmp = a.make<int>(42); assert(*tmp == 42);
-    std::string* s = a.make<std::string>("arena string"); assert(*s == "arena string");
-    s->~basic_string();                                                  // 소멸자가 필요한 객체는 직접 정리해야 한다
-    a.rollback(m);                                                       // 임시 객체들을 한꺼번에 버린다
-    assert(a.used() == m);
-    assert(a.alloc(2000) == nullptr);                                    // 용량 초과
-    a.reset();
-    assert(a.used() == 0 && a.alloc(1000) != nullptr);
-    std::cout << "ArenaAllocator verified: bump pointer, rollback, reset." << std::endl;
+    // 원래 예: 정렬과 rollback
+    {   Arena a(1024); char* c = (char*)a.alloc(1, 1); double* d = (double*)a.alloc(sizeof(double), alignof(double));
+        assert((uintptr_t)d % alignof(double) == 0 && (char*)d > c);
+        Arena::Mark m = a.mark(); size_t u = a.used();
+        int* tmp = a.make<int>(42); assert(*tmp == 42); std::string* s = a.make<std::string>("arena string"); assert(*s == "arena string" && a.pendingDtors() == 1);
+        a.rollback(m); assert(a.used() == u && a.pendingDtors() == 0);                                       // string 의 소멸자도 호출되고 사용량이 되돌아온다
+        a.reset(); assert(a.used() == 0 && a.alloc(1000) != nullptr && a.chunkCount() == 1); }
+    // ① 한 덩어리 안: 주소가 "직전 끝에서 정렬만큼만 올림"
+    {   Arena a(1 << 22); std::mt19937 rng(1); uintptr_t prevEnd = 0; long checked = 0;
+        for (int i = 0; i < 20000; ++i) {
+            size_t align = (size_t)1 << (rng() % 8), n = 1 + rng() % 100; uintptr_t p = (uintptr_t)a.alloc(n, align);
+            assert(p % align == 0 && a.chunkCount() == 1);
+            if (prevEnd) assert(p >= prevEnd && p - prevEnd < align);                                         // 정렬에 필요한 만큼만 띄운다
+            prevEnd = p + n; ++checked;
+        } }
+    // ② 덩어리 증설·큰 요청: 겹침 없음
+    {   Arena a(256); std::mt19937 rng(2); struct R { unsigned char* p; size_t n; unsigned char tag; }; std::vector<R> rs;
+        for (int i = 0; i < 5000; ++i) { size_t n = (rng() % 20 == 0) ? 300 + rng() % 1500 : 1 + rng() % 90, align = (size_t)1 << (rng() % 7);
+            unsigned char* p = (unsigned char*)a.alloc(n, align); assert(p && (uintptr_t)p % align == 0); unsigned char tag = (unsigned char)(1 + i % 250); std::fill(p, p + n, tag); rs.push_back({p, n, tag}); }
+        std::vector<R> sorted = rs; std::sort(sorted.begin(), sorted.end(), [](const R& x, const R& y) { return x.p < y.p; });
+        for (size_t i = 0; i + 1 < sorted.size(); ++i) assert(sorted[i].p + sorted[i].n <= sorted[i + 1].p);   // 모든 구간이 서로소
+        for (const R& r : rs) for (size_t i = 0; i < r.n; ++i) assert(r.p[i] == r.tag);                         // 무늬 보존
+        assert(a.chunkCount() > 20 && a.reserved() >= a.used()); }
+    // ③ 상한
+    {   Arena a(100, 1000); int got = 0; while (a.alloc(60, 1)) ++got; assert(got == 10 && a.reserved() <= 1000 && a.alloc(500) == nullptr); a.reset(); assert(a.alloc(60, 1) != nullptr); }
+    // ④ 소멸자 순서와 cross-chunk rollback
+    {   dlog.clear(); {   Arena a(24); for (int i = 0; i < 2; ++i) a.make<Logged>(i);
+            Arena::Mark m = a.mark(); size_t reservedAtMark = a.reserved();
+            for (int i = 2; i < 12; ++i) { a.make<Logged>(i); }
+            a.make<int>(5); assert(a.chunkCount() > 1 && a.pendingDtors() == 12);       // 정수는 소멸자 목록에 안 올라간다
+            size_t reservedPeak = a.reserved(); a.rollback(m); std::vector<int> want; for (int i = 11; i >= 2; --i) want.push_back(i); assert(dlog == want && a.pendingDtors() == 2);
+            assert(a.reserved() == reservedPeak && reservedPeak > reservedAtMark);                                                         // 덩어리는 유지
+            for (int i = 20; i < 30; ++i) { a.make<Logged>(i); }
+            assert(a.reserved() == reservedPeak);                                          // 유지된 덩어리를 재사용: 새로 받지 않는다
+            dlog.clear(); }
+        std::vector<int> want; for (int i = 29; i >= 20; --i) want.push_back(i); want.push_back(1); want.push_back(0); assert(dlog == want); }        // 아레나가 사라지며 남은 객체를 역순 소멸
+    // ⑤ 예외: 생성 실패하면 사용량이 그대로
+    {   Arena a(256); a.make<Logged>(1); size_t u = a.used(), p = a.pendingDtors(); dlog.clear();
+        try { a.make<Boom>(); assert(false); } catch (const std::runtime_error&) {}
+        assert(a.used() == u && a.pendingDtors() == p && dlog.empty()); a.reset(); assert(dlog.size() == 1); }
+    // ⑥ 식 트리: 아레나 vs 힙
+    {   long nodesTotal = 0;
+        for (int seed = 0; seed < 300; ++seed) {
+            std::mt19937 g1(seed), g2(seed); long na = 0, nh = 0; Arena ar(1024);
+            Expr* ea = buildA(ar, g1, 9, na); std::unique_ptr<HExpr> eh = buildH(g2, 9, nh);
+            assert(na == nh && evalA(ea) == evalH(eh.get()) && ar.used() >= (size_t)na * sizeof(Expr)); nodesTotal += na;
+            ar.reset(); assert(ar.used() == 0);                                                                // 전체를 한 번에 비운다
+        }
+        char buf[16]; Arena sa(64); const char* s1 = sa.dup("hello"); const char* s2 = sa.dup(std::string("arena")); assert(std::string(s1) == "hello" && std::string(s2) == "arena" && s1 + 6 == s2); (void)buf;
+        std::cout << "ArenaAllocator verified: bump pointer matches the closed form, chunks never overlap, rollback runs destructors in reverse; " << nodesTotal << " tree nodes matched heap-built trees." << std::endl; }
     return 0;
 }
-// Time Complexity: 할당 O(1), 해제 O(1) (전체)
+// Time Complexity: 할당 O(1) (덩어리 증설 시 O(덩어리 크기)), rollback/reset O(되돌릴 객체 수 + 덩어리 수)
 // Space Complexity: O(용량)
 ```
 # Part 7. 가비지 컬렉션
