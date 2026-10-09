@@ -6,62 +6,62 @@
 
 | 책 | Part | 항목 | 링크형(정본이 다른 책) | GCC/Clang 확장 | POSIX | Linux 전용 | 스레드 |
 |----|-----:|-----:|-----:|-----:|-----:|-----:|-----:|
-| AdvancedDataStructures | 16 | 116 | 33 | 16 | 0 | 0 | 9 |
-| Graph | 17 | 106 | 7 | 13 | 1 | 0 | 0 |
-| Hash | 16 | 75 | 2 | 13 | 0 | 0 | 2 |
+| AdvancedDataStructures | 16 | 136 | 33 | 18 | 0 | 0 | 15 |
+| Graph | 17 | 107 | 7 | 13 | 1 | 0 | 0 |
+| Hash | 16 | 76 | 2 | 13 | 0 | 0 | 2 |
 | List | 11 | 78 | 5 | 1 | 0 | 0 | 4 |
 | Memory | 17 | 112 | 2 | 15 | 24 | 23 | 16 |
 | PathFinding | 17 | 102 | 11 | 2 | 0 | 0 | 0 |
-| Queue | 11 | 53 | 2 | 2 | 0 | 0 | 6 |
-| Set | 17 | 104 | 14 | 25 | 0 | 0 | 4 |
+| Queue | 11 | 56 | 2 | 3 | 0 | 0 | 6 |
+| Set | 17 | 105 | 14 | 25 | 0 | 0 | 4 |
 | Stack | 10 | 50 | 2 | 4 | 1 | 0 | 4 |
 | String | 18 | 68 | 2 | 6 | 0 | 0 | 1 |
-| Tree | 17 | 121 | 5 | 9 | 0 | 0 | 0 |
-| **합계** | 167 | 985 | 85 | 106 | 26 | 23 | 46 |
+| Tree | 17 | 125 | 5 | 9 | 0 | 0 | 0 |
+| **합계** | 167 | 1015 | 85 | 109 | 26 | 23 | 52 |
 
 표시: `↗File.md#N` 은 링크형 요약(정본이 File.md Part N), `[gcc]` `[posix]` `[linux]` `[threads]` 는 위 표의 이식성 표지다. POSIX·Linux 코드는 `#if` 가드로 감싸 다른 환경에서도 컴파일되고, GCC/Clang 확장을 쓰는 항목은 MSVC에서 따로 손봐야 한다.
 
 ## AdvancedDataStructures
 
-### Part 1. Persistent Data Structures (6)
+### Part 1. Persistent Data Structures (8)
 
-`PersistentArray`, `PersistentList`, `PersistentStack` ↗Stack#10, `PersistentQueue`, `PersistentSegmentTree`, `PersistentTrie`
+`PersistentArray`, `PersistentList`, `PersistentStack` ↗Stack#10, `PersistentQueue`, `PersistentSegmentTree`, `PersistentTrie`, `HAMT`, `RRBVector`
 
-### Part 2. Succinct Data Structures (6)
+### Part 2. Succinct Data Structures (7)
 
-`BitVector` [gcc], `Rank` [gcc], `Select` [gcc], `WaveletTree`, `FMIndex` ↗String#9, `SuccinctTrie`
+`BitVector` [gcc], `Rank` [gcc], `Select` [gcc], `WaveletTree`, `FMIndex` ↗String#9, `SuccinctTrie`, `BitmapIndex`
 
-### Part 3. 확률적 자료구조 (8)
+### Part 3. 확률적 자료구조 (12)
 
-`BloomFilter` [gcc], `CountingBloomFilter`, `CuckooFilter`, `QuotientFilter`, `XORFilter`, `CountMinSketch`, `HyperLogLog` [gcc], `TDigest`
+`BloomFilter` [gcc], `CountingBloomFilter`, `CuckooFilter`, `QuotientFilter`, `XORFilter`, `CountMinSketch`, `HyperLogLog` [gcc], `TDigest`, `MisraGries`, `SpaceSaving`, `CountSketch`, `ReservoirSampling`
 
 ### Part 4. 문자열 자료구조 (6)
 
 `Rope` ↗String#4, `PieceTable` ↗String#4, `GapBuffer` ↗String#4, `FingerTree`, `SuffixAutomaton` ↗String#9, `PatriciaTrie` ↗Tree#10
 
-### Part 5. 공간 자료구조 (9)
+### Part 5. 공간 자료구조 (11)
 
-`KDTree` ↗Tree#11, `QuadTree` ↗Tree#11, `Octree` ↗Tree#11, `RTree` ↗Tree#16, `BallTree`, `BVHTree`, `BKTree`, `VPTree`, `CoverTree`
+`KDTree` ↗Tree#11, `QuadTree` ↗Tree#11, `Octree` ↗Tree#11, `RTree` ↗Tree#16, `BallTree`, `BVHTree`, `BKTree`, `VPTree`, `CoverTree`, `DCEL`, `QuadEdge`
 
-### Part 6. 범위 질의 (6)
+### Part 6. 범위 질의 (8)
 
-`SegmentTree`, `LazyPropagation` ↗Tree#12, `FenwickTree`, `SparseTable`, `IntervalTree` ↗Tree#16, `RangeTree`
+`SegmentTree`, `LazyPropagation` ↗Tree#12, `FenwickTree`, `SparseTable`, `IntervalTree` ↗Tree#16, `RangeTree`, `DisjointSparseTable` [gcc], `SqrtTree` [gcc]
 
 ### Part 7. 균형 트리 (7)
 
 `AVLTree`, `RedBlackTree`, `AA Tree`, `Treap` ↗Tree#13, `SplayTree` ↗Tree#13, `ScapegoatTree` ↗Tree#13, `TangoTree` [gcc]
 
-### Part 8. 외부 메모리 (6)
+### Part 8. 외부 메모리 (9)
 
-`BTree` ↗Tree#13, `BPlusTree` ↗Tree#13, `BStarTree`, `FractalTree`, `LSMTree`, `BufferTree`
+`BTree` ↗Tree#13, `BPlusTree` ↗Tree#13, `BStarTree`, `FractalTree`, `LSMTree`, `BufferTree`, `CSBPlusTree`, `BwTree` [threads], `Masstree`
 
-### Part 9. 동시성 (6)
+### Part 9. 동시성 (11)
 
-`LockFreeQueue` ↗Queue#10 [threads], `LockFreeStack` ↗Stack#9 [threads], `ConcurrentHashMap` ↗Hash#12 [threads], `SkipListSet` ↗List#10, `CompareAndSwap` ↗Memory#11 [threads], `HazardPointer` [threads]
+`LockFreeQueue` ↗Queue#10 [threads], `LockFreeStack` ↗Stack#9 [threads], `ConcurrentHashMap` ↗Hash#12 [threads], `SkipListSet` ↗List#10, `CompareAndSwap` ↗Memory#11 [threads], `HazardPointer` [threads], `ChaseLevDeque` [threads], `Disruptor` [threads], `RCU` [threads], `Seqlock` [threads], `EpochBasedReclamation` [threads]
 
-### Part 10. 분산 시스템 (6)
+### Part 10. 분산 시스템 (7)
 
-`ConsistentHashing` ↗Hash#7, `DistributedHashTable`, `Chord` ↗Hash#7, `Kademlia` ↗Hash#7 [gcc], `MerkleTree` ↗Tree#16, `CRDT`
+`ConsistentHashing` ↗Hash#7, `DistributedHashTable`, `Chord` ↗Hash#7, `Kademlia` ↗Hash#7 [gcc], `MerkleTree` ↗Tree#16, `MerklePatriciaTrie`, `CRDT`
 
 ### Part 11. GPU 자료구조 (5)
 
@@ -121,9 +121,9 @@
 
 `MakeSet`, `FindSet`, `UnionSet`, `UnionByRank`, `PathCompression`
 
-### Part 9. 최단 경로 (5)
+### Part 9. 최단 경로 (6)
 
-`Dijkstra`, `BellmanFord`, `FloydWarshall`, `Johnson`, `SPFA`
+`Dijkstra`, `BellmanFord`, `FloydWarshall`, `Johnson`, `SPFA`, `DialAlgorithm`
 
 ### Part 10. 길찾기 (7)
 
@@ -179,9 +179,9 @@
 
 `PolynomialRollingHash` [gcc], `RabinFingerprint`, `LongestCommonSubstringHash` [gcc]
 
-### Part 6. 해시 컨테이너 (3)
+### Part 6. 해시 컨테이너 (4)
 
-`HashMap`, `LinkedHashMap`, `Multimap`
+`HashMap`, `LinkedHashMap`, `Multimap`, `BiMap`
 
 ### Part 7. 분산 해시 (6)
 
@@ -427,9 +427,9 @@
 
 `Deque`, `PushFront`, `PushBack`, `PopFront`, `PopBack`
 
-### Part 5. 우선순위 큐 (6)
+### Part 5. 우선순위 큐 (8)
 
-`PriorityQueue`, `PushHeap`, `PopHeap`, `Heapify`, `BuildHeap`, `HeapSort`
+`PriorityQueue`, `PushHeap`, `PopHeap`, `Heapify`, `BuildHeap`, `HeapSort`, `CalendarQueue`, `RadixHeap` [gcc]
 
 ### Part 6. BFS (5)
 
@@ -439,9 +439,9 @@
 
 `SlidingWindowMaximum`, `MonotonicQueue`, `WindowMinimum`
 
-### Part 8. 운영체제 (4)
+### Part 8. 운영체제 (5)
 
-`JobQueue`, `ReadyQueue`, `WaitingQueue`, `MessageQueue`
+`JobQueue`, `ReadyQueue`, `WaitingQueue`, `TimingWheel`, `MessageQueue`
 
 ### Part 9. 네트워크 (4)
 
@@ -477,9 +477,9 @@
 
 `Iterator`, `ForEach`, `Find`, `Filter`, `Map`, `Reduce`
 
-### Part 5. 구현 (6)
+### Part 5. 구현 (7)
 
-`ArraySet`, `LinkedSet`, `HashSet` [gcc], `TreeSet`, `BitSet` [gcc], `ImmutableSet`
+`ArraySet`, `LinkedSet`, `HashSet` [gcc], `TreeSet`, `Multiset`, `BitSet` [gcc], `ImmutableSet`
 
 ### Part 6. 비트 집합 (6)
 
@@ -675,9 +675,9 @@
 
 `RBInsert`, `RBDelete`, `FixViolation`, `Recolor`, `DoubleBlack`, `TwoThreeTree`, `TwoThreeFourTree`, `LeftLeaningRedBlackTree`
 
-### Part 8. 힙 (12)
+### Part 8. 힙 (15)
 
-`BinaryHeap`, `HeapInsert` [gcc], `HeapDelete` [gcc], `Heapify` ↗Queue#5 [gcc], `BuildHeap` ↗Queue#5, `HeapSort` ↗Queue#5, `FibonacciHeap`, `BinomialHeap` [gcc], `PairingHeap`, `LeftistHeap`, `DAryHeap`, `MinMaxHeap` [gcc]
+`BinaryHeap`, `HeapInsert` [gcc], `HeapDelete` [gcc], `Heapify` ↗Queue#5 [gcc], `BuildHeap` ↗Queue#5, `HeapSort` ↗Queue#5, `FibonacciHeap`, `BinomialHeap` [gcc], `PairingHeap`, `LeftistHeap`, `DAryHeap`, `MinMaxHeap` [gcc], `SkewHeap`, `IntervalHeap`, `LoserTree`
 
 ### Part 9. 다중 트리 (5)
 
@@ -703,9 +703,9 @@
 
 `PersistentTree`, `ImmutableTree`, `FingerTree` ↗AdvancedDataStructures#4
 
-### Part 15. 그래프 확장 (8)
+### Part 15. 그래프 확장 (9)
 
-`RootingTree`, `TreeDP`, `HeavyLightDecomposition`, `CentroidDecomposition`, `BinaryLifting`, `EulerTourTechnique`, `LinkCutTree`, `TopTree`
+`RootingTree`, `TreeDP`, `HeavyLightDecomposition`, `CentroidDecomposition`, `BinaryLifting`, `EulerTourTechnique`, `LinkCutTree`, `TopTree`, `EulerTourTree`
 
 ### Part 16. 특수 목적 (9)
 

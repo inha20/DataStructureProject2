@@ -1218,6 +1218,160 @@ int main() {
 // Space Complexity: O(1) 추가 (제자리)
 ```
 
+## CalendarQueue()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <utility>
+#include <vector>
+
+// 캘린더 큐(Calendar Queue, Brown 1988): 이산 사건 시뮬레이터의 우선순위 큐. 탁상 달력처럼 "하루(폭 width)" 칸이 nb 개인 배열이고 사건을 자기 날짜의 칸에 (우선순위 순으로 정렬해) 넣는다.
+// 칸 번호 = (우선순위 / width) mod nb 이므로 한 바퀴(= 한 해, nb·width)를 넘는 먼 미래의 사건도 같은 칸에 섞여 들어가고, 꺼낼 때는 "이번 해의 현재 날짜" 에 속하는 사건(우선순위 < 그 칸의 끝)만 꺼낸다.
+// 현재 칸부터 달력을 넘기며 첫 번째로 해당하는 사건을 찾고, 한 바퀴를 다 돌아도 없으면 전체 칸의 맨 앞에서 최솟값을 직접 찾는다. 사건이 칸에 고르게 퍼지면 넣기·꺼내기가 평균 O(1) 이다(이진 힙의 O(log n)).
+// 사건 수가 칸 수의 두 배를 넘거나 절반 아래로 떨어지면 칸 수를 두 배/절반으로 바꾸고 width 를 "가장 이른 사건 25 개의 평균 간격 x 3" 으로 다시 잡는다(간격이 고르지 않은 외톨이는 평균에서 뺀다).
+// 검증: ① 손으로 확인한 작은 예 ② 같은 (우선순위, 입력 순번) 순서를 가진 std::multiset 오라클과 꺼낸 순서가 완전히 같다 — 시뮬레이션 "홀드 모델"(꺼내고 미래 사건 넣기, 분포 3 가지: 균등·지수 비슷·두 군집), 과거 우선순위 삽입,
+//       일괄 넣기 후 비우기, 전부 같은 우선순위, 큰 간격 ③ 칸 수가 실제로 늘고 줄었으며 꺼낼 때 훑은 칸 수의 평균이 작다(O(1) 에 가깝다)
+class CalendarQueue {
+    typedef std::pair<long long, long long> Ev;                                                    // (우선순위, 입력 순번): 순번으로 같은 우선순위의 선입선출을 보장
+    std::vector<std::vector<Ev>> b_; long long width_ = 1, lastPrio_ = 0, top_ = 1; size_t n_ = 0, last_ = 0; long long seq_ = 0;
+    size_t bucketOf(long long p) const { return (size_t)((p / width_) % (long long)b_.size()); }
+    void put(const Ev& e) { auto& v = b_[bucketOf(e.first)]; v.insert(std::upper_bound(v.begin(), v.end(), e), e); }
+    void rebuild(size_t nb) {                                                                      // 칸 수를 바꾸고 width 를 표본에서 다시 정한다
+        std::vector<Ev> all; for (auto& v : b_) all.insert(all.end(), v.begin(), v.end());
+        const size_t m = std::min<size_t>(25, all.size()); std::partial_sort(all.begin(), all.begin() + (long)m, all.end());
+        long long sum = 0, cnt = 0; for (size_t i = 1; i < m; ++i) { sum += all[i].first - all[i - 1].first; ++cnt; }
+        if (cnt) { const long long avg = sum / cnt; long long s2 = 0, c2 = 0; for (size_t i = 1; i < m; ++i) { const long long g = all[i].first - all[i - 1].first; if (g <= 2 * avg) { s2 += g; ++c2; } } if (c2) width_ = std::max<long long>(1, 3 * s2 / c2); }
+        b_.assign(nb, {}); for (const Ev& e : all) put(e);
+        if (n_) { lastPrio_ = all.empty() ? 0 : std::min_element(all.begin(), all.end())->first; last_ = bucketOf(lastPrio_); top_ = (lastPrio_ / width_ + 1) * width_; }
+    }
+public:
+    long scans = 0, resizesUp = 0, resizesDown = 0;                                                // scans: 꺼낼 때 훑은 칸 수의 합
+    CalendarQueue() : b_(2) {}
+    size_t size() const { return n_; } size_t buckets() const { return b_.size(); } long long width() const { return width_; }
+    void push(long long prio) {
+        const Ev e{prio, seq_++}; if (n_ == 0 || prio < lastPrio_) { lastPrio_ = prio; last_ = bucketOf(prio); top_ = (prio / width_ + 1) * width_; }       // 과거의 사건이면 달력의 현재 날짜를 되돌린다
+        put(e); ++n_; if (n_ > 2 * b_.size()) { rebuild(2 * b_.size()); ++resizesUp; }
+    }
+    Ev pop() {                                                                                     // 우선순위가 가장 작은 사건
+        size_t i = last_; long long top = top_;
+        for (size_t step = 0; step < b_.size(); ++step) {
+            ++scans; auto& v = b_[i];
+            if (!v.empty() && v.front().first < top) { Ev e = v.front(); v.erase(v.begin()); --n_; last_ = i; top_ = top; lastPrio_ = e.first; shrink(); return e; }
+            i = (i + 1) % b_.size(); top += width_;
+        }
+        size_t best = 0; bool any = false;                                                         // 한 해를 돌아도 없다: 전체에서 최솟값을 직접 찾는다
+        for (size_t j = 0; j < b_.size(); ++j) if (!b_[j].empty() && (!any || b_[j].front() < b_[best].front())) { best = j; any = true; }
+        Ev e = b_[best].front(); b_[best].erase(b_[best].begin()); --n_; last_ = best; lastPrio_ = e.first; top_ = (e.first / width_ + 1) * width_; shrink(); return e;
+    }
+    void shrink() { if (n_ < b_.size() / 2 && b_.size() > 2) { rebuild(b_.size() / 2); ++resizesDown; } }
+};
+
+int main() {
+    {   CalendarQueue q; for (long long p : {50, 10, 40, 10, 30}) q.push(p);                       // 손으로 확인: 우선순위 순서, 같은 10 은 먼저 넣은 것부터
+        std::vector<std::pair<long long, long long>> out; while (q.size()) out.push_back(q.pop());
+        assert((out == std::vector<std::pair<long long, long long>>{{10, 1}, {10, 3}, {30, 4}, {40, 2}, {50, 0}})); }
+    std::mt19937_64 rng(5); long totalPops = 0; size_t maxBuckets = 0; long up = 0, down = 0; double worstAvgScan = 0;
+    for (int scenario = 0; scenario < 6; ++scenario) {
+        CalendarQueue q; std::set<std::pair<long long, long long>> oracle; long long seq = 0, clock = 0; auto push = [&](long long p) { q.push(p); oracle.insert({p, seq++}); };
+        auto pop = [&]() { auto e = q.pop(); assert(e == *oracle.begin()); oracle.erase(oracle.begin()); clock = e.first; ++totalPops; };
+        auto incr = [&](int dist) -> long long { if (dist == 0) return (long long)(rng() % 200); if (dist == 1) { long long x = 1; while (rng() % 3 && x < (1 << 20)) x *= 2; return x + (long long)(rng() % 7); } return (rng() % 2 ? 5 : 100000) + (long long)(rng() % 50); };   // 균등 / 거의 지수 / 두 군집
+        for (int i = 0; i < 400; ++i) push((long long)(rng() % 5000));
+        const long scansBefore = q.scans; long pops0 = totalPops;
+        for (int step = 0; step < 60000; ++step) {                                                 // 홀드 모델: 하나 꺼내고 그 시각 이후의 사건 하나를 넣는다 (때로는 과거의 사건도)
+            pop(); if (scenario == 3 && step % 50 == 0) push(clock > 100 ? clock - (long long)(rng() % 100) : 0); push(clock + incr(scenario % 3));
+            if (scenario == 4 && step % 1000 == 0) { for (int k = 0; k < 3000; ++k) push(clock + (long long)(rng() % 1000000)); while (oracle.size() > 400) pop(); }                             // 일괄 넣기 후 줄이기
+        }
+        const double avgScan = (double)(q.scans - scansBefore) / (double)(totalPops - pops0); if (scenario != 4) worstAvgScan = std::max(worstAvgScan, avgScan);
+        maxBuckets = std::max(maxBuckets, q.buckets()); up += q.resizesUp; down += q.resizesDown;
+        while (q.size()) pop(); assert(oracle.empty());
+    }
+    {   CalendarQueue q; std::multiset<std::pair<long long, long long>> oracle; for (long long i = 0; i < 5000; ++i) { q.push(7); oracle.insert({7, i}); } while (q.size()) { assert(q.pop() == *oracle.begin()); oracle.erase(oracle.begin()); } }    // 전부 같은 우선순위: 입력 순서
+    assert(maxBuckets >= 64 && up > 3 && down > 3 && worstAvgScan < 12.0);
+    std::cout << "CalendarQueue: dequeue order matched a (priority, insertion-order) multiset oracle over " << totalPops << " pops in 6 workloads (hold model with 3 increment distributions, past-dated inserts, bulk fill/drain, equal priorities); the calendar grew to " << maxBuckets << " buckets (" << up << " doublings, " << down << " halvings) and a dequeue scanned " << worstAvgScan << " buckets on average" << std::endl;
+    return 0;
+}
+// Time Complexity: 평균 O(1) (사건이 칸에 고르게 퍼질 때), 최악 O(n) (한 칸에 몰릴 때), 칸 수 조정은 분할상환 O(1)
+// Space Complexity: O(n + 칸 수)
+```
+
+## RadixHeap()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
+
+// 기수 힙(Radix Heap, Ahuja·Mehlhorn·Orlin·Tarjan 1990): 정수 키에 대한 "단조" 우선순위 큐 — 새로 넣는 키는 마지막으로 꺼낸 값(last) 이상이어야 한다(다익스트라에서 자연스럽게 성립).
+// 키 x 를 last 와 비교해 처음으로 달라지는 비트 위치로 버킷을 정한다: 버킷 0 = last 와 같은 키, 버킷 i = x xor last 의 최상위 비트가 i-1 번째(즉 x 가 last 보다 크고 2^(i-1) 이상 차이).
+// 꺼낼 때 버킷 0 이 비어 있으면 첫 번째 비지 않은 버킷 i 에서 최솟값을 골라 새 last 로 삼고, 그 버킷의 원소들을 새 last 기준으로 다시 나누면 모두 더 낮은 버킷으로 내려간다 — 원소 하나는 버킷을 아래로만 이동하므로 최대 (비트 수 + 1) 번,
+// 분할상환 비용은 원소당 O(log C) (C: 키의 최대 차이). 이진 힙(O(log n))보다 상수가 작고 캐시 친화적이라 정수 가중치 다익스트라·정렬 경매에서 쓴다.
+// 검증: ① 손으로 확인 ② 단조 작업(꺼낸 키 이상만 넣기) 무작위 20 만 번을 std::priority_queue 와 대조 ③ 무작위 64 비트 키 전부 넣고 꺼내기 == 정렬 ④ 정수 가중치 무작위 그래프의 다익스트라가 힙 구현과 같은 거리를 내고
+//       이동 횟수가 원소당 최대 65 이하 (단조가 아닌 삽입은 assert 로 거부한다)
+class RadixHeap {
+    typedef uint64_t U; std::vector<std::pair<U, int>> b_[65]; U last_ = 0; size_t n_ = 0;
+    static int bucketOf(U x, U last) { return x == last ? 0 : 64 - __builtin_clzll(x ^ last); }    // x xor last 의 최상위 비트 위치 + 1
+public:
+    long moves = 0;                                                                                // 원소가 버킷 사이를 옮겨 다닌 총 횟수
+    bool empty() const { return n_ == 0; } size_t size() const { return n_; } U lastKey() const { return last_; }
+    void push(U key, int val) { assert(key >= last_); b_[bucketOf(key, last_)].push_back({key, val}); ++n_; ++moves; }
+    std::pair<U, int> pop() {
+        if (b_[0].empty()) {
+            int i = 1; while (b_[i].empty()) ++i;                                                  // 첫 번째 비지 않은 버킷
+            U mn = b_[i][0].first; for (const auto& e : b_[i]) mn = std::min(mn, e.first);
+            last_ = mn; std::vector<std::pair<U, int>> cell; cell.swap(b_[i]);
+            for (const auto& e : cell) { const int j = bucketOf(e.first, last_); assert(j < i); b_[j].push_back(e); ++moves; }      // 새 last 기준으로 재분배: 모두 더 낮은 버킷으로
+        }
+        auto e = b_[0].back(); b_[0].pop_back(); --n_; return e;
+    }
+};
+struct Arc { int to; uint64_t w; };
+std::vector<uint64_t> dijkstraRadix(const std::vector<std::vector<Arc>>& g, int s, long& moves, size_t& pushes) {
+    const uint64_t INF = ~0ULL; std::vector<uint64_t> d(g.size(), INF); RadixHeap h; d[s] = 0; h.push(0, s); pushes = 1;
+    while (!h.empty()) { auto [du, u] = h.pop(); if (du > d[u]) continue; for (const Arc& a : g[(size_t)u]) if (du + a.w < d[(size_t)a.to]) { d[(size_t)a.to] = du + a.w; h.push(d[(size_t)a.to], a.to); ++pushes; } }      // 키 du + w >= du = last: 단조
+    moves = h.moves; return d;
+}
+std::vector<uint64_t> dijkstraHeap(const std::vector<std::vector<Arc>>& g, int s) {
+    const uint64_t INF = ~0ULL; std::vector<uint64_t> d(g.size(), INF); std::priority_queue<std::pair<uint64_t, int>, std::vector<std::pair<uint64_t, int>>, std::greater<>> pq; d[s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (const Arc& a : g[(size_t)u]) if (du + a.w < d[(size_t)a.to]) { d[(size_t)a.to] = du + a.w; pq.push({d[(size_t)a.to], a.to}); } }
+    return d;
+}
+
+int main() {
+    {   RadixHeap h; for (uint64_t k : {5, 3, 9, 3, 7}) h.push(k, (int)k * 10);                    // 손으로 확인: 3 3 5 7 9 순서, 꺼낸 뒤에는 그 값 이상만 넣을 수 있다
+        std::vector<uint64_t> out; while (!h.empty()) { auto e = h.pop(); out.push_back(e.first); if (e.first == 5) h.push(6, 60); }
+        assert((out == std::vector<uint64_t>{3, 3, 5, 6, 7, 9}) && h.lastKey() == 9); }
+    std::mt19937_64 rng(3); RadixHeap h; std::priority_queue<std::pair<uint64_t, int>, std::vector<std::pair<uint64_t, int>>, std::greater<>> ref; uint64_t last = 0; long pushed = 0;
+    for (int step = 0; step < 200000; ++step) {
+        if (ref.empty() || rng() % 100 < 55) { const int mode = (int)(rng() % 3); const uint64_t add = mode == 0 ? rng() % 16 : mode == 1 ? rng() % (1ULL << 20) : rng() >> (rng() % 60);        // 가까운 키 / 중간 / 아주 먼 키
+            const uint64_t key = last + std::min<uint64_t>(add, ~0ULL - last); h.push(key, step); ref.push({key, step}); ++pushed; }
+        else { auto a = h.pop(); auto b = ref.top(); ref.pop(); assert(a.first == b.first); last = a.first; }                                                              // 키가 같은 원소들의 값(step) 순서는 규정하지 않는다
+        assert(h.size() == ref.size());
+    }
+    while (!ref.empty()) { auto a = h.pop(); assert(a.first == ref.top().first); ref.pop(); }
+    {   RadixHeap sorter; std::vector<uint64_t> keys(100000); for (auto& k : keys) k = rng(); for (uint64_t k : keys) sorter.push(k, 0);
+        std::sort(keys.begin(), keys.end()); for (uint64_t k : keys) assert(sorter.pop().first == k); assert(sorter.moves <= 65L * 100000); }                              // 전부 넣고 꺼내기 == 정렬, 이동 <= 원소당 65
+    long maxMovesPerPush = 0;
+    for (int trial = 0; trial < 60; ++trial) {
+        const int n = 2 + (int)(rng() % 400), m = (int)(rng() % (6 * (unsigned)n)); const uint64_t maxW = 1 + rng() % (trial % 2 ? 1000000000ULL : 20ULL); std::vector<std::vector<Arc>> g((size_t)n);
+        for (int i = 0; i < m; ++i) g[rng() % (unsigned)n].push_back({(int)(rng() % (unsigned)n), rng() % (maxW + 1)});         // 가중치 0 포함
+        long moves = 0; size_t pushes = 0; assert(dijkstraRadix(g, 0, moves, pushes) == dijkstraHeap(g, 0)); maxMovesPerPush = std::max(maxMovesPerPush, moves / (long)pushes);
+        assert(moves <= 65L * (long)pushes);
+    }
+    std::cout << "RadixHeap: 200000 monotone push/pop operations matched std::priority_queue, 100000 random 64-bit keys came out sorted, and radix-heap Dijkstra equalled binary-heap Dijkstra on 60 random graphs (zero-weight edges included); at most " << maxMovesPerPush << " bucket moves per pushed element" << std::endl;
+    return 0;
+}
+// Time Complexity: push O(1), pop 분할상환 O(log C) (원소 하나는 버킷을 아래로만 옮겨 최대 65 번), 다익스트라 O(E + V log C)
+// Space Complexity: O(n + 65)
+```
 # Part 6. BFS
 ## BreadthFirstSearch()
 ### 대표코드
@@ -1759,6 +1913,81 @@ int main() {
 }
 // Time Complexity: P·V O(1)
 // Space Complexity: O(대기 프로세스 수)
+```
+## TimingWheel()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <vector>
+
+// 계층형 타이밍 휠(Hierarchical Timing Wheel, Varghese & Lauck 1987): 수만~수백만 개의 타이머(연결 제한 시간, 재전송 타이머, 캐시 만료)를 O(1) 에 등록·취소하고, 시간이 흐르면 만료된 것만 꺼낸다. 우선순위 큐의 O(log n) 대신 시계 바퀴를 쓴다.
+// 바퀴 한 개는 64 칸(6 비트) 배열이고 칸 하나는 한 "틱" 에 대응한다. 만료까지 남은 시간(delta)이 64 미만이면 1 층(해상도 1 틱) 칸 (만료 시각 & 63) 에, 64² 미만이면 2 층(칸 하나가 64 틱) 칸 ((만료 시각 >> 6) & 63) 에 둔다 ...
+// 4 층이면 2^24 틱까지 표현한다(그 너머는 넘침 목록: 가장 큰 바퀴가 한 바퀴 돌 때마다 다시 배치). 시간이 한 틱 흐를 때: 현재 시각이 64 의 배수에 닿으면 2 층의 해당 칸을 열어 타이머를 다시 배치(cascade — 이제 남은 시간이 짧아져 1 층으로 내려온다), 64² 의 배수면 3 층도 같은 일을 하고,
+// 그 뒤 1 층의 현재 칸을 비우면 만료. 타이머 하나는 만료까지 많아야 (층 수 - 1) 번만 옮겨진다. 취소는 활성 표에서 지우면 끝(칸에서는 나중에 지연 삭제). 리눅스 커널 timer wheel, Netty·Kafka 의 시간 휠이 이 구조다.
+// 검증: 시험용 16 칸 x 4 층 바퀴(2^16 틱 범위)에서 무작위 등록(지연 1~수십만 틱, 일부는 바퀴 범위 밖(넘침))·취소·같은 id 재등록과 틱 진행을 우선순위 큐 오라클과 대조 — 매 틱 만료된 id 집합이 정확히 같다(만료 시각 정확, 취소·재등록된 것은 만료 안 됨).
+//       타이머당 옮김 횟수 <= 층 수 + 넘침 재배치 몫, 활성 타이머가 모두 소진되면 칸이 비어 있다.
+template <int BITS = 6, int LEVELS = 4> class TimingWheel {                                        // 기본: 64 칸 x 4 층
+    static const int SLOTS = 1 << BITS; struct Timer { uint64_t id, expiry; };
+    uint64_t now_ = 0; std::vector<Timer> slot_[LEVELS][SLOTS]; std::vector<Timer> overflow_; std::unordered_map<uint64_t, uint64_t> active_;         // id -> 현재 유효한 만료 시각
+public:
+    long moves = 0;                                                                               // 칸에 넣은 총 횟수(등록 + cascade)
+    uint64_t now() const { return now_; } size_t pending() const { return active_.size(); }
+    void add(uint64_t id, uint64_t delay) { active_[id] = now_ + delay; place({id, now_ + delay}); }       // 같은 id 를 다시 등록하면 앞의 것은 무효(지연 삭제)
+    void cancel(uint64_t id) { active_.erase(id); }
+    void place(const Timer& t) {
+        ++moves; const uint64_t delta = t.expiry > now_ ? t.expiry - now_ : 0;
+        for (int lv = 0; lv < LEVELS; ++lv) if (delta < (1ULL << (BITS * (lv + 1)))) { slot_[lv][(t.expiry >> (BITS * lv)) & (SLOTS - 1)].push_back(t); return; }
+        overflow_.push_back(t);                                                                    // 2^24 틱보다 먼 타이머
+    }
+    std::vector<uint64_t> tick() {                                                                 // 시각을 한 틱 진행하고 이번 틱에 만료된 id 를 돌려준다
+        ++now_;
+        if ((now_ & ((1ULL << (BITS * LEVELS)) - 1)) == 0) { std::vector<Timer> o; o.swap(overflow_); for (const Timer& t : o) place(t); }          // 가장 큰 바퀴가 한 바퀴 돌았다: 넘침 목록 재배치
+        for (int lv = LEVELS - 1; lv >= 1; --lv) if ((now_ & ((1ULL << (BITS * lv)) - 1)) == 0) {                                                     // 높은 층부터 칸을 열어 아래로 내려보낸다
+            std::vector<Timer> cell; cell.swap(slot_[lv][(now_ >> (BITS * lv)) & (SLOTS - 1)]); for (const Timer& t : cell) { auto it = active_.find(t.id); if (it != active_.end() && it->second == t.expiry) place(t); }
+        }
+        std::vector<uint64_t> fired; std::vector<Timer> cell; cell.swap(slot_[0][now_ & (SLOTS - 1)]);
+        for (const Timer& t : cell) { auto it = active_.find(t.id); if (it != active_.end() && it->second == t.expiry) { assert(t.expiry == now_); fired.push_back(t.id); active_.erase(it); } }
+        return fired;
+    }
+};
+
+int main() {
+    {   TimingWheel<> w; w.add(1, 3); w.add(2, 3); w.add(3, 70); w.add(4, 5000); w.add(5, 10); w.cancel(5);                       // 손으로 확인: 3 틱 뒤 1·2, 70 틱 뒤 3(2 층에서 내려옴), 5000 틱 뒤 4(3 층), 5 는 취소
+        std::vector<std::pair<uint64_t, std::vector<uint64_t>>> got; for (int i = 0; i < 5100; ++i) { auto f = w.tick(); std::sort(f.begin(), f.end()); if (!f.empty()) got.push_back({w.now(), f}); }
+        assert((got == std::vector<std::pair<uint64_t, std::vector<uint64_t>>>{{3, {1, 2}}, {70, {3}}, {5000, {4}}}) && w.pending() == 0); }
+    // 시험은 16 칸 x 4 층(2^16 틱)으로 줄여 넘침·cascade 가 자주 일어나게 한다
+    std::mt19937 rng(91); TimingWheel<4, 4> wheel; std::map<uint64_t, uint64_t> oracle; std::multimap<uint64_t, uint64_t> byExpiry;              // 오라클: id -> 만료, 만료 시각 -> id
+    long adds = 0, cancels = 0, rearms = 0, firedTotal = 0, overflowAdds = 0; uint64_t nextId = 1;
+    for (int step = 0; step < 400000; ++step) {
+        const int op = (int)(rng() % 100);
+        if (op < 6) { uint64_t d; const int kind = (int)(rng() % 10);                                // 지연: 짧음 / 중간 / 긺 / 아주 긺(넘침)
+            if (kind < 5) d = 1 + rng() % 40; else if (kind < 8) d = 1 + rng() % 3000; else if (kind < 9) d = 1 + rng() % 60000; else { d = (1ULL << 16) + rng() % 200000; ++overflowAdds; }
+            uint64_t id = nextId++; if (rng() % 8 == 0 && !oracle.empty()) { auto it = oracle.begin(); std::advance(it, (long)(rng() % oracle.size())); id = it->first; ++rearms; }          // 가끔 기존 id 를 새 시각으로 재등록
+            if (oracle.count(id)) { auto range = byExpiry.equal_range(oracle[id]); for (auto r = range.first; r != range.second; ++r) if (r->second == id) { byExpiry.erase(r); break; } }
+            oracle[id] = wheel.now() + d; byExpiry.insert({wheel.now() + d, id}); wheel.add(id, d); ++adds; }
+        else if (op < 8 && !oracle.empty()) { auto it = oracle.begin(); std::advance(it, (long)(rng() % oracle.size())); const uint64_t id = it->first;
+            auto range = byExpiry.equal_range(it->second); for (auto r = range.first; r != range.second; ++r) if (r->second == id) { byExpiry.erase(r); break; } oracle.erase(it); wheel.cancel(id); ++cancels; }
+        auto fired = wheel.tick(); std::sort(fired.begin(), fired.end());
+        std::vector<uint64_t> want; auto range = byExpiry.equal_range(wheel.now()); for (auto r = range.first; r != range.second; ++r) want.push_back(r->second); byExpiry.erase(range.first, range.second);
+        std::sort(want.begin(), want.end()); for (uint64_t id : want) oracle.erase(id);
+        assert(fired == want); firedTotal += (long)fired.size(); assert(wheel.pending() == oracle.size());
+    }
+    while (wheel.pending() > 0 && wheel.now() < (1ULL << 21)) { auto fired = wheel.tick(); std::sort(fired.begin(), fired.end()); std::vector<uint64_t> want; auto range = byExpiry.equal_range(wheel.now()); for (auto r = range.first; r != range.second; ++r) want.push_back(r->second); byExpiry.erase(range.first, range.second); std::sort(want.begin(), want.end()); assert(fired == want); for (uint64_t id : want) oracle.erase(id); }       // 남은 타이머도 정확한 시각에 모두 만료
+    assert(wheel.pending() == 0 && oracle.empty() && byExpiry.empty() && overflowAdds > 100);
+    assert(wheel.moves <= adds * 7);                                                               // 등록 1 + 층 이동 최대 3 + 넘침 재배치 몫: 등록당 상수 번
+    std::cout << "TimingWheel: " << adds << " timer registrations (" << rearms << " re-arms, " << cancels << " cancels, " << overflowAdds << " beyond the wheel range) fired exactly " << firedTotal << " times at exactly their expiry tick, matching a priority-queue oracle on every one of " << wheel.now() << " ticks; " << (double)wheel.moves / (double)adds << " wheel placements per timer" << std::endl;
+    return 0;
+}
+// Time Complexity: 등록·취소 O(1), 틱 하나 O(만료되거나 cascade 되는 타이머 수) — 타이머당 많아야 층 수만큼 이동
+// Space Complexity: O(활성 타이머 + 칸 수 256 + 취소됐지만 아직 칸에 남은 항목)
 ```
 ## MessageQueue()
 ### 대표코드

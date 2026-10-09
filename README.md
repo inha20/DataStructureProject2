@@ -3,7 +3,7 @@
 <!-- status:begin -->
 **현황 (자동 생성 — `python3 -I tools/gen_index.py`)**
 
-- 책 11권, Part 167개, 항목 985개 (실행되는 C++ 코드 블록 984개, 그중 링크형 요약 85개).
+- 책 11권, Part 167개, 항목 1015개 (실행되는 C++ 코드 블록 1014개, 그중 링크형 요약 85개).
 - 모든 코드 블록은 `main` 과 `assert` 를 가진 완전한 프로그램이며 `tools/audit.py` 로 컴파일·실행을 검증한다.
 - 전체 감사 기록 없음.
 - 목차와 이식성 표는 [INDEX.md](INDEX.md), 복잡도 모음은 [COMPLEXITY.md](COMPLEXITY.md).

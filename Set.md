@@ -1591,6 +1591,92 @@ int main() {
 // Time Complexity: 조회·삽입·삭제·순위·select 모두 O(log N)
 // Space Complexity: O(N)
 ```
+## Multiset()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
+
+// 다중집합(Multiset): 같은 값이 여러 번 들어갈 수 있는 집합 — 값마다 "개수(multiplicity)" 를 센다. std::multiset 은 같은 값을 노드 여러 개로 저장하지만, 이 구현은 서로 다른 값마다 노드 하나 + 개수를 두고
+// 서브트리의 총 개수(tot)를 함께 저장하는 트립(순서 통계 트리)이라 개수가 아주 큰 값도 노드 하나이고, 다음이 모두 O(log 서로 다른 값 수) 다:
+// insert(x, c)·erase(x, c)(c 개를 지움, 있는 만큼만)·count(x)·size()(총 원소 수)·kth(i)(총 순서로 i 번째, 같은 값은 연달아)·rank(x)(x 보다 작은 원소 수)·lowerBound/upperBound(x)·countRange(lo, hi)(구간 안 원소 수)·min/max.
+// 집합 연산의 다중집합판도 한다: 합집합 = 값마다 max(개수), 교집합 = min(개수), 합(additive union) = 개수의 합, 차 = max(0, a - b); 포함 관계는 모든 값에서 개수가 이하인지. (수학의 bag / 다중집합과 같은 정의)
+// 검증: 무작위 insert(개수 포함)·erase·count·kth·rank·bounds·countRange 4 만 번을 std::multiset 과 대조, 같은 값을 백만 번 넣어도 노드 하나, 다중집합 연산 네 가지가 값별 개수 정의와 같고 부분 다중집합 판정 일치
+class Multiset {
+    struct Node { int key; long long cnt, tot; uint32_t pri; Node *l = nullptr, *r = nullptr; };   // cnt: 이 값의 개수, tot: 서브트리 총 개수
+    Node* root_ = nullptr; std::mt19937 rng_{2024}; size_t distinct_ = 0;
+    static long long tot(Node* x) { return x ? x->tot : 0; }
+    static void pull(Node* x) { x->tot = x->cnt + tot(x->l) + tot(x->r); }
+    static void split(Node* x, int key, Node*& a, Node*& b) { if (!x) { a = b = nullptr; return; } if (x->key < key) { split(x->r, key, x->r, b); pull(x); a = x; } else { split(x->l, key, a, x->l); pull(x); b = x; } }       // a: key 미만, b: key 이상
+    static Node* merge(Node* a, Node* b) { if (!a) return b; if (!b) return a; if (a->pri > b->pri) { a->r = merge(a->r, b); pull(a); return a; } b->l = merge(a, b->l); pull(b); return b; }
+    static void destroy(Node* x) { if (!x) return; destroy(x->l); destroy(x->r); delete x; }
+    Node* find(int key) const { Node* x = root_; while (x && x->key != key) x = key < x->key ? x->l : x->r; return x; }
+    static void collect(Node* x, std::vector<std::pair<int, long long>>& out) { if (!x) return; collect(x->l, out); out.push_back({x->key, x->cnt}); collect(x->r, out); }
+public:
+    Multiset() {} Multiset(const Multiset&) = delete; Multiset& operator=(const Multiset&) = delete; ~Multiset() { destroy(root_); }
+    Multiset(Multiset&& o) noexcept : root_(o.root_), rng_(o.rng_), distinct_(o.distinct_) { o.root_ = nullptr; o.distinct_ = 0; }
+    long long size() const { return tot(root_); } size_t distinct() const { return distinct_; }
+    long long count(int x) const { Node* n = find(x); return n ? n->cnt : 0; }
+    void insert(int x, long long c = 1) {
+        if (c <= 0) return;
+        if (Node* n = find(x)) { n->cnt += c; for (Node* p = root_; p != n; p = x < p->key ? p->l : p->r) p->tot += c; n->tot += c; return; }          // 이미 있는 값: 경로의 tot 만 늘린다
+        Node *a, *b; split(root_, x, a, b); Node* n = new Node{x, c, c, (uint32_t)rng_()}; root_ = merge(merge(a, n), b); ++distinct_;
+    }
+    long long erase(int x, long long c = 1) {                                                      // 실제로 지운 개수
+        Node* n = find(x); if (!n || c <= 0) return 0; const long long d = std::min(c, n->cnt);
+        if (d < n->cnt) { for (Node* p = root_; p != n; p = x < p->key ? p->l : p->r) p->tot -= d; n->cnt -= d; n->tot -= d; return d; }
+        Node *a, *b, *m, *r; split(root_, x, a, b); split(b, x + 1, m, r); destroy(m); root_ = merge(a, r); --distinct_; return d;                  // 개수가 0 이 되면 노드를 지운다
+    }
+    long long rank(int x) const { long long r = 0; for (Node* n = root_; n;) { if (x <= n->key) n = n->l; else { r += tot(n->l) + n->cnt; n = n->r; } } return r; }         // x 보다 작은 원소 수
+    long long countRange(int lo, int hi) const { return lo > hi ? 0 : rank(hi) + count(hi) - rank(lo); }          // lo <= v <= hi 인 원소 수 = (hi 이하) - (lo 미만)
+    int kth(long long i) const { Node* n = root_; for (;;) { if (i < tot(n->l)) n = n->l; else if (i < tot(n->l) + n->cnt) return n->key; else { i -= tot(n->l) + n->cnt; n = n->r; } } }       // 0 기준, 정렬했을 때 i 번째
+    int lowerBound(int x) const { long long i = rank(x); return i < size() ? kth(i) : INT32_MAX; }  // x 이상인 최소 원소(없으면 INT32_MAX)
+    int upperBound(int x) const { long long i = rank(x) + count(x); return i < size() ? kth(i) : INT32_MAX; }
+    int minimum() const { return kth(0); } int maximum() const { return kth(size() - 1); }
+    std::vector<std::pair<int, long long>> items() const { std::vector<std::pair<int, long long>> v; collect(root_, v); return v; }
+    static Multiset combine(const Multiset& a, const Multiset& b, char op) {                       // 'u' 합집합(max) 'i' 교집합(min) '+' 합(add) '-' 차(max(0, a-b))
+        Multiset r; auto ia = a.items(), ib = b.items(); std::set<int> keys; for (auto& p : ia) keys.insert(p.first); for (auto& p : ib) keys.insert(p.first);
+        for (int k : keys) { const long long x = a.count(k), y = b.count(k); long long c = op == 'u' ? std::max(x, y) : op == 'i' ? std::min(x, y) : op == '+' ? x + y : std::max(0LL, x - y); r.insert(k, c); }
+        return r;
+    }
+    bool subsetOf(const Multiset& o) const { for (auto& p : items()) if (p.second > o.count(p.first)) return false; return true; }
+};
+
+int main() {
+    {   Multiset m; m.insert(5, 3); m.insert(2); m.insert(9, 2); m.insert(5);                      // 손으로 확인: {2, 5x4, 9x2}
+        assert(m.size() == 7 && m.distinct() == 3 && m.count(5) == 4 && m.kth(0) == 2 && m.kth(1) == 5 && m.kth(4) == 5 && m.kth(5) == 9 && m.rank(5) == 1 && m.rank(6) == 5 && m.rank(10) == 7);
+        assert(m.lowerBound(3) == 5 && m.upperBound(5) == 9 && m.upperBound(9) == INT32_MAX && m.countRange(2, 5) == 5 && m.countRange(6, 8) == 0);
+        assert(m.erase(5, 10) == 4 && m.count(5) == 0 && m.distinct() == 2 && m.erase(7) == 0 && m.minimum() == 2 && m.maximum() == 9); }
+    std::mt19937 rng(59); Multiset m; std::multiset<int> ref;
+    for (int step = 0; step < 40000; ++step) {
+        const int op = (int)(rng() % 12), x = (int)(rng() % 400) - 200;
+        if (op < 4) { const int c = 1 + (int)(rng() % 4); m.insert(x, c); for (int i = 0; i < c; ++i) ref.insert(x); }
+        else if (op < 7) { const int c = 1 + (int)(rng() % 5); long long want = 0; for (int i = 0; i < c; ++i) { auto it = ref.find(x); if (it == ref.end()) break; ref.erase(it); ++want; } assert(m.erase(x, c) == want); }
+        else if (op == 7) { assert(m.count(x) == (long long)ref.count(x)); }
+        else if (op == 8) { assert(m.rank(x) == (long long)std::distance(ref.begin(), ref.lower_bound(x))); }
+        else if (op == 9 && !ref.empty()) { const long long i = (long long)(rng() % ref.size()); auto it = ref.begin(); std::advance(it, i); assert(m.kth(i) == *it); }
+        else if (op == 10) { auto lb = ref.lower_bound(x), ub = ref.upper_bound(x); assert(m.lowerBound(x) == (lb == ref.end() ? INT32_MAX : *lb) && m.upperBound(x) == (ub == ref.end() ? INT32_MAX : *ub)); }
+        else { const int hi = x + (int)(rng() % 100); assert(m.countRange(x, hi) == (long long)std::distance(ref.lower_bound(x), ref.upper_bound(hi))); }
+        assert(m.size() == (long long)ref.size());
+    }
+    {   std::vector<std::pair<int, long long>> got = m.items(), want; for (auto it = ref.begin(); it != ref.end();) { const int v = *it; const long long c = (long long)ref.count(v); want.push_back({v, c}); std::advance(it, c); } assert(got == want && m.distinct() == want.size()); }
+    {   Multiset huge; huge.insert(7, 1000000); for (int i = 0; i < 1000; ++i) huge.insert(7); assert(huge.distinct() == 1 && huge.size() == 1001000 && huge.kth(1000999) == 7 && huge.rank(8) == 1001000); }       // 개수가 커도 노드 하나
+    for (int trial = 0; trial < 100; ++trial) {                                                    // 다중집합 연산은 값별 개수 정의와 같다
+        Multiset a, b; std::multiset<int> ra, rb; for (int i = 0; i < 60; ++i) { int x = (int)(rng() % 15); a.insert(x); ra.insert(x); x = (int)(rng() % 15); b.insert(x); rb.insert(x); }
+        for (char op : {'u', 'i', '+', '-'}) { Multiset r = Multiset::combine(a, b, op); for (int v = 0; v < 15; ++v) { const long long x = (long long)ra.count(v), y = (long long)rb.count(v); assert(r.count(v) == (op == 'u' ? std::max(x, y) : op == 'i' ? std::min(x, y) : op == '+' ? x + y : std::max(0LL, x - y))); } }
+        assert(Multiset::combine(a, b, 'i').subsetOf(a) && a.subsetOf(Multiset::combine(a, b, 'u')) && a.subsetOf(Multiset::combine(a, b, '+')) && Multiset::combine(a, b, '-').subsetOf(a) && a.subsetOf(a));
+    }
+    std::cout << "Multiset: 40000 random insert/erase/count/rank/kth/bounds/countRange operations matched std::multiset; one node held a value inserted 1001000 times; union (max), intersection (min), sum and difference of multisets matched the per-value definitions on 100 random pairs" << std::endl;
+    return 0;
+}
+// Time Complexity: insert·erase·count·rank·kth·bounds O(log d) (d: 서로 다른 값의 수, 기대), 다중집합 연산 O(d log d)
+// Space Complexity: O(d) — 같은 값은 노드 하나에 개수로 저장
+```
 ## BitSet()
 ### 대표코드
 ```cpp

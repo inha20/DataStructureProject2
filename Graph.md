@@ -5389,6 +5389,61 @@ int main() {
 // Time Complexity: O(k·E) 평균, O(V·E) 최악
 // Space Complexity: O(V + E)
 ```
+## DialAlgorithm()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
+
+// 다이얼 알고리즘(Dial 1969): 간선 가중치가 0..C 의 정수인 그래프의 단일 출발점 최단 경로를 힙 없이 "버킷 배열" 로 푼다. 거리 d 인 정점들을 버킷 d 에 넣고 d = 0, 1, 2, ... 순서로 버킷을 비워 나간다.
+// 가장 먼저 비워지는 버킷의 정점이 곧 확정 거리를 가지므로 다익스트라와 같은 정당성이다. 간선 하나가 거리를 최대 C 만 늘리므로 동시에 쓰이는 버킷은 C+1 개뿐 → 크기 C+1 의 원형 배열 (d mod (C+1)) 이면 된다.
+// 한 버킷 안에서 가중치 0 간선으로 같은 버킷에 정점이 더 들어올 수 있으므로 인덱스로 순회한다. 오래된 항목(그 뒤 더 짧은 거리로 갱신된 정점)은 꺼낼 때 거리를 비교해 건너뛴다.
+// 시간 O(E + V·C)(버킷 훑기 포함): 가중치 범위가 작으면 힙(E log V)보다 빠르다 — 도로망 1~수십 분 단위, 격자 비용 1~9 등. 가중치 범위가 크면 기수 힙이나 이진 힙이 낫다.
+// 검증: ① 손으로 확인한 작은 그래프 ② 무작위 방향 그래프(C 가 1, 2, 10, 50, 정점 1~300, 가중치 0 포함, 도달 불가 포함) 400 개에서 이진 힙 다익스트라와 거리 배열이 같다 ③ 훑은 버킷 수 = 최대 최단 거리 + 1 이하, 정점당 확정 처리 한 번
+typedef std::vector<std::vector<std::pair<int, int>>> Graph;                                       // (도착, 가중치 0..C)
+const long long INF = LLONG_MAX / 4;
+std::vector<long long> dial(const Graph& g, int s, int C, long long& bucketsScanned) {
+    const int n = (int)g.size(); std::vector<long long> dist((size_t)n, INF); std::vector<std::vector<int>> bucket((size_t)C + 1); std::vector<char> done((size_t)n, 0);
+    dist[(size_t)s] = 0; bucket[0].push_back(s); size_t pending = 1; long long d = 0; bucketsScanned = 0;
+    while (pending > 0) {                                                                          // 남은 항목이 있는 동안 거리 d = 0, 1, 2, ...
+        auto& cell = bucket[(size_t)(d % (C + 1))]; ++bucketsScanned;
+        for (size_t k = 0; k < cell.size(); ++k) {                                                 // 처리 중 같은 버킷에 push 될 수 있으므로 인덱스 순회
+            const int u = cell[k];
+            if (done[(size_t)u] || dist[(size_t)u] != d) continue;                                 // 오래된 항목: 그 뒤 더 짧은 거리로 갱신된 정점
+            done[(size_t)u] = 1; --pending;                                                        // 확정: 아직 확정 안 된 발견 정점의 수 pending 에서 뺀다
+            for (auto [v, w] : g[(size_t)u]) if (d + w < dist[(size_t)v]) { if (dist[(size_t)v] == INF) ++pending; dist[(size_t)v] = d + w; bucket[(size_t)((d + w) % (C + 1))].push_back(v); }
+        }
+        cell.clear(); ++d;
+    }
+    return dist;
+}
+std::vector<long long> dijkstra(const Graph& g, int s) {
+    std::vector<long long> d(g.size(), INF); std::priority_queue<std::pair<long long, int>, std::vector<std::pair<long long, int>>, std::greater<>> pq; d[(size_t)s] = 0; pq.push({0, s});
+    while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[(size_t)u]) continue; for (auto [v, w] : g[(size_t)u]) if (du + w < d[(size_t)v]) { d[(size_t)v] = du + w; pq.push({d[(size_t)v], v}); } }
+    return d;
+}
+
+int main() {
+    {   Graph g(5); g[0] = {{1, 4}, {2, 1}}; g[2] = {{1, 2}, {3, 5}}; g[1] = {{3, 1}}; long long scanned = 0;                  // 손으로 확인: 0->2(1) 0->1(4) 2->1(2) 2->3(5) 1->3(1), 정점 4 는 도달 불가
+        auto d = dial(g, 0, 5, scanned); assert((d == std::vector<long long>{0, 3, 1, 4, INF}) && scanned == 5); }                     // 거리 0..4 의 버킷 5 개를 훑는다
+    std::mt19937 rng(47); long long totalScanned = 0, totalMax = 0; int graphs = 0;
+    for (int t = 0; t < 400; ++t) {
+        const int C = std::vector<int>{1, 2, 10, 50}[(size_t)(t % 4)], n = 1 + (int)(rng() % 300), m = (int)(rng() % (4 * (unsigned)n)); Graph g((size_t)n);
+        for (int i = 0; i < m; ++i) g[rng() % (unsigned)n].push_back({(int)(rng() % (unsigned)n), (int)(rng() % (unsigned)(C + 1))});      // 가중치 0..C
+        long long scanned = 0; auto a = dial(g, 0, C, scanned), b = dijkstra(g, 0); assert(a == b);
+        long long maxDist = 0; for (long long x : a) if (x < INF) maxDist = std::max(maxDist, x); assert(scanned == maxDist + 1); totalScanned += scanned; totalMax += maxDist; ++graphs;     // 버킷은 0..최대 거리 까지 한 번씩
+    }
+    std::cout << "DialAlgorithm: bucket-array shortest paths (weights 0..C for C in {1, 2, 10, 50}) equalled binary-heap Dijkstra on " << graphs << " random digraphs with zero-weight edges and unreachable vertices; each run scanned exactly (largest distance + 1) buckets (" << totalScanned << " in total)" << std::endl;
+    return 0;
+}
+// Time Complexity: O(E + V·C) — 간선 한 번씩 + 버킷 훑기(최대 거리 <= V·C)
+// Space Complexity: O(V + E + C)
+```
 # Part 10. 길찾기
 ## AStar()
 ### 대표코드

@@ -5,7 +5,7 @@
 | 도구 | 하는 일 |
 |------|---------|
 | `check_all.py` | **커밋 전에 돌리는 빠른 관문**(몇 초, 컴파일 없음): 자체 테스트, 구조·자리표시·얕은 항목·약한 항목(`--list-weak`) 0, 링크, 복잡도 표기, 생성 문서 최신성 |
-| `audit.py` | 구조 점검과 **컴파일·실행 검증**. 모드: `--strict`(-Wall -Wextra, 경고도 실패) `--san`(ASan+UBSan+LSan) `--tsan`(ThreadSanitizer) `--portable`(clang++, g++ -std=c++20 -pedantic) `--repeat N`(스레드 블록 반복) `--time`(3초 넘는 블록). 결과는 블록 해시로 `~/.cache/ds-audit.json` 에 저장되어 바뀐 블록만 다시 돌린다 |
+| `audit.py` | 구조 점검(Part·헤딩·BOM·깨진 글자·자리표시, 그리고 `#if` 가드 밖의 POSIX 헤더)과 **컴파일·실행 검증**. 모드: `--strict`(-Wall -Wextra, 경고도 실패) `--san`(ASan+UBSan+LSan) `--tsan`(ThreadSanitizer) `--portable`(clang++, g++ -std=c++20 -pedantic) `--repeat N`(스레드 블록 반복) `--time`(3초 넘는 블록). 결과는 블록 해시로 `~/.cache/ds-audit.json` 에 저장되어 바뀐 블록만 다시 돌린다 |
 | `mdedit.py` | 책 파일 일괄 편집 DSL(`@@ CODE File.md :: ## 표제`). CRLF/LF·BOM 을 보존한다. 문법은 파일 머리말 참고 |
 | `where.py` | 항목이 어느 책 몇 Part 에 있는지 조회 |
 | `linkcheck.py` | `File.md Part N` 언급과 `정본은 …` 링크 주석의 대상 존재, 동명 항목의 분류(`canonical.json`) 검사 |

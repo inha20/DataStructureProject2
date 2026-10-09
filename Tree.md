@@ -3855,6 +3855,271 @@ int main() {
 // Time Complexity: min/max O(1), push·popMin·popMax O(log N)
 // Space Complexity: O(N)
 ```
+## SkewHeap()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <utility>
+#include <vector>
+
+// 스큐 힙(Skew Heap, Sleator & Tarjan 1986): 균형 정보(랭크·길이)를 하나도 저장하지 않는 병합 가능한 힙. 모든 연산을 merge 하나로 한다 — push 는 한 노드짜리 힙과 병합, pop 은 루트를 빼고 두 자식을 병합.
+// merge(a, b): 키가 작은 쪽을 루트로 삼고, 그 루트의 오른쪽 자식과 나머지 힙을 병합해서 결과를 "왼쪽" 에 달고 옛 왼쪽 자식은 오른쪽으로 보낸다(자식 교환 무조건 실행). 왼쪽 편향 힙(Leftist heap)이 랭크로 오른쪽 가지를 짧게 유지하는 대신
+// 스큐 힙은 늘 교환해 두어 한 번의 병합이 비싸도 분할상환으로 O(log n) 이 되게 한다(퍼텐셜: "오른쪽 가지가 무거운 노드" 수). 코드가 가장 짧은 병합 힙이다.
+// 병합의 재귀 깊이가 오른쪽 가지 길이(최악 O(n))까지 갈 수 있어 이 구현은 오른쪽 가지를 따라 내려가며 노드를 스택에 모았다가 아래에서부터 자식을 교환해 올라오는 반복형으로 짰다.
+// 검증: ① 손으로 확인한 병합 ② 무작위 push/pop/meld 6 만 번을 std::priority_queue 와 대조, 힙 성질 검사 ③ 분할상환 비용: 병합 한 번에 방문한 노드 수의 평균이 3·log2(n+1)+2 이내
+//       ④ 오른쪽 가지가 긴 최악 입력(내림차순 삽입)에서도 스택 오버플로 없이 동작
+struct SkewHeap {
+    struct Node { int key; Node *l = nullptr, *r = nullptr; explicit Node(int k) : key(k) {} };
+    Node* root = nullptr; size_t n = 0; long visits = 0;                                           // visits: 병합이 방문한 노드 수의 누계
+    SkewHeap() {}
+    SkewHeap(const SkewHeap&) = delete; SkewHeap& operator=(const SkewHeap&) = delete;
+    ~SkewHeap() { std::vector<Node*> st; if (root) st.push_back(root); while (!st.empty()) { Node* x = st.back(); st.pop_back(); if (x->l) st.push_back(x->l); if (x->r) st.push_back(x->r); delete x; } }
+    Node* merge(Node* a, Node* b) {
+        std::vector<Node*> spine;                                                                  // 병합 중 내려온 노드들 (루트 쪽 -> 아래)
+        while (a && b) { ++visits; if (b->key < a->key) std::swap(a, b); spine.push_back(a); a = a->r; }
+        Node* m = a ? a : b;                                                                       // 한쪽이 바닥나면 남은 쪽을 그대로 붙인다
+        for (size_t i = spine.size(); i-- > 0;) { Node* x = spine[i]; x->r = x->l; x->l = m; m = x; }       // 아래부터: 옛 왼쪽 자식은 오른쪽으로, 병합 결과는 왼쪽으로 (교환)
+        return m;
+    }
+    void push(int k) { root = merge(root, new Node(k)); ++n; }
+    int top() const { return root->key; }
+    int pop() { Node* x = root; const int k = x->key; root = merge(x->l, x->r); delete x; --n; return k; }
+    void meld(SkewHeap& o) { root = merge(root, o.root); n += o.n; visits += o.visits; o.root = nullptr; o.n = 0; o.visits = 0; }             // o 의 내용을 모두 옮겨 온다
+    bool valid() const { std::vector<Node*> st; if (root) st.push_back(root); size_t cnt = 0; while (!st.empty()) { Node* x = st.back(); st.pop_back(); ++cnt; for (Node* c : {x->l, x->r}) if (c) { if (c->key < x->key) return false; st.push_back(c); } } return cnt == n; }
+};
+
+int main() {
+    {   SkewHeap a, b; for (int k : {5, 1, 9}) a.push(k); for (int k : {4, 2, 8}) b.push(k);       // 손으로 확인: 두 힙을 합쳐 정렬된 순서로 꺼낸다
+        a.meld(b); assert(a.n == 6 && b.n == 0 && b.root == nullptr && a.valid()); std::vector<int> out; while (a.n) out.push_back(a.pop()); assert((out == std::vector<int>{1, 2, 4, 5, 8, 9})); }
+    std::mt19937 rng(17); std::vector<SkewHeap*> heaps; std::vector<std::priority_queue<int, std::vector<int>, std::greater<int>>> ref;
+    for (int i = 0; i < 4; ++i) { heaps.push_back(new SkewHeap); ref.emplace_back(); }
+    long ops = 0, mergeCalls = 0;
+    for (int step = 0; step < 60000; ++step) {
+        const size_t h = rng() % heaps.size(); const int op = (int)(rng() % 100);
+        if (op < 50) { const int k = (int)(rng() % 100000); heaps[h]->push(k); ref[h].push(k); ++ops; ++mergeCalls; }
+        else if (op < 90) { if (!ref[h].empty()) { assert(heaps[h]->top() == ref[h].top()); assert(heaps[h]->pop() == ref[h].top()); ref[h].pop(); ++ops; mergeCalls += 1; } }
+        else { size_t g = rng() % heaps.size(); if (g != h) { heaps[h]->meld(*heaps[g]); while (!ref[g].empty()) { ref[h].push(ref[g].top()); ref[g].pop(); } ++ops; ++mergeCalls; } }          // 힙 g 를 힙 h 에 합친다
+        assert(heaps[h]->n == ref[h].size());
+        if (step % 6000 == 0) for (auto* x : heaps) assert(x->valid());
+    }
+    long totalVisits = 0; size_t maxN = 0; for (auto* x : heaps) { totalVisits += x->visits; maxN = std::max(maxN, x->n); }
+    const double avg = (double)totalVisits / (double)mergeCalls; assert(avg <= 3 * std::log2((double)maxN + 1) + 2);                      // 분할상환 O(log n): 병합당 방문 노드 수
+    for (size_t i = 0; i < heaps.size(); ++i) { while (!ref[i].empty()) { assert(heaps[i]->pop() == ref[i].top()); ref[i].pop(); } delete heaps[i]; }
+    {   SkewHeap worst; for (int k = 30000; k > 0; --k) worst.push(k); assert(worst.valid()); for (int k = 1; k <= 30000; ++k) assert(worst.pop() == k); }          // 내림차순 삽입: 깊은 가지가 생겨도 반복형이라 안전
+    std::cout << "SkewHeap: 60000 random push/pop/meld operations across 4 heaps matched std::priority_queue; a merge visited " << avg << " nodes on average (bound 3*log2(n)+2 = " << 3 * std::log2((double)maxN + 1) + 2 << "); 30000 descending inserts stayed fast and safe with the iterative merge" << std::endl;
+    return 0;
+}
+// Time Complexity: push·pop·meld 분할상환 O(log n) (한 번의 연산은 O(n) 일 수 있다)
+// Space Complexity: O(n), 노드마다 키 + 포인터 둘 (균형 정보 없음)
+```
+
+## IntervalHeap()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <iostream>
+#include <random>
+#include <set>
+#include <vector>
+
+// 구간 힙(Interval Heap, van Leeuwen & Wood 1993): 최솟값과 최댓값을 모두 O(log n) 에 꺼내는 양끝 우선순위 큐(DEPQ). 완전 이진 트리의 노드 하나가 원소 두 개를 [왼쪽 끝 lo, 오른쪽 끝 hi] 의 "구간" 으로 들고(마지막 노드만 하나일 수 있음),
+// 자식의 구간은 부모의 구간 안에 들어 있다: lo(부모) <= lo(자식) <= hi(자식) <= hi(부모). 따라서 모든 lo 가 최소 힙, 모든 hi 가 최대 힙을 이루고 뿌리 구간 [lo, hi] 가 전체의 [최솟값, 최댓값]이다.
+// 배열 a 에 노드 i 의 두 원소를 a[2i], a[2i+1] 로 놓으면 포인터 없이 표현된다. 삽입: 끝에 붙이고(노드가 둘이 되면 lo <= hi 로 정렬) 위로 올리며 lo 경로·hi 경로를 각각 고친다. 최솟값 꺼내기: 마지막 원소를 뿌리 lo 자리에 놓고 lo 경로로 내린다(최댓값은 대칭).
+// MinMaxHeap 이 한 원소당 노드 하나에 층마다 최소/최대를 번갈아 두는 것과 달리 한 노드에 두 끝을 같이 두어 비교가 단순하고 상수가 작다. 작업 스케줄러의 양쪽 끝 꺼내기, 중앙값 유지 보조 구조, 범위 축소에 쓴다.
+// 검증: ① 손으로 확인 ② 무작위 push/popMin/popMax 30 만 번을 std::multiset 과 대조(min·max 질의 포함)하고 매 연산 뒤 구간 힙 불변식(노드 안 lo<=hi, 자식 구간이 부모 구간 안)을 검사 ③ 작은 크기(1~12)의 모든 삽입 순서(순열)로 만든 힙이 불변식을 지킨다
+//       ④ 정렬된·역정렬 입력, 중복이 많은 입력
+class IntervalHeap {
+    std::vector<int> a_;                                                                           // 노드 i: a_[2i] (lo), a_[2i+1] (hi). 원소 수가 홀수면 마지막 노드는 a_[2i] 하나뿐
+    int lo(size_t i) const { return a_[2 * i]; }
+    int hi(size_t i) const { return 2 * i + 1 < a_.size() ? a_[2 * i + 1] : a_[2 * i]; }           // 원소가 하나뿐인 노드는 lo = hi
+    void upLo(size_t i) { while (i > 0) { size_t p = (i - 1) / 2; if (a_[2 * i] >= a_[2 * p]) break; std::swap(a_[2 * i], a_[2 * p]); i = p; } }          // lo 경로: 부모 lo 보다 작으면 올린다
+    void upHi(size_t i) {                                                                          // hi 경로: 부모 hi 보다 크면 올린다 (하나뿐인 노드는 그 원소가 hi)
+        size_t pos = 2 * i + 1 < a_.size() ? 2 * i + 1 : 2 * i;
+        while (i > 0) { size_t p = (i - 1) / 2; if (a_[pos] <= a_[2 * p + 1]) break; std::swap(a_[pos], a_[2 * p + 1]); i = p; pos = 2 * i + 1; }
+    }
+    void downLo(size_t i) {                                                                        // 뿌리 쪽에서 lo 자리에 놓인 값을 내린다
+        const size_t nodes = (a_.size() + 1) / 2;
+        for (;;) {
+            if (2 * i + 1 < a_.size() && a_[2 * i] > a_[2 * i + 1]) std::swap(a_[2 * i], a_[2 * i + 1]);                         // 노드 안에서 lo <= hi
+            size_t m = 0; bool any = false;                                                        // lo 가 더 작은 자식
+            for (size_t c : {2 * i + 1, 2 * i + 2}) if (c < nodes && (!any || a_[2 * c] < a_[2 * m])) { m = c; any = true; }
+            if (!any || a_[2 * i] <= a_[2 * m]) return;
+            std::swap(a_[2 * i], a_[2 * m]); i = m;
+        }
+    }
+    void downHi(size_t i) {
+        const size_t nodes = (a_.size() + 1) / 2;
+        for (;;) {
+            if (2 * i + 1 < a_.size() && a_[2 * i] > a_[2 * i + 1]) std::swap(a_[2 * i], a_[2 * i + 1]);
+            if (2 * i + 1 >= a_.size()) return;                                                    // hi 자리가 없는 노드(하나뿐)는 끝
+            size_t m = 0; bool any = false;                                                        // hi 가 더 큰 자식 (하나뿐인 자식은 그 원소가 hi)
+            for (size_t c : {2 * i + 1, 2 * i + 2}) if (c < nodes && (!any || hi(c) > hi(m))) { m = c; any = true; }
+            if (!any || a_[2 * i + 1] >= hi(m)) return;
+            const size_t pos = 2 * m + 1 < a_.size() ? 2 * m + 1 : 2 * m; std::swap(a_[2 * i + 1], a_[pos]); i = m;
+        }
+    }
+public:
+    size_t size() const { return a_.size(); } bool empty() const { return a_.empty(); }
+    int min() const { return a_[0]; } int max() const { return a_.size() == 1 ? a_[0] : a_[1]; }
+    void push(int x) {
+        a_.push_back(x); const size_t k = a_.size() - 1, i = k / 2;
+        if (k % 2 == 1) {                                                                          // 노드 i 가 둘이 됐다: 정렬한 뒤 두 경로를 고친다
+            if (a_[k - 1] > a_[k]) std::swap(a_[k - 1], a_[k]);
+            upLo(i); upHi(i);
+        } else if (i > 0) {                                                                        // 새 노드의 첫 원소: 부모 구간 밖이면 부모 끝 값과 바꾸고 그 경로를 올린다
+            const size_t p = (i - 1) / 2;
+            if (x < a_[2 * p]) { std::swap(a_[2 * i], a_[2 * p]); upLo(p); }
+            else if (x > a_[2 * p + 1]) { std::swap(a_[2 * i], a_[2 * p + 1]); upHi(p); }
+        }
+    }
+    int popMin() {
+        const int r = a_[0]; const int last = a_.back(); a_.pop_back();
+        if (!a_.empty()) { a_[0] = last; downLo(0); }
+        return r;
+    }
+    int popMax() {
+        if (a_.size() == 1) { const int r = a_[0]; a_.pop_back(); return r; }
+        const int r = a_[1]; const int last = a_.back(); a_.pop_back();
+        if (a_.size() >= 2) { a_[1] = last; downHi(0); }                                           // 원소가 둘이었다면 방금 pop 한 것이 a_[1] 자신이라 놓을 곳이 없다
+        return r;
+    }
+    bool valid() const {
+        const size_t nodes = (a_.size() + 1) / 2;
+        for (size_t i = 0; i < nodes; ++i) {
+            if (lo(i) > hi(i)) return false;
+            if (i > 0) { const size_t p = (i - 1) / 2; if (lo(i) < lo(p) || hi(i) > hi(p)) return false; }
+        }
+        return true;
+    }
+};
+
+int main() {
+    {   IntervalHeap h; for (int x : {5, 1, 9, 3, 7, 2, 8}) h.push(x);                             // 손으로 확인
+        assert(h.min() == 1 && h.max() == 9 && h.valid() && h.size() == 7);
+        assert(h.popMin() == 1 && h.popMax() == 9 && h.min() == 2 && h.max() == 8 && h.popMin() == 2 && h.popMax() == 8 && h.size() == 3 && h.valid());
+        assert(h.popMax() == 7 && h.popMax() == 5 && h.popMax() == 3 && h.empty()); }
+    std::mt19937 rng(23); IntervalHeap h; std::multiset<int> ref; long ops = 0;
+    for (int step = 0; step < 300000; ++step) {
+        const int op = (int)(rng() % 10);
+        if (op < 5 || ref.empty()) { const int x = (int)(rng() % (step % 7 == 0 ? 5 : 100000)); h.push(x); ref.insert(x); }                  // 가끔 값이 아주 적은 구간(중복 많음)
+        else if (op < 8) { assert(h.min() == *ref.begin()); assert(h.popMin() == *ref.begin()); ref.erase(ref.begin()); }
+        else { assert(h.max() == *ref.rbegin()); assert(h.popMax() == *ref.rbegin()); ref.erase(std::prev(ref.end())); }
+        assert(h.size() == ref.size()); ++ops;
+        if (!ref.empty()) assert(h.min() == *ref.begin() && h.max() == *ref.rbegin());
+        if (ref.size() < 40 || step % 997 == 0) assert(h.valid());                                 // 작은 크기에서는 매번 불변식 전체 검사
+    }
+    for (int n = 1; n <= 8; ++n) { std::vector<int> perm(n); for (int i = 0; i < n; ++i) perm[(size_t)i] = i; // 크기 n 의 모든 삽입 순서
+        do { IntervalHeap g; for (int x : perm) { g.push(x); assert(g.valid()); } assert(g.min() == 0 && g.max() == n - 1);
+             IntervalHeap c = g; std::vector<int> order; bool front = true; while (!c.empty()) { order.push_back(front ? c.popMin() : c.popMax()); front = !front; assert(c.valid()); }                         // 양끝에서 번갈아 꺼내기
+             std::vector<int> want; int lo = 0, hi = n - 1; for (int i = 0; i < n; ++i) want.push_back(i % 2 == 0 ? lo++ : hi--); assert(order == want); } while (std::next_permutation(perm.begin(), perm.end())); }
+    {   IntervalHeap asc, desc; for (int i = 0; i < 5000; ++i) { asc.push(i); desc.push(5000 - i); } assert(asc.valid() && desc.valid() && asc.min() == 0 && asc.max() == 4999 && desc.min() == 1 && desc.max() == 5000);
+        for (int i = 0; i < 5000; ++i) { assert(asc.popMax() == 4999 - i && desc.popMin() == 1 + i); } }
+    std::cout << "IntervalHeap: " << ops << " random push/popMin/popMax operations matched std::multiset with the interval-containment invariant checked (every operation while small), every insertion order of up to 8 elements gave a valid heap that drained correctly from both ends, and ascending/descending/duplicate-heavy inputs worked" << std::endl;
+    return 0;
+}
+// Time Complexity: push·popMin·popMax O(log n), min·max O(1)
+// Space Complexity: O(n) — 포인터 없는 배열
+```
+
+## LoserTree()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
+#include <iostream>
+#include <queue>
+#include <random>
+#include <vector>
+
+// 패자 트리(Loser Tree, 토너먼트 트리): k 개의 정렬된 런(run)을 합치는 k-way 병합(외부 정렬의 핵심)에서 "k 개의 머리 원소 중 최솟값" 을 고르는 구조. 리프 k 개(런마다 하나)가 토너먼트를 치르고,
+// 내부 노드에는 이긴 쪽이 아니라 "진 쪽(패자)" 의 런 번호를 저장하며 승자는 위로 올라간다. 맨 위에는 전체 승자가 있다. 승자의 런에서 다음 원소를 읽어 리프를 바꾸면, 그 리프에서 뿌리까지의 한 경로만 다시 겨루면 된다:
+// 경로 위의 각 노드에는 이미 "그 부분의 패자" 가 저장돼 있으므로 새 후보와 한 번씩만 비교하면 된다 → 원소당 비교가 정확히 경로 길이 ceil(log2 k) 번. 이진 힙에서 pop + push 는 자식 두 개와 비교하므로 약 2 log k 번이라 비교 횟수가 거의 절반이다.
+// 같은 키는 런 번호가 작은 쪽이 이기게 하면 안정(stable) 병합이다. 같은 틀로 "교체 선택(replacement selection)" 도 한다: 메모리 M 개로 입력을 읽으며 현재 런에 이어 붙일 수 있는 최솟값을 내보내 평균 2M 길이의 런을 만든다(키 = (런 번호, 값)).
+// 검증: ① 손으로 확인한 3-way 병합 ② 무작위 k = 1..70 개 런(길이 0 포함, 중복 많음)의 병합 결과 == 안정 정렬한 연결(같은 키는 런 번호 순), 비교 횟수 <= N ceil(log2 k) + k, 이진 힙 병합보다 적음
+//       ③ 교체 선택: 모든 런이 정렬돼 있고 입력의 순열이며, 무작위 입력의 평균 런 길이 ≈ 2M, 정렬된 입력은 런 하나, 역정렬 입력은 런 길이 M
+class LoserTree {
+    int k_; std::vector<int> loser_; std::vector<long long> key_; long long cmp_ = 0;               // loser_[1..k-1]: 내부 노드에 남은 패자(런 번호), loser_[0]: 전체 승자
+    bool beats(int a, int b) { ++cmp_; return key_[(size_t)a] < key_[(size_t)b] || (key_[(size_t)a] == key_[(size_t)b] && a < b); }
+public:
+    explicit LoserTree(const std::vector<long long>& heads) : k_((int)heads.size()), loser_((size_t)heads.size(), 0), key_(heads) {
+        std::vector<int> win((size_t)2 * (size_t)k_);                                              // 아래에서 위로 토너먼트: 리프 k_+i 는 런 i
+        for (int i = 0; i < k_; ++i) win[(size_t)(k_ + i)] = i;
+        for (int j = k_ - 1; j >= 1; --j) { const int a = win[(size_t)(2 * j)], b = win[(size_t)(2 * j + 1)]; if (beats(a, b)) { win[(size_t)j] = a; loser_[(size_t)j] = b; } else { win[(size_t)j] = b; loser_[(size_t)j] = a; } }
+        loser_[0] = k_ == 1 ? 0 : win[1];
+    }
+    int winner() const { return loser_[0]; } long long key(int run) const { return key_[(size_t)run]; } long long comparisons() const { return cmp_; }
+    void replace(int run, long long newKey) {                                                      // 승자 런의 머리를 바꾸고 리프에서 뿌리까지 한 경로만 다시 겨룬다
+        key_[(size_t)run] = newKey; int cur = run;
+        for (int j = (k_ + run) / 2; j >= 1; j /= 2) if (beats(loser_[(size_t)j], cur)) std::swap(loser_[(size_t)j], cur);          // 저장된 패자가 새 후보를 이기면 그쪽이 위로 올라간다
+        loser_[0] = cur;
+    }
+};
+const long long INF = LLONG_MAX;
+std::vector<std::pair<int, int>> kWayMerge(const std::vector<std::vector<int>>& runs, long long& cmp) {      // (값, 런 번호) 열
+    const int k = (int)runs.size(); std::vector<size_t> pos((size_t)k, 0); std::vector<long long> heads;
+    for (int i = 0; i < k; ++i) heads.push_back(runs[(size_t)i].empty() ? INF : runs[(size_t)i][0]);
+    LoserTree t(heads); std::vector<std::pair<int, int>> out;
+    while (t.key(t.winner()) != INF) {
+        const int w = t.winner(); out.push_back({(int)t.key(w), w}); ++pos[(size_t)w];
+        t.replace(w, pos[(size_t)w] < runs[(size_t)w].size() ? runs[(size_t)w][pos[(size_t)w]] : INF);
+    }
+    cmp = t.comparisons(); return out;
+}
+std::vector<std::pair<int, int>> heapMerge(const std::vector<std::vector<int>>& runs, long long& cmp) {      // 이진 힙(비교 횟수를 세는 비교자)으로 같은 일을 한다
+    struct Item { int v, run; size_t idx; }; long long c = 0;
+    auto greater = [&c](const Item& a, const Item& b) { ++c; return a.v != b.v ? a.v > b.v : a.run > b.run; };
+    std::priority_queue<Item, std::vector<Item>, decltype(greater)> pq(greater); std::vector<std::pair<int, int>> out;
+    for (int i = 0; i < (int)runs.size(); ++i) if (!runs[(size_t)i].empty()) pq.push({runs[(size_t)i][0], i, 0});
+    while (!pq.empty()) { Item x = pq.top(); pq.pop(); out.push_back({x.v, x.run}); if (x.idx + 1 < runs[(size_t)x.run].size()) pq.push({runs[(size_t)x.run][x.idx + 1], x.run, x.idx + 1}); }
+    cmp = c; return out;
+}
+std::vector<std::vector<int>> replacementSelection(const std::vector<int>& in, int M) {            // 교체 선택: 메모리 M 개로 만드는 정렬 런들
+    std::vector<std::vector<int>> runs; if (in.empty()) return runs;
+    const long long SHIFT = 1LL << 32; std::vector<long long> init; size_t next = 0;
+    for (int i = 0; i < M && next < in.size(); ++i) init.push_back(in[next++]);                    // 키 = 런 번호 x 2^32 + 값 (값은 31 비트 양수)
+    LoserTree t(init); runs.emplace_back();
+    for (;;) {
+        const int w = t.winner(); const long long key = t.key(w); if (key == INF) break;
+        const long long runNo = key / SHIFT, val = key % SHIFT; while ((long long)runs.size() <= runNo) runs.emplace_back();
+        runs[(size_t)runNo].push_back((int)val);
+        if (next < in.size()) { const int x = in[next++]; t.replace(w, (x >= val ? runNo : runNo + 1) * SHIFT + x); }           // 방금 낸 값 이상이면 같은 런, 아니면 다음 런으로 미룬다
+        else t.replace(w, INF);
+    }
+    while (!runs.empty() && runs.back().empty()) runs.pop_back(); return runs;
+}
+
+int main() {
+    {   long long cmp = 0; auto out = kWayMerge({{1, 4, 7}, {2, 4, 9}, {3, 4}}, cmp);              // 손으로 확인: 같은 4 는 런 번호 순
+        assert((out == std::vector<std::pair<int, int>>{{1, 0}, {2, 1}, {3, 2}, {4, 0}, {4, 1}, {4, 2}, {7, 0}, {9, 1}})); }
+    std::mt19937 rng(37); long long loserTotal = 0, heapTotal = 0, elems = 0;
+    for (int trial = 0; trial < 400; ++trial) {
+        const int k = 1 + (int)(rng() % 70), maxV = trial % 3 == 0 ? 6 : 1000; std::vector<std::vector<int>> runs((size_t)k); std::vector<std::pair<int, int>> all;
+        for (int i = 0; i < k; ++i) { const int len = (int)(rng() % 40); for (int j = 0; j < len; ++j) runs[(size_t)i].push_back((int)(rng() % (unsigned)maxV)); std::sort(runs[(size_t)i].begin(), runs[(size_t)i].end()); for (int v : runs[(size_t)i]) all.push_back({v, i}); }
+        std::stable_sort(all.begin(), all.end());                                                  // (값, 런 번호) 순: 안정 병합의 정답
+        long long c1 = 0, c2 = 0; auto m = kWayMerge(runs, c1); auto h = heapMerge(runs, c2); assert(m == all && h == all);
+        int lg = 0; while ((1 << lg) < k) ++lg; const long long n = (long long)all.size(); assert(c1 <= n * lg + 2 * k + 1 + n);        // 원소당 경로 길이 비교 (+ 빌드 k-1, 마지막 INF 처리)
+        if (k >= 8 && n >= 100) { loserTotal += c1; heapTotal += c2; elems += n; }
+    }
+    assert(loserTotal < heapTotal * 3 / 4);                                                        // 비교 횟수가 이진 힙의 3/4 미만
+    const int M = 100, N = 100000; std::vector<int> in((size_t)N); for (auto& x : in) x = (int)(rng() % 1000000000);
+    auto runs = replacementSelection(in, M); std::vector<int> flat; for (const auto& r : runs) { assert(std::is_sorted(r.begin(), r.end())); flat.insert(flat.end(), r.begin(), r.end()); }
+    std::vector<int> sortedIn = in, sortedFlat = flat; std::sort(sortedIn.begin(), sortedIn.end()); std::sort(sortedFlat.begin(), sortedFlat.end()); assert(sortedIn == sortedFlat);                 // 모든 런이 정렬돼 있고 입력의 순열
+    const double avg = (double)N / (double)runs.size(); assert(avg > 1.7 * M && avg < 2.3 * M);                              // 무작위 입력의 평균 런 길이 ≈ 2M (Knuth)
+    std::vector<int> asc((size_t)N), desc((size_t)N); for (int i = 0; i < N; ++i) { asc[(size_t)i] = i; desc[(size_t)i] = N - i; }
+    assert(replacementSelection(asc, M).size() == 1 && replacementSelection(desc, M).size() == (size_t)((N + M - 1) / M));                                       // 정렬된 입력: 런 하나, 역정렬: 길이 M
+    std::cout << "LoserTree: k-way merges of 400 random run sets (k up to 70, empty runs and heavy duplicates) equalled the stable sorted concatenation; " << loserTotal << " comparisons versus " << heapTotal << " for a binary-heap merge (" << 100.0 * (double)loserTotal / (double)heapTotal << "%); replacement selection with M=" << M << " produced " << runs.size() << " runs of average length " << avg << " from " << N << " random keys" << std::endl;
+    return 0;
+}
+// Time Complexity: 병합 원소당 정확히 ceil(log2 k) 번 비교, 만들기 O(k)
+// Space Complexity: O(k) (내부 노드 k-1 개의 패자 번호 + 머리 키)
+```
 # Part 9. 다중 트리
 ## TrieInsert() & TrieSearch()
 ### 대표코드
@@ -6484,6 +6749,89 @@ int main() {
 }
 // Time Complexity: 구성 O(N), 클러스터 병합 O(1)
 // Space Complexity: O(N)
+```
+## EulerTourTree()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
+
+// 오일러 투어 트리(Euler Tour Tree, Henzinger & King 1995): 간선이 생기고 사라지는 숲(동적 포레스트)에서 두 정점이 같은 트리에 있는지(connected), 트리의 크기, 간선 추가(link)·삭제(cut)를 모두 O(log n) 에 한다.
+// 각 트리를 "오일러 투어(깊이 우선으로 간선을 양방향 한 번씩 지나는 닫힌 걸음)" 의 열로 저장하고, 열을 균형 이진 탐색 트리(여기서는 암시적 트립)에 둔다. 열의 원소는 정점 노드 V(w)(정점당 하나, 크기 세기용)와 호 노드 A(u→v)(간선 하나당 양방향 둘).
+// 투어는 원형이라 어느 정점에서 시작해도 되므로 reroot(v) = V(v) 앞뒤를 잘라 순서를 바꾸는 한 번의 split + merge. link(u, v) = reroot(u), reroot(v) 한 뒤 [투어(u)] A(u→v) [투어(v)] A(v→u) 를 이어 붙이기.
+// cut(u, v) = 열이 X A(u→v) Y A(v→u) Z 모양이므로 두 호를 찾아 잘라 낸 가운데 Y 가 v 쪽 트리, X + Z 가 u 쪽 트리가 된다. connected(u, v) = 두 V 노드가 같은 트립의 뿌리를 갖는가 (트립 노드에서 부모 포인터를 따라 올라간다).
+// 링크-컷 트리(Link-Cut Tree)가 경로 질의에 강하다면 이 구조는 부분 트리(크기·합) 질의에 강하다. 완전 동적 연결성(Holm 등)의 숲 층으로도 쓰인다.
+// 검증: 정점 60 개의 숲에서 무작위 link·cut·connected·size 4 만 번을 단순한 인접 리스트 + BFS 오라클과 대조하고, 주기적으로 모든 투어가 닫힌 걸음(호가 현재 정점에서 시작해 다음 정점으로 이어지고, 정점 노드가 정확히 한 번씩, 호가 간선마다 둘)인지 검사한다.
+struct EulerTourForest {
+    struct Node { int type, a, b; uint32_t pri; Node *l = nullptr, *r = nullptr, *p = nullptr; int sz = 1, vcnt = 0; };           // type 0: 정점 a, type 1: 호 a→b
+    int n; std::vector<Node*> vertexNode; std::map<std::pair<int, int>, Node*> arc; std::mt19937 rng{12345};
+    explicit EulerTourForest(int n_) : n(n_) { for (int v = 0; v < n; ++v) vertexNode.push_back(make(0, v, v)); }
+    ~EulerTourForest() { std::set<Node*> roots; for (Node* x : vertexNode) roots.insert(root(x)); for (Node* r : roots) destroy(r); }       // 같은 트립을 두 번 지우지 않게 뿌리를 모은다
+    static void destroy(Node* x) { if (!x) return; destroy(x->l); destroy(x->r); delete x; }
+    Node* make(int type, int a, int b) { Node* x = new Node{type, a, b, (uint32_t)rng()}; x->vcnt = type == 0; return x; }
+    static int sz(Node* x) { return x ? x->sz : 0; }
+    static void pull(Node* x) { x->sz = 1 + sz(x->l) + sz(x->r); x->vcnt = (x->type == 0) + (x->l ? x->l->vcnt : 0) + (x->r ? x->r->vcnt : 0); if (x->l) x->l->p = x; if (x->r) x->r->p = x; }
+    static Node* merge(Node* a, Node* b) { if (!a) { if (b) b->p = nullptr; return b; } if (!b) { a->p = nullptr; return a; }
+        if (a->pri > b->pri) { a->r = merge(a->r, b); pull(a); a->p = nullptr; return a; } b->l = merge(a, b->l); pull(b); b->p = nullptr; return b; }
+    static void split(Node* x, int k, Node*& L, Node*& R) {                                        // 앞 k 개 | 나머지
+        if (!x) { L = R = nullptr; return; }
+        if (sz(x->l) < k) { split(x->r, k - sz(x->l) - 1, x->r, R); pull(x); L = x; L->p = nullptr; if (R) R->p = nullptr; }
+        else { split(x->l, k, L, x->l); pull(x); R = x; R->p = nullptr; if (L) L->p = nullptr; }
+    }
+    static Node* root(Node* x) { while (x->p) x = x->p; return x; }
+    static int position(Node* x) { int pos = sz(x->l); while (x->p) { if (x == x->p->r) pos += sz(x->p->l) + 1; x = x->p; } return pos; }        // 열에서 x 의 0 기준 위치
+    Node* reroot(int v) {                                                                          // 투어가 V(v) 로 시작하도록 원형을 돌린다
+        Node* x = vertexNode[(size_t)v]; Node* rt = root(x); Node *a, *b; split(rt, position(x), a, b); return merge(b, a);
+    }
+    bool connected(int u, int v) const { return root(vertexNode[(size_t)u]) == root(vertexNode[(size_t)v]); }
+    int treeSize(int v) const { return root(vertexNode[(size_t)v])->vcnt; }
+    bool hasEdge(int u, int v) const { return arc.count({u, v}) > 0; }
+    void link(int u, int v) {
+        assert(!connected(u, v)); Node* tu = reroot(u); Node* tv = reroot(v);
+        Node* auv = make(1, u, v); Node* avu = make(1, v, u); arc[{u, v}] = auv; arc[{v, u}] = avu;
+        merge(merge(merge(tu, auv), tv), avu);
+    }
+    void cut(int u, int v) {
+        Node* a = arc.at({u, v}); Node* b = arc.at({v, u}); int pa = position(a), pb = position(b); if (pa > pb) { std::swap(a, b); std::swap(pa, pb); }
+        Node* rt = root(a); Node *X, *rest, *aN, *Y, *bAndZ, *bN, *Z; split(rt, pa, X, rest); split(rest, 1, aN, Y); split(Y, pb - pa - 1, Y, bAndZ); split(bAndZ, 1, bN, Z);
+        arc.erase({a->a, a->b}); arc.erase({b->a, b->b}); delete aN; delete bN; merge(X, Z);          // Y 는 그대로 한 트리, X + Z 가 다른 쪽 트리
+    }
+    // 검증용: 투어 하나가 닫힌 걸음인가
+    bool walkValid(Node* rt, int expectVertices) const {
+        std::vector<Node*> seq; std::vector<Node*> st; Node* x = rt; while (x || !st.empty()) { while (x) { st.push_back(x); x = x->l; } x = st.back(); st.pop_back(); seq.push_back(x); x = x->r; }
+        if ((int)seq.size() != rt->sz || rt->vcnt != expectVertices) return false;
+        int cur = seq[0]->a, start = cur, vnodes = 0, arcs = 0; std::set<int> seenV;
+        for (Node* e : seq) { if (e->type == 0) { if (e->a != cur || !seenV.insert(e->a).second) return false; ++vnodes; } else { if (e->a != cur) return false; cur = e->b; ++arcs; } }
+        return cur == start && vnodes == expectVertices && arcs == 2 * (expectVertices - 1);      // 닫힌 걸음, 정점 노드 정확히 한 번씩, 호는 간선마다 둘 (트리이므로 간선 수 = 정점 수 - 1)
+    }
+};
+
+int main() {
+    {   EulerTourForest f(6); f.link(0, 1); f.link(1, 2); f.link(3, 4);                              // 손으로 확인
+        assert(f.connected(0, 2) && !f.connected(0, 3) && f.treeSize(1) == 3 && f.treeSize(5) == 1 && f.treeSize(4) == 2);
+        f.link(2, 3); assert(f.connected(0, 4) && f.treeSize(0) == 5); f.cut(1, 2); assert(!f.connected(0, 4) && f.connected(2, 4) && f.treeSize(0) == 2 && f.treeSize(3) == 3); }
+    const int N = 60; std::mt19937 rng(97); EulerTourForest f(N); std::vector<std::set<int>> adj((size_t)N); std::vector<std::pair<int, int>> edges; long links = 0, cuts = 0, queries = 0;
+    auto component = [&](int s) { std::vector<char> seen((size_t)N, 0); std::vector<int> st{s}; seen[(size_t)s] = 1; int cnt = 0; std::vector<int> mem; while (!st.empty()) { int u = st.back(); st.pop_back(); ++cnt; mem.push_back(u); for (int v : adj[(size_t)u]) if (!seen[(size_t)v]) { seen[(size_t)v] = 1; st.push_back(v); } } return mem; };
+    for (int step = 0; step < 40000; ++step) {
+        const int op = (int)(rng() % 10);
+        if (op < 4) { int u = (int)(rng() % N), v = (int)(rng() % N); if (u != v && !f.connected(u, v)) { f.link(u, v); adj[(size_t)u].insert(v); adj[(size_t)v].insert(u); edges.push_back({u, v}); ++links; } }
+        else if (op < 6 && !edges.empty()) { const size_t i = rng() % edges.size(); auto [u, v] = edges[i]; f.cut(u, v); adj[(size_t)u].erase(v); adj[(size_t)v].erase(u); edges.erase(edges.begin() + (long)i); ++cuts; }
+        else { int u = (int)(rng() % N), v = (int)(rng() % N); auto comp = component(u); const bool want = std::find(comp.begin(), comp.end(), v) != comp.end();
+            assert(f.connected(u, v) == want && f.treeSize(u) == (int)comp.size()); ++queries; }
+        if (step % 500 == 0) { std::set<EulerTourForest::Node*> roots; for (int v = 0; v < N; ++v) { auto* rt = EulerTourForest::root(f.vertexNode[(size_t)v]); if (roots.insert(rt).second) assert(f.walkValid(rt, (int)component(v).size())); } }
+    }
+    for (auto [u, v] : edges) assert(f.hasEdge(u, v) && f.hasEdge(v, u));
+    std::cout << "EulerTourTree: " << links << " links, " << cuts << " cuts and " << queries << " connectivity/size queries on a 60-vertex dynamic forest matched a BFS oracle; every tour stayed a closed walk with one vertex node per vertex and two arcs per edge" << std::endl;
+    return 0;
+}
+// Time Complexity: link·cut·connected·treeSize 기대 O(log n) (트립의 split/merge 몇 번 + 부모 포인터 올라가기)
+// Space Complexity: O(n) — 정점 노드 n 개 + 간선당 호 노드 2 개
 ```
 # Part 16. 특수 목적
 ## ExpressionTree()

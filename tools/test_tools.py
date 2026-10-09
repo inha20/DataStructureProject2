@@ -92,6 +92,13 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(any('duplicate ## headings' in p for p in probs))
         probs, _ = audit.structure('T', '﻿' + BOOK, 2, True)
         self.assertTrue(any('stray BOM' in p for p in probs))
+    def test_posix_guard_detection(self):
+        self.assertTrue(audit.unguarded_posix('#include <unistd.h>\nint main() {}'))
+        self.assertTrue(audit.unguarded_posix('#include <sys/mman.h>\nint main() {}'))
+        self.assertFalse(audit.unguarded_posix('#if defined(__linux__)\n#include <unistd.h>\n#endif\nint main() {}'))
+        self.assertFalse(audit.unguarded_posix('#ifdef __unix__\n#include <sys/mman.h>\n#else\n#endif\n#include <vector>\nint main() {}'))
+        self.assertTrue(audit.unguarded_posix('#if 0\n#endif\n#include <fcntl.h>\nint main() {}'))
+        self.assertFalse(audit.unguarded_posix('#include <csignal>\n#include <thread>\nint main() {}'))
     def test_placeholder_detection(self):
         self.assertTrue(audit.is_placeholder('#include <cassert>\nint main() {\n assert(true);\n return 0;\n}'))
         self.assertFalse(audit.is_placeholder('int main() { assert(1 + 1 == 2); }'))

@@ -93,6 +93,23 @@ def is_placeholder(code):
     return bool(re.search(r"assert\((true|1 == 1)\)", " ".join(body))) and len(body) <= 8
 
 
+POSIX_INC = re.compile(r"#\s*include\s*<(?:sys/[\w./]+|unistd\.h|fcntl\.h|dirent\.h|signal\.h|pthread\.h|semaphore\.h|sched\.h|termios\.h|poll\.h|netinet/[\w.]+|arpa/[\w.]+|netdb\.h|dlfcn\.h|spawn\.h)>")
+
+
+def unguarded_posix(code):
+    """True if a POSIX-only header is included outside any #if/#ifdef/#ifndef region (it would not compile on Windows)."""
+    depth = 0
+    for line in code.split("\n"):
+        s = line.strip()
+        if re.match(r"#\s*(if|ifdef|ifndef)\b", s):
+            depth += 1
+        elif re.match(r"#\s*endif\b", s):
+            depth -= 1
+        elif depth == 0 and POSIX_INC.match(s):
+            return True
+    return False
+
+
 def structure(book, text, nbom, startbom):
     probs = []
     entries, lines = parse(text)
@@ -114,6 +131,9 @@ def structure(book, text, nbom, startbom):
     nocode = [e["name"] for e in entries if e["code"] is None]
     if nocode:
         probs.append(f"{len(nocode)} entries without a cpp block: {nocode[:6]}")
+    posix = [e["name"] for e in entries if e["code"] and unguarded_posix(e["code"])]
+    if posix:
+        probs.append(f"{len(posix)} entries include POSIX headers outside an #if guard: {posix[:6]}")
     norep = [e["name"] for e in entries if not e["has_rep"]]
     if norep:
         probs.append(f"{len(norep)} entries without '### 대표코드': {norep[:6]}")

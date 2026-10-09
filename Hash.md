@@ -2484,6 +2484,108 @@ int main() {
 // Time Complexity: insert 분할상환 O(1), erase(key) O(값 개수)
 // Space Complexity: O(n)
 ```
+## BiMap()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <vector>
+
+// 양방향 맵(BiMap, Guava 의 BiMap·Boost.Bimap): 키 -> 값 과 값 -> 키 를 모두 O(1) 로 찾는 맵. 키도 유일하고 값도 유일해야 한다(일대일 대응, bijection) — 사용자 id <-> 이름, 심볼 <-> 번호(문자열 인터닝), 코덱 표 등.
+// 구현: 같은 구조의 해시 표 두 개를 둔다 — 앞방향 표(키 -> 값)와 뒷방향 표(값 -> 키). 불변식: 앞방향의 (k, v) 가 있으면 뒷방향에 (v, k) 가 있고 그 역도 성립하며 두 표의 크기가 같다. 삽입은 두 표를 항상 함께 고쳐야 한다.
+// 값 충돌이 문제다: put(k, v) 에서 v 가 이미 다른 키 k2 의 값이면 일대일이 깨지므로 put 은 거부(DUP_VALUE)하고, forcePut 은 기존 (k2, v) 를 쫓아내고 넣는다. 역방향 뷰 inverse() 는 복사 없이 두 표의 역할만 바꿔 보여 준다(inverse().put(v, k) = put(k, v)).
+// 해시 표는 선형 탐사 개방 주소법이고, 삭제는 묘비(tombstone) 대신 "뒤로 밀기(backward shift)" 로 구멍을 메워 표가 지울수록 느려지지 않는다. 적재율 1/2 을 넘으면 두 배로 키운다.
+// 검증: ① 손으로 확인(거부·덮어쓰기·강제 삽입·역방향 뷰) ② 무작위 put·forcePut·키로 지우기·값으로 지우기·조회 30 만 번을 std::map 두 개(정/역) 모델과 대조, 매 구간 일대일 불변식과 탐사 길이 확인 ③ 지우기 후에도 모든 항목이 도달 가능(뒤로 밀기 정확성)하고 평균 탐사 길이가 작다
+class OpenMap {                                                                                    // uint64 -> uint64, 선형 탐사, 뒤로 밀기 삭제
+    struct Slot { uint64_t key = 0, val = 0; bool used = false; };
+    std::vector<Slot> t_; size_t n_ = 0;
+    static uint64_t mix(uint64_t x) { x += 0x9E3779B97F4A7C15ULL; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL; x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL; return x ^ (x >> 31); }
+    size_t home(uint64_t k) const { return (size_t)(mix(k) & (t_.size() - 1)); }
+    void grow() { std::vector<Slot> old; old.swap(t_); t_.assign(old.size() * 2, Slot()); n_ = 0; for (const Slot& s : old) if (s.used) put(s.key, s.val); }
+public:
+    mutable long probes = 0, lookups = 0;                                                          // 조회가 훑은 칸 수(통계)
+    OpenMap() : t_(8) {}
+    size_t size() const { return n_; }
+    const uint64_t* find(uint64_t k) const { ++lookups; for (size_t i = home(k);; i = (i + 1) & (t_.size() - 1)) { ++probes; if (!t_[i].used) return nullptr; if (t_[i].key == k) return &t_[i].val; } }
+    void put(uint64_t k, uint64_t v) {
+        if ((n_ + 1) * 2 > t_.size()) grow();
+        size_t i = home(k); while (t_[i].used && t_[i].key != k) i = (i + 1) & (t_.size() - 1);
+        if (!t_[i].used) { t_[i].used = true; t_[i].key = k; ++n_; } t_[i].val = v;
+    }
+    bool erase(uint64_t k) {
+        size_t i = home(k); while (t_[i].used && t_[i].key != k) i = (i + 1) & (t_.size() - 1);
+        if (!t_[i].used) return false;
+        const size_t mask = t_.size() - 1; size_t j = i;                                           // 뒤로 밀기: 구멍 i 뒤의 항목 중 홈이 i 이전(순환)에 있는 것을 당겨 온다
+        for (;;) {
+            j = (j + 1) & mask; if (!t_[j].used) break;
+            const size_t h = home(t_[j].key);
+            if ((j > i && (h <= i || h > j)) || (j < i && (h <= i && h > j))) { t_[i] = t_[j]; i = j; }
+        }
+        t_[i] = Slot(); --n_; return true;
+    }
+    template <class F> void each(F f) const { for (const Slot& s : t_) if (s.used) f(s.key, s.val); }
+    bool reachable() const { for (const Slot& s : t_) if (s.used) { const uint64_t* v = find(s.key); if (!v || *v != s.val) return false; } return true; }       // 모든 항목이 탐사로 닿는다
+};
+enum PutResult { INSERTED, REPLACED, UNCHANGED, DUP_VALUE };
+class BiMap {
+    OpenMap fwd_, bwd_;
+public:
+    size_t size() const { return fwd_.size(); }
+    PutResult put(uint64_t k, uint64_t v) {                                                        // 일대일을 깨는 삽입은 거부한다
+        const uint64_t* cur = fwd_.find(k); const uint64_t* owner = bwd_.find(v);
+        if (cur && *cur == v) return UNCHANGED;
+        if (owner) return DUP_VALUE;                                                               // v 가 다른 키의 값이다
+        if (cur) { bwd_.erase(*cur); fwd_.put(k, v); bwd_.put(v, k); return REPLACED; }
+        fwd_.put(k, v); bwd_.put(v, k); return INSERTED;
+    }
+    void forcePut(uint64_t k, uint64_t v) {                                                        // v 를 가진 기존 항목을 쫓아내고 넣는다
+        const uint64_t* owner = bwd_.find(v); if (owner && *owner != k) { const uint64_t k2 = *owner; fwd_.erase(k2); bwd_.erase(v); }
+        const uint64_t* cur = fwd_.find(k); if (cur) { const uint64_t old = *cur; bwd_.erase(old); }
+        fwd_.put(k, v); bwd_.put(v, k);
+    }
+    const uint64_t* valueOf(uint64_t k) const { return fwd_.find(k); }
+    const uint64_t* keyOf(uint64_t v) const { return bwd_.find(v); }
+    bool eraseKey(uint64_t k) { const uint64_t* v = fwd_.find(k); if (!v) return false; const uint64_t val = *v; fwd_.erase(k); bwd_.erase(val); return true; }
+    bool eraseValue(uint64_t v) { const uint64_t* k = bwd_.find(v); if (!k) return false; const uint64_t key = *k; bwd_.erase(v); fwd_.erase(key); return true; }
+    struct Inverse { BiMap& m; const uint64_t* get(uint64_t v) const { return m.keyOf(v); } PutResult put(uint64_t v, uint64_t k) { return m.put(k, v); } bool erase(uint64_t v) { return m.eraseValue(v); } };
+    Inverse inverse() { return Inverse{*this}; }                                                   // 복사 없는 역방향 뷰
+    bool consistent() const {
+        if (fwd_.size() != bwd_.size()) return false; bool ok = true;
+        fwd_.each([&](uint64_t k, uint64_t v) { const uint64_t* b = bwd_.find(v); ok = ok && b && *b == k; });
+        bwd_.each([&](uint64_t v, uint64_t k) { const uint64_t* f = fwd_.find(k); ok = ok && f && *f == v; });
+        return ok && fwd_.reachable() && bwd_.reachable();
+    }
+    double avgProbes() const { return fwd_.lookups ? (double)fwd_.probes / (double)fwd_.lookups : 0; }
+};
+
+int main() {
+    {   BiMap m; assert(m.put(1, 100) == INSERTED && m.put(2, 200) == INSERTED && m.put(1, 100) == UNCHANGED && m.put(3, 100) == DUP_VALUE);           // 손으로 확인
+        assert(m.put(1, 111) == REPLACED && *m.valueOf(1) == 111 && m.keyOf(100) == nullptr && *m.keyOf(111) == 1 && m.size() == 2);
+        m.forcePut(2, 111); assert(m.valueOf(1) == nullptr && *m.valueOf(2) == 111 && *m.keyOf(111) == 2 && m.keyOf(200) == nullptr && m.size() == 1);        // 111 을 가진 (1, 111) 이 쫓겨나고 2 의 값은 200 -> 111
+        auto inv = m.inverse(); assert(*inv.get(111) == 2 && inv.put(500, 7) == INSERTED && *m.valueOf(7) == 500 && inv.erase(500) && m.valueOf(7) == nullptr && m.consistent()); }
+    std::mt19937_64 rng(53); BiMap m; std::map<uint64_t, uint64_t> fwd, bwd; long rejected = 0;
+    for (int step = 0; step < 300000; ++step) {
+        const uint64_t k = rng() % 3000, v = rng() % 3000; const int op = (int)(rng() % 10);
+        if (op < 4) { const PutResult r = m.put(k, v); auto f = fwd.find(k); PutResult want;
+            if (f != fwd.end() && f->second == v) want = UNCHANGED; else if (bwd.count(v)) want = DUP_VALUE; else if (f != fwd.end()) { want = REPLACED; bwd.erase(f->second); fwd[k] = v; bwd[v] = k; } else { want = INSERTED; fwd[k] = v; bwd[v] = k; }
+            assert(r == want); rejected += r == DUP_VALUE; }
+        else if (op < 5) { m.forcePut(k, v); auto o = bwd.find(v); if (o != bwd.end() && o->second != k) { fwd.erase(o->second); bwd.erase(o); } auto f = fwd.find(k); if (f != fwd.end()) bwd.erase(f->second); fwd[k] = v; bwd[v] = k; }
+        else if (op < 7) { const bool had = fwd.count(k) > 0; assert(m.eraseKey(k) == had); if (had) { bwd.erase(fwd[k]); fwd.erase(k); } }
+        else if (op < 8) { const bool had = bwd.count(v) > 0; assert(m.eraseValue(v) == had); if (had) { fwd.erase(bwd[v]); bwd.erase(v); } }
+        else { const uint64_t* a = m.valueOf(k); auto f = fwd.find(k); assert((a != nullptr) == (f != fwd.end()) && (!a || *a == f->second)); const uint64_t* b = m.keyOf(v); auto g = bwd.find(v); assert((b != nullptr) == (g != bwd.end()) && (!b || *b == g->second)); }
+        assert(m.size() == fwd.size() && fwd.size() == bwd.size()); if (step % 10007 == 0) assert(m.consistent());
+    }
+    assert(m.consistent() && rejected > 1000);
+    std::cout << "BiMap: 300000 random put/forcePut/erase-by-key/erase-by-value/lookup operations matched a pair of std::maps (" << rejected << " puts rejected for duplicate values); both hash tables stayed mutually consistent and fully reachable after backward-shift deletions, " << m.avgProbes() << " probes per lookup on average" << std::endl;
+    return 0;
+}
+// Time Complexity: put·forcePut·조회·삭제 기대 O(1) (선형 탐사, 적재율 <= 1/2)
+// Space Complexity: O(n) — 해시 표 두 개 (항목당 키·값을 두 번 저장)
+```
 # Part 7. 분산 해시
 ## ConsistentHashing()
 ### 대표코드
@@ -5323,7 +5425,7 @@ int main() {
             } });
         for (int rd = 0; rd < 4; rd++) readers.emplace_back([&, rd] {
             std::mt19937 rng(100u + (unsigned)rd); uint64_t last[KEYS + 1] = {0};
-            while (!stop.load()) { int k = 1 + (int)(rng() % KEYS); uint64_t val; ++reads;
+            while (!stop.load() || reads.load() < 2000) { int k = 1 + (int)(rng() % KEYS); uint64_t val; ++reads;     // 작성자가 먼저 끝나도 독자가 최소 2000 번은 읽도록(스케줄링에 기대지 않는다)
                 if (tb.get((uint64_t)k, val)) { ++observed; assert((val >> 20) == (uint64_t)k); uint64_t ver = val & 0xFFFFF; assert(ver >= 1 && ver <= version[k].load()); assert(ver >= last[k]); last[k] = ver; } } });
         for (auto& x : writers) x.join(); stop = true; for (auto& x : readers) x.join();
         for (int k = 1; k <= KEYS; k++) { uint64_t val; if (tb.get((uint64_t)k, val)) { assert((val >> 20) == (uint64_t)k && (val & 0xFFFFF) == version[k].load()); } assert(version[k].load() == (uint64_t)ROUNDS); }     // 남아 있다면 마지막 버전
