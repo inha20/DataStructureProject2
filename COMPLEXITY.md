@@ -19,7 +19,7 @@
 | `Select` | 2 | select O(log (표본 사이의 워드 수)) + O(1) | N + 표본 O(N/1024) |
 | `WaveletTree` | 2 | 구성 O(N log σ), 질의 O(log σ) | N log σ 비트 (+ 랭크 디렉터리) |
 | `FMIndex` | 2 | count O(\|P\|·B) (Occ 체크포인트 간격 B), locate 는 행마다 O(s·log) 걸음, 구성 O(n log n) | BWT n 바이트 + Occ 체크포인트 n/B·σ 정수 + SA 표본 n/s 개 |
-| `SuccinctTrie` | 2 | 이동 O(1) (rank/select 가 O(1) 일 때), 단어 조회 O(\|w\|·σ) | 2N+1 비트 + 라벨 N 문자 |
+| `SuccinctTrie` | 2 | 이동 O(1) (rank/select 가 O(1) 일 때), 단어 조회 O(\|w\|·σ) | 구조 2N+1 논리 비트 + 라벨 N 문자 (이 데모의 int 로 저장한 B 와 rank/select 표는 O(N) 워드; 간결 구현은 N 비트 + o(N) 디렉터리) |
 | `BitmapIndex` | 2 | 동치·AND·OR·NOT O(N/64), 범위 질의·합 O(B·N/64) (B: 값의 비트 수), 압축 AND O(두 압축열 길이의 합) | 동치 부호화 O(C·N/8) 바이트(C: 서로 다른 값 수), 비트 슬라이스 O(B·N/8) |
 | `BloomFilter` | 3 | 삽입·조회 O(k) | 약 1.44 n log2(1/p) 비트 |
 | `CountingBloomFilter` | 3 | 삽입·삭제·조회 O(k) | 카운터당 4비트 → 블룸 필터의 4배 |
@@ -37,7 +37,7 @@
 | `PieceTable` | 4 | 삽입·삭제 O(조각 수), 텍스트 조립 O(길이), undo O(1) (스냅샷 교체) | 원본 + 추가 버퍼 + 조각 목록 (+ undo 스냅샷마다 조각 목록 한 벌) |
 | `GapBuffer` | 4 | 커서 위치 삽입·삭제 분할상환 O(1), 커서 이동 O(거리) | O(N + 틈) |
 | `FingerTree` | 4 | 양 끝 push/pop 분할상환 O(1), concat O(log N), split/index O(log N) | O(N), 버전 사이에 구조 공유 |
-| `SuffixAutomaton` | 4 | 구성 O(n·σ) (복제 시 전이 배열 복사), 부분 문자열 판정 O(m) | O(n·σ) |
+| `SuffixAutomaton` | 4 | 구성 O(n·σ) (복제 시 전이 배열 복사), 출현 횟수 집계 countEndpos 는 std::sort 때문에 O(n log n) (계수 정렬이면 O(n)), 부분 문자열 판정 O(m) | O(n·σ) |
 | `PatriciaTrie` | 4 | 삽입·삭제·조회 O(\|key\|) | O(키 수) 노드 (노드 수 < 2 · 키 수) |
 | `KDTree` | 5 | 구성 O(N log N), 최근접 질의 평균 O(log N) | O(N) |
 | `QuadTree` | 5 | 삽입 O(깊이), 범위 질의 O(깊이 + k) | O(N) |

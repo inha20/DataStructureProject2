@@ -73,7 +73,7 @@ int main() {
 
 // 순회(Traverse): 리스트의 모든 항목을 한 번씩 정해진 순서로 방문한다. 배열은 인덱스나 포인터로, 연결 리스트는 head 에서 next 를 따라간다. 단방향 연결 리스트는 뒤로 갈 수 없으므로 역순 순회는 재귀(호출 스택에 쌓기)나 명시적 스택이 필요하다 — 재귀는 노드 수만큼 스택 깊이를 쓰므로 긴 리스트에서는 명시적 스택을 써야 한다.
 // 순회 중 일찍 멈추기(조건을 만족하면 중단)와 방문 횟수 세기도 같은 골격이다. 순환이 있는 리스트를 순회하면 끝나지 않으므로 상한이나 플로이드(토끼와 거북이) 판정으로 보호한다.
-// 검증: ① 전방 순회(반복·재귀)와 후방 순회(재귀·명시적 스택)가 std::vector 와 같은 순서, 방문 횟수 == 길이 ② 조건부 조기 종료가 정확히 첫 일치까지만 방문 ③ 1,000,000 노드 리스트를 명시적 스택으로 역순 순회(재귀였다면 스택 오버플로) ④ 순환 리스트에서 상한 있는 순회는 정확히 상한만큼만 방문하고 플로이드 판정이 순환 여부를 맞힌다 ⑤ 빈 리스트·노드 1개 경계.
+// 검증: ① 전방 순회(반복·재귀)와 후방 순회(재귀·명시적 스택)가 std::vector 와 같은 순서, 방문 횟수 == 길이 ② 조건부 조기 종료가 정확히 첫 일치까지만 방문 ③ 1,000,000 노드 리스트를 명시적 스택으로 역순 순회(재귀였다면 스택 오버플로) ④ 순환 리스트에서 상한 있는 순회는 정확히 상한만큼만 방문하고 플로이드 판정이 순환 여부를 맞힌다 ⑤ 빈 리스트·노드 1개 경계에서 네 가지 순회(반복 전방·재귀 전방·재귀 후방·스택 후방)가 모두 벡터와 같고 방문 횟수가 길이와 같음.
 struct Node { int val; Node* next; Node(int v, Node* n) : val(v), next(n) {} };
 Node* build(const std::vector<int>& v) { Node* head = nullptr; Node** t = &head; for (int x : v) { *t = new Node(x, nullptr); t = &(*t)->next; } return head; }
 void destroy(Node* h) { while (h) { Node* n = h->next; delete h; h = n; } }
@@ -96,7 +96,10 @@ int main() {
       assert(out.size() == big.size() && out.front() == 999999 && out.back() == 0 && std::is_sorted(out.rbegin(), out.rend())); destroy(h); }
     { Node* h = build({1, 2, 3, 4, 5}); assert(!hasCycle(h)); Node* last = h; while (last->next) last = last->next; last->next = h->next->next;                           // ④ 순환: 5 -> 3
       assert(hasCycle(h) && boundedWalk(h, 100) == 100 && boundedWalk(h, 3) == 3); last->next = nullptr; assert(!hasCycle(h) && boundedWalk(h, 100) == 5); destroy(h); }
-    { assert(!hasCycle(nullptr) && boundedWalk(nullptr, 5) == 0); Node* one = build({7}); std::vector<int> a, b; forwardRec(one, a); backwardRec(one, b); assert(a == b && a.size() == 1 && !hasCycle(one)); one->next = one; assert(hasCycle(one)); one->next = nullptr; destroy(one); }   // ⑤
+    { assert(!hasCycle(nullptr) && boundedWalk(nullptr, 5) == 0);   // ⑤ 빈 리스트와 노드 1개: 모든 순회를 nullptr·단일 노드에서 실행
+      for (const std::vector<int>& w : {std::vector<int>{}, std::vector<int>{7}}) { Node* h = build(w); std::vector<int> r(w.rbegin(), w.rend()), a, f, b1, b2; long n = forEach(h, [&](int x) { a.push_back(x); }); forwardRec(h, f); backwardRec(h, b1); backwardStack(h, b2);
+        assert(n == (long)w.size() && a == w && f == w && b1 == r && b2 == r && !hasCycle(h) && boundedWalk(h, 5) == (long)w.size() && forEachWhile(h, [](int) { return true; }) == (long)w.size()); destroy(h); }
+      Node* one = build({7}); one->next = one; assert(hasCycle(one) && boundedWalk(one, 5) == 5); one->next = nullptr; destroy(one); }
     std::cout << "Traverse: forward (iterative and recursive) and backward (recursive and explicit stack) traversals matched std::vector order, early exit stopped at the first match, a 1,000,000-node list was walked backwards with an explicit stack, and cycles were detected without looping" << std::endl; return 0;
 }
 // Time Complexity: O(N)
@@ -195,7 +198,7 @@ int main() {
 
 // 삭제(Delete): 위치로 지우기와 값으로 지우기가 있다. 배열 리스트는 지운 칸 뒤의 항목을 한 칸씩 앞으로 당기므로 n−pos−1 번 이동하고, 연결 리스트는 앞 노드의 next 를 건너뛰게 바꾸고 노드를 해제한다(걷기 O(pos)). 포인터의 포인터를 쓰면 머리 노드를 지우는 경우에도 별도 분기가 없다.
 // 값이 일치하는 항목을 모두 지울 때 항목마다 한 칸씩 당기면 O(n²) 이지만, 읽기 포인터와 쓰기 포인터를 두고 지워지지 않을 항목만 앞으로 복사하면 단 한 번의 순회(비교 n 번, 이동 ≤ n 번)로 끝난다(안정적: 남은 항목의 순서 유지). 연결 리스트에서는 걷다가 일치하는 노드를 바로 해제한다.
-// 검증: ① 위치 삭제가 std::vector::erase 와 같고 이동 횟수가 정확히 n−pos−1 ② 연결 리스트 위치 삭제(머리·꼬리·중간·1 노드)와 노드 해제(누수·이중 해제 없음) ③ 값 삭제(첫 번째)와 전부 삭제가 std::erase-remove 와 같고 한 번의 순회(비교 n 번)이며 남은 항목의 순서 유지 ④ 범위 밖 위치 예외 ⑤ 없는 값 삭제는 false 이고 리스트 불변.
+// 검증: ① 위치 삭제가 std::vector::erase 와 같고 이동 횟수가 정확히 n−pos−1 ② 연결 리스트 위치 삭제(머리·꼬리·중간·1 노드)와 노드 해제(누수·이중 해제 없음) ③ 값 삭제(첫 번째)와 전부 삭제가 std::erase-remove 와 같고 한 번의 순회(비교 n 번)이며 이동 횟수가 독립 계산(첫 삭제 항목 뒤에 남는 항목 수)과 정확히 같고 남은 항목의 순서 유지 ④ 범위 밖 위치 예외 ⑤ 없는 값 삭제는 false 이고 리스트 불변.
 struct ArrayList { std::vector<int> a; long moves = 0, compares = 0;
     void eraseAt(int pos) { if (pos < 0 || pos >= (int)a.size()) throw std::out_of_range("erase"); for (std::size_t i = pos; i + 1 < a.size(); i++) { a[i] = a[i + 1]; moves++; } a.pop_back(); }
     int removeAll(int key) { std::size_t w = 0; for (std::size_t r = 0; r < a.size(); r++) { compares++; if (a[r] != key) { if (w != r) moves++; a[w++] = a[r]; } } int removed = (int)(a.size() - w); a.resize(w); return removed; } };   // 읽기/쓰기 포인터
@@ -214,12 +217,13 @@ int main() {
       while (!ref.empty()) { int pos = (int)(rng() % ref.size()); long before = l.steps; l.eraseAt(pos); ref.erase(ref.begin() + pos); assert(l.items() == ref && l.steps - before == pos && Node::live == (int)ref.size() && l.n == (int)ref.size()); } assert(l.head == nullptr); }
     { LinkedList l; l.pushBack(7); l.eraseAt(0); assert(l.head == nullptr && l.n == 0 && Node::live == 0); for (int v : {1, 2, 3}) l.pushBack(v); l.eraseAt(2); l.eraseAt(0); assert(l.items() == std::vector<int>{2}); }
     for (int rep = 0; rep < 200; rep++) { std::vector<int> v((std::size_t)(rng() % 60)); for (int& x : v) x = (int)(rng() % 6); int key = (int)(rng() % 7);                                 // ③ 값 삭제
-        ArrayList a; a.a = v; int removed = a.removeAll(key); std::vector<int> ref = v; ref.erase(std::remove(ref.begin(), ref.end(), key), ref.end()); assert(a.a == ref && removed == (int)(v.size() - ref.size()) && a.compares == (long)v.size() && a.moves <= (long)v.size());
+        ArrayList a; a.a = v; int removed = a.removeAll(key); std::vector<int> ref = v; ref.erase(std::remove(ref.begin(), ref.end(), key), ref.end()); assert(a.a == ref && removed == (int)(v.size() - ref.size()) && a.compares == (long)v.size());
+        std::size_t firstHit = (std::size_t)(std::find(v.begin(), v.end(), key) - v.begin()); long behind = 0; for (std::size_t i = firstHit + 1; i < v.size(); i++) if (v[i] != key) behind++; assert(a.moves == behind);   // 이동 = 첫 삭제 항목 뒤에 남는 항목 수(앞쪽 항목은 제자리)
         LinkedList l; for (int x : v) l.pushBack(x); assert(l.removeAll(key) == removed && l.items() == ref && l.n == (int)ref.size() && Node::live == (int)ref.size());
         LinkedList f; for (int x : v) f.pushBack(x); bool had = std::find(v.begin(), v.end(), key) != v.end(); std::vector<int> r1 = v; if (had) r1.erase(std::find(r1.begin(), r1.end(), key)); assert(f.removeFirst(key) == had && f.items() == r1); }   // ⑤
     assert(Node::live == 0); { LinkedList l; for (int v : {1, 2, 3}) l.pushBack(v); bool threw = false; for (int bad : {-1, 3, 10}) { try { l.eraseAt(bad); } catch (const std::out_of_range&) { threw = true; } assert(threw); threw = false; } assert(l.items() == (std::vector<int>{1, 2, 3}) && !l.removeFirst(9) && l.removeAll(9) == 0); }   // ④
     { ArrayList a; a.a = {1, 1, 1, 1}; assert(a.removeAll(1) == 4 && a.a.empty() && a.moves == 0); }
-    std::cout << "Delete: positional erase moved exactly n-pos-1 elements, linked erase freed exactly one node per deletion with no leaks, and delete-all used a single pass (n comparisons, at most n moves) producing the same stable result as erase-remove" << std::endl; return 0;
+    std::cout << "Delete: positional erase moved exactly n-pos-1 elements, linked erase freed exactly one node per deletion with no leaks, and delete-all used a single pass (n comparisons, exactly one move per kept item behind the first removed one) producing the same stable result as erase-remove" << std::endl; return 0;
 }
 // Time Complexity: 위치 삭제 배열 O(N)·연결 리스트 O(pos), 값 전부 삭제 O(N)
 // Space Complexity: O(1)
@@ -398,24 +402,26 @@ int main() {
 #include <cassert>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 // 교환(Swap): 배열은 두 칸의 값을 맞바꾼다. i == j 일 때도 안전해야 한다 — 임시 변수를 쓰는 교환은 안전하지만 XOR 교환(a^=b; b^=a; a^=b)은 같은 칸을 가리키면 0 이 되어 값이 사라진다. 연결 리스트에서는 값을 맞바꾸는 대신 노드를 다시 연결하는 것이 올바르다(노드가 큰 객체거나 다른 곳에서 노드 포인터를 들고 있을 때 값 교환은 의미가 달라진다).
-// 노드 교환의 균일한 방법: 두 노드를 가리키는 연결(포인터의 포인터) pa, pb 를 찾아 `swap(*pa, *pb); swap((*pa)->next, (*pb)->next)` 두 줄이면 떨어져 있든 이웃하든 머리·꼬리든 i == j 든 모두 맞다(이웃한 경우는 중간에 자기를 가리키는 순환이 잠깐 생기지만 두 번째 교환에서 풀린다). 인접한 쌍끼리 교환(swap pairs)도 포인터 재연결로 한다. 리스트 전체의 교환은 머리 포인터와 길이만 맞바꾸면 되어 길이와 무관한 O(1) 이다.
-// 검증: ① 배열 교환(i == j 포함)이 std::swap 모델과 같고 XOR 교환은 i == j 에서 0 이 되는 함정을 보임 ② 연결 리스트 노드 교환이 모든 (i, j) 쌍(이웃·머리·꼬리·같은 위치)에서 모델(노드 포인터 벡터에 std::swap)과 같은 순서이고 노드 주소와 노드 값이 보존 ③ 무작위 교환 5000 번 뒤에도 순환·유실 없음 ④ 인접 쌍 교환이 기대 결과와 같음 ⑤ 리스트 전체 교환은 길이와 무관하게 상수 연산(맞바꾼 포인터 수 고정).
+// 노드 교환의 균일한 방법: 두 노드를 가리키는 연결(포인터의 포인터) pa, pb 를 찾아 `swap(*pa, *pb); swap((*pa)->next, (*pb)->next)` 두 줄이면 떨어져 있든 이웃하든 머리·꼬리든 i == j 든 모두 맞다(이웃한 경우는 중간에 자기를 가리키는 순환이 잠깐 생기지만 두 번째 교환에서 풀린다). 인접한 쌍끼리 교환(swap pairs)도 포인터 재연결로 한다. 리스트 전체의 교환은 머리 포인터와 길이만 맞바꾸면 되어 길이와 무관한 O(1) 이다. 위치 i, j 가 범위 밖이면 걷다가 null 을 역참조하게 되므로 swapNodes 는 먼저 검사해 out_of_range 를 던진다.
+// 검증: ① 배열 교환(i == j 포함)이 std::swap 모델과 같고 XOR 교환은 i == j 에서 0 이 되는 함정을 보임 ② 연결 리스트 노드 교환이 모든 (i, j) 쌍(이웃·머리·꼬리·같은 위치)에서 모델(노드 포인터 벡터에 std::swap)과 같은 순서이고 노드 주소와 노드 값이 보존 ③ 무작위 교환 5000 번 뒤에도 순환·유실 없음 ④ 인접 쌍 교환이 기대 결과와 같음 ⑤ 리스트 전체 교환은 머리 포인터와 길이 두 필드만 맞바꾸고 노드 사슬(주소·순서)은 하나도 건드리지 않음(상수 시간은 이 구조에서 나오며 시간·횟수를 재지는 않는다) ⑥ 범위 밖 위치(음수·길이 이상·빈 리스트)는 out_of_range 이고 리스트 불변.
 struct Node { int val; Node* next; static int live; Node(int v, Node* nx) : val(v), next(nx) { ++live; } ~Node() { --live; } }; int Node::live = 0;
 Node* build(const std::vector<int>& v) { Node* head = nullptr; Node** t = &head; for (int x : v) { *t = new Node(x, nullptr); t = &(*t)->next; } return head; }
 void destroy(Node* h) { while (h) { Node* n = h->next; delete h; h = n; } }
 std::vector<Node*> nodes(Node* h) { std::vector<Node*> r; for (; h; h = h->next) r.push_back(h); return r; }
 void xorSwap(int& a, int& b) { a ^= b; b ^= a; a ^= b; }
-void arraySwap(std::vector<int>& a, int i, int j) { std::swap(a[i], a[j]); }
-void swapNodes(Node*& head, int i, int j) {                                                                          // 위치 i, j (0 기반) 의 노드를 재연결로 교환
-    Node **pa = &head, **pb = &head; for (int k = 0; k < i; k++) pa = &(*pa)->next; for (int k = 0; k < j; k++) pb = &(*pb)->next;
+void arraySwap(std::vector<int>& a, int i, int j) { int t = a[i]; a[i] = a[j]; a[j] = t; }                          // 임시 변수 교환(i == j 에서도 안전)
+void swapNodes(Node*& head, int i, int j) {                                                                          // 위치 i, j (0 기반) 의 노드를 재연결로 교환, 범위 밖이면 out_of_range
+    auto at = [&](int k) { if (k < 0) throw std::out_of_range("swapNodes"); Node** p = &head; for (; k > 0 && *p; k--) p = &(*p)->next; if (!*p) throw std::out_of_range("swapNodes"); return p; };
+    Node **pa = at(i), **pb = at(j);
     std::swap(*pa, *pb); std::swap((*pa)->next, (*pb)->next); }
 Node* swapPairs(Node* head) { Node** link = &head; while (*link && (*link)->next) { Node *a = *link, *b = a->next; a->next = b->next; b->next = a; *link = b; link = &a->next; } return head; }
 struct List { Node* head = nullptr; std::size_t n = 0; };
-void swapLists(List& a, List& b, int& pointerSwaps) { std::swap(a.head, b.head); std::swap(a.n, b.n); pointerSwaps += 2; }
+void swapLists(List& a, List& b) { std::swap(a.head, b.head); std::swap(a.n, b.n); }                              // 필드 두 개만 교환: 노드는 건드리지 않는다
 int main() {
     std::mt19937 rng(9);
     { std::vector<int> a = {5, 6, 7}; arraySwap(a, 0, 2); assert(a == (std::vector<int>{7, 6, 5})); arraySwap(a, 1, 1); assert(a == (std::vector<int>{7, 6, 5}));       // ①
@@ -427,9 +433,13 @@ int main() {
       assert(nodes(h) == model && Node::live == 50); std::vector<int> vals; for (Node* c : nodes(h)) vals.push_back(c->val); std::sort(vals.begin(), vals.end()); assert(vals == v); destroy(h); }
     for (int n = 0; n <= 11; n++) { std::vector<int> v(n); for (int k = 0; k < n; k++) v[k] = k + 1; std::vector<int> ref = v; for (int k = 0; k + 1 < n; k += 2) std::swap(ref[k], ref[k + 1]);            // ④
         Node* h = swapPairs(build(v)); std::vector<int> got; for (Node* c : nodes(h)) got.push_back(c->val); assert(got == ref); destroy(h); }
-    { int swaps = 0; List a, b; a.head = build(std::vector<int>(10, 1)); a.n = 10; b.head = build(std::vector<int>(100000, 2)); b.n = 100000; swapLists(a, b, swaps); assert(a.n == 100000 && b.n == 10 && a.head->val == 2 && b.head->val == 1 && swaps == 2);   // ⑤
-      int s2 = 0; List c, d; swapLists(c, d, s2); assert(s2 == 2 && c.head == nullptr && d.n == 0); destroy(a.head); destroy(b.head); }
-    assert(Node::live == 0); std::cout << "Swap: pointer-to-pointer relinking swapped nodes correctly for every pair (adjacent, head, tail, same) up to length 9 and across 5000 random swaps without losing or duplicating nodes; swapping whole lists took 2 pointer swaps regardless of length; XOR-swap of a variable with itself zeroed it" << std::endl; return 0;
+    { List a, b; a.head = build(std::vector<int>(10, 1)); a.n = 10; b.head = build(std::vector<int>(100000, 2)); b.n = 100000; std::vector<Node*> na = nodes(a.head), nb = nodes(b.head); swapLists(a, b);   // ⑤ 머리와 길이만 맞바꾼다
+      assert(a.n == 100000 && b.n == 10 && a.head->val == 2 && b.head->val == 1 && nodes(a.head) == nb && nodes(b.head) == na);                            // 어느 노드도 건드리지 않았다(주소·순서 그대로)
+      List c, d; swapLists(c, d); assert(c.head == nullptr && d.n == 0); destroy(a.head); destroy(b.head); }
+    { Node* h = build({1, 2, 3}); std::vector<Node*> before = nodes(h); const int bad[][2] = {{0, 3}, {3, 0}, {5, 1}, {-1, 0}, {0, -1}};                           // ⑥ 범위 밖 위치
+      for (const auto& p : bad) { bool threw = false; try { swapNodes(h, p[0], p[1]); } catch (const std::out_of_range&) { threw = true; } assert(threw && nodes(h) == before); }
+      Node* none = nullptr; bool threw = false; try { swapNodes(none, 0, 0); } catch (const std::out_of_range&) { threw = true; } assert(threw && none == nullptr); destroy(h); }
+    assert(Node::live == 0); std::cout << "Swap: pointer-to-pointer relinking swapped nodes correctly for every pair (adjacent, head, tail, same) up to length 9 and across 5000 random swaps without losing or duplicating nodes; swapping whole lists exchanged only the head pointer and length, leaving every node of a 10-node and a 100000-node list untouched; out-of-range positions threw without changing the list; XOR-swap of a variable with itself zeroed it" << std::endl; return 0;
 }
 // Time Complexity: 배열 O(1), 연결 리스트 O(max(i, j)) (걷기), 리스트 전체 교환 O(1)
 // Space Complexity: O(1)
@@ -696,7 +706,7 @@ int main() {
 
 // 위치 삽입(InsertAt): 배열 리스트에서 pos 위치에 항목을 끼워 넣는 연산이다. 용량이 모자라면 먼저 키우고, pos 이후를 뒤로 민 뒤 값을 쓴다. 여러 개를 넣을 때(범위 삽입)는 항목마다 밀면 m·(n−pos) 번 이동하지만, 틈을 한 번에 m 칸 열고 채우면 (n−pos) + m 번이다 — 같은 결과를 훨씬 적은 이동으로 얻는다.
 // 순서가 중요하지 않다면 더 싼 방법이 있다: 끝에 넣고 pos 의 항목과 자리를 바꾸면(unordered insert) O(1) 이다. 입력 범위가 자기 자신(같은 배열의 일부)일 수 있으므로 재할당과 이동 중에 원본이 무효가 되는 일이 없어야 한다.
-// 검증: ① 단일 삽입이 std::vector::insert 와 같고 이동 횟수 == n−pos ② 범위 삽입(다양한 반복자: 포인터·리스트·입력 크기 0)이 같은 결과이고 이동 횟수 == (n−pos), 항목별 삽입의 이동은 m·(n−pos) 로 훨씬 큼 ③ 순서 무관 삽입은 원소 집합이 같고 이동 O(1) ④ 범위 밖 pos 는 예외이고 불변 ⑤ 자기 자신의 일부를 삽입해도 정확함.
+// 검증: ① 단일 삽입이 std::vector::insert 와 같고 이동 횟수 == n−pos ② 범위 삽입(다양한 반복자: 벡터·리스트·입력 크기 0)이 같은 결과이고 이동 횟수 == (n−pos), 항목별 삽입의 이동은 m·(n−pos) 로 훨씬 큼 ③ 순서 무관 삽입은 새 값이 pos 에 들어가고 옛 pos 항목이 맨 뒤로 가며 원소 집합이 같고 이동 1 회 ④ 범위 밖 pos 는 예외이고 불변 ⑤ 자기 자신의 일부를 삽입해도 정확함.
 struct ArrayList { std::vector<int> a; long moves = 0;
     void insertAt(std::size_t pos, int v) { if (pos > a.size()) throw std::out_of_range("insertAt"); a.push_back(0); for (std::size_t i = a.size() - 1; i > pos; i--) { a[i] = a[i - 1]; moves++; } a[pos] = v; }
     template <class It> void insertRange(std::size_t pos, It first, It last) {                                       // 틈을 한 번에 열고 채운다
@@ -711,12 +721,11 @@ int main() {
         std::size_t pos = rng() % (n + 1), m = rng() % 12; std::vector<int> items(m); for (int& x : items) x = (int)(rng() % 100 + 1000); ref.insert(ref.begin() + pos, items.begin(), items.end());
         bulk.insertRange(pos, items.begin(), items.end()); assert(bulk.a == ref && bulk.moves == (long)(n - pos)); for (std::size_t j = 0; j < m; j++) single.insertAt(pos + j, items[j]); assert(single.a == ref && single.moves == (long)(m * (n - pos)));
         std::list<int> lst(items.begin(), items.end()); ArrayList fromList; fromList.a.assign(bulk.a.begin(), bulk.a.begin() + std::min<std::size_t>(n, 3)); std::vector<int> r2 = fromList.a; std::size_t p2 = rng() % (r2.size() + 1); r2.insert(r2.begin() + p2, lst.begin(), lst.end()); fromList.insertRange(p2, lst.begin(), lst.end()); assert(fromList.a == r2); }
-    { ArrayList u; std::vector<int> ref; for (int i = 0; i < 100; i++) { std::size_t pos = rng() % (u.a.size() + 1); long before = u.moves; u.insertUnordered(pos, i); ref.push_back(i); assert(u.moves - before == 1); }   // ③
+    { ArrayList u; std::vector<int> ref; for (int i = 0; i < 100; i++) { std::size_t pos = rng() % (u.a.size() + 1); long before = u.moves; int displaced = pos < u.a.size() ? u.a[pos] : i; u.insertUnordered(pos, i); ref.push_back(i); assert(u.moves - before == 1 && u.a.size() == ref.size() && u.a[pos] == i && u.a.back() == displaced); }   // 새 값은 pos 에, 밀려난 옛 항목은 맨 뒤에   // ③
       std::vector<int> a = u.a, b = ref; std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end()); assert(a == b); }
     { ArrayList al; al.a = {1, 2, 3}; bool threw = false; for (std::size_t bad : {4ul, 100ul}) { try { al.insertAt(bad, 0); } catch (const std::out_of_range&) { threw = true; } assert(threw); threw = false; try { std::vector<int> x{1}; al.insertRange(bad, x.begin(), x.end()); } catch (const std::out_of_range&) { threw = true; } assert(threw); threw = false; }
       assert(al.a == (std::vector<int>{1, 2, 3})); al.insertAt(3, 4); al.insertAt(0, 0); assert(al.a == (std::vector<int>{0, 1, 2, 3, 4})); }                                              // ④ 경계: 맨 뒤·맨 앞
-    { ArrayList al; al.a = {1, 2, 3, 4, 5}; std::vector<int> ref = al.a; ref.insert(ref.begin() + 2, ref.begin() + 1, ref.begin() + 4); std::vector<int> src(al.a.begin() + 1, al.a.begin() + 4); al.insertRange(2, al.a.begin() + 1, al.a.begin() + 4); assert(al.a == (std::vector<int>{1, 2, 2, 3, 4, 3, 4, 5}));   // ⑤ 자기 범위
-      (void)src; (void)ref; }
+    { ArrayList al; al.a = {1, 2, 3, 4, 5}; al.insertRange(2, al.a.begin() + 1, al.a.begin() + 4); assert(al.a == (std::vector<int>{1, 2, 2, 3, 4, 3, 4, 5})); }   // ⑤ 자기 범위
     std::cout << "InsertAt: single insertion moved exactly n-pos elements, bulk insertion moved n-pos once instead of m*(n-pos), unordered insertion cost one move, invalid positions threw, and inserting a range of the array into itself was handled safely" << std::endl; return 0;
 }
 // Time Complexity: 단일 O(N−pos), 범위 삽입 O(N−pos+m), 순서 무관 삽입 O(1)
@@ -735,7 +744,7 @@ int main() {
 
 // 위치 삭제(DeleteAt): 배열 리스트에서 pos 위치의 항목을 지운다. 뒤의 항목을 한 칸씩 앞으로 당기므로 n−pos−1 번 이동한다. 구간 삭제 [first, last) 는 한 번에 (n−last) 번만 이동하면 되고, 하나씩 지우면 k = last−first 일 때 k(n−first) − k(k+1)/2 번(대략 k 배)이다.
 // 순서가 필요 없다면 지울 자리에 마지막 항목을 덮어쓰고 길이만 줄이면 O(1) 이다(unordered erase) — 대신 순서가 바뀐다. 조건에 맞는 항목을 모두 지울 때는 읽기/쓰기 두 포인터로 한 번만 훑는다(erase–remove 관용구). 지운 뒤 용량은 줄지 않는다.
-// 검증: ① 단일 삭제가 std::vector::erase 와 같고 이동 횟수 == n−pos−1 ② 구간 삭제가 같은 결과이고 이동 횟수 == n−last, 하나씩 삭제는 k(n−first) − k(k+1)/2 ③ 순서 무관 삭제는 이동 1 회이고 원소 집합이 맞음 ④ 조건 삭제가 std::erase_if 와 같고 한 번의 순회 ⑤ 범위 밖 위치·역전된 구간은 예외이고 불변 ⑥ 용량 유지.
+// 검증: ① 단일 삭제가 std::vector::erase 와 같고 이동 횟수 == n−pos−1 ② 구간 삭제가 같은 결과이고 이동 횟수 == n−last, 하나씩 삭제는 k(n−first) − k(k+1)/2 ③ 순서 무관 삭제는 이동이 정확히 (pos 가 마지막이 아니면 1, 마지막이면 0) 회이고 지운 자리에 옛 마지막 항목이 들어오며 원소 집합이 맞음 ④ 조건 삭제가 erase–remove(remove_if + erase) 와 같고 한 번의 순회 ⑤ 범위 밖 위치·역전된 구간은 예외이고 불변 ⑥ 용량 유지.
 struct ArrayList { std::vector<int> a; long moves = 0;
     void eraseAt(std::size_t pos) { if (pos >= a.size()) throw std::out_of_range("eraseAt"); for (std::size_t i = pos; i + 1 < a.size(); i++) { a[i] = a[i + 1]; moves++; } a.pop_back(); }
     void eraseRange(std::size_t first, std::size_t last) { if (first > last || last > a.size()) throw std::out_of_range("eraseRange"); std::size_t k = last - first; for (std::size_t i = last; i < a.size(); i++) { a[i - k] = a[i]; moves++; } a.resize(a.size() - k); }
@@ -747,14 +756,14 @@ int main() {
     for (int rep = 0; rep < 300; rep++) { std::size_t n = rng() % 60; ArrayList bulk, single; for (std::size_t i = 0; i < n; i++) { int x = (int)(rng() % 100); bulk.a.push_back(x); single.a.push_back(x); } std::vector<int> ref = bulk.a;       // ②
         std::size_t first = n ? rng() % (n + 1) : 0, last = first + (n - first ? rng() % (n - first + 1) : 0); ref.erase(ref.begin() + first, ref.begin() + last); bulk.eraseRange(first, last); assert(bulk.a == ref && bulk.moves == (long)(n - last));
         long k = (long)(last - first); for (std::size_t j = first; j < last; j++) single.eraseAt(first); assert(single.a == ref && single.moves == (long)(k * (n - first) - k * (k + 1) / 2)); }
-    { ArrayList u; for (int i = 0; i < 100; i++) u.a.push_back(i); std::vector<int> ref = u.a; std::mt19937 r2(1); while (!u.a.empty()) { std::size_t pos = r2() % u.a.size(); int val = u.a[pos]; long before = u.moves; assert(u.eraseUnordered(pos) == val && u.moves - before <= 1); ref.erase(std::find(ref.begin(), ref.end(), val)); std::vector<int> x = u.a, y = ref; std::sort(x.begin(), x.end()); std::sort(y.begin(), y.end()); assert(x == y); } }   // ③
+    { ArrayList u; for (int i = 0; i < 100; i++) u.a.push_back(i); std::vector<int> ref = u.a; std::mt19937 r2(1); while (!u.a.empty()) { std::size_t pos = r2() % u.a.size(); int val = u.a[pos], oldLast = u.a.back(); std::size_t last = u.a.size() - 1; long before = u.moves; assert(u.eraseUnordered(pos) == val && u.moves - before == (pos != last ? 1 : 0) && u.a.size() == last); if (pos != last) assert(u.a[pos] == oldLast); ref.erase(std::find(ref.begin(), ref.end(), val)); std::vector<int> x = u.a, y = ref; std::sort(x.begin(), x.end()); std::sort(y.begin(), y.end()); assert(x == y); } }   // ③
     for (int rep = 0; rep < 200; rep++) { ArrayList al; std::size_t n = rng() % 80; for (std::size_t i = 0; i < n; i++) al.a.push_back((int)(rng() % 20)); std::vector<int> ref = al.a; int m = (int)(rng() % 5) + 2;      // ④
         long inspected = al.eraseIf([&](int x) { return x % m == 0; }); ref.erase(std::remove_if(ref.begin(), ref.end(), [&](int x) { return x % m == 0; }), ref.end()); assert(al.a == ref && inspected == (long)n && al.moves <= (long)n); }
     { ArrayList al; al.a = {1, 2, 3}; bool threw = false; try { al.eraseAt(3); } catch (const std::out_of_range&) { threw = true; } assert(threw); threw = false; try { al.eraseRange(2, 1); } catch (const std::out_of_range&) { threw = true; } assert(threw);   // ⑤
       threw = false; try { al.eraseRange(0, 4); } catch (const std::out_of_range&) { threw = true; } assert(threw); threw = false; try { al.eraseUnordered(5); } catch (const std::out_of_range&) { threw = true; } assert(threw && al.a == (std::vector<int>{1, 2, 3}));
       al.eraseRange(1, 1); assert(al.a.size() == 3); al.eraseRange(0, 3); assert(al.a.empty()); }
     { ArrayList al; for (int i = 0; i < 1000; i++) al.a.push_back(i); std::size_t cap = al.a.capacity(); al.eraseRange(10, 990); assert(al.a.size() == 20 && al.a.capacity() == cap); }       // ⑥ 용량 유지
-    std::cout << "DeleteAt: positional erase moved exactly n-pos-1 elements, range erase moved n-last once instead of k(n-first)-k(k+1)/2 when erasing one at a time, unordered erase cost at most one move, conditional erase inspected each element once, and invalid ranges threw without modifying the array" << std::endl; return 0;
+    std::cout << "DeleteAt: positional erase moved exactly n-pos-1 elements, range erase moved n-last once instead of k(n-first)-k(k+1)/2 when erasing one at a time, unordered erase moved only the last element into the hole (one move, none when the last element itself was removed), conditional erase inspected each element once, and invalid ranges threw without modifying the array" << std::endl; return 0;
 }
 // Time Complexity: 단일 O(N−pos), 구간 O(N−last), 순서 무관 O(1), 조건 삭제 O(N)
 // Space Complexity: O(1)

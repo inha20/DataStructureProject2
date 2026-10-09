@@ -641,8 +641,9 @@ int main() {
         for (size_t i = 0; i <= n; i += 1 + rng() % 7) assert(rb.rank1(i) == pre[i] && rb.rank0(i) == i - pre[i]);
         assert(rb.rank1(n) == pre[n]);
         double overhead = (double)rb.bytes() / (n / 8.0) - 1;
-        assert(overhead < 0.08);                                           // 원본 비트 배열 대비 약 6% 추가 공간 (누적 배열이면 3200%)
-        std::cout << "Rank: density " << density << ", overhead " << overhead * 100 << "% (naive prefix array +3100%)" << std::endl;
+        double naive = (n + 1) * 4.0 / (n / 8.0);                          // 위치마다 32비트 누적 개수를 두는 배열: (n+1)*32 비트 / n 비트 = 약 3200%
+        assert(overhead < 0.08 && naive > 31);                             // 원본 비트 배열 대비 약 6% 추가 공간 (누적 배열이면 3200%)
+        std::cout << "Rank: density " << density << ", overhead " << overhead * 100 << "% (naive prefix array +" << (long)(naive * 100 + 0.5) << "%)" << std::endl;
     }
     return 0;
 }
@@ -865,15 +866,16 @@ int main() {
 #include <cassert>
 
 // 간결 트라이(LOUDS, Level-Order Unary Degree Sequence): 트라이를 포인터 대신 비트열 하나로 표현한다. 노드를 너비 우선 순서로 보며
-// 각 노드마다 "자식 수만큼의 1 과 0 하나"를 이어 쓰고, 맨 앞에 가상 루트용 "10" 을 붙인다. 노드 n 개면 비트는 2n+1 개뿐이다.
+// 각 노드마다 "자식 수만큼의 1 과 0 하나"를 이어 쓰고, 맨 앞에 가상 루트용 "10" 을 붙인다. 노드 n 개면 비트는 2n+1 개뿐이다 (*논리적* 비트 수: 이 데모는 읽기 쉽게 B 를 vector<int>, rank/select 표를 int 배열로 두므로 메모리까지 간결한 것은 아니다 —
+// 진짜 간결 구조라면 B 는 비트 배열이고 rank/select 는 o(n) 비트짜리 디렉터리(Rank 항목처럼 블록 누적 개수)로 대신한다).
 // rank/select 만으로 이동한다 (x = BFS 번호, 1-기준):
 //   첫째 자식 = select0(x)+1 위치의 1 의 순번(rank1),  다음 형제 = 바로 다음 비트가 1 이면 y+1,  부모 = rank0(select1(y))
 // 간선 라벨은 BFS 순서로 별도 배열에, "단어의 끝" 표시는 비트 배열 하나에 둔다
 struct Louds {
-    std::vector<int> B;                                                    // 비트열
+    std::vector<int> B;                                                    // 비트열 (논리적으로 2n+1 비트, 여기서는 int 로 저장)
     std::vector<char> label;                                               // label[y] = 노드 y 로 들어오는 간선의 문자 (y >= 2, 1 번이 루트)
     std::vector<bool> terminal;                                            // terminal[y] = 단어의 끝인가
-    std::vector<int> pos0, pos1, pre1;                                     // select0, select1 표와 rank1 접두합
+    std::vector<int> pos0, pos1, pre1;                                     // select0, select1 표와 rank1 접두합 (교육용 int 표: 진짜 간결 구조에서는 o(n) 디렉터리)
     void build(const std::set<std::string>& words) {
         struct T { std::vector<std::pair<char, int>> kids; bool end = false; }; std::vector<T> t(1);
         for (auto& w : words) { int cur = 0; for (char c : w) { int nx = -1; for (auto& k : t[cur].kids) if (k.first == c) nx = k.second; if (nx < 0) { nx = t.size(); t.emplace_back(); t[cur].kids.push_back({c, nx}); } cur = nx; } t[cur].end = true; }
@@ -910,11 +912,12 @@ int main() {
         assert(t.countPrefix(p) == want);
     }
     for (int y = 2; y <= t.nodes(); y++) { int p = t.parent(y); bool found = false; for (int c = t.firstChild(p); c; c = t.nextSibling(c)) found |= c == y; assert(found); }   // parent 와 firstChild/nextSibling 이 일관
-    std::cout << "SuccinctTrie: " << words.size() << " words, " << t.nodes() << " nodes, " << t.B.size() << " structure bits (pointer trie: " << t.nodes() * 4 * 8 << " bits for 4 children pointers)" << std::endl;
+    size_t tableBits = (t.pre1.size() + t.pos0.size() + t.pos1.size()) * sizeof(int) * 8;   // 이 데모의 rank/select 표가 실제로 쓰는 비트 수
+    std::cout << "SuccinctTrie: " << words.size() << " words, " << t.nodes() << " nodes, " << t.B.size() << " logical structure bits (2n+1; this demo stores B as int and its int rank/select tables take " << tableBits << " bits, which a real o(n) directory would replace) vs pointer trie " << t.nodes() * 4 * 8 << " bits for 4 children pointers" << std::endl;
     return 0;
 }
 // Time Complexity: 이동 O(1) (rank/select 가 O(1) 일 때), 단어 조회 O(|w|·σ)
-// Space Complexity: 2N+1 비트 + 라벨 N 문자
+// Space Complexity: 구조 2N+1 논리 비트 + 라벨 N 문자 (이 데모의 int 로 저장한 B 와 rank/select 표는 O(N) 워드; 간결 구현은 N 비트 + o(N) 디렉터리)
 ```
 
 ## BitmapIndex()
@@ -1080,7 +1083,7 @@ int main() {
 
 // 카운팅 블룸 필터: 비트 대신 작은 카운터(보통 4비트)를 두어 삭제를 지원한다. 삽입은 k 개 카운터 +1, 삭제는 −1, 조회는 모두 > 0 인지.
 //  4비트(최대 15)면 충분한 이유: 카운터 하나가 16 이상이 될 확률이 m·1.37e−15 수준이라 무시할 만하다.  그래도 포화(15)한 카운터는 "더 이상 줄이지 않는다" — 줄이면 실제보다 낮아져 거짓 음성이 생길 수 있기 때문이다.
-//  (일반 블룸 필터보다 공간 4배.  없는 키를 삭제하면 필터가 깨지므로 "넣었던 키만 삭제" 가 전제)  검증: ① 무작위 삽입·삭제 20 만 번 동안 *지금 들어 있는 모든 키*가 항상 "있을 수도" (거짓 음성 0)  ② 전부 지우면 필터가 비어 있다 (포화가 없었다면)
+//  (일반 블룸 필터보다 공간 4배.  없는 키를 삭제하면 필터가 깨지므로 "넣었던 키만 삭제" 가 전제)  검증: ① 무작위 삽입·삭제 20 만 번 동안 (997 단계마다 약 200 번, 그리고 끝에서) *지금 들어 있는 모든 키*를 전수 조회해 모두 "있을 수도" (거짓 음성 0)  ② 전부 지우면 필터가 비어 있다 (포화가 없었다면)
 //  ③ 거짓 양성률이 이론값(블룸 필터와 같은 식)과 5σ 이내  ④ 포화 규칙의 필요성: 카운터 하나(m = 1)에 20 개 키를 넣어 포화시킨 뒤 19 개를 지우면, 규칙을 지킨 필터는 남은 키를 계속 "있을 수도"로 답하지만 포화를 무시하고 줄이는 필터는 거짓 음성을 낸다
 //  ⑤ 부하 ln 2 에서 관측된 최대 카운터 값이 15 보다 훨씬 작다.
 static uint64_t mix(uint64_t x) { x += 0x9E3779B97F4A7C15ULL; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL; x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL; return x ^ (x >> 31); }
@@ -1110,7 +1113,7 @@ int main() {
     { CBloom good(1, 1, true), bad(1, 1, false); for (uint64_t key = 0; key < 20; ++key) { good.add(key); bad.add(key); } assert(good.get(0) == 15 && bad.get(0) == 15);                      // ④ 포화
       for (uint64_t key = 0; key < 19; ++key) { good.remove(key); bad.remove(key); } assert(good.maybe(19) && !bad.maybe(19)); }                          // 규칙을 지키면 남은 키가 살아 있고, 안 지키면 거짓 음성
     { CBloom e(1000000, 5); const int cnt = (int)(1000000 * std::log(2.0) / 5); for (int i = 0; i < cnt; ++i) e.add((uint64_t)i); int mx = e.maxCounter(); assert(mx < 12 && e.saturated == 0);  // ⑤
-      std::cout << "CountingBloomFilter: " << ops << " random insert/remove operations never lost a live key, removing everything emptied the filter, false-positive rate " << meas << " matched theory " << p << ", a saturated counter kept a surviving key visible (the naive variant lost it), and at load ln 2 the largest 4-bit counter was only " << mx << std::endl; }
+      std::cout << "CountingBloomFilter: " << ops << " random insert/remove operations never lost a live key (full live-key check every 997th step and at the end), removing everything emptied the filter, false-positive rate " << meas << " matched theory " << p << ", a saturated counter kept a surviving key visible (the naive variant lost it), and at load ln 2 the largest 4-bit counter was only " << mx << std::endl; }
     return 0;
 }
 // Time Complexity: 삽입·삭제·조회 O(k)
@@ -2127,7 +2130,7 @@ int main() {
 
 // 접미사 오토마톤(SAM, 문자열 관점의 요약, 정본은 String.md Part 9): 문자열의 모든 부분 문자열을 받아들이는 최소 DFA. 상태 수 ≤ 2n−1, 전이 ≤ 3n−4, 온라인 O(n) 구성.
 //  서로 다른 부분 문자열의 수 = Σ (len[v] − len[link[v]]).  상태 v 의 endpos 크기 cnt[v] 는 len 이 큰 순서로 link 를 따라 합산하면 되고, 패턴의 출현 횟수 = 패턴이 닿는 상태의 cnt.
-//  ① 전수: 이진 문자열 길이 ≤ 12 전부 — 상태 수 ≤ 2n − 1, 전이 수 ≤ 3n − 4 (n ≥ 3), 서로 다른 부분 문자열 수가 집합 오라클과 같고, 길이 ≤ 6 의 모든 이진 패턴에 대해 contains / 출현 횟수가 순진한 탐색과 같다
+//  ① 전수: 이진 문자열 길이 ≤ 12 전부 — 상태 수 ≤ 2n − 1, 전이 수 ≤ 3n − 4 (n ≥ 3), 서로 다른 부분 문자열 수가 집합 오라클과 같고, (텍스트 길이 ≤ 9 에 대해서만) 길이 ≤ 6 의 모든 이진 패턴에 대해 contains / 출현 횟수가 순진한 탐색과 같다
 //  ② 최장 공통 부분 문자열: 무작위 문자열 쌍에서 SAM 으로 b 를 훑은 길이가 동적 계획법(O(nm))과 같다  ③ 20 만 글자: 상태 수 ≤ 2n − 1, 실제 부분 문자열 300 개는 받아들이고 무작위 길이 25 문자열은 순진한 탐색과 같은 판정.
 struct SAM {
     struct State { int len, link; int next[26]; };
@@ -2168,10 +2171,10 @@ int main() {
     { const int n = 200000; std::string t(n, 'a'); for (char& c : t) c = (char)('a' + rng() % 4); SAM s; s.build(t); s.countEndpos(); assert((int)s.st.size() <= 2 * n - 1 && s.transitions() <= 3LL * n - 4);
       for (int q = 0; q < 300; ++q) { int pl = 1 + (int)(rng() % 30); std::string p = t.substr(rng() % (n - pl), pl); assert(s.contains(p) && s.occurrences(p) >= 1 && s.occurrences(p) == naiveCount(t, p)); }
       for (int q = 0; q < 100; ++q) { std::string p(25, 'a'); for (char& c : p) c = (char)('a' + rng() % 4); assert(s.contains(p) == (t.find(p) != std::string::npos)); }
-      std::cout << "SuffixAutomaton: states <= 2n-1 and transitions <= 3n-4 held for every binary string up to length 12, distinct-substring counts and occurrence counts matched naive enumeration, the longest common substring matched dynamic programming, and a 2*10^5-character string produced " << s.st.size() << " states" << std::endl; }
+      std::cout << "SuffixAutomaton: states <= 2n-1 and transitions <= 3n-4 held for every binary string up to length 12, distinct-substring counts matched naive enumeration for all of them, contains/occurrence counts matched naive search for every binary text up to length 9 and every binary pattern up to length 6, the longest common substring matched dynamic programming, and a 2*10^5-character string produced " << s.st.size() << " states" << std::endl; }
     return 0;
 }
-// Time Complexity: 구성 O(n·σ) (복제 시 전이 배열 복사), 부분 문자열 판정 O(m)
+// Time Complexity: 구성 O(n·σ) (복제 시 전이 배열 복사), 출현 횟수 집계 countEndpos 는 std::sort 때문에 O(n log n) (계수 정렬이면 O(n)), 부분 문자열 판정 O(m)
 // Space Complexity: O(n·σ)
 ```
 ## PatriciaTrie()
@@ -8020,7 +8023,9 @@ int main() {
 // 캐시 인지(cache-aware) B-트리: 캐시 라인 크기를 코드에 "알고" 노드 크기를 거기에 맞춘다. 64 바이트 라인에 4 바이트 키 16 개 = 노드 하나가 정확히 한 라인이 되게 분기 수 F=16 으로 정적 트리를 만든다.
 // 구성: 정렬 배열을 레벨 0 으로 두고, 레벨 h+1 은 레벨 h 의 F 개마다 첫 키를 모은 배열(표본). 탐색은 맨 위(크기 <= F)에서 시작해 한 레벨에서 F 개 연속 키만 읽고 다음 레벨의 해당 블록으로 내려간다.
 // 이분 탐색은 깊은 곳에서 프로브마다 다른 캐시 라인을 건드려 약 log2 N - 4 라인을 읽지만, 이 트리는 log_F N 라인이면 된다. F 가 라인보다 작으면 레벨이 늘고, 크면 노드 한 개가 여러 라인이다 -> F = 라인 크기가 최적
-// (반대로 캐시 무관 B-트리(앞 항목)는 B 를 모르고도 거의 같은 성능을 낸다는 점이 대비된다)
+// (반대로 캐시 무관 B-트리(CacheObliviousBTree 항목)는 B 를 모르고도 거의 같은 성능을 낸다는 점이 대비된다)
+// 검증: 모든 질의 결과가 std::lower_bound 와 같고, 읽은 캐시 라인 수를 *정확히* 센다 — n = 2^20 개 키에서 F=16 은 노드 하나가 정확히 한 라인이라 질의당 레벨 수(t16.lv.size()=5) 라인,
+//  F=4 도 노드가 한 라인 안이라 레벨 수 라인, F=64 는 노드가 4 라인이라 (맨 위 레벨만 1 라인) 4·(레벨 수−1)+1 라인이고, 최적인 F=16 은 이분 탐색(약 16 라인)의 절반 미만이다
 struct StaticBTree {
     int F; std::vector<std::vector<int>> lv;
     StaticBTree(const std::vector<int>& keys, int F) : F(F) { lv.push_back(keys); while (lv.back().size() > (size_t)F) { std::vector<int> up; for (size_t i = 0; i < lv.back().size(); i += F) up.push_back(lv.back()[i]); lv.push_back(up); } }
@@ -8037,7 +8042,7 @@ struct StaticBTree {
 };
 int main() {
     std::mt19937 g(5); const long n = 1 << 20; std::vector<int> keys(n); for (long i = 0; i < n; i++) keys[i] = i * 3;     // 이미 정렬된 정수 키
-    double lines[3] = {0, 0, 0}; int Fs[3] = {4, 16, 64}; (void)Fs; (void)Fs; double bin = 0; int Q = 3000;
+    double lines[3] = {0, 0, 0}; double bin = 0; int Q = 3000;
     StaticBTree t4(keys, 4), t16(keys, 16), t64(keys, 64); const StaticBTree* trees[3] = {&t4, &t16, &t64};
     for (int t = 0; t < Q; t++) {
         int q = g() % (n * 3); long want = std::lower_bound(keys.begin(), keys.end(), q) - keys.begin();
@@ -8046,6 +8051,7 @@ int main() {
     }
     for (int k = 0; k < 3; k++) lines[k] /= Q; bin /= Q;
     assert(lines[1] <= lines[0] && lines[1] <= lines[2] && lines[1] * 2 < bin);        // F = 16(라인 크기)이 최소, 이분 탐색의 절반 미만
+    assert(lines[1] == (double)t16.lv.size() && lines[0] == (double)t4.lv.size() && lines[2] == 4.0 * (t64.lv.size() - 1) + 1);   // 라인 수 자체도 정확히 (노드당 라인 수 x 레벨 수)
     std::cout << "CacheAwareBTree: cache lines per search  F=4: " << lines[0] << ", F=16: " << lines[1] << ", F=64: " << lines[2] << ", binary search: " << bin << std::endl; return 0;
 }
 // Time Complexity: 탐색 O(log_F N) 캐시 라인 (F = 라인 크기 / 키 크기)
