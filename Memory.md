@@ -357,7 +357,7 @@ extern "C" char etext, edata, end, __bss_start, __data_start;      // GNU ld / g
 //  .bss  = 초기값이 없거나 0 인 전역/static (실행 파일에는 크기만 기록되고 로드될 때 0 으로 채워진다)
 // 그래서 큰 배열을 전역으로 선언해도 실행 파일 크기는 거의 늘지 않는다.  static 지역 변수도 여기에 있어 호출 사이에 값이 유지된다
 // 검증: ① 값과 0 초기화, 호출 사이 유지  ② Linux: 링커 기호로 구역 경계를 얻어 `.data` 변수가 [etext, edata) 에, `.bss` 변수가 [__bss_start, end) 에 있음을 확인 — 문자열 리터럴·스택·힙은 어느 구역에도 속하지 않음
-//        ③ 실행 파일 크기가 bss 배열(16 MB)보다 훨씬 작음  ④ 요구 페이징: 0 으로 시작하는 큰 배열은 건드리기 전까지 실제 메모리(RSS)를 거의 쓰지 않고, 전부 건드리면 그 크기만큼 늘어난다  ⑤ 함수 안 static 은 여러 스레드가 동시에 처음 불러도 초기화가 *정확히 한 번* (C++11 보장)
+//        ③ 실행 파일 크기가 bss 배열(16 MB)보다 훨씬 작음  ④ 요구 페이징: 0 으로 시작하는 큰 배열은 건드리기 전까지 실제 메모리에 거의 올라오지 않고(mincore 로 쪽마다 확인), 한 칸을 쓰면 쪽 정확히 하나, 쪽마다 하나씩 쓰면 전부 올라온다  ⑤ 함수 안 static 은 여러 스레드가 동시에 처음 불러도 초기화가 *정확히 한 번* (C++11 보장)
 // audit: no-sanitize (새니타이저가 전역을 재배치하고 그림자 메모리를 써서 구역 경계와 상주 메모리 측정이 달라진다)
 int withValue = 42;                 // .data
 int zeroed[4000000];                // .bss: 16MB 인데 파일에는 저장되지 않음
@@ -368,15 +368,19 @@ int nextId() { static int id = 100; return id++; }       // static 지역: 첫 �
 std::atomic<int> initRuns{0};
 int expensiveInit() { initRuns.fetch_add(1); return 7; }
 int lazyValue() { static int v = expensiveInit(); return v; }
-long residentPages() {                                                                              // /proc/self/statm 의 두 번째 값 = 상주 페이지 수
-#if defined(__linux__)
-    FILE* f = fopen("/proc/self/statm", "r"); long a = 0, r = 0; if (f) { if (fscanf(f, "%ld %ld", &a, &r) != 2) r = -1; fclose(f); } return r;
-#else
-    return -1;
-#endif
-}
 
 int main() {
+#if defined(__linux__)
+    // ④ 요구 페이징: mincore 는 쪽 하나하나가 실제 메모리에 있는지를 쪽 표에서 *정확히* 알려 준다 (/proc 의 상주 크기는 CPU 별 카운터라 몇십 쪽씩 늦게 반영되기도 한다).  가장 먼저, 아무도 읽거나 쓰기 전에 잰다.
+    const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE), lo = (uintptr_t)zeroed & ~(pg - 1), hi = ((uintptr_t)(zeroed + 4000000) + pg - 1) & ~(pg - 1);       // 배열이 걸친 쪽들
+#if defined(MADV_NOHUGEPAGE)
+    madvise((void*)lo, hi - lo, MADV_NOHUGEPAGE);                                                         // THP 는 첫 쓰기에 2 MB(또는 mTHP 64 KB) 를 한꺼번에 배정하므로 양끝의 부분 쪽까지 *전부* 끈다
+#endif
+    auto resident = [&] { std::vector<unsigned char> v((hi - lo) / pg); long n = -1; if (mincore((void*)lo, hi - lo, v.data()) == 0) { n = 0; for (unsigned char c : v) n += c & 1; } return n; };
+    long n0 = resident(); assert(n0 >= 0 && n0 <= 2);                                                     // 건드리지 않은 배열은 (양끝의 남과 나눠 쓰는 쪽을 빼면) 메모리에 없다
+    zeroed[2000000] = 9; long n1 = resident(); if (n1 - n0 != 1) std::fprintf(stderr, "WARNING: one store made %ld pages resident\n", n1 - n0);
+    assert(n1 - n0 == 1);                                                                                 // 한 칸만 쓰면 쪽 정확히 하나
+#endif
     assert(withValue == 42);
     for (int i = 0; i < 4000000; i += 99999) assert(zeroed[i] == 0);   // 전부 0 으로 시작 (보장됨)
     assert(counter == 0);
@@ -391,18 +395,11 @@ int main() {
     assert(!inData((uintptr_t)&onStack) && !inData((uintptr_t)onHeap) && !inData((uintptr_t)literal) && (uintptr_t)literal >= e0 && (uintptr_t)literal < d0);    // 스택·힙은 데이터 세그먼트가 아니고, 문자열 리터럴은 코드와 데이터 사이의 읽기 전용 구역(.rodata)
     ::operator delete(onHeap);
     struct stat st; assert(stat("/proc/self/exe", &st) == 0 && (size_t)st.st_size < sizeof(zeroed) / 2);       // ③ 파일이 bss 배열 크기의 절반도 안 된다
-#if defined(MADV_NOHUGEPAGE)
-    {   uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE), lo = (uintptr_t)zeroed & ~(pg - 1), hi = ((uintptr_t)(zeroed + 4000000) + pg - 1) & ~(pg - 1); madvise((void*)lo, hi - lo, MADV_NOHUGEPAGE); }          // THP 는 첫 쓰기에 2 MB(또는 mTHP 64 KB) 를 한꺼번에 배정하므로 배열이 걸친 쪽 *전부*(양끝의 부분 쪽 포함)에 끈다
+    for (size_t i = 0; i < 4000000; i += pg / sizeof(int)) zeroed[i] = 1;                                  // 쪽마다 하나씩 = 모든 쪽
+    long n2 = resident(); if (n2 != (long)((hi - lo) / pg)) std::fprintf(stderr, "WARNING: touching every page made %ld of %zu pages resident\n", n2, (size_t)((hi - lo) / pg));
+    assert(n2 == (long)((hi - lo) / pg));                                                                 // 전부 올라왔다 (16 MB = 4 KB 쪽 4096 개 안팎)
 #endif
-    long before = residentPages(); assert(before > 0);                                                   // ④ 요구 페이징
-    zeroed[5] = 9; long afterOne = residentPages(); if (afterOne - before > 8) std::fprintf(stderr, "WARNING: one store made %ld pages resident\n", afterOne - before);
-    assert(afterOne - before <= 8);                                                                       // 한 칸만 건드리면 페이지 한두 개
-    for (size_t i = 0; i < 4000000; i += 1024) zeroed[i] = 1;                                              // 4 KB 마다 하나씩 = 모든 페이지
-    long afterAll = residentPages(); long grown = afterAll - afterOne; if (!(grown > 3500 && grown < 4600)) std::fprintf(stderr, "WARNING: touching every page made %ld pages resident\n", grown);
-    assert(grown > 3500 && grown < 4600);           // 16 MB = 4096 페이지
-#else
     zeroed[5] = 9;
-#endif
     counter++;
     assert(zeroed[5] == 9 && counter == 1);
     // ⑤ 스레드가 동시에 처음 부른다
