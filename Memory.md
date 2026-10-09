@@ -2512,192 +2512,679 @@ int main() {
 ## MarkSweep()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 
 // 마크-스윕: (1) 루트(스택·전역 변수)에서 닿는 객체를 모두 표시(mark)하고, (2) 힙 전체를 훑어 표시되지 않은 객체를 해제(sweep)한다.
 // 순환 참조도 올바르게 회수하고, 객체를 옮기지 않아 포인터가 안정적이다.  단점: 힙 전체를 훑고 단편화가 생기며 수집 중 멈춤(stop-the-world)이 있다
-struct Obj { std::vector<int> refs; bool alive = false, marked = false; };
+// 이 구현은 워드 배열 위에서 진짜 힙처럼 만든다: 객체 = [헤더][참조 칸 n 개][데이터 칸], 헤더에 크기·참조 수·표시/빈 블록 비트.
+//  할당은 자유 블록 리스트 first-fit(남는 조각이 2 워드 미만이면 통째로 준다), 스윕은 힙을 선형으로 걸으며 죽은 객체와 빈 블록을 이어 붙여(병합) 자유 리스트를 새로 만든다.
+//  표시는 두 가지로 구현해 서로 맞춘다: ① 명시적 스택 (추가 메모리 O(깊이))  ② Schorr–Waite 포인터 역전 (추가 메모리 O(1): 내려갈 때 참조 칸에 부모를 적어 두고 올라올 때 복원)
+// 검증: ① 임의 그래프(순환·공유·자기 참조 포함) 300 개에서 스택 표시 == 포인터 역전 표시 == BFS 기준, 역전 후 힙이 표시 비트만 빼고 비트까지 원래대로
+//        ② 무작위 변경 프로그램 4 000 번(할당·참조 바꾸기·루트 버리기, 힙이 차면 GC 후 재시도)을 id 모형과 대조: 수집 뒤 살아 있는 id 집합 == 모형의 도달 가능 집합, 주소는 그대로, 참조·데이터 보존
+//        ③ 불변식: 블록이 힙을 빈틈없이 덮고, 자유 리스트 == 힙 안의 빈 블록 전부(주소순), 스윕 뒤에는 이웃한 빈 블록이 없음  ④ 단편화: 총 자유 공간은 충분해도 연속 공간이 없어 실패하는 장면
+const uint64_t MARK = 1ull << 63, FREE = 1ull << 62;
+inline uint32_t sizeOf(uint64_t h) { return (uint32_t)(h & 0xFFFFFF); }
+inline uint32_t nrefsOf(uint64_t h) { return (uint32_t)((h >> 24) & 0xFFFF); }
+inline uint32_t cursorOf(uint64_t h) { return (uint32_t)((h >> 40) & 0xFFFF); }
+const uint64_t CURSOR_MASK = 0xFFFFull << 40;
+
 struct Heap {
-    std::vector<Obj> objs; std::vector<int> roots;
-    int alloc() { for (size_t i = 0; i < objs.size(); i++) if (!objs[i].alive) { objs[i] = Obj{}; objs[i].alive = true; return i; } objs.push_back(Obj{}); objs.back().alive = true; return objs.size() - 1; }
-    void mark() {
-        std::vector<int> stack(roots.begin(), roots.end());
-        while (!stack.empty()) {
-            int i = stack.back(); stack.pop_back();
-            if (objs[i].marked) continue;
-            objs[i].marked = true;
-            for (int r : objs[i].refs) stack.push_back(r);
+    std::vector<uint64_t> mem; std::vector<uint32_t> roots; uint32_t freeHead = 1; long collections = 0;
+    explicit Heap(uint32_t words) : mem(words + 1, 0) { mem[1] = FREE | words; mem[2] = 0; }
+    void relink(uint32_t prev, uint32_t to) { if (prev) mem[prev + 1] = to; else freeHead = to; }
+    uint64_t& ref(uint32_t b, uint32_t i) { return mem[b + 1 + i]; }
+    uint64_t& data(uint32_t b, uint32_t j) { return mem[b + 1 + nrefsOf(mem[b]) + j]; }
+    uint32_t dataWords(uint32_t b) const { return sizeOf(mem[b]) - 1 - nrefsOf(mem[b]); }
+    uint32_t alloc(uint32_t nrefs, uint32_t dataN) {                                           // 실패하면 0
+        uint32_t need = std::max<uint32_t>(2, 1 + nrefs + dataN), prev = 0;
+        for (uint32_t b = freeHead; b; prev = b, b = (uint32_t)mem[b + 1]) {
+            uint32_t sz = sizeOf(mem[b]); if (sz < need) continue;
+            uint32_t next = (uint32_t)mem[b + 1], take = (sz - need >= 2) ? need : sz;
+            if (take < sz) { uint32_t rest = b + take; mem[rest] = FREE | (sz - take); mem[rest + 1] = next; relink(prev, rest); } else relink(prev, next);
+            mem[b] = (uint64_t)take | ((uint64_t)nrefs << 24); for (uint32_t i = 1; i < take; ++i) mem[b + i] = 0;
+            return b;
+        }
+        return 0;
+    }
+    void markStack(const std::vector<uint32_t>& rs) {
+        std::vector<uint32_t> st; for (uint32_t r : rs) { if (r) st.push_back(r); }
+        while (!st.empty()) {
+            uint32_t b = st.back(); st.pop_back(); if (mem[b] & MARK) continue;
+            mem[b] |= MARK; for (uint32_t i = 0; i < nrefsOf(mem[b]); ++i) { uint32_t c = (uint32_t)ref(b, i); if (c && !(mem[c] & MARK)) st.push_back(c); }
         }
     }
-    int sweep() {
-        int freed = 0;
-        for (auto& o : objs) { if (o.alive && !o.marked) { o.alive = false; o.refs.clear(); freed++; } o.marked = false; }
-        return freed;
+    void markReversal(uint32_t root) {                                                           // Schorr–Waite: 스택 없이 참조 칸을 뒤집어 부모를 기억한다
+        if (!root || (mem[root] & MARK)) return;
+        uint32_t prev = 0, cur = root; mem[cur] |= MARK;
+        for (;;) {
+            uint32_t i = cursorOf(mem[cur]);
+            if (i < nrefsOf(mem[cur])) {
+                uint32_t child = (uint32_t)ref(cur, i);
+                if (child && !(mem[child] & MARK)) { ref(cur, i) = prev; prev = cur; cur = child; mem[cur] |= MARK; }   // 내려간다: 지나온 칸에 부모를 적는다
+                else mem[cur] += (1ull << 40);                                                                       // 다음 칸
+            } else {
+                mem[cur] &= ~CURSOR_MASK;                                                       // 이 객체 끝
+                if (!prev) break;
+                uint32_t p = prev, j = cursorOf(mem[p]);
+                prev = (uint32_t)ref(p, j); ref(p, j) = cur; mem[p] += (1ull << 40); cur = p;   // 올라간다: 조부모를 복원하고 원래 자식 포인터를 되돌린다
+            }
+        }
     }
-    int collect() { mark(); return sweep(); }
-    int liveCount() const { int c = 0; for (auto& o : objs) c += o.alive; return c; }
+    void mark() { markStack(roots); }
+    long sweep() {                                                                               // 죽은 객체와 빈 블록을 이어 붙이며 자유 리스트를 새로 만든다
+        uint32_t b = 1, end = (uint32_t)mem.size(), runStart = 0, runLen = 0, lastFree = 0; long freed = 0; freeHead = 0;
+        auto flush = [&]() { if (!runStart) return; mem[runStart] = FREE | runLen; mem[runStart + 1] = 0; if (lastFree) mem[lastFree + 1] = runStart; else freeHead = runStart; lastFree = runStart; runStart = 0; };
+        while (b < end) {
+            uint64_t h = mem[b]; uint32_t sz = sizeOf(h);
+            if ((h & FREE) || !(h & MARK)) { if (!(h & FREE)) ++freed; if (!runStart) { runStart = b; runLen = 0; } runLen += sz; }
+            else { mem[b] &= ~MARK; flush(); }
+            b += sz;
+        }
+        flush(); return freed;
+    }
+    long collect() { ++collections; mark(); return sweep(); }
+    // 검증용
+    std::vector<std::pair<uint32_t, bool>> walk() const {                                       // (블록, 빈 블록인가) — 힙을 빈틈없이 덮어야 한다
+        std::vector<std::pair<uint32_t, bool>> v; uint32_t b = 1;
+        while (b < mem.size()) { assert(sizeOf(mem[b]) >= 2); v.push_back({b, (mem[b] & FREE) != 0}); b += sizeOf(mem[b]); }
+        assert(b == mem.size()); return v;
+    }
+    void checkInvariants(bool afterSweep) const {
+        auto w = walk(); std::vector<uint32_t> freeInHeap; for (auto& p : w) { if (p.second) freeInHeap.push_back(p.first); assert(!(mem[p.first] & MARK) && !(mem[p.first] & CURSOR_MASK)); }
+        std::vector<uint32_t> inList; for (uint32_t b = freeHead; b; b = (uint32_t)mem[b + 1]) { assert(mem[b] & FREE); inList.push_back(b); assert(inList.size() <= w.size()); }
+        assert(inList == freeInHeap);                                                           // 자유 리스트 == 힙 안의 빈 블록 전부, 주소순
+        if (afterSweep) for (size_t i = 0; i + 1 < w.size(); ++i) assert(!(w[i].second && w[i + 1].second));   // 이웃한 빈 블록은 병합돼 있다
+    }
+    size_t liveObjects() const { size_t n = 0; for (auto& p : walk()) n += !p.second; return n; }
+    uint32_t largestFree() const { uint32_t m = 0; for (uint32_t b = freeHead; b; b = (uint32_t)mem[b + 1]) m = std::max(m, sizeOf(mem[b])); return m; }
+    uint32_t totalFree() const { uint32_t t = 0; for (uint32_t b = freeHead; b; b = (uint32_t)mem[b + 1]) t += sizeOf(mem[b]); return t; }
 };
 
 int main() {
-    Heap h;
-    int a = h.alloc(), b = h.alloc(), c = h.alloc(), d = h.alloc(), e = h.alloc();
-    h.roots = {a};
-    h.objs[a].refs = {b}; h.objs[b].refs = {c};            // a -> b -> c  (루트에서 닿는다)
-    h.objs[d].refs = {e}; h.objs[e].refs = {d};            // d <-> e  (서로만 가리키는 순환, 루트에서 닿지 않음)
-    assert(h.liveCount() == 5);
-    assert(h.collect() == 2);                               // 순환 참조된 d, e 가 회수된다
-    assert(h.liveCount() == 3 && h.objs[a].alive && h.objs[b].alive && h.objs[c].alive);
-    h.objs[b].refs.clear();                                 // b -> c 끊기
-    assert(h.collect() == 1 && !h.objs[c].alive);
-    int reused = h.alloc();                                 // 회수된 칸을 재사용
-    assert(reused == c || reused == d || reused == e);
-    std::cout << "MarkSweep verified: cycle collected, live=" << h.liveCount() << std::endl;
+    // 원래 예: a -> b -> c, d <-> e (순환 쓰레기)
+    {   Heap h(200); uint32_t a = h.alloc(1, 1), b = h.alloc(1, 1), c = h.alloc(0, 1), d = h.alloc(1, 1), e = h.alloc(1, 1);
+        h.roots = {a}; h.ref(a, 0) = b; h.ref(b, 0) = c; h.ref(d, 0) = e; h.ref(e, 0) = d;
+        assert(h.liveObjects() == 5 && h.collect() == 2 && h.liveObjects() == 3);               // 순환 참조된 d, e 가 회수
+        h.ref(b, 0) = 0; assert(h.collect() == 1 && h.liveObjects() == 2);
+        uint32_t reused = h.alloc(0, 1); assert(reused == c || reused == d || reused == e || reused > e); h.checkInvariants(true); }
+
+    // ① 임의 그래프에서 세 가지 표시가 같다
+    std::mt19937 rng(11); long graphs = 0, markedTotal = 0;
+    for (int g = 0; g < 300; ++g) {
+        Heap h(6000); int n = 1 + (int)(rng() % 150); std::vector<uint32_t> objs;
+        for (int i = 0; i < n; ++i) { uint32_t o = h.alloc(rng() % 6, 1 + rng() % 3); assert(o); objs.push_back(o); }
+        for (uint32_t o : objs) for (uint32_t k = 0; k < nrefsOf(h.mem[o]); ++k) { if (rng() % 4) h.ref(o, k) = objs[rng() % objs.size()]; }   // 순환·공유·자기 참조 모두 가능
+        std::vector<uint32_t> roots; int nr = (int)(rng() % 4); for (int i = 0; i < nr; ++i) roots.push_back(objs[rng() % objs.size()]);
+        std::set<uint32_t> want; { std::vector<uint32_t> st(roots.begin(), roots.end()); while (!st.empty()) { uint32_t b = st.back(); st.pop_back(); if (!want.insert(b).second) continue;
+            for (uint32_t k = 0; k < nrefsOf(h.mem[b]); ++k) { if (h.ref(b, k)) st.push_back((uint32_t)h.ref(b, k)); } } }                     // 독립 BFS 기준
+        std::vector<uint64_t> snapshot = h.mem;
+        h.markStack(roots); std::set<uint32_t> viaStack; for (auto& p : h.walk()) { if (h.mem[p.first] & MARK) viaStack.insert(p.first); }
+        h.mem = snapshot; for (uint32_t r : roots) h.markReversal(r); std::set<uint32_t> viaReversal; for (auto& p : h.walk()) { if (h.mem[p.first] & MARK) viaReversal.insert(p.first); }
+        assert(viaStack == want && viaReversal == want);
+        std::vector<uint64_t> after = h.mem; for (auto& p : h.walk()) { after[p.first] &= ~MARK; }                    // 역전 표시는 표시 비트 말고는 아무것도 바꾸지 않는다 (비트 단위로 복원)
+        assert(after == snapshot);
+        ++graphs; markedTotal += (long)want.size();
+    }
+
+    // ② 무작위 변경 프로그램과 id 모형
+    {   Heap h(1500); std::map<int, std::vector<int>> refs; std::map<int, uint32_t> addr; std::vector<int> roots; int nextId = 1; long ooms = 0, gcs = 0, allocs = 0, frees = 0;
+        auto reachable = [&]() { std::set<int> seen; std::vector<int> st(roots.begin(), roots.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (!x || !seen.insert(x).second) continue; for (int c : refs[x]) st.push_back(c); } return seen; };
+        auto syncRoots = [&]() { h.roots.clear(); for (int r : roots) h.roots.push_back(addr[r]); };
+        auto verify = [&]() {
+            std::set<int> reach = reachable(); std::set<int> inHeap;
+            for (auto& p : h.walk()) { if (p.second) continue; uint32_t b = p.first; int id = (int)h.data(b, 0); assert(inHeap.insert(id).second && addr.count(id) && addr[id] == b);
+                for (uint32_t k = 0; k < nrefsOf(h.mem[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); assert((c ? (int)h.data(c, 0) : 0) == refs[id][k]); }
+                for (uint32_t j = 1; j < h.dataWords(b); ++j) { assert(h.data(b, j) == (uint64_t)id * 2654435761u + j); } }
+            assert(inHeap == reach);                                                              // 수집 뒤 살아 있는 id == 도달 가능 id
+            for (auto it = refs.begin(); it != refs.end();) { if (!reach.count(it->first)) { addr.erase(it->first); it = refs.erase(it); } else ++it; }
+        };
+        for (int step = 0; step < 4000; ++step) {
+            int op = (int)(rng() % 100); std::set<int> reach = reachable(); std::vector<int> rl(reach.begin(), reach.end());
+            if (op < 45 || rl.empty()) {
+                uint32_t nr = rng() % 4, nd = 1 + rng() % 5; uint32_t b = h.alloc(nr, nd);
+                if (!b) { syncRoots(); h.collect(); ++gcs; verify(); h.checkInvariants(true); b = h.alloc(nr, nd); }
+                if (!b) { ++ooms; continue; }
+                ++allocs; int id = nextId++; h.data(b, 0) = (uint64_t)id; for (uint32_t j = 1; j < h.dataWords(b); ++j) { h.data(b, j) = (uint64_t)id * 2654435761u + j; }
+                addr[id] = b; refs[id] = std::vector<int>(nr, 0);
+                int how = (int)(rng() % 10);
+                if (how < 3 && roots.size() < 5) { roots.push_back(id); }
+                else if (how < 8 && !rl.empty()) { int host = rl[rng() % rl.size()]; if (!refs[host].empty()) { uint32_t k = rng() % refs[host].size(); refs[host][k] = id; h.ref(addr[host], k) = b; } }   // 아니면 바로 쓰레기
+            } else if (op < 85) {
+                int host = rl[rng() % rl.size()]; if (refs[host].empty()) continue;
+                uint32_t k = rng() % refs[host].size(); int tgt = (rng() % 5 == 0) ? 0 : rl[rng() % rl.size()]; refs[host][k] = tgt; h.ref(addr[host], k) = tgt ? addr[tgt] : 0;
+            } else if (op < 92) {
+                if (!roots.empty()) { roots.erase(roots.begin() + rng() % roots.size()); }
+            } else if (op < 97) {
+                if (roots.size() < 5) roots.push_back(rl[rng() % rl.size()]);
+            } else { syncRoots(); frees += h.collect(); ++gcs; verify(); h.checkInvariants(true); }
+            syncRoots();
+        }
+        syncRoots(); frees += h.collect(); verify(); h.checkInvariants(true);
+        assert(gcs > 50 && allocs > 1500 && frees > 500);
+        std::cout << "MarkSweep verified: " << graphs << " random graphs (" << markedTotal << " marked, stack == pointer reversal == BFS), " << gcs << " collections, " << allocs << " allocations, " << frees << " objects swept, " << ooms << " out-of-memory." << std::endl; }
+
+    // ④ 단편화: 총 자유 공간은 충분한데 연속 공간이 없어서 실패
+    {   auto filled = [](std::vector<uint32_t>& os) { Heap h(40 * 4); for (int i = 0; i < 40; ++i) { uint32_t o = h.alloc(0, 3); assert(o); os.push_back(o); } assert(h.alloc(0, 3) == 0); return h; };
+        std::vector<uint32_t> os; Heap h = filled(os);                                              // 4 워드짜리 40 개로 가득 채운다
+        h.roots.clear(); for (int i = 1; i < 40; i += 2) { h.roots.push_back(os[i]); }              // 홀수 번째만 살린다
+        h.collect(); h.checkInvariants(true);
+        assert(h.totalFree() == 20 * 4 && h.largestFree() == 4 && h.alloc(0, 7) == 0);              // 80 워드가 비었지만 8 워드 연속 공간은 없다 (외부 단편화)
+        std::vector<uint32_t> os2; Heap g = filled(os2);
+        g.roots.clear(); for (int i = 0; i < 20; ++i) { g.roots.push_back(os2[i]); }                // 앞쪽 절반만 살린다
+        g.collect(); g.checkInvariants(true); assert(g.largestFree() == 80 && g.alloc(0, 7) != 0);   // 인접한 죽은 객체가 병합돼 큰 요청이 들어간다
+    }
+    // GC 가 할당 실패에서 구해 준다: 쓰레기를 계속 만들어도 힙이 안 찬다
+    {   Heap h(300); uint32_t keeper = h.alloc(1, 2); h.roots = {keeper}; long made = 0;
+        for (int i = 0; i < 2000; ++i) { uint32_t o = h.alloc(0, 4); if (!o) { h.collect(); o = h.alloc(0, 4); } assert(o); ++made; if (i % 100 == 0) h.ref(keeper, 0) = o; }
+        assert(made == 2000 && h.collections > 5); h.checkInvariants(false); }
     return 0;
 }
-// Time Complexity: O(살아있는 객체 + 힙 전체) (마크 + 스윕)
-// Space Complexity: O(깊이) 마크 스택
+// Time Complexity: 마크 O(살아있는 객체와 참조), 스윕 O(힙 전체), 할당 O(자유 블록 수)
+// Space Complexity: O(깊이) 마크 스택 (포인터 역전 표시는 O(1))
 ```
 ## MarkCompact()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
-
-// 마크-컴팩트(Lisp2 방식): 표시 후 살아있는 객체를 한쪽으로 밀어 붙여(slide) 단편화를 없앤다.  객체의 상대 순서가 유지된다.
-//   (1) mark  (2) 새 주소(forwarding address) 계산  (3) 모든 참조를 새 주소로 갱신  (4) 객체 이동
-struct Obj { int payload; std::vector<int> refs; bool alive = false, marked = false; int fwd = -1; };
-
-int main() {
-    std::vector<Obj> heap(8);
-    auto make = [&](int i, int payload, std::vector<int> refs) { heap[i] = Obj{payload, refs, true, false, -1}; };
-    make(0, 100, {2}); make(1, 111, {}); make(2, 102, {4}); make(3, 113, {}); make(4, 104, {2}); make(5, 115, {}); make(6, 106, {0}); // 1,3,5 는 쓰레기
-    std::vector<int> roots = {6};
-
-    // 1) mark
-    std::vector<int> st = roots;
-    while (!st.empty()) { int i = st.back(); st.pop_back(); if (heap[i].marked) continue; heap[i].marked = true; for (int r : heap[i].refs) st.push_back(r); }
-    // 순회 결과(이동 전) 기록: 루트에서 DFS 로 본 payload 순서
-    auto walk = [&](std::vector<int> start) { std::vector<int> out, s = start; std::vector<bool> seen(heap.size(), false);
-        while (!s.empty()) { int i = s.back(); s.pop_back(); if (seen[i]) continue; seen[i] = true; out.push_back(heap[i].payload); for (int k = heap[i].refs.size(); k-- > 0;) s.push_back(heap[i].refs[k]); } return out; };
-    std::vector<int> before = walk(roots);
-    // 2) forwarding address
-    int next = 0; for (size_t i = 0; i < heap.size(); i++) if (heap[i].alive && heap[i].marked) heap[i].fwd = next++;
-    // 3) 참조 갱신
-    for (auto& o : heap) if (o.alive && o.marked) for (int& r : o.refs) r = heap[r].fwd;
-    for (int& r : roots) r = heap[r].fwd;
-    // 4) 이동 (앞쪽으로 밀기: 목적지 <= 원래 위치이므로 순서대로 옮겨도 안전)
-    for (size_t i = 0; i < heap.size(); i++) if (heap[i].alive && heap[i].marked) { int dst = heap[i].fwd; Obj o = heap[i]; o.marked = false; o.fwd = -1; heap[dst] = o; }
-    for (int i = next; i < (int)heap.size(); i++) heap[i] = Obj{};
-    assert(next == 4);                                                     // 살아남은 객체 4개: 0, 2, 4, 6
-    for (int i = 0; i < next; i++) assert(heap[i].alive);                 // 앞쪽에 빈틈 없이 모였다
-    for (int i = next; i < (int)heap.size(); i++) assert(!heap[i].alive);
-    assert(heap[0].payload == 100 && heap[1].payload == 102 && heap[2].payload == 104 && heap[3].payload == 106);   // 상대 순서 유지
-    assert(walk(roots) == before);                                         // 이동 후에도 그래프 구조(참조 관계)가 같다
-    std::cout << "MarkCompact: live objects slid to [0," << next << ")" << std::endl;
-    return 0;
-}
-// Time Complexity: O(힙 크기) · 3~4 패스
-// Space Complexity: O(1) 추가 (forwarding 주소는 객체 헤더에 저장)
-```
-## CopyingGC()
-### 대표코드
-```cpp
+#include <cstdint>
+#include <cstring>
 #include <iostream>
-#include <vector>
-#include <cassert>
-
-// 복사 수집(Cheney 알고리즘): 힙을 from-space/to-space 로 나눈다.  루트에서 닿는 객체를 to-space 로 "복사" 하며 원본에는 전달 주소(forwarding pointer)를 남겨
-// 공유된 객체가 두 번 복사되지 않게 한다.  to-space 의 scan 포인터가 free 포인터를 따라잡으면 끝(BFS).  비용은 살아있는 객체에 비례(쓰레기는 방문조차 안 함),
-// 결과가 자동으로 압축된다.  단점: 힙의 절반만 쓸 수 있다
-struct Obj { int payload; std::vector<int> refs; int fwd = -1; };
-
-int main() {
-    std::vector<Obj> from = {{0, {1, 2}}, {1, {3}}, {2, {3}}, {3, {0}}, {4, {5}}, {5, {4}}, {6, {}}};   // 0->1,2 ; 1->3 ; 2->3 ; 3->0 (순환) ; 4<->5 (쓰레기) ; 6 (쓰레기)
-    std::vector<int> roots = {0};
-    std::vector<Obj> to;
-    auto copy = [&](int i) -> int {                          // 이미 복사됐으면 전달 주소를 돌려준다
-        if (from[i].fwd >= 0) return from[i].fwd;
-        to.push_back(Obj{from[i].payload, from[i].refs, -1});
-        from[i].fwd = to.size() - 1;
-        return from[i].fwd;
-    };
-    for (int& r : roots) r = copy(r);
-    for (size_t scan = 0; scan < to.size(); scan++)          // scan 포인터가 free(to.size()) 를 따라잡을 때까지
-        for (int& r : to[scan].refs) r = copy(r);
-    assert(to.size() == 4);                                   // 도달 가능한 0,1,2,3 만 복사 (4,5,6 은 방문하지 않음)
-    assert(to[roots[0]].payload == 0);
-    // 공유된 객체 3 은 하나만 복사되어 1 과 2 가 같은 사본을 가리킨다
-    int p1 = to[to[roots[0]].refs[0]].refs[0], p2 = to[to[roots[0]].refs[1]].refs[0];
-    assert(p1 == p2 && to[p1].payload == 3);
-    assert(to[to[p1].refs[0]].payload == 0 && to[p1].refs[0] == roots[0]);   // 순환 3 -> 0 도 올바르게 보존
-    from.swap(to);                                            // 역할 교대: to-space 가 새 from-space
-    assert(from.size() == 4);
-    std::cout << "CopyingGC: 7 objects -> " << from.size() << " survivors, compacted automatically" << std::endl;
-    return 0;
-}
-// Time Complexity: O(살아있는 객체)
-// Space Complexity: O(힙) · 2 (두 공간)
-```
-## GenerationalGC()
-### 대표코드
-```cpp
-#include <iostream>
+#include <map>
+#include <random>
 #include <set>
 #include <vector>
-#include <cassert>
 
-// 세대별 수집: "대부분의 객체는 금방 죽는다"(약한 세대 가설).  새 객체는 young 에 두고 자주·싸게 수집(minor GC), 두 번 이상 살아남으면 old 로 승급해 드물게 수집한다.
-// 문제: old 객체가 young 객체를 가리키면 minor GC 가 old 전체를 훑지 않고도 알아야 한다 -> 쓰기 장벽(write barrier)이 "old -> young 참조" 를 기억 집합(remembered set)에 기록
-struct Obj { int id; std::vector<int> refs; bool old = false; int age = 0; };
+// 마크-컴팩트(Lisp2 방식): 표시 후 살아있는 객체를 한쪽으로 밀어 붙여(slide) 단편화를 없앤다.  객체의 상대 순서가 유지된다.
+//   (1) mark  (2) 새 주소(forwarding address) 계산 — 헤더의 forwarding 칸에 저장  (3) 모든 참조(루트 포함)를 새 주소로 갱신  (4) 객체 이동 (목적지 <= 원래 위치라 낮은 주소부터 옮기면 안전)
+// 힙이 가득 차면 압축한 뒤 범프 포인터로 계속 할당한다 (자유 리스트가 필요 없다).  객체 = [헤더][forwarding][참조 n][데이터 d]
+// 이어서 대비를 위해 고정 크기 칸 전용 Edwards 의 "두 손가락" 압축도 만든다: 이동 횟수가 최소(살아 있는 칸 중 경계 L 이상인 것만)이지만 순서를 보존하지 않는다
+// 검증: ① 임의 그래프 400 개: 압축 뒤 살아 있는 id 집합 == BFS 기준, 살아남은 객체의 주소 순서 보존, 빈틈 없이 앞쪽에 모임, 참조·데이터 보존, 이동한 객체 수 == "앞에 죽은 워드가 있는 산 객체의 수", 두 번째 압축은 아무것도 안 옮김
+//        ② 무작위 변경 프로그램 4 000 번: 힙이 차면 압축 후 재시도, id 모형 대조(루트 갱신 포함)  ③ 두 손가락: 산 칸이 [0,L) 로 모이고 이동 수 == L 이상에 있던 산 칸 수 <= Lisp2 이동 수, 그래프 동형
+const uint64_t MARK = 1ull << 63, POISON = 0xDEADDEADDEADDEADull;
+inline uint32_t sizeOf(uint64_t h) { return (uint32_t)(h & 0xFFFFFF); }
+inline uint32_t nrefsOf(uint64_t h) { return (uint32_t)((h >> 24) & 0xFFFF); }
 
 struct Heap {
-    std::vector<Obj> objs; std::set<int> alive; std::vector<int> roots; std::set<int> remembered;   // old 에 있으면서 young 을 가리키는 객체들
-    int make() { objs.push_back(Obj{(int)objs.size(), {}, false, 0}); alive.insert(objs.size() - 1); return objs.size() - 1; }
-    void writeRef(int from, int to) {
-        objs[from].refs.push_back(to);
-        if (objs[from].old && !objs[to].old) remembered.insert(from);          // 쓰기 장벽
+    std::vector<uint64_t> mem; uint32_t top = 1; std::vector<uint32_t> roots;
+    explicit Heap(uint32_t words) : mem(words + 1, POISON) {}
+    uint64_t& ref(uint32_t b, uint32_t i) { return mem[b + 2 + i]; }
+    uint64_t& data(uint32_t b, uint32_t j) { return mem[b + 2 + nrefsOf(mem[b]) + j]; }
+    uint32_t dataWords(uint32_t b) const { return sizeOf(mem[b]) - 2 - nrefsOf(mem[b]); }
+    uint32_t alloc(uint32_t nrefs, uint32_t dataN) {
+        uint32_t need = 2 + nrefs + dataN; if (top + need > mem.size()) return 0;
+        uint32_t b = top; mem[b] = (uint64_t)need | ((uint64_t)nrefs << 24); for (uint32_t i = 1; i < need; ++i) mem[b + i] = 0; top += need; return b;
     }
-    // useRemembered=false 는 장벽을 빼먹은 잘못된 구현을 보여주기 위한 것
-    int minorGC(bool useRemembered) {
-        std::set<int> live; std::vector<int> st(roots.begin(), roots.end());
-        if (useRemembered) for (int r : remembered) for (int c : objs[r].refs) st.push_back(c);
-        while (!st.empty()) {
-            int i = st.back(); st.pop_back();
-            if (objs[i].old || live.count(i)) continue;                         // old 는 minor GC 에서 건드리지 않는다
-            live.insert(i);
-            for (int c : objs[i].refs) st.push_back(c);
+    void mark() {
+        std::vector<uint32_t> st; for (uint32_t r : roots) { if (r) st.push_back(r); }
+        while (!st.empty()) { uint32_t b = st.back(); st.pop_back(); if (mem[b] & MARK) continue; mem[b] |= MARK;
+            for (uint32_t i = 0; i < nrefsOf(mem[b]); ++i) { uint32_t c = (uint32_t)ref(b, i); if (c && !(mem[c] & MARK)) st.push_back(c); } }
+    }
+    long compact(long* liveOut = nullptr) {                                                     // 옮긴 객체 수를 돌려준다
+        mark(); uint32_t next = 1, oldTop = top; long live = 0, moved = 0;
+        for (uint32_t b = 1; b < top; b += sizeOf(mem[b])) { if (mem[b] & MARK) { mem[b + 1] = next; next += sizeOf(mem[b]); ++live; } }      // (2) 새 주소
+        for (uint32_t& r : roots) { if (r) r = (uint32_t)mem[r + 1]; }                                                                       // (3) 루트와 참조 갱신
+        for (uint32_t b = 1; b < top; b += sizeOf(mem[b])) { if (mem[b] & MARK) for (uint32_t i = 0; i < nrefsOf(mem[b]); ++i) { if (ref(b, i)) ref(b, i) = mem[ref(b, i) + 1]; } }
+        for (uint32_t b = 1; b < top;) {                                                                                                     // (4) 이동
+            uint32_t sz = sizeOf(mem[b]);
+            if (mem[b] & MARK) { uint32_t dst = (uint32_t)mem[b + 1]; if (dst != b) { std::memmove(&mem[dst], &mem[b], (size_t)sz * 8); ++moved; } mem[dst] &= ~MARK; mem[dst + 1] = 0; }
+            b += sz;
         }
-        int freed = 0;
-        for (auto it = alive.begin(); it != alive.end();) {
-            if (!objs[*it].old && !live.count(*it)) { it = alive.erase(it); freed++; } else ++it;
+        top = next; for (uint32_t i = top; i < oldTop; ++i) mem[i] = POISON;                      // 옛 영역을 오염값으로 채워 낡은 참조를 바로 잡아낸다
+        if (liveOut) { *liveOut = live; }
+        return moved;
+    }
+    std::vector<uint32_t> objects() const { std::vector<uint32_t> v; for (uint32_t b = 1; b < top; b += sizeOf(mem[b])) { assert(sizeOf(mem[b]) >= 2); v.push_back(b); } return v; }
+};
+
+// Edwards 두 손가락: 고정 크기 칸
+struct Cell { int id; int refs[3]; };
+struct CellHeap {
+    std::vector<Cell> cells; std::vector<char> live; std::vector<int> roots;
+    long twoFinger() {
+        size_t N = cells.size(), L = 0; for (size_t i = 0; i < N; ++i) { L += live[i]; }
+        std::vector<int> fwd(N, -1); long moved = 0; size_t lo = 0, hi = N;
+        for (;;) {
+            while (lo < L && live[lo]) ++lo;                                                     // 아래 손가락: [0,L) 안의 죽은 칸
+            while (hi > L && !live[hi - 1]) --hi;                                                // 위 손가락: [L,N) 안의 산 칸
+            if (lo >= L || hi <= L) break;
+            cells[lo] = cells[hi - 1]; live[lo] = 1; live[hi - 1] = 0; fwd[hi - 1] = (int)lo; ++moved;     // 산 칸을 빈 자리로, 옛 자리에는 전달 주소
         }
-        for (int i : live) if (++objs[i].age >= 2) objs[i].old = true;          // 두 번 살아남으면 승급
-        return freed;
+        auto fix = [&](int r) { return (r >= 0 && (size_t)r >= L) ? fwd[r] : r; };
+        for (int& r : roots) r = fix(r);
+        for (size_t i = 0; i < L; ++i) for (int& r : cells[i].refs) r = fix(r);
+        cells.resize(L); live.assign(L, 1); return moved;
     }
 };
 
 int main() {
-    auto scenario = [](bool useRemembered) {
-        Heap h;
-        int oldObj = h.make(); h.roots = {oldObj};
-        h.minorGC(true); h.minorGC(true);                 // 두 번 살아남아 oldObj 가 old 세대로 승급
-        assert(h.objs[oldObj].old);
-        int young = h.make(); int garbage = h.make();      // 새 객체 둘: young 은 old 객체가 참조, garbage 는 아무도 참조 안 함
-        h.writeRef(oldObj, young);                         // old -> young 참조 (쓰기 장벽 발동)
-        int freed = h.minorGC(useRemembered);
-        return std::make_tuple(freed, h.alive.count(young) > 0, h.alive.count(garbage) > 0);
-    };
-    auto good = scenario(true), bad = scenario(false);
-    assert(std::get<0>(good) == 1 && std::get<1>(good) && !std::get<2>(good));    // 쓰레기만 회수, young 은 생존
-    assert(!std::get<1>(bad));                                                     // 기억 집합이 없으면 살아있는 young 객체를 잘못 회수한다
-    std::cout << "GenerationalGC: remembered set keeps old->young referents alive" << std::endl;
+    // 원래 예: 0..6 중 1, 3, 5 가 쓰레기
+    {   Heap h(100); uint32_t o[7]; int ids[7] = {100, 111, 102, 113, 104, 115, 106};
+        for (int i = 0; i < 7; ++i) { o[i] = h.alloc(1, 1); h.data(o[i], 0) = (uint64_t)ids[i]; }
+        h.ref(o[0], 0) = o[2]; h.ref(o[2], 0) = o[4]; h.ref(o[4], 0) = o[2]; h.ref(o[6], 0) = o[0]; h.roots = {o[6]};
+        long live; long moved = h.compact(&live);
+        assert(live == 4 && moved == 3 && h.top == 1 + 4 * 4);                                   // 산 객체 4 개(0, 2, 4, 6), 앞에 죽은 워드가 있는 3 개가 이동
+        std::vector<uint32_t> obs = h.objects(); assert(obs.size() == 4);
+        assert(h.data(obs[0], 0) == 100 && h.data(obs[1], 0) == 102 && h.data(obs[2], 0) == 104 && h.data(obs[3], 0) == 106);   // 상대 순서 유지
+        assert(h.ref(obs[3], 0) == obs[0] && h.ref(obs[0], 0) == obs[1] && h.ref(obs[1], 0) == obs[2] && h.ref(obs[2], 0) == obs[1] && h.roots[0] == obs[3]);
+    }
+
+    // ① 임의 그래프에서 압축의 성질
+    std::mt19937 rng(5); long graphs = 0, movedTotal = 0, liveTotal = 0;
+    for (int g = 0; g < 400; ++g) {
+        Heap h(8000); int n = 1 + (int)(rng() % 120); std::vector<uint32_t> objs;
+        for (int i = 0; i < n; ++i) { uint32_t b = h.alloc(rng() % 5, 1 + rng() % 3); assert(b); h.data(b, 0) = (uint64_t)(i + 1); objs.push_back(b); }
+        for (uint32_t b : objs) for (uint32_t k = 0; k < nrefsOf(h.mem[b]); ++k) { if (rng() % 3) h.ref(b, k) = objs[rng() % objs.size()]; }
+        int nr = 1 + (int)(rng() % 3); for (int i = 0; i < nr; ++i) h.roots.push_back(objs[rng() % objs.size()]);
+        std::map<int, std::vector<int>> graph; std::map<int, std::vector<uint64_t>> payload; std::vector<int> order;      // 압축 전 논리 그래프와 주소 순서
+        for (uint32_t b : h.objects()) { int id = (int)h.data(b, 0); order.push_back(id); for (uint32_t k = 0; k < nrefsOf(h.mem[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); graph[id].push_back(c ? (int)h.data(c, 0) : 0); }
+            for (uint32_t j = 0; j < h.dataWords(b); ++j) { payload[id].push_back(h.data(b, j)); } }
+        std::vector<int> rootIds; for (uint32_t r : h.roots) rootIds.push_back((int)h.data(r, 0));
+        std::set<int> want; { std::vector<int> st(rootIds.begin(), rootIds.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (!x || !want.insert(x).second) continue; for (int c : graph[x]) st.push_back(c); } }
+        long expectMoved = 0; { uint32_t deadBefore = 0; for (uint32_t b : h.objects()) { int id = (int)h.data(b, 0); if (want.count(id)) { if (deadBefore) ++expectMoved; } else deadBefore += sizeOf(h.mem[b]); } }   // 독립 계산
+        long live; long moved = h.compact(&live);
+        std::vector<int> after; uint32_t wordsSum = 1;
+        for (uint32_t b : h.objects()) { int id = (int)h.data(b, 0); after.push_back(id); wordsSum += sizeOf(h.mem[b]);
+            for (uint32_t k = 0; k < nrefsOf(h.mem[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); assert((c ? (int)h.data(c, 0) : 0) == graph[id][k]); }
+            for (uint32_t j = 0; j < h.dataWords(b); ++j) { assert(h.data(b, j) == payload[id][j]); } }
+        assert(std::set<int>(after.begin(), after.end()) == want && (long)after.size() == live && wordsSum == h.top);       // 살아 있는 집합, 빈틈 없음
+        std::vector<int> expectOrder; for (int id : order) { if (want.count(id)) expectOrder.push_back(id); } assert(after == expectOrder);   // 상대 순서 보존
+        for (size_t i = 0; i < h.roots.size(); ++i) assert((int)h.data(h.roots[i], 0) == rootIds[i]);
+        assert(moved == expectMoved);
+        std::vector<uint64_t> snap = h.mem; assert(h.compact() == 0 && h.mem == snap);                                       // 멱등
+        ++graphs; movedTotal += moved; liveTotal += live;
+    }
+
+    // ② 무작위 변경 프로그램 (힙이 차면 압축)
+    long compactions = 0, allocs = 0, ooms = 0;
+    {   Heap h(900); std::map<int, std::vector<int>> refs; std::vector<int> roots; int nextId = 1;
+        auto where = [&]() { std::map<int, uint32_t> w; for (uint32_t b : h.objects()) w[(int)h.data(b, 0)] = b; return w; };
+        auto reachable = [&]() { std::set<int> seen; std::vector<int> st(roots.begin(), roots.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (!x || !seen.insert(x).second) continue; for (int c : refs[x]) st.push_back(c); } return seen; };
+        auto compactAndVerify = [&]() {
+            h.compact(); ++compactions; auto w = where(); std::set<int> reach = reachable(); std::set<int> got; for (auto& kv : w) got.insert(kv.first);
+            assert(got == reach);
+            for (auto& kv : w) { uint32_t b = kv.second; for (uint32_t k = 0; k < nrefsOf(h.mem[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); assert((c ? (int)h.data(c, 0) : 0) == refs[kv.first][k]); }
+                for (uint32_t j = 1; j < h.dataWords(b); ++j) { assert(h.data(b, j) == (uint64_t)kv.first * 7919u + j); } }
+            for (size_t i = 0; i < roots.size(); ++i) assert((int)h.data(h.roots[i], 0) == roots[i]);
+            for (auto it = refs.begin(); it != refs.end();) { if (!reach.count(it->first)) it = refs.erase(it); else ++it; }
+        };
+        for (int step = 0; step < 4000; ++step) {
+            auto w = where(); std::set<int> reach = reachable(); std::vector<int> rl(reach.begin(), reach.end()); int op = (int)(rng() % 100);
+            if (op < 50 || rl.empty()) {
+                uint32_t nr = rng() % 4, nd = 1 + rng() % 4; uint32_t b = h.alloc(nr, nd);
+                if (!b) { compactAndVerify(); w = where(); b = h.alloc(nr, nd); }
+                if (!b) { ++ooms; continue; }
+                ++allocs; int id = nextId++; h.data(b, 0) = (uint64_t)id; for (uint32_t j = 1; j < h.dataWords(b); ++j) { h.data(b, j) = (uint64_t)id * 7919u + j; }
+                refs[id] = std::vector<int>(nr, 0); w[id] = b; int how = (int)(rng() % 10);
+                if (how < 3 && roots.size() < 5) { roots.push_back(id); h.roots.push_back(b); }
+                else if (how < 8 && !rl.empty()) { int host = rl[rng() % rl.size()]; if (!refs[host].empty()) { uint32_t k = rng() % refs[host].size(); refs[host][k] = id; h.ref(w[host], k) = b; } }
+            } else if (op < 85) {
+                int host = rl[rng() % rl.size()]; if (refs[host].empty()) continue;
+                uint32_t k = rng() % refs[host].size(); int tgt = (rng() % 5 == 0) ? 0 : rl[rng() % rl.size()]; refs[host][k] = tgt; h.ref(w[host], k) = tgt ? w[tgt] : 0;
+            } else if (op < 92) { if (!roots.empty()) { size_t i = rng() % roots.size(); roots.erase(roots.begin() + i); h.roots.erase(h.roots.begin() + i); } }
+            else if (op < 97) { if (roots.size() < 5) { int id = rl[rng() % rl.size()]; roots.push_back(id); h.roots.push_back(w[id]); } }
+            else compactAndVerify();
+        }
+        compactAndVerify(); assert(compactions > 30 && allocs > 1500);
+    }
+
+    // ③ 두 손가락
+    long tfMoved = 0, lispMoved = 0, permuted = 0, cellRuns = 0;
+    for (int g = 0; g < 400; ++g) {
+        CellHeap c; int N = 2 + (int)(rng() % 80); c.cells.resize(N); c.live.assign(N, 0);
+        for (int i = 0; i < N; ++i) { c.cells[i].id = i + 1; for (int& r : c.cells[i].refs) r = (rng() % 3) ? (int)(rng() % N) : -1; }
+        int nr = 1 + (int)(rng() % 3); for (int i = 0; i < nr; ++i) c.roots.push_back((int)(rng() % N));
+        std::vector<int> st(c.roots.begin(), c.roots.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (c.live[x]) continue; c.live[x] = 1; for (int r : c.cells[x].refs) { if (r >= 0) st.push_back(r); } }
+        std::map<int, std::vector<int>> graph; std::vector<int> rootIds, liveOrder;
+        for (int i = 0; i < N; ++i) { if (!c.live[i]) continue; liveOrder.push_back(c.cells[i].id); for (int r : c.cells[i].refs) graph[c.cells[i].id].push_back(r >= 0 ? c.cells[r].id : 0); }
+        for (int r : c.roots) rootIds.push_back(c.cells[r].id);
+        size_t L = liveOrder.size(); long expectMoves = 0, lisp2 = 0; bool seenDead = false;
+        for (int i = 0; i < N; ++i) { if (c.live[i]) { if ((size_t)i >= L) ++expectMoves; if (seenDead) ++lisp2; } else seenDead = true; }
+        long moved = c.twoFinger();
+        assert(moved == expectMoves && moved <= lisp2 && c.cells.size() == L);                                               // 이동 수 == L 이상에 있던 산 칸 수
+        std::vector<int> after; for (size_t i = 0; i < L; ++i) { after.push_back(c.cells[i].id); int id = c.cells[i].id; for (int k = 0; k < 3; ++k) { int r = c.cells[i].refs[k]; assert((r >= 0 ? c.cells[r].id : 0) == graph[id][k]); } }
+        for (size_t i = 0; i < c.roots.size(); ++i) assert(c.cells[c.roots[i]].id == rootIds[i]);
+        std::vector<int> a2 = after, b2 = liveOrder; std::sort(a2.begin(), a2.end()); std::sort(b2.begin(), b2.end()); assert(a2 == b2);   // 같은 집합
+        if (after != liveOrder) ++permuted;                                                                                  // 순서는 바뀔 수 있다
+        tfMoved += moved; lispMoved += lisp2; ++cellRuns;
+    }
+    assert(permuted > 20 && tfMoved <= lispMoved && graphs == 400);
+    std::cout << "MarkCompact verified: " << graphs << " graphs compacted (" << liveTotal << " live objects, " << movedTotal << " moved, order kept), " << compactions
+              << " compactions in the mutator run, two-finger moved " << tfMoved << " cells vs " << lispMoved << " for sliding (order not kept in " << permuted << "/" << cellRuns << " runs)." << std::endl;
     return 0;
 }
-// Time Complexity: minor GC 는 young 크기 + 기억 집합에 비례
-// Space Complexity: O(기억 집합)
+// Time Complexity: O(힙 크기) · 4 패스 (표시 + 주소 계산 + 갱신 + 이동), 두 손가락은 표시 뒤 O(셀 수) 한 번
+// Space Complexity: O(1) 추가 (forwarding 주소는 객체 헤더에 저장), 표시 스택 O(깊이)
+```
+## CopyingGC()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
+
+// 복사 수집(Cheney 알고리즘): 힙을 from-space/to-space 로 나눈다.  루트에서 닿는 객체를 to-space 로 "복사" 하며 원본에는 전달 주소(forwarding pointer)를 남겨
+// 공유된 객체가 두 번 복사되지 않게 한다.  to-space 의 scan 포인터가 free 포인터를 따라잡으면 끝(BFS).  비용은 살아있는 객체에 비례(쓰레기는 방문조차 안 함),
+// 결과가 자동으로 압축된다.  단점: 힙의 절반만 쓸 수 있다
+// 이 구현은 워드 배열 두 개 위에서 진짜로 만든다: 객체 = [헤더][참조 n][데이터 d], 복사하고 나면 원본의 헤더를 "전달됨 + 새 주소" 로 덮어쓴다.  할당은 범프 포인터.
+// 검증: ① 임의 그래프 400 개(순환·공유·자기 참조): 수집 뒤 to-space 의 객체 순서 == 루트부터의 너비 우선 발견 순서(Cheney 의 정확한 성질), 살아 있는 객체가 정확히 한 번씩 복사(복사 횟수 == 도달 가능 수),
+//        공유·순환이 보존, 참조·데이터 보존, 옛 공간은 오염값으로 채워 낡은 참조가 있으면 바로 드러남  ② 비용은 쓰레기 양과 무관: 같은 산 구조에 쓰레기를 0 / 100 / 1000 개 섞어도 복사한 워드 수·스캔 수가 같다
+//        ③ 무작위 변경 프로그램 4 000 번(할당 실패 시 수집, 루트 갱신): id 모형 대조  ④ 두 번 연속 수집하면 두 번째는 순서까지 같은 배치(고정점)
+const uint64_t FWD = 1ull << 63, POISON = 0xDEADDEADDEADDEADull;
+inline uint32_t sizeOf(uint64_t h) { return (uint32_t)(h & 0xFFFFFF); }
+inline uint32_t nrefsOf(uint64_t h) { return (uint32_t)((h >> 24) & 0xFFFF); }
+
+struct Heap {
+    std::vector<uint64_t> from, to; uint32_t top = 1; std::vector<uint32_t> roots; long copiedObjects = 0, copiedWords = 0, scanned = 0, collections = 0;
+    explicit Heap(uint32_t semiWords) : from(semiWords + 1, 0), to(semiWords + 1, 0) {}
+    uint64_t& ref(uint32_t b, uint32_t i) { return from[b + 1 + i]; }
+    uint64_t& data(uint32_t b, uint32_t j) { return from[b + 1 + nrefsOf(from[b]) + j]; }
+    uint32_t dataWords(uint32_t b) const { return sizeOf(from[b]) - 1 - nrefsOf(from[b]); }
+    uint32_t alloc(uint32_t nrefs, uint32_t dataN) {
+        uint32_t need = std::max<uint32_t>(2, 1 + nrefs + dataN); if (top + need > from.size()) return 0;
+        uint32_t b = top; from[b] = (uint64_t)need | ((uint64_t)nrefs << 24); for (uint32_t i = 1; i < need; ++i) from[b + i] = 0; top += need; return b;
+    }
+    void collect() {
+        ++collections; uint32_t freePtr = 1, scan = 1;
+        auto copy = [&](uint32_t old) -> uint32_t {
+            if (!old) return 0;
+            uint64_t h = from[old]; if (h & FWD) return (uint32_t)(h & 0xFFFFFFFFu);                                  // 이미 복사됨: 전달 주소
+            uint32_t sz = sizeOf(h), nu = freePtr; std::memcpy(&to[nu], &from[old], (size_t)sz * 8); from[old] = FWD | nu; freePtr += sz; ++copiedObjects; copiedWords += sz; return nu;
+        };
+        for (uint32_t& r : roots) r = copy(r);
+        while (scan < freePtr) {                                                                                  // scan 이 free 를 따라잡을 때까지
+            uint32_t sz = sizeOf(to[scan]), n = nrefsOf(to[scan]); ++scanned;
+            for (uint32_t i = 0; i < n; ++i) { to[scan + 1 + i] = copy((uint32_t)to[scan + 1 + i]); }
+            scan += sz;
+        }
+        std::fill(from.begin(), from.end(), POISON); from.swap(to); top = freePtr;                              // 역할 교대, 옛 from 은 오염값
+    }
+    std::vector<uint32_t> objects() const { std::vector<uint32_t> v; for (uint32_t b = 1; b < top; b += sizeOf(from[b])) { assert(sizeOf(from[b]) >= 2); v.push_back(b); } return v; }
+};
+
+std::vector<int> bfsOrder(const std::map<int, std::vector<int>>& g, const std::vector<int>& roots) {                // 초기 큐 = 루트(중복 제외), 꺼내서 자식을 슬롯 순서로 붙인다
+    std::vector<int> q; std::set<int> seen; for (int r : roots) { if (r && seen.insert(r).second) q.push_back(r); }
+    for (size_t i = 0; i < q.size(); ++i) { auto it = g.find(q[i]); if (it == g.end()) continue; for (int c : it->second) { if (c && seen.insert(c).second) q.push_back(c); } }
+    return q;
+}
+
+int main() {
+    // 원래 예: 0->1,2 ; 1->3 ; 2->3 ; 3->0 (순환) ; 4<->5 (쓰레기) ; 6 (쓰레기)
+    {   Heap h(100); uint32_t o[7]; for (int i = 0; i < 7; ++i) { o[i] = h.alloc(2, 1); h.data(o[i], 0) = (uint64_t)i; }
+        h.ref(o[0], 0) = o[1]; h.ref(o[0], 1) = o[2]; h.ref(o[1], 0) = o[3]; h.ref(o[2], 0) = o[3]; h.ref(o[3], 0) = o[0]; h.ref(o[4], 0) = o[5]; h.ref(o[5], 0) = o[4]; h.roots = {o[0]};
+        h.collect(); assert(h.copiedObjects == 4 && h.objects().size() == 4);                                        // 도달 가능한 0,1,2,3 만 복사
+        uint32_t r = h.roots[0]; assert(h.data(r, 0) == 0);
+        uint32_t c1 = (uint32_t)h.ref(r, 0), c2 = (uint32_t)h.ref(r, 1); uint32_t p1 = (uint32_t)h.ref(c1, 0), p2 = (uint32_t)h.ref(c2, 0);
+        assert(p1 == p2 && h.data(p1, 0) == 3 && h.ref(p1, 0) == r);                                                 // 공유된 객체 3 은 하나, 순환 3 -> 0 보존
+    }
+
+    // ① 임의 그래프: 너비 우선 순서와 정확히 한 번 복사
+    std::mt19937 rng(9); long graphs = 0, liveTotal = 0, garbageTotal = 0;
+    auto build = [&](Heap& h, int n, int garbage, std::map<int, std::vector<int>>& graph, std::vector<int>& rootIds, std::map<int, std::vector<uint64_t>>& payload, uint32_t seed) {
+        std::mt19937 r(seed), r2(seed + 1), r3(seed + 2); std::vector<uint32_t> objs; int total = n + garbage;       // 모양·간선·루트를 서로 다른 난수열로 뽑아, 쓰레기 양이 산 구조를 바꾸지 않게 한다
+        for (int i = 0; i < total; ++i) { uint32_t b = h.alloc(r() % 5, 1 + r() % 3); assert(b); h.data(b, 0) = (uint64_t)(i + 1); for (uint32_t j = 1; j < h.dataWords(b); ++j) { h.data(b, j) = (uint64_t)(i + 1) * 31 + j; } objs.push_back(b); }
+        std::vector<uint32_t> liveSet(objs.begin(), objs.begin() + n);                                               // 앞 n 개는 산 구조(자기들끼리만 참조), 뒤는 쓰레기(산 쪽도 참조 가능하지만 산 쪽에서는 못 닿는다)
+        for (int i = 0; i < total; ++i) for (uint32_t k = 0; k < nrefsOf(h.from[objs[i]]); ++k) {
+            if (r2() % 3) { uint32_t t = (i < n) ? liveSet[r2() % n] : objs[r2() % total]; h.ref(objs[i], k) = t; }
+        }
+        int nr = 1 + (int)(r3() % 3); h.roots.clear(); for (int i = 0; i < nr; ++i) { h.roots.push_back(liveSet[r3() % n]); }
+        graph.clear(); payload.clear(); rootIds.clear();
+        for (uint32_t b : objs) { int id = (int)h.data(b, 0); for (uint32_t k = 0; k < nrefsOf(h.from[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); graph[id].push_back(c ? (int)h.data(c, 0) : 0); } for (uint32_t j = 0; j < h.dataWords(b); ++j) { payload[id].push_back(h.data(b, j)); } }
+        for (uint32_t rr : h.roots) rootIds.push_back((int)h.data(rr, 0));
+    };
+    for (int g = 0; g < 400; ++g) {
+        Heap h(9000); std::map<int, std::vector<int>> graph; std::vector<int> rootIds; std::map<int, std::vector<uint64_t>> payload;
+        int n = 1 + (int)(rng() % 100), garbage = (int)(rng() % 60); build(h, n, garbage, graph, rootIds, payload, 1000 + g);
+        std::vector<int> order = bfsOrder(graph, rootIds); h.collect();
+        std::vector<int> got; for (uint32_t b : h.objects()) { int id = (int)h.data(b, 0); got.push_back(id);
+            for (uint32_t k = 0; k < nrefsOf(h.from[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); assert((c ? (int)h.data(c, 0) : 0) == graph[id][k]); }
+            for (uint32_t j = 0; j < h.dataWords(b); ++j) { assert(h.data(b, j) == payload[id][j]); } }
+        assert(got == order && h.copiedObjects == (long)order.size() && h.scanned == (long)order.size());              // 순서 == BFS 발견 순서, 정확히 한 번씩
+        for (size_t i = 0; i < h.roots.size(); ++i) assert((int)h.data(h.roots[i], 0) == rootIds[i]);
+        for (uint32_t i = h.top; i < h.to.size(); ++i) assert(h.to[i] == POISON);                                       // 옛 공간(to 벡터로 바뀐 것)은 오염값
+        std::vector<uint64_t> snap(h.from.begin() + 1, h.from.begin() + h.top); std::vector<uint32_t> r2 = h.roots;
+        h.collect(); assert(std::vector<uint64_t>(h.from.begin() + 1, h.from.begin() + h.top) == snap && h.roots == r2);   // 한 번 더 하면 같은 배치 (고정점)
+        ++graphs; liveTotal += (long)order.size(); garbageTotal += garbage;
+    }
+
+    // ② 비용은 살아있는 객체에만 비례
+    {   long words[3], scans[3]; int gs[3] = {0, 100, 1000};
+        for (int k = 0; k < 3; ++k) { Heap h(40000); std::map<int, std::vector<int>> graph; std::vector<int> rootIds; std::map<int, std::vector<uint64_t>> payload;
+            build(h, 80, gs[k], graph, rootIds, payload, 777); h.collect(); words[k] = (long)h.copiedWords; scans[k] = (long)h.scanned; }
+        assert(words[0] > 0 && words[0] == words[1] && words[1] == words[2] && scans[0] == scans[1] && scans[1] == scans[2]); }                     // 쓰레기를 1000 개 섞어도 복사량이 같다
+
+    // ③ 무작위 변경 프로그램
+    long gcs = 0, allocs = 0;
+    {   Heap h(700); std::map<int, std::vector<int>> refs; std::vector<int> roots; int nextId = 1;
+        auto where = [&]() { std::map<int, uint32_t> w; for (uint32_t b : h.objects()) w[(int)h.data(b, 0)] = b; return w; };
+        auto reachable = [&]() { std::set<int> seen; std::vector<int> st(roots.begin(), roots.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (!x || !seen.insert(x).second) continue; for (int c : refs[x]) st.push_back(c); } return seen; };
+        auto collectAndVerify = [&]() {
+            h.collect(); ++gcs; auto w = where(); std::set<int> reach = reachable(); std::set<int> got; for (auto& kv : w) got.insert(kv.first);
+            assert(got == reach);
+            for (auto& kv : w) { uint32_t b = kv.second; for (uint32_t k = 0; k < nrefsOf(h.from[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); assert((c ? (int)h.data(c, 0) : 0) == refs[kv.first][k]); } }
+            for (size_t i = 0; i < roots.size(); ++i) assert((int)h.data(h.roots[i], 0) == roots[i]);
+            for (auto it = refs.begin(); it != refs.end();) { if (!reach.count(it->first)) it = refs.erase(it); else ++it; }
+        };
+        for (int step = 0; step < 4000; ++step) {
+            auto w = where(); std::set<int> reach = reachable(); std::vector<int> rl(reach.begin(), reach.end()); int op = (int)(rng() % 100);
+            if (op < 50 || rl.empty()) {
+                uint32_t nr = rng() % 4, nd = 1 + rng() % 4; uint32_t b = h.alloc(nr, nd);
+                if (!b) { collectAndVerify(); w = where(); b = h.alloc(nr, nd); }
+                if (!b) { continue; }                                                                               // 살아 있는 것만으로 가득 찬 경우
+                ++allocs; int id = nextId++; h.data(b, 0) = (uint64_t)id; refs[id] = std::vector<int>(nr, 0); w[id] = b; int how = (int)(rng() % 10);
+                if (how < 3 && roots.size() < 5) { roots.push_back(id); h.roots.push_back(b); }
+                else if (how < 8 && !rl.empty()) { int host = rl[rng() % rl.size()]; if (!refs[host].empty()) { uint32_t k = rng() % refs[host].size(); refs[host][k] = id; h.ref(w[host], k) = b; } }
+            } else if (op < 85) {
+                int host = rl[rng() % rl.size()]; if (refs[host].empty()) continue;
+                uint32_t k = rng() % refs[host].size(); int tgt = (rng() % 5 == 0) ? 0 : rl[rng() % rl.size()]; refs[host][k] = tgt; h.ref(w[host], k) = tgt ? w[tgt] : 0;
+            } else if (op < 92) { if (!roots.empty()) { size_t i = rng() % roots.size(); roots.erase(roots.begin() + i); h.roots.erase(h.roots.begin() + i); } }
+            else if (op < 97) { if (roots.size() < 5) { int id = rl[rng() % rl.size()]; roots.push_back(id); h.roots.push_back(w[id]); } }
+            else collectAndVerify();
+        }
+        collectAndVerify(); assert(gcs > 30 && allocs > 1500);
+    }
+    std::cout << "CopyingGC verified: " << graphs << " graphs (" << liveTotal << " survivors copied exactly once in BFS order, " << garbageTotal << " garbage objects never touched), "
+              << gcs << " collections in the mutator run; copy cost independent of garbage." << std::endl;
+    return 0;
+}
+// Time Complexity: O(살아있는 객체) (쓰레기는 방문하지 않는다), 할당 O(1)
+// Space Complexity: O(힙) · 2 (두 공간), 큐/스택 없이 scan 포인터 하나로 BFS
+```
+## GenerationalGC()
+### 대표코드
+```cpp
+#include <algorithm>
+#include <cassert>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
+
+// 세대별 수집: "대부분의 객체는 금방 죽는다"(약한 세대 가설).  새 객체는 young 에 두고 자주·싸게 수집(minor GC), 두 번 이상 살아남으면 old 로 승급해 드물게 수집한다(major GC).
+// 문제: old 객체가 young 객체를 가리키면 minor GC 가 old 전체를 훑지 않고도 알아야 한다 -> 쓰기 장벽(write barrier)이 "old -> young 참조" 를 기억한다.
+//  장벽은 두 가지를 구현한다: REMEMBERED(조건부: old 가 young 을 가리킬 때만 기억 집합에 추가)와 CARDS(무조건 카드 표시: 쓴 객체가 속한 8 개 묶음에 dirty 비트를 켠다, 값싼 장벽)
+//  minor GC 는 루트 + 기억 집합/더러운 카드의 old 객체에서 출발해 young 만 따라간다.  old 의 쓰레기가 가리키는 young 은 살아남는다(nepotism — 떠도는 쓰레기, major 에서 회수)
+// 검증: ① 장벽이 없으면 살아 있는 young 객체를 잘못 회수한다 (원래 장면 + 무작위 40 시드 중 손실이 나는 시드 수)  ② 장벽이 있으면 6 000 번 무작위 변경 × 2 가지 장벽 × 20 시드에서
+//        GC 뒤: 도달 가능한 객체는 하나도 안 사라지고 참조·id 보존, major 뒤: 살아 있는 집합 == 도달 가능 집합 정확히 일치  ③ GC 직후 기억 집합/더러운 카드는 "old 이면서 young 을 가리키는 객체"와 정확히 같고
+//        (GC 사이에는 그것을 빠짐없이 덮음), 승급 규칙: age >= 2 인 객체만 old  ④ 효율: 짧게 사는 객체가 많은 부하에서 세대별 수집이 훑은 객체 수가 "항상 전체 수집" 의 1/3 미만이고 최종 도달 가능 집합은 같다
+enum Barrier { NONE, REMEMBERED, CARDS };
+struct Obj { bool alive = false, old = false, marked = false; int age = 0, id = 0; std::vector<int> refs; };
+
+struct GenHeap {
+    std::vector<Obj> objs; std::vector<int> freeSlots, youngList, roots; Barrier mode; bool generational; size_t nurseryCap, oldCap, youngCount = 0, oldCount = 0;
+    std::set<int> remembered; std::vector<char> dirty; static const int CARD = 8;
+    long minors = 0, majors = 0, scannedMinor = 0, scannedMajor = 0;
+    GenHeap(Barrier b, size_t nursery, size_t limit, bool gen = true) : mode(b), generational(gen), nurseryCap(nursery), oldCap(limit) {}
+    bool wantsGC() const { return generational ? (youngCount >= nurseryCap || oldCount >= oldCap) : (youngCount + oldCount >= oldCap); }
+    bool collectAuto() { if (!generational || oldCount >= oldCap) { major(); return true; } minor(); return false; }       // 돌려주는 값: major 였는가
+    int alloc(int id, int nrefs) {
+        int idx; if (!freeSlots.empty()) { idx = freeSlots.back(); freeSlots.pop_back(); } else { idx = (int)objs.size(); objs.emplace_back(); dirty.resize(objs.size() / CARD + 1, 0); }
+        Obj& o = objs[idx]; o = Obj(); o.alive = true; o.id = id; o.refs.assign(nrefs, -1); youngList.push_back(idx); ++youngCount; return idx;
+    }
+    void write(int from, int slot, int to) {                                                  // 쓰기 장벽
+        objs[from].refs[slot] = to;
+        if (mode == REMEMBERED) { if (objs[from].old && to >= 0 && !objs[to].old) remembered.insert(from); }
+        else if (mode == CARDS) dirty[from / CARD] = 1;
+    }
+    std::vector<int> oldSources() const {                                                      // minor GC 의 추가 루트: old 객체들
+        std::vector<int> v;
+        if (mode == REMEMBERED) v.assign(remembered.begin(), remembered.end());
+        else if (mode == CARDS) {
+            for (size_t c = 0; c < dirty.size(); ++c) {
+                if (!dirty[c]) continue;
+                for (size_t i = c * CARD; i < std::min(objs.size(), (c + 1) * CARD); ++i) { if (objs[i].alive && objs[i].old) v.push_back((int)i); }
+            }
+        }
+        return v;
+    }
+    bool pointsToYoung(int o) const { for (int c : objs[o].refs) { if (c >= 0 && objs[c].alive && !objs[c].old) return true; } return false; }
+    void rebuild(const std::vector<int>& candidates) {                                         // old 이면서 young 을 가리키는 객체만 다시 기억
+        remembered.clear(); std::fill(dirty.begin(), dirty.end(), 0);
+        for (int o : candidates) {
+            if (!objs[o].alive || !objs[o].old || !pointsToYoung(o)) continue;
+            if (mode == REMEMBERED) remembered.insert(o); else if (mode == CARDS) dirty[o / CARD] = 1;
+        }
+    }
+    void minor() {
+        ++minors; std::vector<int> st; for (int r : roots) { if (r >= 0 && !objs[r].old) st.push_back(r); }
+        std::vector<int> srcs = oldSources();
+        for (int o : srcs) { ++scannedMinor; for (int c : objs[o].refs) { if (c >= 0 && !objs[c].old) st.push_back(c); } }
+        while (!st.empty()) {
+            int i = st.back(); st.pop_back(); if (!objs[i].alive || objs[i].old || objs[i].marked) continue;
+            objs[i].marked = true; ++scannedMinor; for (int c : objs[i].refs) { if (c >= 0 && !objs[c].old) st.push_back(c); }
+        }
+        std::vector<int> keep, promoted;
+        for (int i : youngList) {
+            if (objs[i].marked) { objs[i].marked = false; if (++objs[i].age >= 2) { objs[i].old = true; --youngCount; ++oldCount; promoted.push_back(i); } else keep.push_back(i); }
+            else { objs[i].alive = false; objs[i].refs.clear(); freeSlots.push_back(i); --youngCount; }
+        }
+        youngList = keep; std::vector<int> cand = srcs; cand.insert(cand.end(), promoted.begin(), promoted.end()); rebuild(cand);
+    }
+    void major() {
+        ++majors; std::vector<int> st; for (int r : roots) { if (r >= 0) st.push_back(r); }
+        while (!st.empty()) {
+            int i = st.back(); st.pop_back(); if (!objs[i].alive || objs[i].marked) continue;
+            objs[i].marked = true; ++scannedMajor; for (int c : objs[i].refs) { if (c >= 0) st.push_back(c); }
+        }
+        youngList.clear(); youngCount = oldCount = 0; std::vector<int> olds;
+        for (size_t i = 0; i < objs.size(); ++i) {
+            Obj& o = objs[i]; if (!o.alive) continue;
+            if (!o.marked) { o.alive = false; o.refs.clear(); freeSlots.push_back((int)i); continue; }
+            o.marked = false;
+            if (!generational) o.old = true;                                                    // 비세대 모드(비교용): 전부 한 덩어리
+            if (o.old) { ++oldCount; olds.push_back((int)i); } else { ++youngCount; youngList.push_back((int)i); }
+        }
+        rebuild(olds);
+    }
+    std::set<int> aliveIds() const { std::set<int> s; for (const Obj& o : objs) { if (o.alive) s.insert(o.id); } return s; }
+};
+
+struct Run { long lost = 0, floating = 0, minors = 0, majors = 0, ops = 0; };
+
+// 무작위 변경 프로그램을 id 모형과 함께 돌린다 (손실이 처음 나오면 중단)
+Run runProgram(Barrier mode, uint32_t seed, int steps) {
+    GenHeap h(mode, 24, 120); std::mt19937 rng(seed); Run run; std::map<int, std::vector<int>> refs; std::vector<int> roots; std::map<int, int> idxOf; int nextId = 1;
+    auto reachable = [&]() { std::set<int> seen; std::vector<int> st(roots.begin(), roots.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (x < 0 || !seen.insert(x).second) continue; for (int c : refs[x]) st.push_back(c); } return seen; };
+    auto syncRoots = [&]() { h.roots.clear(); for (int r : roots) h.roots.push_back(idxOf[r]); };
+    auto check = [&](bool major) -> bool {                                                     // GC 직후 검사: 도달 가능한 것이 하나도 안 사라졌나
+        std::set<int> reach = reachable(); long lost = 0;
+        for (int id : reach) {
+            int ix = idxOf[id]; if (!h.objs[ix].alive || h.objs[ix].id != id) { ++lost; continue; }
+            for (size_t k = 0; k < refs[id].size(); ++k) { int c = h.objs[ix].refs[k]; int cid = c < 0 ? -1 : (h.objs[c].alive ? h.objs[c].id : -2); if (cid != refs[id][k]) ++lost; }
+        }
+        run.lost += lost; if (lost) return false;
+        std::set<int> alive = h.aliveIds();
+        if (major) assert(alive == reach); else run.floating += (long)(alive.size() - reach.size());      // major 뒤 정확히 일치, minor 뒤에는 떠도는 쓰레기가 남을 수 있다
+        for (const Obj& o : h.objs) { if (o.alive) assert((o.age >= 2) == o.old); }                       // 승급 규칙
+        if (mode != NONE) {                                                                              // GC 직후 기억 집합/카드는 정확히 "old 이면서 young 을 가리키는 객체"
+            std::set<int> want, wantCards; for (size_t i = 0; i < h.objs.size(); ++i) { if (h.objs[i].alive && h.objs[i].old && h.pointsToYoung((int)i)) { want.insert((int)i); wantCards.insert((int)i / GenHeap::CARD); } }
+            if (mode == REMEMBERED) assert(h.remembered == want);
+            else { std::set<int> got; for (size_t c = 0; c < h.dirty.size(); ++c) { if (h.dirty[c]) got.insert((int)c); } assert(got == wantCards); }
+        }
+        return true;
+    };
+    for (int step = 0; step < steps; ++step) {
+        ++run.ops;
+        if (h.wantsGC()) { syncRoots(); bool major = h.collectAuto(); if (!check(major)) break; }
+        std::set<int> reach = reachable(); std::vector<int> rl(reach.begin(), reach.end()); int op = (int)(rng() % 100);
+        if (op < 50 || rl.empty()) {
+            int id = nextId++, nr = (int)(rng() % 4); int ix = h.alloc(id, nr); idxOf[id] = ix; refs[id] = std::vector<int>(nr, -1); int how = (int)(rng() % 10);
+            if (how < 3 && roots.size() < 4) roots.push_back(id);
+            else if (how < 9 && !rl.empty()) { int host = rl[rng() % rl.size()]; if (!refs[host].empty()) { size_t k = rng() % refs[host].size(); refs[host][k] = id; h.write(idxOf[host], (int)k, ix); } }
+        } else if (op < 90) {
+            int host = rl[rng() % rl.size()]; if (refs[host].empty()) continue;
+            size_t k = rng() % refs[host].size(); int tgt = (rng() % 6 == 0) ? -1 : rl[rng() % rl.size()]; refs[host][k] = tgt; h.write(idxOf[host], (int)k, tgt < 0 ? -1 : idxOf[tgt]);
+        } else if (op < 95) { if (!roots.empty()) roots.erase(roots.begin() + rng() % roots.size()); }
+        else if (roots.size() < 4) roots.push_back(rl[rng() % rl.size()]);
+        if (step % 97 == 0) { syncRoots(); h.minor(); if (!check(false)) break; }
+        if (step % 531 == 0) { syncRoots(); h.major(); if (!check(true)) break; }
+        if (mode == REMEMBERED) {                                                                        // GC 사이에도 old -> young 간선은 하나도 빠지면 안 된다
+            for (size_t i = 0; i < h.objs.size(); ++i) { if (h.objs[i].alive && h.objs[i].old && h.pointsToYoung((int)i)) assert(h.remembered.count((int)i)); }
+        }
+    }
+    run.minors = h.minors; run.majors = h.majors; return run;
+}
+
+// 짧게 사는 객체가 많은 부하: 10 개 중 하나만 표에 넣어 오래 산다
+long workload(bool generational, std::set<int>& finalIds) {
+    GenHeap h(REMEMBERED, 64, generational ? 1000 : 270, generational); std::map<int, std::vector<int>> refs; std::map<int, int> idxOf; int nextId = 1;
+    int tableId = nextId++; int table = h.alloc(tableId, 200); idxOf[tableId] = table; refs[tableId] = std::vector<int>(200, -1); int slot = 0;
+    for (int it = 0; it < 6000; ++it) {
+        h.roots = {table}; if (h.wantsGC()) h.collectAuto();
+        int id = nextId++; int ix = h.alloc(id, 2); idxOf[id] = ix; refs[id] = std::vector<int>(2, -1);
+        if (it % 10 == 0) { refs[tableId][slot % 200] = id; h.write(table, slot % 200, ix); ++slot; }
+        else if (it % 10 == 1) { int prev = idxOf[id - 1]; if (h.objs[prev].alive && h.objs[prev].id == id - 1) { refs[id][0] = id - 1; h.write(ix, 0, prev); } }
+    }
+    h.roots = {table}; h.major();
+    std::set<int> reach, seen; std::vector<int> st{tableId};
+    while (!st.empty()) { int x = st.back(); st.pop_back(); if (x < 0 || !reach.insert(x).second) continue; for (int c : refs[x]) st.push_back(c); }
+    finalIds = h.aliveIds(); assert(finalIds == reach);
+    return h.scannedMinor + h.scannedMajor;
+}
+
+int main() {
+    // ① 원래 장면: old -> young 참조
+    for (int variant = 0; variant < 3; ++variant) {
+        Barrier mode = variant == 0 ? NONE : variant == 1 ? REMEMBERED : CARDS; GenHeap h(mode, 100, 100);
+        int oldObj = h.alloc(1, 1); h.roots = {oldObj}; h.minor(); h.minor(); assert(h.objs[oldObj].old);            // 두 번 살아남아 old 로 승급
+        int young = h.alloc(2, 1), garbage = h.alloc(3, 1); h.write(oldObj, 0, young);                              // old -> young 참조 (쓰기 장벽 발동)
+        h.minor();
+        assert(!h.objs[garbage].alive);                                                                              // 쓰레기는 회수
+        assert(h.objs[young].alive == (mode != NONE));                                                               // 장벽이 없으면 살아있는 young 을 잘못 회수한다
+    }
+    // ② 무작위 변경: 장벽이 있는 쪽은 손실 0, 없는 쪽은 손실이 나는 시드가 있다
+    long lostSeedsNone = 0, floatingTotal = 0, minors = 0, majors = 0, ops = 0;
+    for (uint32_t seed = 1; seed <= 40; ++seed) { Run r = runProgram(NONE, seed, 3000); if (r.lost) ++lostSeedsNone; }
+    for (uint32_t seed = 1; seed <= 20; ++seed) {
+        for (int m = 1; m <= 2; ++m) {
+            Run r = runProgram(m == 1 ? REMEMBERED : CARDS, seed * 7919u, 6000); assert(r.lost == 0);
+            floatingTotal += r.floating; minors += r.minors; majors += r.majors; ops += r.ops;
+        }
+    }
+    assert(lostSeedsNone >= 20 && minors > 3000 && majors > 100 && floatingTotal > 0);
+    // ③ 효율
+    std::set<int> finalGen, finalFull; long scanGen = workload(true, finalGen), scanFull = workload(false, finalFull);
+    assert(finalGen == finalFull && scanGen * 3 < scanFull);                                                          // 같은 결과를 3 배 이상 적게 훑어서
+    std::cout << "GenerationalGC verified: without a barrier " << lostSeedsNone << "/40 seeds lose live objects, with barriers 0 losses in " << ops << " ops (" << minors << " minor, " << majors
+              << " major, " << floatingTotal << " floating garbage seen); generational scanned " << scanGen << " vs " << scanFull << " objects." << std::endl;
+    return 0;
+}
+// Time Complexity: minor GC 는 살아있는 young + 기억 집합(또는 더러운 카드)에 비례, major GC 는 살아있는 전체
+// Space Complexity: O(기억 집합) 또는 O(카드 수)
 ```
 ## ReferenceCountingGC()
 ### 대표코드
@@ -2753,51 +3240,131 @@ int main() {
 ## IncrementalGC()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 
 // 증분 수집: 마킹을 작은 조각으로 쪼개 프로그램(뮤테이터)과 번갈아 실행해 긴 멈춤을 없앤다.  삼색 표시: 흰색(미방문) / 회색(방문했으나 자식 미처리) / 검정(자식까지 처리).
 // 불변식: "검정 객체는 흰 객체를 직접 가리키지 않는다".  뮤테이터가 검정 객체에 흰 객체 참조를 쓰면 그 흰 객체는 영영 처리되지 않아 살아있는데 회수된다.
 // 쓰기 장벽(Dijkstra): 검정 객체에 참조를 쓸 때 대상 객체를 회색으로 칠한다
+// 이 구현은 세 가지 장벽을 비교한다: NONE(없음), DIJKSTRA(삽입 장벽: 새로 쓰는 대상을 회색으로 — 강한 불변식 "검정 -> 흰 간선 없음", 끝낼 때 루트를 다시 훑어야 한다),
+//  YUASA(삭제 장벽, snapshot-at-beginning: 덮어쓰는 옛 값을 회색으로 — 약한 불변식 "검정이 가리키는 흰 객체는 회색에서 흰 길로 닿는다", 루트 재검사 불필요).  마킹 중 새 객체는 검정으로 만든다(allocate-black)
+// 검증: ① 고전 장면(검정 객체에 숨은 참조)에서 NONE 만 객체를 잃는다  ② 무작위 변경 4 000 번과 증분 단계(예산 1~3)를 섞어 20 시드 × 장벽마다: 매 단계 불변식을 검사하고,
+//        스윕 뒤 (a) 도달 가능한 객체가 하나도 안 사라졌고 (b) 살아 있는 집합 ⊆ (사이클 시작 때 도달 가능한 집합 ∪ 사이클 중 새로 만든 객체)  ③ NONE 은 손실이 나는 시드가 많다
+//        ④ 변경이 멈춘 상태의 마지막 사이클은 살아 있는 집합 == 도달 가능 집합 정확히 일치, Dijkstra 만 루트 재검사가 필요
 enum Color { WHITE, GRAY, BLACK };
-struct Obj { std::vector<int> refs; Color c = WHITE; };
-struct GC {
-    std::vector<Obj> o; std::vector<int> gray; bool barrier;
-    explicit GC(bool b) : barrier(b) {}
-    void shade(int i) { if (o[i].c == WHITE) { o[i].c = GRAY; gray.push_back(i); } }
-    bool step() {                                                   // 회색 객체 하나를 처리하는 작은 작업
-        if (gray.empty()) return false;
-        int i = gray.back(); gray.pop_back();
-        for (int c : o[i].refs) shade(c);
-        o[i].c = BLACK; return true;
+enum Barrier { NONE, DIJKSTRA, YUASA };
+struct Obj { bool alive = false; Color color = WHITE; int id = 0; std::vector<int> refs; };
+
+struct IncHeap {
+    std::vector<Obj> objs; std::vector<int> freeSlots, gray, roots; Barrier mode; bool marking = false; long barrierShades = 0, rescans = 0, steps = 0;
+    explicit IncHeap(Barrier b) : mode(b) {}
+    int alloc(int id, int nrefs) {
+        int idx; if (!freeSlots.empty()) { idx = freeSlots.back(); freeSlots.pop_back(); } else { idx = (int)objs.size(); objs.emplace_back(); }
+        Obj& o = objs[idx]; o = Obj(); o.alive = true; o.id = id; o.refs.assign(nrefs, -1); o.color = marking ? BLACK : WHITE; return idx;       // 마킹 중 할당 = 검정
     }
-    void writeRef(int from, int to) {
-        o[from].refs.push_back(to);
-        if (barrier && o[from].c == BLACK) shade(to);               // 쓰기 장벽
+    void shade(int i) { if (i >= 0 && objs[i].alive && objs[i].color == WHITE) { objs[i].color = GRAY; gray.push_back(i); } }
+    void startCycle() { marking = true; for (int r : roots) shade(r); }
+    bool step(int budget) {                                                                    // 회색 객체를 budget 개까지 처리
+        while (budget-- > 0 && !gray.empty()) { int i = gray.back(); gray.pop_back(); for (int c : objs[i].refs) shade(c); objs[i].color = BLACK; ++steps; }
+        return gray.empty();
+    }
+    void write(int from, int slot, int to) {
+        if (marking) {
+            if (mode == DIJKSTRA && to >= 0 && objs[to].color == WHITE) { ++barrierShades; shade(to); }
+            if (mode == YUASA) { int old = objs[from].refs[slot]; if (old >= 0 && objs[old].color == WHITE) { ++barrierShades; shade(old); } }
+        }
+        objs[from].refs[slot] = to;
+    }
+    void finish() {                                                                            // 종료: (Dijkstra) 루트 재검사 -> 스윕
+        if (mode == DIJKSTRA) { ++rescans; for (int r : roots) shade(r); while (!gray.empty()) step(1 << 20); }
+        assert(gray.empty());
+        for (size_t i = 0; i < objs.size(); ++i) { Obj& o = objs[i]; if (!o.alive) continue; if (o.color == WHITE) { o.alive = false; o.refs.clear(); freeSlots.push_back((int)i); } else o.color = WHITE; }
+        marking = false;
+    }
+    void checkInvariant() const {                                                               // 마킹 중 삼색 불변식
+        if (!marking) return;
+        if (mode == DIJKSTRA) { for (const Obj& o : objs) { if (o.alive && o.color == BLACK) for (int c : o.refs) assert(c < 0 || !objs[c].alive || objs[c].color != WHITE); } }
+        if (mode == YUASA) {
+            std::set<int> chain; std::vector<int> st; for (int g : gray) st.push_back(g);
+            while (!st.empty()) { int i = st.back(); st.pop_back(); for (int c : objs[i].refs) { if (c >= 0 && objs[c].alive && objs[c].color == WHITE && chain.insert(c).second) st.push_back(c); } }   // 회색에서 흰 길로 닿는 흰 객체
+            for (const Obj& o : objs) { if (o.alive && o.color == BLACK) for (int c : o.refs) assert(c < 0 || !objs[c].alive || objs[c].color != WHITE || chain.count(c)); }
+        }
     }
 };
 
-bool lostObject(bool barrier) {
-    GC gc(barrier);
-    gc.o.resize(3);                                                 // 0 = 루트 객체, 1 = A, 2 = B (A 가 B 를 가리킴)
-    gc.o[0].refs = {1}; gc.o[1].refs = {2};
-    gc.shade(0);
-    gc.step();                                                      // 루트 처리: 1 이 회색, 루트는 검정
-    // 뮤테이터: 이미 검정인 루트에 B 로 가는 새 참조를 쓰고, A -> B 참조를 지운다 (B 는 여전히 루트에서 닿는다)
-    gc.writeRef(0, 2);
-    gc.o[1].refs.clear();
-    while (gc.step()) {}                                            // 수집 마무리
-    return gc.o[2].c == WHITE;                                      // B 가 표시되지 않았다 = 살아있는 객체가 회수 대상이 됨
+bool classicScenario(Barrier mode) {                                                         // 고전 장면: 검정 객체에 숨은 참조를 쓰고 회색 객체의 참조를 지운다
+    IncHeap h(mode); int A = h.alloc(1, 2), B = h.alloc(2, 1), C = h.alloc(3, 0);
+    h.write(A, 0, B); h.write(B, 0, C); h.roots = {A};
+    h.startCycle(); h.step(1);                                                               // A 는 검정, B 는 회색
+    h.roots.push_back(C);                                                                    // 뮤테이터가 B 에서 C 를 읽어 지역 변수에 둔다
+    h.write(A, 1, C);                                                                        // 검정 A -> 흰 C
+    h.write(B, 0, -1);                                                                       // 회색 B -> C 삭제
+    h.roots.pop_back(); h.step(100); h.finish();
+    return h.objs[C].alive;                                                                  // A -> C 로 아직 닿으므로 살아 있어야 한다
+}
+
+struct Result { long lost = 0, floating = 0, cycles = 0, shades = 0, rescans = 0; };
+Result runProgram(Barrier mode, uint32_t seed, int steps) {
+    IncHeap h(mode); std::mt19937 rng(seed); Result res; std::map<int, std::vector<int>> refs; std::vector<int> roots; std::map<int, int> idxOf; int nextId = 1;
+    std::set<int> s0, allocated;
+    auto reachable = [&]() { std::set<int> seen; std::vector<int> st(roots.begin(), roots.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (x < 0 || !seen.insert(x).second) continue; for (int c : refs[x]) st.push_back(c); } return seen; };
+    auto sync = [&]() { h.roots.clear(); for (int r : roots) h.roots.push_back(idxOf[r]); };
+    auto sweepAndCheck = [&]() -> bool {
+        sync(); h.finish(); ++res.cycles; std::set<int> reach = reachable(); long lost = 0;
+        for (int id : reach) { int ix = idxOf[id]; if (!h.objs[ix].alive || h.objs[ix].id != id) { ++lost; continue; }
+            for (size_t k = 0; k < refs[id].size(); ++k) { int c = h.objs[ix].refs[k]; int cid = c < 0 ? -1 : (h.objs[c].alive ? h.objs[c].id : -2); if (cid != refs[id][k]) ++lost; } }
+        res.lost += lost; if (lost) return false;
+        std::set<int> alive; for (const Obj& o : h.objs) { if (o.alive) alive.insert(o.id); }
+        for (int id : alive) assert(s0.count(id) || allocated.count(id));                                    // 살아 있는 집합 ⊆ 시작 때 도달 가능 ∪ 새로 만든 것
+        res.floating += (long)(alive.size() - reach.size());
+        for (auto it = refs.begin(); it != refs.end();) { if (!alive.count(it->first)) it = refs.erase(it); else ++it; }
+        return true;
+    };
+    for (int step = 0; step < steps; ++step) {
+        std::set<int> reach = reachable(); std::vector<int> rl(reach.begin(), reach.end()); int op = (int)(rng() % 100);
+        if (op < 40 || rl.empty()) {
+            int id = nextId++, nr = (int)(rng() % 4); int ix = h.alloc(id, nr); idxOf[id] = ix; refs[id] = std::vector<int>(nr, -1); if (h.marking) allocated.insert(id); int how = (int)(rng() % 10);
+            if (how < 3 && roots.size() < 4) roots.push_back(id);
+            else if (how < 9 && !rl.empty()) { int host = rl[rng() % rl.size()]; if (!refs[host].empty()) { size_t k = rng() % refs[host].size(); refs[host][k] = id; h.write(idxOf[host], (int)k, ix); } }
+        } else if (op < 78) {
+            int host = rl[rng() % rl.size()]; if (!refs[host].empty()) { size_t k = rng() % refs[host].size(); int tgt = (rng() % 6 == 0) ? -1 : rl[rng() % rl.size()]; refs[host][k] = tgt; h.write(idxOf[host], (int)k, tgt < 0 ? -1 : idxOf[tgt]); }
+        } else if (op < 86) { if (!roots.empty()) roots.erase(roots.begin() + rng() % roots.size()); }
+        else if (op < 93) { if (roots.size() < 4) roots.push_back(rl[rng() % rl.size()]); }                       // 지역 변수가 힙에서 객체를 읽어 온다 (장벽 없음)
+        if (!h.marking && rng() % 100 < 4) { sync(); s0 = reachable(); allocated.clear(); h.startCycle(); }
+        else if (h.marking) {
+            sync(); bool done = h.step(1 + (int)(rng() % 3)); h.checkInvariant();
+            if (done && rng() % 100 < 40) { if (!sweepAndCheck()) break; }
+        }
+        sync();
+    }
+    if (res.lost == 0) {                                                                                         // 변경이 멈춘 상태의 마지막 사이클은 정확해야 한다
+        if (h.marking) { sync(); while (!h.step(5)) {} if (!sweepAndCheck()) return res; }
+        sync(); s0 = reachable(); allocated.clear(); h.startCycle(); while (!h.step(5)) {} sync(); h.finish();
+        std::set<int> alive, reach = reachable(); for (const Obj& o : h.objs) { if (o.alive) alive.insert(o.id); }
+        assert(alive == reach);
+    }
+    res.shades = h.barrierShades; res.rescans = h.rescans; return res;
 }
 
 int main() {
-    assert(lostObject(false));                                      // 장벽 없음: B 가 흰색으로 남아 잘못 회수된다
-    assert(!lostObject(true));                                      // 장벽 있음: B 는 보존된다
-    std::cout << "IncrementalGC: write barrier prevents losing a live object during incremental marking." << std::endl;
+    assert(!classicScenario(NONE) && classicScenario(DIJKSTRA) && classicScenario(YUASA));                        // 장벽이 없으면 C 를 잃는다
+    long lostSeeds = 0, floating[3] = {0, 0, 0}, cycles[3] = {0, 0, 0}, shades[3] = {0, 0, 0}, rescans[3] = {0, 0, 0};
+    for (uint32_t seed = 1; seed <= 20; ++seed) for (int m = 0; m < 3; ++m) {
+        Result r = runProgram((Barrier)m, seed * 104729u, 4000);
+        if (m == NONE) { if (r.lost) ++lostSeeds; } else assert(r.lost == 0);
+        floating[m] += r.floating; cycles[m] += r.cycles; shades[m] += r.shades; rescans[m] += r.rescans;
+    }
+    assert(lostSeeds >= 5 && cycles[DIJKSTRA] > 200 && cycles[YUASA] > 200 && shades[DIJKSTRA] > 0 && shades[YUASA] > 0 && rescans[DIJKSTRA] > 0 && rescans[YUASA] == 0);
+    std::cout << "IncrementalGC verified: no barrier loses live objects in " << lostSeeds << "/20 seeds; Dijkstra (" << cycles[DIJKSTRA] << " cycles, " << shades[DIJKSTRA] << " barrier shades, " << rescans[DIJKSTRA]
+              << " root rescans) and Yuasa (" << cycles[YUASA] << " cycles, " << shades[YUASA] << " shades, no rescan) lose none; floating garbage " << floating[DIJKSTRA] << " / " << floating[YUASA] << "." << std::endl;
     return 0;
 }
-// Time Complexity: 조각당 O(1) 작업, 전체 O(힙)
+// Time Complexity: 조각당 O(예산), 한 사이클 O(힙), 장벽 O(1)
 // Space Complexity: O(회색 작업 목록)
 ```
 ## ConcurrentGC()
