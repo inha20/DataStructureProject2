@@ -1155,7 +1155,12 @@ std::vector<int> levelByDfs(const BT& t) { std::vector<std::vector<int>> by; std
 std::vector<int> levelOracle(const BT& t) { std::vector<std::pair<std::string, int>> p; std::vector<std::pair<int, std::string>> st = {{t.root, ""}}; while (!st.empty()) { auto e = st.back(); st.pop_back(); p.push_back({e.second, t.val[e.first]}); if (t.L[e.first] >= 0) st.push_back({t.L[e.first], e.second + "L"}); if (t.R[e.first] >= 0) st.push_back({t.R[e.first], e.second + "R"}); }
     std::sort(p.begin(), p.end(), [](auto& x, auto& y) { return x.first.size() != y.first.size() ? x.first.size() < y.first.size() : x.first < y.first; }); std::vector<int> out; for (auto& e : p) out.push_back(e.second); return out; }       // 'L' < 'R' 이므로 문자열 사전순이 왼쪽→오른쪽
 
+std::string layerPicture(const BT& t) { std::string s; auto g = levelGroups(t); for (size_t d = 0; d < g.size(); ++d) { s += "depth " + std::to_string(d) + ":"; for (int v : g[d]) s += " " + std::to_string(v); s += "\n"; } return s; }
 int main() {
+    {   BT demo; demo.root = demo.add(1); int l = demo.add(2), r = demo.add(3); demo.L[demo.root] = l; demo.R[demo.root] = r; int a = demo.add(4), b = demo.add(5), c = demo.add(6), d = demo.add(7);       // 그림: 층별 묶음
+        demo.L[l] = a; demo.R[l] = b; demo.R[r] = c; demo.L[b] = d;
+        assert(layerPicture(demo) == "depth 0: 1\ndepth 1: 2 3\ndepth 2: 4 5 6\ndepth 3: 7\n"); std::cout << layerPicture(demo);
+        assert((levelQueue(demo) == std::vector<int>{1, 2, 3, 4, 5, 6, 7})); }
     std::mt19937 rng(37);
     for (int it = 0; it < 5000; ++it) {
         BT t = randomBT(1 + (int)(rng() % 100), rng); size_t mq; std::vector<int> a = levelQueue(t, &mq), c = levelByDfs(t), o = levelOracle(t); auto g = levelGroups(t); assert(a == o && c == o);
@@ -1566,7 +1571,11 @@ struct PNode { int key; PNode *l = nullptr, *r = nullptr; explicit PNode(int k) 
 PNode* insertRec(PNode* n, int k, std::vector<std::unique_ptr<PNode>>& own) { if (!n) { own.emplace_back(new PNode(k)); return own.back().get(); } if (k < n->key) n->l = insertRec(n->l, k, own); else if (k > n->key) n->r = insertRec(n->r, k, own); return n; }
 std::string shapeP(const PNode* n) { if (!n) return "."; return "(" + shapeP(n->l) + shapeP(n->r) + ")"; }
 
+std::string sideways(const BST& t, int u, int depth) { if (u < 0) return ""; return sideways(t, t.R[u], depth + 1) + std::string((size_t)depth * 4, ' ') + std::to_string(t.key[u]) + "\n" + sideways(t, t.L[u], depth + 1); }       // 그림: 오른쪽 자식이 위, 왼쪽 자식이 아래 (트리를 시계 방향으로 90° 돌린 모양)
 int main() {
+    {   BST demo; for (int k : {5, 3, 8, 1, 4, 7, 9}) demo.insert(k); std::string pic = sideways(demo, demo.root, 0);                // 그림 ①: 삽입 순서 5 3 8 1 4 7 9 -> 균형 잡힌 모양
+        assert(pic == "        9\n    8\n        7\n5\n        4\n    3\n        1\n"); std::cout << pic;
+        BST chain; for (int k : {1, 2, 3}) chain.insert(k); assert(sideways(chain, chain.root, 0) == "        3\n    2\n1\n"); }                            // 그림 ②: 정렬된 삽입 1 2 3 -> 오른쪽으로만 자라는 사슬
     std::mt19937 rng(14);
     for (int round = 0; round < 500; ++round) {                                                                  // ① std::set 대조
         BST t; std::set<int> ref; for (int op = 0; op < 300; ++op) { int k = (int)(rng() % 200); bool a = t.insert(k), b = ref.insert(k).second; assert(a == b); (void)a; (void)b; }
@@ -1962,7 +1971,11 @@ struct Avl {
     std::string shape(int u) const { return u < 0 ? "." : "(" + shape(L[u]) + shape(R[u]) + ")"; }
 };
 
+std::string avlPicture(const Avl& t, int u, int depth) { if (u < 0) return ""; return avlPicture(t, t.R[u], depth + 1) + std::string((size_t)depth * 4, ' ') + std::to_string(t.key[u]) + "(h" + std::to_string(t.h[u]) + ")\n" + avlPicture(t, t.L[u], depth + 1); }
 int main() {
+    {   Avl a; a.insert(10); a.insert(20); std::string chain = avlPicture(a, a.root, 0); a.insert(30); std::string balanced = avlPicture(a, a.root, 0);                          // 그림: 10 20 까지는 사슬, 30 을 넣으면 왼쪽 회전
+        assert(chain == "    20(h1)\n10(h2)\n" && balanced == "    30(h1)\n20(h2)\n    10(h1)\n" && a.fixes == 1); std::cout << chain << "-- insert 30 (one left rotation) -->\n" << balanced;
+        Avl lr; lr.insert(30); lr.insert(10); lr.insert(20); assert(avlPicture(lr, lr.root, 0) == "    30(h1)\n20(h2)\n    10(h1)\n" && lr.fixes == 1); }                                   // 30 10 20 은 왼쪽-오른쪽 이중 회전이지만 같은 모양
     // 전수: 모든 삽입 순서에서 불변식·삽입당 재균형 ≤ 1
     for (int n = 1; n <= 8; ++n) {
         std::vector<int> perm(n); std::iota(perm.begin(), perm.end(), 0); std::set<std::string> shapes; long perms = 0;
@@ -2187,7 +2200,12 @@ std::vector<int> depths(const T& t) { std::vector<int> d(t.n, 0); std::vector<in
 std::vector<int> subtreeSizes(const T& t) { std::vector<int> s(t.n, 1), order = {t.root}; for (size_t i = 0; i < order.size(); ++i) { int u = order[i]; if (t.L[u] >= 0) order.push_back(t.L[u]); if (t.R[u] >= 0) order.push_back(t.R[u]); } for (size_t i = order.size(); i-- > 1;) s[t.P[order[i]]] += s[order[i]]; return s; }
 bool inSubtree(const T& t, int u, int x) { for (; u >= 0; u = t.P[u]) if (u == x) return true; return false; }
 
+std::string sideT(const T& t, int u, int depth) { if (u < 0) return ""; return sideT(t, t.R[u], depth + 1) + std::string((size_t)depth * 4, ' ') + std::to_string(u) + "\n" + sideT(t, t.L[u], depth + 1); }       // 키 = 번호, 오른쪽이 위
 int main() {
+    {   T demo(5); demo.root = 1; demo.L[1] = 0; demo.R[1] = 3; demo.L[3] = 2; demo.R[3] = 4; demo.P[0] = 1; demo.P[3] = 1; demo.P[2] = 3; demo.P[4] = 3;                      // 그림: rotateLeft(1) 전후
+        std::string before = sideT(demo, demo.root, 0); demo.rotateLeft(1); std::string after = sideT(demo, demo.root, 0);
+        assert(before == "        4\n    3\n        2\n1\n    0\n" && after == "    4\n3\n        2\n    1\n        0\n");                                                // 3 이 올라오고 1 이 왼쪽으로 내려가며 3 의 옛 왼쪽 자식 2 는 1 의 오른쪽으로
+        std::cout << "before rotateLeft(1):\n" << before << "after:\n" << after; assert(demo.linksOk()); }
     const long catalan[] = {1, 1, 2, 5, 14, 42, 132, 429};
     for (int n = 1; n <= 7; ++n) {
         std::map<std::string, T> shapeMap = allShapes(n); assert((long)shapeMap.size() == catalan[n]);               // 모양 수 = 카탈란 수
@@ -3875,7 +3893,12 @@ struct Trie {
 size_t distinctPrefixes(const std::set<std::string>& s) { std::set<std::string> p; for (auto& w : s) for (size_t k = 0; k <= w.size(); ++k) p.insert(w.substr(0, k)); return std::max<size_t>(1, p.size()); }                       // 빈 접두사 포함 = 루트 포함 노드 수 (루트는 빈 트라이에도 있다)
 int refCountPrefix(const std::set<std::string>& s, const std::string& p) { int c = 0; for (auto& w : s) if (w.compare(0, p.size(), p) == 0 && w.size() >= p.size()) ++c; return c; }
 
+std::string drawTrie(const Trie& t, int u, int depth, char ch) {                                                       // 들여쓰기 = 깊이, * = 단어의 끝, 수 = 이 노드를 지나는 단어 수
+    std::string s = depth ? std::string((size_t)depth * 2, ' ') + ch + (t.end[u] ? "*" : "") + " " + std::to_string(t.pass[u]) + "\n" : std::string("(root)\n");
+    for (int c = 0; c < 26; ++c) if (t.nx[u][c] >= 0) s += drawTrie(t, t.nx[u][c], depth + 1, (char)('a' + c)); return s; }
 int main() {
+    {   Trie demo; for (const char* w : {"car", "cart", "cat", "dog"}) demo.insert(w); std::string pic = drawTrie(demo, 0, 0, ' ');                                      // 그림: 공통 접두사 "ca" 를 세 단어가 공유
+        assert(pic == "(root)\n  c 3\n    a 3\n      r* 2\n        t* 1\n      t* 1\n  d 1\n    o 1\n      g* 1\n"); std::cout << pic; }
     std::vector<std::string> universe = {""}; for (int len = 1; len <= 3; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; universe.push_back(s); }   // 15 개
     std::vector<std::string> queries = {""}; for (int len = 1; len <= 4; ++len) for (int m = 0; m < (1 << len); ++m) { std::string s; for (int b = len - 1; b >= 0; --b) s += (m >> b & 1) ? 'b' : 'a'; queries.push_back(s); }   // 31 개
     assert(universe.size() == 15 && queries.size() == 31);
@@ -4584,7 +4607,15 @@ template <class T, class Op> void exhaustive(int n, T e, Op op, const std::vecto
     SegTree<T, Op> viaSet(n, e, op); for (int i = 0; i < n; ++i) viaSet.set(i, a[i]); assert(viaSet.d == st.d);   // ③ build = 점 갱신 n 번
 }
 
+template <class T, class Op> std::string drawSeg(const SegTree<T, Op>& s) {                                              // 층마다 노드가 맡은 구간 [lo, hi) 와 값
+    std::string out; for (int lvl = 0; (1 << lvl) <= s.size; ++lvl) { out += "L" + std::to_string(lvl) + ":"; int span = s.size >> lvl;
+        for (int i = 0; i < (1 << lvl); ++i) out += " [" + std::to_string(i * span) + "," + std::to_string((i + 1) * span) + ")=" + std::to_string(s.d[(size_t)((1 << lvl) + i)]); out += "\n"; } return out; }
+std::string queryCover(int size, int l, int r) { std::string s; for (l += size, r += size; l < r; l >>= 1, r >>= 1) { if (l & 1) s += " " + std::to_string(l++); if (r & 1) s += " " + std::to_string(--r); } return s; }       // 쿼리가 방문하는 노드 번호 (왼쪽 경계는 오른쪽으로, 오른쪽 경계는 왼쪽으로 올라간다)
 int main() {
+    {   auto plus = [](long long a, long long b) { return a + b; }; SegTree<long long, decltype(plus)> demo(8, 0, plus); demo.build({5, 3, 7, 9, 6, 4, 1, 2}); std::string pic = drawSeg(demo);        // 그림: 합 트리 (8 개 잎)
+        assert(pic == "L0: [0,8)=37\nL1: [0,4)=24 [4,8)=13\nL2: [0,2)=8 [2,4)=16 [4,6)=10 [6,8)=3\nL3: [0,1)=5 [1,2)=3 [2,3)=7 [3,4)=9 [4,5)=6 [5,6)=4 [6,7)=1 [7,8)=2\n"); std::cout << pic;
+        assert(queryCover(8, 1, 7) == " 9 14 5 6" && demo.query(1, 7) == 3 + 1 + (7 + 9) + (6 + 4));                                                                                              // 구간 [1,7) 는 노드 9, 14, 5, 6 (= [1,2) [6,7) [2,4) [4,6)) 네 개로 덮이고 합은 30
+        std::cout << "query [1,7) uses nodes" << queryCover(8, 1, 7) << " (4 nodes, not 6 leaves): sum = " << demo.query(1, 7) << std::endl; }
     std::mt19937 rng(61);
     for (int n = 1; n <= 70; ++n) {
         std::vector<long long> v(n); for (auto& x : v) x = (long long)(rng() % 2001) - 1000;
@@ -4645,7 +4676,14 @@ long long mergeCount(std::vector<int>& a, std::vector<int>& tmp, int lo, int hi)
     if (hi - lo < 2) return 0; int mid = (lo + hi) / 2; long long c = mergeCount(a, tmp, lo, mid) + mergeCount(a, tmp, mid, hi); int i = lo, j = mid, k = lo;
     while (i < mid && j < hi) { if (a[i] <= a[j]) tmp[k++] = a[i++]; else { tmp[k++] = a[j++]; c += mid - i; } } while (i < mid) tmp[k++] = a[i++]; while (j < hi) tmp[k++] = a[j++]; for (int x = lo; x < hi; ++x) a[x] = tmp[x]; return c; }
 
+std::string fenwickTable(const Fenwick& f) {                                                                              // 노드 i 는 (i - lowbit(i), i] 를 맡는다 (1 부터 센다)
+    std::string s = "i  covers   t[i]\n"; for (int i = 1; i <= f.n; ++i) { int lo = i - (i & -i) + 1; char buf[64]; std::snprintf(buf, sizeof buf, "%-2d %-8s %4lld\n", i, ("[" + std::to_string(lo) + "," + std::to_string(i) + "]").c_str(), (long long)f.t[(size_t)i]); s += buf; } return s; }
+std::string prefixPath(int i) { std::string s; for (; i > 0; i -= i & -i) s += (s.empty() ? "" : " -> ") + std::to_string(i); return s; }
 int main() {
+    {   Fenwick demo(std::vector<long long>{3, 2, -1, 6, 5, 4, -3, 3}); std::string path = prefixPath(7);                                                // 그림: 인덱스별 맡은 구간 + prefix(7) 가 거치는 노드
+        assert(demo.t[1] == 3 && demo.t[2] == 5 && demo.t[3] == -1 && demo.t[4] == 10 && demo.t[5] == 5 && demo.t[6] == 9 && demo.t[7] == -3 && demo.t[8] == 19);
+        assert(path == "7 -> 6 -> 4" && demo.t[7] + demo.t[6] + demo.t[4] == 16 && demo.prefix(6) == 16);                                                  // 7 -> 6 -> 4: 세 칸만 더하면 앞 7 개의 합
+        std::cout << fenwickTable(demo) << "prefix(7) visits " << path << " = " << demo.prefix(6) << std::endl; }
     std::mt19937 rng(71);
     for (int n = 1; n <= 200; ++n) {                                                                             // ① ② ③ 작은 n 전부
         std::vector<long long> a(n); for (auto& x : a) x = (long long)(rng() % 50); Fenwick built(a), viaAdd(n); for (int i = 0; i < n; ++i) viaAdd.add(i, a[i]); assert(built.t == viaAdd.t);
@@ -5229,7 +5267,27 @@ struct BTree {
     }
 };
 
+std::string drawBTree(const Node* root) {                              // 그림: 층마다 한 줄, 노드는 [키 ...] 로 나열
+    std::string out; std::vector<const Node*> level{root};
+    while (!level.empty()) {
+        std::vector<const Node*> next;
+        for (size_t i = 0; i < level.size(); ++i) {
+            out += i ? " [" : "[";
+            for (size_t j = 0; j < level[i]->keys.size(); ++j) out += (j ? " " : "") + std::to_string(level[i]->keys[j]);
+            out += "]"; for (const Node* c : level[i]->kids) next.push_back(c);
+        }
+        out += "\n"; level = next;
+    }
+    return out;
+}
+
 int main() {
+    {   BTree d; std::vector<std::string> snaps;                       // 그림: 1..10 을 차례로 넣으며 노드가 쪼개지는 순간 (T=3: 노드당 키 2..5 개)
+        for (int k = 1; k <= 10; ++k) { d.insert(k); if (k == 5 || k == 6 || k == 10) snaps.push_back(drawBTree(d.root)); }
+        assert(snaps[0] == "[1 2 3 4 5]\n");                               // 5 개까지는 잎 하나에 다 들어간다 (꽉 찼다)
+        assert(snaps[1] == "[3]\n[1 2] [4 5 6]\n");                        // 6 번째: 꽉 찬 루트를 쪼개 가운데 키 3 이 올라가고 높이가 1 늘었다
+        assert(snaps[2] == "[3 6]\n[1 2] [4 5] [7 8 9 10]\n");             // 오른쪽 잎이 다시 차서 쪼개지며 6 이 올라갔다 (높이는 그대로)
+        for (const auto& s : snaps) std::cout << s << "--\n"; }
     BTree t; std::mt19937 rng(17);
     const int n = 5000;
     std::vector<int> keys(n); for (int i = 0; i < n; i++) keys[i] = i * 3; std::shuffle(keys.begin(), keys.end(), rng);
@@ -5366,7 +5424,18 @@ void destroy(Node* n) { std::vector<Node*> st; if (n) st.push_back(n); while (!s
 int depthOf(Node* n, int k) { int d = 0; while (n && n->key != k) { n = k < n->key ? n->l : n->r; d++; } return n ? d : -1; }
 bool isBST(Node* n, long lo, long hi) { return !n || (n->key > lo && n->key < hi && isBST(n->l, lo, n->key) && isBST(n->r, n->key, hi)); }
 
+std::string sideways(const Node* n, int depth) { if (!n) return ""; return sideways(n->r, depth + 1) + std::string((size_t)depth * 4, ' ') + std::to_string(n->key) + "\n" + sideways(n->l, depth + 1); }       // 그림: 오른쪽 자식이 위, 왼쪽 자식이 아래
+
 int main() {
+    {   Node* c = nullptr; for (int k : {1, 2, 3}) c = insert(c, k);        // 삽입할 때마다 새 키가 루트로 올라온다 -> 왼쪽으로만 늘어진 사슬
+        assert(sideways(c, 0) == "3\n    2\n        1\n"); std::cout << sideways(c, 0) << "--\n";
+        c = splay(c, 1); assert(sideways(c, 0) == "        3\n    2\n1\n");  // 1 에 접근: zig-zig 로 1 이 루트가 되고 사슬이 반대 방향으로 뒤집혔다
+        std::cout << sideways(c, 0) << "--\n";
+        Node* z = new Node(4); z->l = new Node(2); z->l->r = new Node(3);   // zig-zag: 4 -> 왼쪽 2 -> 오른쪽 3
+        assert(sideways(z, 0) == "4\n        3\n    2\n");
+        z = splay(z, 3); assert(sideways(z, 0) == "    4\n3\n    2\n");        // 3 이 루트, 2 와 4 가 양쪽 자식 (두 번 꺾인 경로가 펴졌다)
+        std::cout << sideways(z, 0);
+        destroy(c); destroy(z); }
     Node* root = nullptr; std::set<int> truth; std::mt19937 rng(31);
     for (int i = 0; i < 3000; i++) { int k = rng() % 1000; if (rng() % 3) { root = insert(root, k); truth.insert(k); } else { root = erase(root, k); truth.erase(k); } }
     assert(isBST(root, -1, 1 << 30));
@@ -5414,7 +5483,18 @@ Node* erase(Node* t, int k) { Node *a, *b, *c, *d; split(t, k, a, b); split(b, k
 int height(Node* t) { return t ? 1 + std::max(height(t->l), height(t->r)) : 0; }
 bool valid(Node* t, long lo, long hi) { return !t || (t->key > lo && t->key < hi && (!t->l || t->l->pri <= t->pri) && (!t->r || t->r->pri <= t->pri) && valid(t->l, lo, t->key) && valid(t->r, t->key, hi)); }
 
+std::string sideways(const Node* n, int depth) { if (!n) return ""; return sideways(n->r, depth + 1) + std::string((size_t)depth * 4, ' ') + std::to_string(n->key) + ":" + std::to_string(n->pri) + "\n" + sideways(n->l, depth + 1); }       // 그림: 키:우선순위, 오른쪽 자식이 위
+Node* mk(int key, int pri) { Node* n = new Node(key); n->pri = pri; return n; }                    // 우선순위를 손으로 정해 모양을 예측 가능하게 한다
+
 int main() {
+    {   const int pri[7] = {5, 9, 3, 7, 1, 8, 2}; Node* d = nullptr;       // 키 1..7 의 우선순위 -> 루트는 우선순위가 가장 큰 키 2 (BST 성질 + 최대 힙 성질을 만족하는 트리는 하나뿐)
+        for (int k = 1; k <= 7; ++k) d = merge(d, mk(k, pri[k - 1]));
+        const std::string whole = "        7:2\n    6:8\n            5:1\n        4:7\n            3:3\n2:9\n    1:5\n";
+        assert(sideways(d, 0) == whole); std::cout << sideways(d, 0) << "--\n";
+        Node *lo, *hi; split(d, 5, lo, hi);                                // split(5): 키 < 5 와 키 >= 5 로 가른다
+        assert(sideways(lo, 0) == "    4:7\n        3:3\n2:9\n    1:5\n" && sideways(hi, 0) == "    7:2\n6:8\n    5:1\n");
+        d = merge(lo, hi); assert(sideways(d, 0) == whole);                // 다시 합치면 같은 트리: 모양은 (키, 우선순위)가 정하므로 분할·병합 순서와 무관하다
+        destroy(d); }
     Node* t = nullptr; std::set<int> truth;
     for (int k = 0; k < 10000; k++) { t = insert(t, k); truth.insert(k); }          // 정렬된 입력도 균형을 유지한다 (일반 BST 라면 높이 10000)
     assert(height(t) <= 6 * std::log2(10000));
@@ -5463,7 +5543,15 @@ int rmqIndex(const std::vector<Node>& t, int u, int l, int r) {         // 루�
     for (;;) { if (t[u].idx < l) u = t[u].r; else if (t[u].idx > r) u = t[u].l; else return t[u].idx; }
 }
 
+std::string sideways(const std::vector<Node>& t, int u, int depth) { if (u < 0) return ""; return sideways(t, t[u].r, depth + 1) + std::string((size_t)depth * 4, ' ') + std::to_string(t[u].val) + "@" + std::to_string(t[u].idx) + "\n" + sideways(t, t[u].l, depth + 1); }       // 그림: 값@인덱스, 오른쪽 자식이 위
+std::vector<int> rmqPath(const std::vector<Node>& t, int u, int l, int r) { std::vector<int> path; for (;;) { path.push_back(t[u].idx); if (t[u].idx < l) u = t[u].r; else if (t[u].idx > r) u = t[u].l; else return path; } }       // 내려간 노드들의 인덱스
+
 int main() {
+    {   const std::vector<int> arr = {5, 2, 7, 3, 9, 1, 8, 4}; std::vector<Node> d(arr.size()); int rt = build(d, arr);        // 그림: 최솟값 1(인덱스 5)이 루트, 중위 순회하면 배열 순서
+        const std::string pic = "    4@7\n        8@6\n1@5\n            9@4\n        3@3\n            7@2\n    2@1\n        5@0\n";
+        assert(rt == 5 && sideways(d, rt, 0) == pic); std::cout << pic;
+        assert((rmqPath(d, rt, 2, 4) == std::vector<int>{5, 1, 3}) && arr[3] == 3);       // 구간 [2,4] 최솟값: 루트(5)는 구간 오른쪽 -> 왼쪽으로, 1 은 구간 왼쪽 -> 오른쪽으로, 3 이 처음 걸친 노드 = 답
+        assert((rmqPath(d, rt, 0, 7) == std::vector<int>{5}) && (rmqPath(d, rt, 6, 7) == std::vector<int>{5, 7})); }
     std::mt19937 rng(33); std::vector<int> a(3000); for (auto& x : a) x = rng() % 100000;
     std::vector<Node> t(a.size()); int root = build(t, a);
     assert(a[root] == *std::min_element(a.begin(), a.end()));
