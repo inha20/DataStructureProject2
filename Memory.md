@@ -884,14 +884,21 @@ int main() {
 // 스택 프레임(요약, 정본은 Stack.md Part 8): 함수 호출마다 프레임이 하나씩 쌓이고, 호출된 함수의 프레임은 더 낮은 주소에 놓인다.  `__builtin_frame_address(0)` 으로 현재 프레임의 주소를 얻어 확인할 수 있다 (GCC/Clang).
 //  같은 함수를 재귀로 부르면 프레임 크기가 같으므로 *깊이가 한 칸 깊어질 때마다 주소가 정확히 같은 간격(stride)으로 줄어든다*.  간격은 지역 변수가 커지면 그만큼 커진다.
 //  ① 깊이 60 재귀의 프레임 주소가 엄격히 감소하고 간격이 *모두 같다* (16 바이트 정렬)  ② 지역 배열 64 / 256 / 1024 바이트 함수의 간격 차이가 배열 크기 차이와 ±64 바이트 안에서 일치  ③ 호출된 함수의 `__builtin_frame_address(1)` (= 호출자의 프레임 주소)이 바로 위 깊이의 프레임 주소와 같다
-//  ④ 서로 다른 함수 두 개가 번갈아 호출해도(상호 재귀) 프레임 주소가 계속 감소한다.  꼬리 호출 제거를 막으려고 호출 뒤에 컴파일러 장벽을 둔다.
+//  ④ 서로 다른 함수 두 개가 번갈아 호출해도(상호 재귀) 프레임 주소가 계속 감소한다.  꼬리 호출 제거를 막으려고 호출 뒤에 컴파일러 장벽을 둔다.  g++ -O3 은 재귀 함수의 상수 전파 복제본을 만들어 간격이 흔들리므로(144,128,128,…) noclone/noipa 로 막았다 — g++/clang++ 의 -O0 ~ -O3, -Ofast 에서 확인.
 #pragma GCC diagnostic ignored "-Wframe-address"          // __builtin_frame_address(1) 은 호출자 프레임을 보려는 일부러의 사용
-template <int N> __attribute__((noinline)) uintptr_t dive(int d, std::vector<uintptr_t>& addrs, std::vector<uintptr_t>& callerAddrs) {
+#if defined(__clang__)
+#define FRAME_FN __attribute__((noinline))
+#elif defined(__GNUC__) && __GNUC__ >= 8
+#define FRAME_FN __attribute__((noinline, noclone, noipa))   // g++ -O3/-Ofast 는 noinline 이어도 상수 전파 복제본(.constprop.N)을 만들어 프레임 크기가 서로 다른 함수로 재귀하므로 복제·IPA 를 막는다
+#else
+#define FRAME_FN __attribute__((noinline, noclone))
+#endif
+template <int N> FRAME_FN uintptr_t dive(int d, std::vector<uintptr_t>& addrs, std::vector<uintptr_t>& callerAddrs) {
     volatile char buf[N]; asm volatile("" : : "r"(buf) : "memory"); /* 주소를 내보내 컴파일러가 배열을 줄이지 못하게 한다 */ buf[0] = (char)d; addrs.push_back((uintptr_t)__builtin_frame_address(0)); if (d < 59) callerAddrs.push_back((uintptr_t)__builtin_frame_address(1));
     uintptr_t r = d == 0 ? 0 : dive<N>(d - 1, addrs, callerAddrs); asm volatile("" ::: "memory"); buf[N - 1] = (char)r; return r + buf[0]; }
-__attribute__((noinline)) uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs);
-__attribute__((noinline)) uintptr_t pong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[48]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pingpong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
-__attribute__((noinline)) uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[16]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
+FRAME_FN uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs);
+FRAME_FN uintptr_t pong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[48]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pingpong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
+FRAME_FN uintptr_t pingpong(int d, std::vector<uintptr_t>& addrs) { volatile char pad[16]; asm volatile("" : : "r"(pad) : "memory"); pad[0] = 1; addrs.push_back((uintptr_t)__builtin_frame_address(0)); uintptr_t r = d == 0 ? 0 : pong(d - 1, addrs); asm volatile("" ::: "memory"); return r + pad[0]; }
 template <int N> long strideOf() { std::vector<uintptr_t> addrs, callers; dive<N>(59, addrs, callers); assert(addrs.size() == 60); long stride = (long)(addrs[0] - addrs[1]);
     for (size_t i = 1; i < addrs.size(); ++i) { assert(addrs[i] < addrs[i - 1] && (long)(addrs[i - 1] - addrs[i]) == stride && addrs[i] % 16 == 0); }                       // ① 엄격히 감소 + 같은 간격 + 16 바이트 정렬
     for (size_t i = 1; i < addrs.size(); ++i) assert(callers[i - 1] == addrs[i - 1]);                                                                                         // ③ 호출자의 프레임 주소 = 바로 위 프레임
@@ -974,9 +981,10 @@ int main() {
 // 꼬리 호출 최적화(TCO): 함수의 마지막 동작이 다른 (또는 자기 자신의) 호출이면 현재 프레임이 더 이상 필요 없으므로 새 프레임 없이 "점프" 로 바꿀 수 있다 → 재귀가 반복문과 같은 공간 O(1).
 //  C++ 표준은 TCO 를 보장하지 않는다 (-O2 에서는 대개 적용되지만 디버그 빌드에서는 안 된다) — 그래서 *적용 여부에 의존하는 코드는 이식성이 없다*.  보장이 필요하면 트램펄린(trampoline)으로 직접 구현한다.
 //  트램펄린: 재귀 호출 대신 "다음에 할 일" 을 반환하고, 반복문이 그것을 이어서 실행한다 → 스택이 쌓이지 않는다.  상호 재귀(isEven ↔ isOdd)처럼 컴파일러가 제거하기 힘든 경우에도 된다.
+//  이 항목이 *측정해서 보이는 것*: 트램펄린의 스택이 상수(②)이고 장벽을 둔 일반 재귀의 스택이 깊이에 비례(③)한다는 것. sumTail 은 값만 비교하고 스택은 재지 않는다 — 컴파일러가 TCO 를 적용할지는 보장이 없어 단언하면 이식성이 없기 때문이다.
 //  ① 꼬리 재귀 / 일반 재귀 / 반복문 / 트램펄린이 같은 값(n ≤ 10^4)  ② 트램펄린은 n = 10^6 단계에서도 *스택 프레임 주소 범위가 상수*다 (단계가 모두 반복문의 같은 깊이에서 실행되므로 범위 ≤ 1 KB)  ③ 컴파일러가 제거할 수 없게 장벽을 둔 일반 재귀는 깊이에 비례해 스택 주소가 내려간다 (n = 1000 에서 ≥ 16 · n 바이트)
 //  ④ 상호 재귀 isEven(10^6) / isOdd(10^6+1) 가 트램펄린으로 정확  ⑤ 트램펄린 위에서 누적 인수(accumulator) 변환: 일반 재귀 n + f(n−1) → 꼬리 형태 f(n, acc) 로 바꾸면 같은 값을 O(1) 스택으로.
-long long sumTail(long long n, long long acc) { return n == 0 ? acc : sumTail(n - 1, acc + n); }                                    // 꼬리 재귀 (마지막이 자기 호출)
+long long sumTail(long long n, long long acc) { return n == 0 ? acc : sumTail(n - 1, acc + n); }                                    // 꼬리 재귀 (마지막이 자기 호출; 최적화되든 안 되든 값은 같다 — 스택은 재지 않는다)
 uintptr_t deepest = ~(uintptr_t)0, shallowest = 0;
 __attribute__((noinline)) long long sumNonTail(long long n) { uintptr_t here = (uintptr_t)__builtin_frame_address(0); deepest = std::min(deepest, here); shallowest = std::max(shallowest, here);
     if (n == 0) return 0; long long r = n + sumNonTail(n - 1); asm volatile("" ::: "memory"); return r; }                               // 호출 뒤에 덧셈이 남아 꼬리 호출이 아니다 (장벽으로 변환도 막는다)
@@ -985,15 +993,15 @@ struct Step { bool done; long long value; Thunk next; };
 uintptr_t tMin = ~(uintptr_t)0, tMax = 0;
 Step sumStep(long long n, long long acc) { uintptr_t here = (uintptr_t)__builtin_frame_address(0); tMin = std::min(tMin, here); tMax = std::max(tMax, here); if (n == 0) return {true, acc, nullptr}; return {false, 0, [=] { return sumStep(n - 1, acc + n); }}; }
 long long run(Step s) { while (!s.done) s = s.next(); return s.value; }
-Step isEvenStep(long long n, bool wantEven);
-Step isOddStep(long long n, bool wantEven) { if (n == 0) return {true, wantEven ? 0 : 1, nullptr}; return {false, 0, [=] { return isEvenStep(n - 1, wantEven); }}; }          // isOdd(n) = isEven(n−1)
-Step isEvenStep(long long n, bool wantEven) { if (n == 0) return {true, wantEven ? 1 : 0, nullptr}; return {false, 0, [=] { return isOddStep(n - 1, wantEven); }}; }          // isEven(n) = isOdd(n−1)
+Step isEvenStep(long long n);
+Step isOddStep(long long n) { if (n == 0) return {true, 0, nullptr}; return {false, 0, [=] { return isEvenStep(n - 1); }}; }          // isOdd(n) = isEven(n−1)
+Step isEvenStep(long long n) { if (n == 0) return {true, 1, nullptr}; return {false, 0, [=] { return isOddStep(n - 1); }}; }          // isEven(n) = isOdd(n−1)
 
 int main() {
     for (long long n : {0LL, 1LL, 2LL, 10LL, 1000LL, 10000LL}) { long long loop = 0; for (long long i = 1; i <= n; ++i) loop += i; assert(sumTail(n, 0) == loop && sumNonTail(n) == loop && run(sumStep(n, 0)) == loop && loop == n * (n + 1) / 2); }                          // ①
     tMin = ~(uintptr_t)0; tMax = 0; assert(run(sumStep(1000000, 0)) == 500000500000LL); assert(tMax - tMin <= 1024);                                                  // ② 10^6 단계 내내 프레임 주소 범위가 상수(첫 호출만 main 에서 불러 조금 다르다)
     deepest = ~(uintptr_t)0; shallowest = 0; sumNonTail(1000); assert(shallowest - deepest >= 16 * 1000);                                                              // ③ 일반 재귀는 깊이에 비례해 내려간다
-    for (long long n : {0LL, 1LL, 2LL, 3LL, 999999LL, 1000000LL, 1000001LL}) { bool even = n % 2 == 0; assert(run(isEvenStep(n, true)) == (even ? 1 : 0)); assert(run(isOddStep(n, true)) == (even ? 0 : 1)); }                          // ④ 상호 재귀
+    for (long long n : {0LL, 1LL, 2LL, 3LL, 999999LL, 1000000LL, 1000001LL}) { bool even = n % 2 == 0; assert(run(isEvenStep(n)) == (even ? 1 : 0)); assert(run(isOddStep(n)) == (even ? 0 : 1)); }                          // ④ 상호 재귀
     long long loop = 0; for (long long i = 1; i <= 1000000; ++i) loop += i; assert(loop == 500000500000LL && sumTail(1000, 0) == 500500);
     std::cout << "TailCallOptimization: the trampoline ran 10^6 steps at one constant stack depth (frame address range " << tMax - tMin << " bytes), mutual recursion isEven/isOdd worked at n=10^6, while ordinary recursion of depth 1000 descended " << shallowest - deepest << " bytes" << std::endl;
     return 0;
@@ -4523,6 +4531,7 @@ int main() {
 #include <iostream>
 #include <list>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -4530,6 +4539,7 @@ int main() {
 //  유효 접근 시간 EAT = h·(t_tlb + t_mem) + (1 − h)·(t_tlb + 4·t_mem + t_mem)   (미스 시 테이블 4 단계를 걷는 메모리 접근 4 번 + 실제 접근 1 번).  완전 연관 LRU TLB 를 직접 만들어 확인한다.
 //  ① 측정한 적중률 h 를 넣은 공식 EAT 가 접근마다 비용을 더한 평균과 같다(부동소수 오차 1e-9)  ② 순차 훑기: 페이지당 1024 번(4 바이트 보폭) 접근하면 적중률이 정확히 1 − 1/1024  ③ 작업 집합 W 쪽을 무작위로 접근: W ≤ TLB 항목 수면 미스는 컴펄서리 W 번뿐, W ≫ 항목 수면 적중률 ≈ 항목 수 / W
 //  ④ 큰 페이지: 64 MB 를 무작위 접근할 때 4 KB 페이지(16384 쪽)는 적중률 < 1%, 2 MB 페이지(32 쪽)는 컴펄서리 32 번뿐  ⑤ 주소 공간 식별자(ASID): 프로세스 둘이 K 번 접근마다 교대할 때, ASID 태그가 있으면 미스는 컴펄서리 합뿐이고 문맥 전환마다 TLB 를 비우면 전환마다 작업 집합 쪽수만큼 미스가 생긴다(정확히).
+//  ⑥ 교체 정책(LRU): 항목 수 C 의 TLB 에서 C 쪽을 순환하면 미스는 C 번뿐이지만 C + 1 쪽을 순환하면 LRU 가 늘 가장 오래 안 쓴 것을 내쫓으므로 *전부* 미스(균일 무작위 접근은 정책과 무관하게 C/W 라 구별하지 못한다). 용량 2 에 0,1,0,2,0,1,2 를 넣으면 적중/미스 열이 정확히 MMHMHMM — 적중이 최근 순서로 올리고(FIFO 면 다름) 가장 오래된 것을 내쫓는지(최근 것을 내쫓으면 다름)를 가른다.
 struct Tlb {
     size_t cap; std::list<std::pair<uint32_t, uint64_t>> lru; std::unordered_map<uint64_t, std::list<std::pair<uint32_t, uint64_t>>::iterator> where; long hits = 0, misses = 0;
     explicit Tlb(size_t c) : cap(c) {}
@@ -4550,8 +4560,11 @@ int main() {
         assert((double)small4k.hits / n < 0.01 && huge2m.misses == 32 && huge2m.hits == n - 32); }
     {   const long K = 100, switches = 400; const uint64_t pagesEach = 16; Tlb withAsid(64), flushed(64); for (long s = 0; s < switches; ++s) { uint32_t proc = (uint32_t)(s % 2); flushed.flush(); for (long k = 0; k < K; ++k) { uint64_t vpn = (uint64_t)k % pagesEach; withAsid.lookup(proc, vpn); flushed.lookup(proc, vpn); } }          // ⑤ ASID
         assert(withAsid.misses == 2 * (long)pagesEach && flushed.misses == switches * (long)pagesEach); }
+    {   for (uint64_t W : {1ULL, 63ULL, 64ULL, 65ULL, 100ULL}) { Tlb t(64); const int reps = 50; for (int r = 0; r < reps; ++r) for (uint64_t p = 0; p < W; ++p) t.lookup(0, p);              // ⑥ 순환 접근
+            long accesses = (long)W * reps; if (W <= 64) assert(t.misses == (long)W && t.hits == accesses - (long)W); else assert(t.misses == accesses && t.hits == 0); }
+        Tlb t(2); std::string pattern; for (uint64_t p : {0, 1, 0, 2, 0, 1, 2}) pattern += t.lookup(0, p) ? 'H' : 'M'; assert(pattern == "MMHMHMM"); }
     double h = 0.98, eat = h * (tTlb + tMem) + (1 - h) * (tTlb + 5 * tMem); double noTlb = 5 * tMem; assert(eat < noTlb / 4);
-    std::cout << "TLBLookup: the EAT formula equalled the per-access average, a sequential scan hit 1-1/1024, random access over W pages hit about 64/W (only W compulsory misses when W <= 64), 2 MB pages cut 64 MB of random accesses to 32 misses versus a <1% hit rate with 4 KB pages, and ASID tags avoided the " << 400 * 16 << " refill misses a flush-on-switch TLB suffered; at 98% hit rate EAT is " << eat << " vs " << noTlb << " without a TLB" << std::endl;
+    std::cout << "TLBLookup: the EAT formula equalled the per-access average, a sequential scan hit 1-1/1024, random access over W pages hit about 64/W (only W compulsory misses when W <= 64), 2 MB pages cut 64 MB of random accesses to 32 misses versus a <1% hit rate with 4 KB pages, and ASID tags avoided the " << 400 * 16 << " refill misses a flush-on-switch TLB suffered, a cyclic scan of capacity + 1 pages missed every time under LRU; at 98% hit rate EAT is " << eat << " vs " << noTlb << " without a TLB" << std::endl;
     return 0;
 }
 // Time Complexity: 조회 O(1)
@@ -4817,7 +4830,7 @@ int main() {
 // 스택 카나리: 지역 버퍼와 복귀 주소 사이에 비밀 난수(카나리)를 둔다.  버퍼 오버플로로 복귀 주소를 덮으려면 반드시 카나리를 먼저 덮게 되므로, 함수가 반환하기 직전에 카나리가 그대로인지 확인해 공격을 탐지한다 (gcc -fstack-protector).
 //  스택 프레임 한 칸을 바이트 배열로 흉내 낸 안전한 시뮬레이션이다: [ buf(8) | canary(8) | return address(8) ].  glibc 의 카나리는 *가장 낮은 바이트가 0x00* 인 "종결자 카나리"라 strcpy 류의 복사(NUL 에서 멈춤)로는 카나리를 되살려 쓸 수 없다.
 //  ① 겹쳐 쓰는 길이 n = 0..24 전수(memcpy 류): 카나리 훼손 ⇔ n > 8, 복귀 주소 훼손 ⇔ n > 16 이고, 카나리 검사를 켜면 훼손 시 *복귀 주소를 쓰기 전에* 탐지, 끄면 n > 16 에서 제어 흐름 탈취  ② 카나리가 유출된 공격자(정확한 카나리를 되살려 쓰며 복귀 주소만 바꿈): memcpy 류 복사에는 *항상 성공*, strcpy 류 복사는 종결자 카나리에 *단 한 번도 성공하지 못함*(NUL 에서 멈춤), 종결자 없는 카나리에는 strcpy 도 성공(공격 주소의 낮은 두 바이트에 0 이 없을 때 — strcpy 는 어차피 NUL 이 든 주소를 못 쓴다)
-//  ③ 바이트 단위 무차별 대입(BROP): 카나리가 자식 프로세스마다 *그대로 재사용*되는 포크 서버에는 요청 ≤ 7 × 256 번으로 7 바이트를 모두 알아내지만, 요청마다 카나리가 새로 정해지면 같은 전략이 실패  ④ 카나리 엔트로피: 7 바이트 = 56 비트.
+//  ③ 바이트 단위 무차별 대입(BROP): 카나리가 자식 프로세스마다 *그대로 재사용*되는 포크 서버에는 요청 ≤ 7 × 256 번으로 7 바이트를 모두 알아내지만, 요청마다 카나리가 새로 정해지면 같은 전략이 실패  ④ 카나리 엔트로피: 종결자 카나리 20 000 개를 뽑아 가장 낮은 바이트는 늘 0 이고 나머지 7 바이트는 256 가지 값을 모두 취함을 세어, 모르는 바이트 수 × 8 = 56 비트를 계산한다.
 struct Frame { unsigned char mem[24]; };
 enum Result { SAFE, DETECTED, HIJACKED };
 uint64_t makeCanary(std::mt19937_64& rng, bool terminator) { uint64_t c = rng(); if (terminator) c &= ~0xFFULL; else { for (int i = 0; i < 8; ++i) if (((c >> (8 * i)) & 0xFF) == 0) c |= 1ULL << (8 * i); } return c; }                     // 종결자 카나리: 가장 낮은 바이트가 0
@@ -4844,7 +4857,10 @@ int main() {
                 for (int k = 1; k < 8; ++k) { int found = -1; for (int g = 0; g < 256; ++g) { uint64_t trialCanary = known | ((uint64_t)g << (8 * k)); std::memcpy(payload + 8, &trialCanary, 8); if (!s.crashes(payload, 8 + k + 1)) { found = g; break; } } if (found < 0) { known = ~0ULL; break; } known |= (uint64_t)found << (8 * k); }
                 bool ok = known == s.canary; successes += ok; maxRequests = std::max(maxRequests, s.requests); }
             if (world == 0) assert(successes == 20 && maxRequests <= 7 * 256); else assert(successes == 0); } }                                                                                         // 포크 서버는 ≤ 1792 번에 뚫리고 재무작위 서버는 못 뚫는다
-    std::cout << "StackCanary: overwrite lengths 0..24 corrupted the canary exactly beyond 8 bytes and the return address beyond 16 (detected before use when checked), a leaked canary beat memcpy-style overflows " << memcpySuccess << "/" << T << " times but a terminator canary stopped strcpy-style ones " << strcpySuccess << "/" << T << " times, byte-by-byte brute force recovered a fork-server canary in at most " << 7 * 256 << " requests yet failed against re-randomised canaries, and 7 unknown bytes = 56 bits of entropy" << std::endl;
+    int distinct[8] = {0}; { bool seen[8][256] = {}; for (int i = 0; i < 20000; ++i) { uint64_t c = makeCanary(rng, true); for (int b = 0; b < 8; ++b) seen[b][(c >> (8 * b)) & 0xFF] = true; } for (int b = 0; b < 8; ++b) for (int v = 0; v < 256; ++v) distinct[b] += seen[b][v]; }   // ④ 바이트마다 나온 서로 다른 값의 수
+    int unknownBytes = 0; for (int b = 0; b < 8; ++b) unknownBytes += distinct[b] == 256;
+    assert(distinct[0] == 1 && unknownBytes == 7); const int entropyBits = 8 * unknownBytes; assert(entropyBits == 56);
+    std::cout << "StackCanary: overwrite lengths 0..24 corrupted the canary exactly beyond 8 bytes and the return address beyond 16 (detected before use when checked), a leaked canary beat memcpy-style overflows " << memcpySuccess << "/" << T << " times but strcpy-style overflows succeeded " << strcpySuccess << "/" << T << " times against a terminator canary, byte-by-byte brute force recovered a fork-server canary in at most " << 7 * 256 << " requests yet failed against re-randomised canaries, and " << unknownBytes << " unknown bytes = " << entropyBits << " bits of entropy" << std::endl;
     return 0;
 }
 // Time Complexity: O(1) 검사
@@ -5476,9 +5492,13 @@ int main() {
 #include <map>
 #include <stdexcept>
 #include <cassert>
+#include <string>
 
 // 와일드 포인터: 초기화되지 않은 포인터 (쓰레기 값을 주소로 간주).  어디를 가리키는지 알 수 없어 어떤 메모리든 망가뜨릴 수 있다.
 // 대책: (1) 항상 초기화 (nullptr)  (2) 해제 후 nullptr 대입  (3) 할당 목록에 등록된 범위만 유효하다고 인정하는 검사기(Registry)
+// 검증: ① 널·와일드(쓰레기 값)·정상 포인터를 서로 다른 메시지로 구분  ② 해제했지만 nullptr 를 대입하지 않은 *댕글링* 포인터도 remove() 덕에 거부(값만 쓰고 역참조하지 않는다)
+//        ③ Registry 경계를 합성 주소로 바이트 단위 확인: 시작 바로 앞은 무효, 첫 바이트와 마지막 바이트는 유효, 끝 다음 바이트는 무효, 크기가 범위를 넘으면 무효, 할당 사이 틈과 두 할당에 걸친 구간은 무효, 중간 주소로는 remove 되지 않음
+//        ④ 크기를 보는 검사: 범위 안에서 시작하지만 T 가 끝을 넘는 포인터는 거부
 class Registry {
     std::map<uintptr_t, size_t> live;                                    // 시작 주소 -> 크기
 public:
@@ -5502,14 +5522,22 @@ int main() {
     int* init = nullptr;                                                  // 초기화된 포인터: 안전하게 검사 가능
     int* wild = reinterpret_cast<int*>(0x12345678);                       // 초기화되지 않은 포인터가 가질 수 있는 쓰레기 값 (역참조하지 않는다)
     assert(checkedDeref(reg, heap) == 7);
-    bool nullCaught = false, wildCaught = false;
-    try { checkedDeref(reg, init); } catch (const std::runtime_error&) { nullCaught = true; }
-    try { checkedDeref(reg, wild); } catch (const std::runtime_error&) { wildCaught = true; }
-    assert(nullCaught && wildCaught);
-    reg.remove(heap); delete heap; heap = nullptr;                        // 해제 후 nullptr 대입 습관
-    bool afterFree = false; try { checkedDeref(reg, heap); } catch (const std::runtime_error&) { afterFree = true; }
-    assert(afterFree);
-    std::cout << "WildPointer: null and wild dereferences rejected." << std::endl;
+    auto why = [&](int* p) { try { checkedDeref(reg, p); } catch (const std::runtime_error& e) { return std::string(e.what()); } return std::string(); };       // 거부 이유 (받아들이면 빈 문자열)
+    const std::string kNull = "null dereference", kWild = "wild pointer: not inside any live allocation";
+    assert(why(heap).empty() && why(init) == kNull && why(wild) == kWild);                                                                                    // ① 널과 와일드는 서로 다른 이유로 거부
+    int* dangling = heap; reg.remove(heap); delete heap; heap = nullptr;                                                                                      // 해제 후 nullptr 대입 습관 — dangling 은 일부러 대입하지 않은 복사본
+    assert(why(heap) == kNull && why(dangling) == kWild);                                                                                                     // ② nullptr 는 널, 해제된 비널 포인터는 등록이 지워져 와일드와 같이 거부
+    {   Registry g; auto at = [](uintptr_t a) { return reinterpret_cast<const void*>(a); }; const void* const A = at(0x1000); const void* const B = at(0x2000); g.add(A, 0x100); g.add(B, 0x10);   // ③ 합성 주소: 역참조하지 않으므로 안전
+        assert(!g.valid(at(0xFFF)) && g.valid(at(0x1000)) && g.valid(at(0x10FF)) && !g.valid(at(0x1100)));                                                     // 시작 바로 앞 무효, 첫·마지막 바이트 유효, 끝 다음 무효
+        assert(g.valid(at(0x1000), 0x100) && !g.valid(at(0x1000), 0x101) && g.valid(at(0x10F0), 0x10) && !g.valid(at(0x10F0), 0x11) && !g.valid(at(0x10FF), 2));   // 크기가 끝을 넘으면 무효
+        assert(!g.valid(at(0x1800)) && !g.valid(at(0x1FFF)) && g.valid(at(0x2000)) && g.valid(at(0x200F)) && !g.valid(at(0x2010)) && !g.valid(at(0x3000)));  // 할당 사이 틈과 마지막 할당 뒤
+        g.remove(at(0x1008)); assert(g.valid(at(0x1000)) && g.valid(at(0x1008)));               // 중간 주소로는 지워지지 않는다
+        g.remove(A); assert(!g.valid(at(0x1000)) && !g.valid(at(0x1050)) && g.valid(at(0x2000)));                                                              // 시작 주소로 지우면 그 할당만 사라진다
+        g.add(A, 0x20); assert(g.valid(at(0x101F)) && !g.valid(at(0x1020)));                                                                                  // 같은 자리에 더 작게 다시 등록
+        auto whyAt = [&](uintptr_t a) { try { checkedDeref(g, reinterpret_cast<int*>(a)); } catch (const std::runtime_error& e) { return std::string(e.what()); } return std::string(); };   // ④ T 의 크기까지 본다
+        assert(g.valid(at(0x2004), sizeof(int)) && g.valid(at(0x200C), sizeof(int)) && !g.valid(at(0x200D), sizeof(int)));                                    // 끝을 넘는지는 크기까지 본다
+        assert(whyAt(0x200D) == kWild && whyAt(0x200E) == kWild && whyAt(0x2010) == kWild && whyAt(0x1FFC) == kWild && whyAt(0) == kNull); }               // 범위 안에서 시작해도 int 가 끝을 넘으면 거부 (거부되는 경우만 호출: 합성 주소를 역참조하지 않는다)
+    std::cout << "WildPointer: null, wild and dangling dereferences rejected with distinct reasons; Registry bounds checked byte by byte." << std::endl;
     return 0;
 }
 // Time Complexity: 검사 O(log N)
@@ -6803,6 +6831,7 @@ int main() {
 ### 대표코드
 ```cpp
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
@@ -6817,6 +6846,7 @@ int main() {
 //  ① 손 계산: CPU 초기화 → GPU 처리 → CPU 읽기 (N 페이지) — on-demand 는 정확히 2N 폴트, prefetch 두 번이면 폴트 0 + 대량 이동 2 번  ② 비용 모형(폴트 F=25, 페이지당 이동 M=1, 묶음 지연 L=60) — N=1,2 에서는 on-demand 가 싸고 N≥3 부터 prefetch 가 이긴다(교차점 L/(F−M)=2.5)
 //  ③ 무작위 접근 기록 300 개(페이지 8, 길이 3 000): ON_DEMAND 폴트 수 == "페이지별로 접근 쪽이 바뀐 횟수"(호스트 시작) 라는 독립 공식, READ_MOSTLY 폴트 수 == "마지막 내 접근 뒤 상대 쓰기가 있었는가" 라는 독립 공식, 그리고 READ_MOSTLY ≤ ON_DEMAND
 //  ④ 핑퐁: 읽기만 번갈아 k 번 하면 ON_DEMAND 는 k−1 폴트, READ_MOSTLY 는 정확히 1 폴트; 쓰기를 번갈아 하면 두 정책이 같다(k−1)  ⑤ 디바이스 메모리 과구독(용량 C 페이지, LRU 퇴출): 작업 집합 W ≤ C 면 폴트 W, W = C+1 이고 순환 접근이면 *모든* 접근이 폴트 — 임의 기록에서 LRU 시뮬레이터 == 재사용 거리 공식
+//  ⑥ 무효화·묶음 계수: READ_MOSTLY 에서 읽기로 복제된 페이지를 사본 가진 쪽이 쓰면 다른 사본이 무효화된다 — 손 계산(호스트 쓰기, 디바이스 읽기, 호스트 쓰기, 디바이스 읽기, 디바이스 쓰기 → 폴트 2·무효화 2)과 무작위 기록에서 쪽마다 사본 유무를 따로 둔 독립 모형의 횟수가 같고 ON_DEMAND 는 늘 0.  이미 목적지에 있는 페이지의 prefetch 는 묶음도 쪽 수도 늘리지 않는다
 enum Side { HOST = 0, DEVICE = 1 };
 struct Access { int page; Side who; bool write; };
 enum Policy { ON_DEMAND, READ_MOSTLY };
@@ -6840,6 +6870,10 @@ private:
     int cap; std::list<int> order; std::unordered_map<int, std::list<int>::iterator> pos;
 };
 long cost(const UnifiedMemory& u, long F, long M, long L) { return u.faults * F + u.bulkPages * M + u.bulkBatches * L; }
+long invalOracle(const std::vector<Access>& tr, int pages) { std::vector<std::array<bool, 2>> has(pages, std::array<bool, 2>{true, false}); long inv = 0;           // READ_MOSTLY 의 무효화 횟수: 쪽마다 사본 유무를 따로 둔다
+    for (auto& a : tr) { auto& h = has[a.page]; int me = a.who, other = 1 - me;
+        if (!h[me]) { if (a.write) { h[other] = false; } h[me] = true; }                                                                                                         // 폴트: 쓰기면 상대 사본을 버리고 이동, 읽기면 복제
+        else if (a.write) { if (h[other]) ++inv; h[other] = false; } } return inv; }
 long onDemandOracle(const std::vector<Access>& tr, int pages) { std::vector<int> last(pages, HOST); long f = 0; for (auto& a : tr) { if (last[a.page] != a.who) ++f; last[a.page] = a.who; } return f; }          // 접근 쪽이 바뀐 횟수
 long readMostlyOracle(const std::vector<Access>& tr, int pages) { long f = 0; for (size_t i = 0; i < tr.size(); ++i) { const Access& a = tr[i]; long j = -1; bool has = false;                                           // 독립 공식
         for (long k = (long)i - 1; k >= 0; --k) if (tr[k].page == a.page && tr[k].who == a.who) { j = k; has = true; break; }
@@ -6853,15 +6887,22 @@ int main() {
     for (int p = 0; p < N; ++p) onDemand.access({p, HOST, true}); for (int p = 0; p < N; ++p) onDemand.access({p, DEVICE, true}); for (int p = 0; p < N; ++p) onDemand.access({p, HOST, false});                      // ①
     for (int p = 0; p < N; ++p) hinted.access({p, HOST, true}); hinted.prefetch(0, N, DEVICE); for (int p = 0; p < N; ++p) hinted.access({p, DEVICE, true}); hinted.prefetch(0, N, HOST); for (int p = 0; p < N; ++p) hinted.access({p, HOST, false});
     assert(onDemand.faults == 2 * N && hinted.faults == 0 && hinted.bulkBatches == 2 && hinted.bulkPages == 2 * N);
+    const long F = 25, M = 1, L = 60;                                                                                                                                                         // 비용 모형: 폴트 F, 페이지당 이동 M, 묶음 지연 L
     int firstWin = -1; for (int n = 1; n <= 12; ++n) { UnifiedMemory a(n, ON_DEMAND), b(n, ON_DEMAND); for (int p = 0; p < n; ++p) a.access({p, HOST, true}), b.access({p, HOST, true});                      // ② 교차점
         for (int p = 0; p < n; ++p) a.access({p, DEVICE, true}); for (int p = 0; p < n; ++p) a.access({p, HOST, false}); b.prefetch(0, n, DEVICE); for (int p = 0; p < n; ++p) b.access({p, DEVICE, true}); b.prefetch(0, n, HOST); for (int p = 0; p < n; ++p) b.access({p, HOST, false});
-        bool prefetchWins = cost(b, 25, 1, 60) < cost(a, 25, 1, 60); if (n < 3) assert(!prefetchWins); else assert(prefetchWins); if (prefetchWins && firstWin < 0) firstWin = n; }
+        assert(cost(a, F, M, L) == 50L * n && cost(b, F, M, L) == 2L * n + 120);                                                                                                // a: 2n 폴트 × 25, b: 2n 쪽 × 1 + 묶음 2 번 × 60
+        bool prefetchWins = cost(b, F, M, L) < cost(a, F, M, L); if (n < 3) assert(!prefetchWins); else assert(prefetchWins); if (prefetchWins && firstWin < 0) firstWin = n; }
     assert(firstWin == 3);
-    std::mt19937 rng(77); long strictlyBetter = 0, totalOnDemand = 0, totalReadMostly = 0;
+    {   UnifiedMemory z(4, ON_DEMAND); z.prefetch(0, 4, HOST); assert(z.bulkBatches == 0 && z.bulkPages == 0);                                                                         // ⑥ 이미 호스트에 있다: 할 일이 없는 prefetch
+        z.prefetch(0, 2, DEVICE); assert(z.bulkBatches == 1 && z.bulkPages == 2); z.prefetch(0, 2, DEVICE); assert(z.bulkBatches == 1 && z.bulkPages == 2);                              // 같은 prefetch 를 되풀이해도 그대로
+        z.prefetch(0, 4, DEVICE); assert(z.bulkBatches == 2 && z.bulkPages == 4); }                                                                                                 // 일부만 옮겨질 때는 옮겨지는 쪽 수만큼
+    {   UnifiedMemory u(1, READ_MOSTLY); u.access({0, HOST, true}); u.access({0, DEVICE, false}); u.access({0, HOST, true}); u.access({0, DEVICE, false}); u.access({0, DEVICE, true});
+        assert(u.faults == 2 && u.invalidations == 2); }                                                                                                                           // 복제 → 쓰기가 상대 사본을 무효화
+    std::mt19937 rng(77); long strictlyBetter = 0, totalOnDemand = 0, totalReadMostly = 0, totalInval = 0;
     for (int trial = 0; trial < 300; ++trial) { const int pages = 8; std::vector<Access> tr; int writePct = (int)(rng() % 60); for (int i = 0; i < 3000; ++i) tr.push_back({(int)(rng() % pages), (rng() % 2) ? DEVICE : HOST, (int)(rng() % 100) < writePct});          // ③
         UnifiedMemory a(pages, ON_DEMAND), b(pages, READ_MOSTLY); for (auto& x : tr) { a.access(x); b.access(x); }
-        assert(a.faults == onDemandOracle(tr, pages) && b.faults == readMostlyOracle(tr, pages) && b.faults <= a.faults); if (b.faults < a.faults) ++strictlyBetter; totalOnDemand += a.faults; totalReadMostly += b.faults; }
-    assert(strictlyBetter > 200 && totalReadMostly < totalOnDemand);
+        assert(a.faults == onDemandOracle(tr, pages) && b.faults == readMostlyOracle(tr, pages) && b.faults <= a.faults); assert(a.invalidations == 0 && b.invalidations == invalOracle(tr, pages)); totalInval += b.invalidations; if (b.faults < a.faults) ++strictlyBetter; totalOnDemand += a.faults; totalReadMostly += b.faults; }
+    assert(strictlyBetter > 200 && totalReadMostly < totalOnDemand && totalInval > 1000);
     for (int k : {2, 3, 10, 51}) { UnifiedMemory r1(1, ON_DEMAND), r2(1, READ_MOSTLY), w1(1, ON_DEMAND), w2(1, READ_MOSTLY);                                                                             // ④ 핑퐁
         for (int i = 0; i < k; ++i) { Side s = (i % 2 == 0) ? HOST : DEVICE; r1.access({0, s, false}); r2.access({0, s, false}); w1.access({0, s, true}); w2.access({0, s, true}); }
         assert(r1.faults == k - 1 && r2.faults == 1 && w1.faults == k - 1 && w2.faults == k - 1); }
@@ -8966,7 +9007,7 @@ int main() {
 // 소멸자가 파일을 닫거나 락을 푸는 객체에 free 를 쓰면 그 자원이 새어 나간다.   delete[] 는 배열의 모든 원소에 소멸자를 호출한다
 // 이 예제는 delete 가 하는 일을 계측해서 보인다:
 //  ① free 는 소멸자를 건너뛰어 자원이 샌다  ② 소멸 순서: 파생 소멸자 본문 -> 멤버(선언의 역순) -> 기반 소멸자,  delete[] 는 원소를 역순(n-1 ... 0)으로 소멸  ③ 가상 소멸자가 있으면 기반 포인터로 delete 해도 실제 타입의 소멸자가 불리고
-//  크기 있는 해제 함수에 넘어오는 크기도 "실제 타입"의 크기  ④ delete nullptr / free(nullptr) 는 아무 일도 안 한다  ⑤ 무작위 다형 객체 2 000 개를 기반 포인터로 delete: 생성 수 == 소멸 수, 소멸 순서가 생성의 역순(LIFO)일 때 로그가 정확히 거울상
+//  크기 있는 해제 함수에 넘어오는 크기도 "실제 타입"의 크기  ④ delete nullptr / free(nullptr) 는 아무 일도 안 한다 (널에는 소멸자가 불리지 않는다: 로그가 비고 살아 있는 수가 그대로)  ⑤ 무작위 다형 객체 2 000 개를 기반 포인터로 delete: 생성 수 == 소멸 수, 생성의 역순(LIFO)으로 지우면 소멸 로그가 생성 로그를 뒤집고 '+' 를 '-' 로 바꾼 것과 *원소마다 같다*
 //  ⑥ unique_ptr<T[]> 는 delete[] 를, unique_ptr<T> 는 delete 를 부른다
 static std::vector<std::string> logv; static size_t lastDeleteSize = 0; static long allocs = 0, frees = 0;
 void* operator new(std::size_t n) { ++allocs; void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
@@ -9013,14 +9054,14 @@ int main() {
         Base* volatile q = new Leaf; delete q; assert(lastDeleteSize == sizeof(Leaf) && sizeof(Leaf) != sizeof(Derived));                  // 타입마다 실제 크기가 전달된다
         Base* volatile plain = new Base; delete plain; assert(lastDeleteSize == sizeof(Base)); }
     // ④ 널
-    {   long f0 = frees; logv.clear(); Base* nothing = nullptr; delete nothing; std::free(nullptr); assert(frees == f0 && logv.empty()); }
+    {   logv.clear(); Counted::alive = 0; Counted* none = nullptr; Base* nothing = nullptr; delete none; delete nothing; std::free(nullptr); assert(logv.empty() && Counted::alive == 0); }          // 널이면 소멸자가 불리지 않는다 (불렸다면 로그가 차고 alive 가 -1 이 된다)
     // ⑤ 무작위 다형 객체
-    {   std::mt19937 rng(1); logv.clear(); std::vector<Base*> objs; objs.reserve(2000); long a0 = allocs, f0 = frees; int made = 0;
+    {   std::mt19937 rng(1); logv.clear(); std::vector<Base*> objs; objs.reserve(2000); long a0 = allocs; int made = 0;
         for (int i = 0; i < 2000; ++i) { Base* o = (rng() % 3 == 0) ? static_cast<Base*>(new Derived) : (rng() % 2 ? static_cast<Base*>(new Leaf) : new Base); objs.push_back(o); ++made; }
-        size_t constructed = logv.size(); assert(constructed > 6000); logv.clear();
-        for (size_t i = objs.size(); i-- > 0;) delete objs[i];                                                         // 생성의 역순으로 파괴
-        assert(logv.size() == constructed && allocs - a0 == made && frees - f0 == made);                                // 소멸 로그 수 == 생성 로그 수, 할당 수 == 해제 수
-        long plus = 0, minus = 0; for (auto& s : logv) { plus += s[0] == '+'; minus += s[0] == '-'; } assert(plus == 0 && minus == (long)constructed); }
+        long madeAllocs = allocs - a0; size_t constructed = logv.size(); assert(constructed > 6000); std::vector<std::string> built = logv; logv.clear();       // 생성 로그를 저장해 둔다
+        long f0 = frees; for (size_t i = objs.size(); i-- > 0;) delete objs[i]; long freed = frees - f0;                  // 생성의 역순으로 파괴
+        std::vector<std::string> mirror(built.rbegin(), built.rend()); for (auto& s : mirror) s[0] = '-';                // 생성 로그를 뒤집고 + 를 - 로
+        assert(logv.size() == constructed && logv == mirror && madeAllocs == made && freed == made); }                    // 소멸 로그 == 거울상, 할당 수 == 해제 수
     // ⑥ 스마트 포인터가 부르는 해제
     {   logv.clear(); Counted::alive = 0; { std::unique_ptr<Counted[]> arrp(new Counted[3]); assert(Counted::alive == 3); } assert(Counted::alive == 0 && logv.size() == 3);
         { std::unique_ptr<Counted> one(new Counted(9)); assert(Counted::alive == 1); } assert(Counted::alive == 0); }

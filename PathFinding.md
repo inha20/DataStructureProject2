@@ -530,7 +530,7 @@ int main() {
 
 // (격자 관점의 구현, 정본은 Graph.md Part 3 의 BreadthFirstSearch)
 // 너비 우선 탐색(BFS): 출발점에서 가까운 칸부터 한 층씩 퍼져 나간다. 간선 비용이 모두 같으면(격자의 한 걸음) *처음 발견한 경로가 곧 최단 경로* 다. 큐에서 꺼내는 칸의 거리는 단조 비감소이고, 목표를 꺼낸 순간(또는 발견한 순간) 멈추면 그때까지의 칸만 확장한다. 빈 격자에서의 닫힌 해: 4방향 거리는 맨해튼 |Δr| + |Δc|, 8방향은 체비쇼프 max(|Δr|, |Δc|), 그리고 출발점에서 거리 k 인 칸은 4방향이면 4k 개(마름모 둘레), 8방향이면 8k 개(정사각형 둘레).
-// 검증: ① 무작위 그래프(정점 ≤ 10)에서 BFS 거리가 모든 쌍 최단 경로(플로이드–워셜)와 같고 복원 경로가 유효 ② 격자에서 4/8 방향 BFS 거리가 가중치 1 로 구한 다익스트라와 같음, 꺼내는 순서에서 거리 비감소 ③ 조기 종료한 확장 수 ≤ 전체 탐색 ④ 빈 격자의 닫힌 해와 둘레 칸 수 ⑤ 큰 입력: 1000×1000 빈 격자의 반대편 모서리까지 거리 1998 · 길이 25 만 칸의 구불구불한 복도.
+// 검증: ① 무작위 그래프(정점 ≤ 10)에서 BFS 거리가 모든 쌍 최단 경로(플로이드–워셜)와 같고 복원 경로가 유효 ② 격자에서 4/8 방향 BFS 거리가 따로 쓴 플로이드–워셜(가중치 1)과 같음, 꺼내는 순서에서 거리 비감소 ③ 조기 종료한 확장 수 ≤ 전체 탐색 ④ 빈 격자의 닫힌 해와 둘레 칸 수 ⑤ 큰 입력: 1000×1000 빈 격자의 반대편 모서리까지 거리 1998 · 길이 25 만 칸의 구불구불한 복도.
 struct Res { int dist = -1; long expanded = 0; std::vector<int> path; bool monotone = true; };
 
 Res bfsGrid(const std::vector<std::string>& w, int s, int t, bool diag, bool early = true, std::vector<int>* all = nullptr) {
@@ -748,6 +748,7 @@ int main() {
 #include <algorithm>
 #include <cassert>
 #include <climits>
+#include <cstdlib>
 #include <iostream>
 #include <queue>
 #include <random>
@@ -757,7 +758,7 @@ int main() {
 
 // 양방향 탐색(그래프 관점의 정본은 Graph.md Part 10): 시작과 목표에서 동시에 탐색을 돌려 두 탐색 영역이 만나면 끝낸다. 한 방향 탐색이 반지름 d 의 "공"을 채우는 데 b^d 를 쓴다면 양쪽에서 d/2 씩만 채우면 되니 2·b^(d/2) 로 지수의 절반이다(격자에서는 공이 원판이라 면적 비로 약 1/2). 그런데 *언제 멈추는가* 가 비용이 같은 경우와 다른 경우에 완전히 다르다.
 // 비용이 모두 같은 BFS: 한 층씩 번갈아 확장하면 "처음으로 상대 영역에 닿는 순간" 이 곧 최단이다 — 만나기 전에는 두 영역이 서로소이므로 최단 거리 D ≥ Lf + Lb + 1 이고, 처음 만났을 때의 후보 Lf + 1 + db[v] ≤ Lf + 1 + Lb ≤ D 이면서 실제 경로라 D 이상이기 때문. 비용이 다른 다익스트라: 처음 만난 지점의 합은 *최단이 아닐 수 있다*(더 싼 우회가 아직 남아 있다). 올바른 멈춤 규칙은 지금까지 만난 가장 싼 합 μ 를 기억해 두고 "양쪽 우선순위 큐의 맨 앞 거리의 합이 μ 이상" 일 때 멈추는 것이다.
-// 검증: ① 무작위 격자(4/8 방향, 벽 0~40%)에서 양방향 BFS 거리 = 한 방향 BFS 거리(도달 불가면 둘 다 -1, 시작 = 목표면 0), "처음 만나면 반환" 변형도 비용이 같을 때는 정확히 같다 ② 무작위 가중 그래프에서 μ 규칙의 양방향 다익스트라는 단방향 다익스트라와 같고, "처음 만나면 반환" 변형은 더 긴 거리를 내는 경우가 실제로 있다(더 짧은 일은 없다) ③ 장애물 없는 넓은 격자에서 확장 수가 BFS 의 2/3 미만.
+// 검증: ① 무작위 격자(4/8 방향, 벽 0~40%)에서 양방향 BFS 거리 = 한 방향 BFS 거리(도달 불가면 둘 다 -1, 시작 = 목표면 0). 두 BFS 가 같은 이웃 함수(모서리 가로지르기 금지)를 쓰므로, 작은 격자(칸 100 이하)는 이웃 함수와 따로 쓴 플로이드–워셜과도 대조한다. 같은 층의 만남 후보는 모두 같다(코드의 assert)는 것이 곧 \"처음 만나면 반환\" 과 \"층 끝까지 확장\" 이 같다는 증명이다 ② 무작위 가중 그래프에서 μ 규칙의 양방향 다익스트라는 단방향 다익스트라와 같고, "처음 만나면 반환" 변형은 더 긴 거리를 내는 경우가 실제로 있다(더 짧은 일은 없다) ③ 장애물 없는 넓은 격자에서 확장 수가 BFS 의 2/3 미만(4방향)이고 8방향 거리는 체비쇼프 거리와 같다.
 struct Res { int dist = -1; long expanded = 0; };
 static const int DR8[8] = {1, 0, -1, 0, 1, 1, -1, -1}, DC8[8] = {0, 1, 0, -1, 1, -1, 1, -1};
 template <class F> void neighbours(const std::vector<std::string>& w, int u, bool diag, F f) {
@@ -769,20 +770,27 @@ Res bfs(const std::vector<std::string>& w, int s, int t, bool diag) {
     while (!q.empty()) { int u = q.front(); q.pop(); r.expanded++; if (u == t) { r.dist = d[u]; return r; } neighbours(w, u, diag, [&](int v) { if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } }); }
     return r;
 }
-// firstMeeting = true: 처음 만나면 반환. false: 한 층 전체를 확장한 뒤 만남의 최솟값
-Res bidirectional(const std::vector<std::string>& w, int s, int t, bool diag, bool firstMeeting) {
+// 한 층 전체를 확장한 뒤 반환한다. 같은 층에서 처음 닿은 후보는 모두 같다(아래 assert) — 그래서 '처음 만나는 순간 반환' 과 '층 끝까지 확장해 최솟값' 은 같은 알고리즘이다
+Res bidirectional(const std::vector<std::string>& w, int s, int t, bool diag) {
     Res r; if (s == t) { r.dist = 0; return r; } int n = (int)w.size() * (int)w[0].size(); std::vector<int> da(n, -1), db(n, -1); std::vector<int> fa{s}, fb{t}; da[s] = 0; db[t] = 0;
     while (!fa.empty() && !fb.empty()) {
         bool fwd = fa.size() <= fb.size(); auto& f = fwd ? fa : fb; auto& mine = fwd ? da : db; auto& other = fwd ? db : da; std::vector<int> nxt; int best = -1;
-        for (int u : f) { r.expanded++; bool stop = false;
-            neighbours(w, u, diag, [&](int v) { if (stop || mine[v] >= 0) return; mine[v] = mine[u] + 1; nxt.push_back(v); if (other[v] >= 0) { int cand = mine[v] + other[v]; best = best < 0 ? cand : std::min(best, cand); if (firstMeeting) stop = true; } });
-            if (stop) break; }
+        for (int u : f) { r.expanded++;
+            neighbours(w, u, diag, [&](int v) { if (mine[v] >= 0) return; mine[v] = mine[u] + 1; nxt.push_back(v); if (other[v] >= 0) { int cand = mine[v] + other[v]; assert(best < 0 || best == cand); best = cand; } }); }               // 만나기 전 두 영역은 서로소 → 상대의 아직 안 편 마지막 층에서만 닿으므로 후보가 모두 Lf + 1 + Lb
         if (best >= 0) { r.dist = best; return r; }
         f = nxt;
     }
     return r;
 }
 
+// neighbours() 와 따로 쓴 기준 풀이: 모든 칸 쌍을 보고 인접(직선, 또는 두 직선 이웃이 모두 빈 대각)을 정한 뒤 플로이드–워셜
+std::vector<std::vector<int>> floydGrid(const std::vector<std::string>& w, bool diag) {
+    int R = (int)w.size(), C = (int)w[0].size(), n = R * C; const int X = 1 << 20; std::vector<std::vector<int>> d(n, std::vector<int>(n, X));
+    for (int a = 0; a < n; a++) for (int b = 0; b < n; b++) { int ar = a / C, ac = a % C, br = b / C, bc = b % C, dr = std::abs(ar - br), dc = std::abs(ac - bc);
+        if (a == b) d[a][b] = 0; else if (w[ar][ac] != '#' && w[br][bc] != '#' && (dr + dc == 1 || (diag && dr == 1 && dc == 1 && w[ar][bc] != '#' && w[br][ac] != '#'))) d[a][b] = 1; }
+    for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) if (d[i][k] + d[k][j] < d[i][j]) d[i][j] = d[i][k] + d[k][j];
+    return d;
+}
 // ---- 가중 그래프: 양방향 다익스트라 ----
 struct WG { int n; std::vector<std::vector<std::pair<int, int>>> adj; };
 const int INF = INT_MAX / 4;
@@ -807,17 +815,18 @@ int biDijkstra(const WG& g, int s, int t, bool careful) {
 }
 
 int main() {
-    std::mt19937 rng(12); int solved = 0, unreachable = 0; long biTotal = 0, bfsTotal = 0;
+    std::mt19937 rng(12); int solved = 0, unreachable = 0, floyds = 0; long biTotal = 0, bfsTotal = 0;
     for (int it = 0; it < 600; ++it) {
         int R = 3 + (int)(rng() % 14), C = 3 + (int)(rng() % 14), pct = (int)(rng() % 41); std::vector<std::string> w(R, std::string(C, '.')); bool diag = it & 1;
         for (auto& row : w) for (char& ch : row) if ((int)(rng() % 100) < pct) ch = '#';
         int s = (int)(rng() % (R * C)), t = (int)(rng() % (R * C)); w[s / C][s % C] = '.'; w[t / C][t % C] = '.';
-        Res a = bfs(w, s, t, diag), b = bidirectional(w, s, t, diag, false), first = bidirectional(w, s, t, diag, true);
-        assert(a.dist == b.dist && a.dist == first.dist);                                                   // 비용이 같으면 처음 만나는 순간도 최단
+        Res a = bfs(w, s, t, diag), b = bidirectional(w, s, t, diag);
+        assert(a.dist == b.dist);                                                                           // 양방향 BFS == 단방향 BFS
+        if (R * C <= 100) { int f = floydGrid(w, diag)[s][t]; assert(a.dist == (f >= (1 << 20) ? -1 : f)); ++floyds; }          // 이웃 함수를 공유하지 않는 플로이드와도 같다(4·8방향, 모서리 가로지르기 금지 포함)
         if (a.dist >= 0) ++solved; else ++unreachable;
         biTotal += b.expanded; bfsTotal += a.expanded;
     }
-    assert(solved > 300 && unreachable > 5);
+    assert(solved > 300 && unreachable > 5 && floyds > 150);
     // ② 무작위 가중 그래프 (정점 ≤ 25, 무방향, 가중치 1..20): μ 규칙 = 단방향 다익스트라, 성급한 변형은 더 길 수는 있어도 짧을 수는 없다
     int hastyWrong = 0, wsolved = 0;
     for (int it = 0; it < 1500; ++it) {
@@ -829,8 +838,9 @@ int main() {
     }
     assert(wsolved > 800 && hastyWrong > 20);                                                               // 가중치가 다르면 성급한 변형이 실제로 틀린다
     {   const int N = 200; std::vector<std::string> open(N, std::string(N, '.')); int s = 100 * N + 60, t = 100 * N + 140;
-        Res a = bfs(open, s, t, false), b = bidirectional(open, s, t, false, false); assert(a.dist == 80 && b.dist == 80 && b.expanded * 3 < a.expanded * 2);
-        std::cout << "BidirectionalSearch: with equal costs bidirectional BFS (with or without waiting for the full level) matched one-directional BFS on 600 random grids (" << solved << " reachable, " << unreachable << " unreachable); with random edge weights the mu-rule bidirectional Dijkstra matched plain Dijkstra on 1500 graphs while returning at the first meeting overshot in " << hastyWrong << " of " << wsolved << "; on an open 200x200 grid bidirectional search expanded " << b.expanded << " cells against BFS's " << a.expanded << std::endl; }
+        Res a = bfs(open, s, t, false), b = bidirectional(open, s, t, false); assert(a.dist == 80 && b.dist == 80 && b.expanded * 3 < a.expanded * 2);
+        int s8 = 100 * N + 60, t8 = 40 * N + 150; Res a8 = bfs(open, s8, t8, true), b8 = bidirectional(open, s8, t8, true); assert(a8.dist == 90 && b8.dist == 90);              // 8방향 빈 격자: 체비쇼프 거리 max(|60|, |90|) = 90
+        std::cout << "BidirectionalSearch: with equal costs bidirectional BFS matched one-directional BFS on 600 random grids (" << solved << " reachable, " << unreachable << " unreachable) and Floyd-Warshall with its own adjacency on " << floyds << " of them; with random edge weights the mu-rule bidirectional Dijkstra matched plain Dijkstra on 1500 graphs while returning at the first meeting overshot in " << hastyWrong << " of " << wsolved << "; on an open 200x200 grid bidirectional search expanded " << b.expanded << " cells against BFS's " << a.expanded << std::endl; }
     return 0;
 }
 // Time Complexity: O(b^(d/2)) × 2
@@ -1056,7 +1066,7 @@ int main() {
 #include <vector>
 
 // SPFA(경로 탐색 관점의 요약, 정본은 Graph.md Part 9): 벨만–포드에서 "거리가 줄어든 칸의 이웃만 다시 본다" — 줄어든 칸을 큐에 넣고, 꺼낸 칸의 나가는 간선만 완화한다. 음수 간선도 되고 보통 훨씬 빠르지만 최악은 벨만–포드와 같다. 음수 사이클은 "정점마다 현재 최단 걸음의 간선 수" len[v] 가 V 이상이 되는 순간으로 알아낸다. 큐에 이미 있는 칸은 다시 넣지 않는다.
-// 검증: 무작위 방향 그래프(정점 ≤ 8, 가중치 −4..9)에서 ① 음수 사이클 판정이 벨만–포드(V 번째 훑기)와 같고 ② 없을 때 모든 거리가 같음 ③ 격자 지형(비음수)에서는 다익스트라와 같고 훑은 간선 수가 벨만–포드의 전체 훑기보다 훨씬 적음 ④ 비음수인데도 완화 횟수가 한 자릿수 배로 커지는 구조 하나를 만들어 SPFA 의 최악이 실재함을 확인.
+// 검증: 무작위 방향 그래프(정점 ≤ 8, 가중치 −4..9)에서 ① 음수 사이클 판정이 벨만–포드(V 번째 훑기)와 같고 ② 없을 때 모든 거리가 같음 ③ 격자 지형(비음수)에서는 다익스트라와 같고 훑은 간선 수가 벨만–포드의 전체 훑기보다 훨씬 적음 ④ 비음수인데도 완화 횟수가 다익스트라의 10 배를 넘게(이 구성에서는 약 50 배) 커지는 구조 하나를 만들어 SPFA 의 최악이 실재함을 확인.
 typedef long long ll; const ll INF = LLONG_MAX / 4;
 struct Arc { int to, w; };
 struct Res { bool negCycle = false; std::vector<ll> dist; long relaxations = 0, scans = 0; };
@@ -1253,13 +1263,14 @@ int main() {
 #include <iostream>
 #include <queue>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 #include <cassert>
 
 // 탐욕 최선 우선 탐색(Greedy Best-First): 목표까지의 추정 거리 h(n) 만 보고 가장 목표에 가까워 보이는 노드를 먼저 펼친다 (f = h, 지금까지 온 비용 g 는 무시).
 // 장애물이 없으면 거의 직선으로 달려가 A* 보다 훨씬 적은 노드를 확장하지만, 벽에 막혀 "가까워 보이는 막다른 길" 로 들어가면 그곳을 다 채우고 나서야 돌아 나온다 — 최단 경로가 아닐 수 있고(최적성 없음) 그래도 유한 그래프에서 해가 있으면 찾는다(완전성).
-// 빠른 근사해가 필요한 곳(게임 NPC 의 대충 이동)에서 쓴다.  코드는 A* 와 같은 틀에서 정렬 키만 g+h 에서 h 로 바꾼 것이다
+// 빠른 근사해가 필요한 곳(게임 NPC 의 대충 이동)에서 쓴다.  코드는 A* 와 같은 틀에서 정렬 키만 g+h 에서 h 로 바꾼 것이다.  시험: 기준이 되는 "최적" 은 이 항목의 A* 가 아니라 이웃 규칙을 따로 쓴 다익스트라이며, 빈 10x10 격자의 모든 쌍에서 옥타일 거리 = 그 값(허용적·일관적 계수 확인), 지도 300개에서 옥타일 ≤ 그 값, A* 비용 = 그 값, 탐욕은 그 값 이상이다
 typedef std::pair<int, int> P;
 struct Grid { int R, C; std::vector<std::string> w;
     bool ok(int r, int c) const { return r >= 0 && r < R && c >= 0 && c < C && w[r][c] != '#'; }
@@ -1274,20 +1285,26 @@ Res search(const Grid& g, P s, P t, bool greedy) {                         // gr
         g.nb(u.first, u.second, [&](int nr, int nc, int c) { int nid = nr * g.C + nc; if (closed[nid]) return; long ng = best[id] + c; if (ng < best[nid]) { best[nid] = ng; long h = octile({nr, nc}, t); pq.push({{greedy ? h : ng + h, -ng}, {nr, nc}}); } }); }
     return res;
 }
+long dijkstraRef(const Grid& g, P s, P t) {                                                                 // nb()·octile() 과 따로 쓴 기준 풀이: 방향 표와 모서리 규칙을 직접 적은 다익스트라 (벽·격자 밖은 막힘)
+    const int DR[8] = {-1, 1, 0, 0, -1, -1, 1, 1}, DC[8] = {0, 0, -1, 1, -1, 1, -1, 1}; auto blocked = [&](int r, int c) { return r < 0 || c < 0 || r >= g.R || c >= g.C || g.w[r][c] == '#'; };
+    std::vector<long> d(g.R * g.C, -1); std::set<std::pair<long, int>> open; d[s.first * g.C + s.second] = 0; open.insert({0, s.first * g.C + s.second});
+    while (!open.empty()) { auto [du, u] = *open.begin(); open.erase(open.begin()); int r = u / g.C, c = u % g.C; if (r == t.first && c == t.second) return du;
+        for (int k = 0; k < 8; k++) { int nr = r + DR[k], nc = c + DC[k]; if (blocked(nr, nc) || (k >= 4 && (blocked(nr, c) || blocked(r, nc)))) continue; long nd = du + (k >= 4 ? 14 : 10); int v = nr * g.C + nc; if (d[v] < 0 || nd < d[v]) { if (d[v] >= 0) open.erase({d[v], v}); d[v] = nd; open.insert({nd, v}); } } } return -1; }
 int main() {
+    {   Grid o{10, 10, std::vector<std::string>(10, std::string(10, '.'))}; for (int a = 0; a < 100; a++) for (int b = 0; b < 100; b++) assert(octile({a / 10, a % 10}, {b / 10, b % 10}) == dijkstraRef(o, {a / 10, a % 10}, {b / 10, b % 10})); }      // 빈 격자에서 옥타일 거리 = 참 거리(10·(dr+dc) − 6·min): 계수가 틀리면 바로 드러난다
     std::mt19937 gen(1); long gExp = 0, aExp = 0, worse = 0, found = 0, trials = 0; double ratioSum = 0;
     for (int t = 0; t < 300; t++) {
         Grid g{30, 30, std::vector<std::string>(30, std::string(30, '.'))}; for (auto& row : g.w) for (auto& ch : row) if (gen() % 100 < 28) ch = '#';
         P s{(int)(gen() % 30), (int)(gen() % 30)}, e{(int)(gen() % 30), (int)(gen() % 30)}; g.w[s.first][s.second] = '.'; g.w[e.first][e.second] = '.';
-        Res a = search(g, s, e, false), b = search(g, s, e, true); assert((a.cost < 0) == (b.cost < 0));        // 완전성: 해가 있으면 탐욕도 찾는다
-        if (a.cost < 0) continue; trials++; assert(b.cost >= a.cost);       // 최적성 없음: 같거나 더 길다
+        Res a = search(g, s, e, false), b = search(g, s, e, true); long ref = dijkstraRef(g, s, e); assert(a.cost == ref && (b.cost < 0) == (ref < 0));        // A* 는 독립 다익스트라와 같은 최적 비용(도달 불가 포함), 완전성: 해가 있으면 탐욕도 찾는다
+        if (ref < 0) continue; trials++; assert(octile(s, e) <= ref && b.cost >= ref);       // 최적성 없음: 같거나 더 길다
         worse += b.cost > a.cost; ratioSum += (double)b.cost / a.cost; gExp += b.expanded; aExp += a.expanded; found++;
     }
     assert(worse > 0 && gExp < aExp);                                      // 최적이 아닌 경우가 실제로 있고, 확장은 A* 보다 적다
     std::cout << "GreedyBestFirstSearch: " << found << " solvable maps; greedy path longer than optimal in " << worse << " (avg ratio " << ratioSum / trials << "), expansions greedy " << gExp << " vs A* " << aExp << std::endl; return 0;
 }
-// Time Complexity: 최악 O(b^m), 좋은 휴리스틱에서는 매우 빠름
-// Space Complexity: O(b^m)
+// Time Complexity: O(V log V) (닫힌 집합으로 칸마다 한 번만 확장; 닫힌 집합이 없는 트리 탐색이라면 최악 O(b^m)), 좋은 휴리스틱에서는 훨씬 적게 확장
+// Space Complexity: O(V)
 ```
 ## AStar()
 ### 대표코드
@@ -1297,31 +1314,37 @@ int main() {
 #include <iostream>
 #include <queue>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 #include <cassert>
 
 // A*(Hart–Nilsson–Raphael 1968): 노드를 f(n) = g(n) + h(n) 순서로 확장한다 — g 는 시작에서 n 까지 실제로 온 비용, h 는 n 에서 목표까지 남은 거리의 추정.
 // h 가 "허용 가능(admissible; 실제 남은 거리를 넘지 않음)" 하면 목표를 꺼내는 순간의 g 가 최적 비용이고, 추가로 "일관적(consistent; h(a) <= c(a,b) + h(b))" 이면 한 노드는 한 번만 확장하면 된다(닫힌 집합).
-// 격자에서 4방향 이동은 맨해튼 거리, 8방향(직선 10·대각 14)은 옥타일 거리 10·(dx+dy) - 6·min(dx,dy) 가 일관적이다.  동점은 g 가 큰 노드를 먼저(CreateNode 항목) 꺼내면 확장 수가 크게 준다.
-// 이 항목의 시험: 무작위 지도 수백 개에서 Dijkstra(h = 0)와 비용이 항상 같고 확장은 더 적으며, 반대로 h 를 과대 추정(허용 불가)하면 최적이 깨지는 사례가 나온다
+// 격자에서 4방향 이동은 맨해튼 거리, 8방향(직선 10·대각 14)은 옥타일 거리 10·(dx+dy) - 6·min(dx,dy) 가 일관적이다.  동점은 g 가 큰 노드를 먼저(CreateNode 항목) 꺼내면 확장 수가 준다(빈 격자에서 가장 크다).
+// 이 항목의 시험: ① 무작위 지도 400개(4·8방향)에서 Dijkstra(h = 0)와 비용이 항상 같고 확장은 더 적다 — 같은 이웃 함수를 쓰는 Dijkstra 만 믿지 않도록 이웃 규칙을 따로 쓴 기준 풀이(oracle)와도 대조한다 ② 빈 12x12 격자에서는 닫힌 식(8방향 10·max + 4·min, 4방향 10·(dr+dc))과 모든 출발/목표 쌍이 같다 ③ 동점 처리(g 큰 쪽 먼저)를 끄거나 거꾸로 하면 확장 수가 늘어난다 — 빈 격자에서는 경로 위 칸만 열고(12 대 42), 장애물 지도에서는 합이 5% 넘게 줄어듦을 assert ④ h 를 과대 추정(허용 불가)하면 최적이 깨지는 사례가 나온다
 typedef std::pair<int, int> P;
 struct Grid { int R, C; std::vector<std::string> w; bool diag = true;
     bool ok(int r, int c) const { return r >= 0 && r < R && c >= 0 && c < C && w[r][c] != '#'; }
     template <class F> void nb(int r, int c, F f) const { for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if (!dr && !dc) continue; if (!diag && dr && dc) continue; int nr = r + dr, nc = c + dc; if (!ok(nr, nc)) continue; if (dr && dc && (!ok(r + dr, c) || !ok(r, c + dc))) continue; f(nr, nc, dr && dc ? 14 : 10); } } };
 struct Res { long cost = -1; long expanded = 0; std::vector<P> path; };
 int heur(const Grid& g, P a, P b) { int dr = std::abs(a.first - b.first), dc = std::abs(a.second - b.second); return g.diag ? 10 * (dr + dc) - 6 * std::min(dr, dc) : 10 * (dr + dc); }
-Res astar(const Grid& g, P s, P t, double hw) {                            // hw: 휴리스틱 배율 (0 = Dijkstra, 1 = A*, > 1 = 과대 추정)
+Res astar(const Grid& g, P s, P t, double hw, int tie = 1) {               // hw: 휴리스틱 배율 (0 = Dijkstra, 1 = A*, > 1 = 과대 추정); tie: 동점 처리 (1 = g 큰 쪽 먼저, 0 = 안 함, -1 = g 작은 쪽 먼저)
     Res res; int n = g.R * g.C; std::vector<long> gc(n, 1L << 60); std::vector<int> parent(n, -1); std::vector<char> closed(n, 0); using Q = std::pair<std::pair<double, long>, int>;
     std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; int si = s.first * g.C + s.second, ti = t.first * g.C + t.second; gc[si] = 0; pq.push({{hw * heur(g, s, t), 0}, si});
     while (!pq.empty()) { int u = pq.top().second; pq.pop(); if (closed[u]) continue; closed[u] = 1; res.expanded++;
         if (u == ti) { res.cost = gc[u]; for (int v = u; v >= 0; v = parent[v]) res.path.push_back({v / g.C, v % g.C}); std::reverse(res.path.begin(), res.path.end()); return res; }
-        g.nb(u / g.C, u % g.C, [&](int nr, int nc, int c) { int v = nr * g.C + nc; if (closed[v]) return; long ng = gc[u] + c; if (ng < gc[v]) { gc[v] = ng; parent[v] = u; pq.push({{ng + hw * heur(g, {nr, nc}, t), -ng}, v}); } }); }          // 일관적인 h 에서는 닫힌 노드를 다시 열 필요가 없다
+        g.nb(u / g.C, u % g.C, [&](int nr, int nc, int c) { int v = nr * g.C + nc; if (closed[v]) return; long ng = gc[u] + c; if (ng < gc[v]) { gc[v] = ng; parent[v] = u; pq.push({{ng + hw * heur(g, {nr, nc}, t), -tie * ng}, v}); } }); }          // 일관적인 h 에서는 닫힌 노드를 다시 열 필요가 없다
     return res;
 }
 bool validPath(const Grid& g, const std::vector<P>& p, long cost) {
     long c = 0; for (size_t i = 0; i < p.size(); i++) { if (!g.ok(p[i].first, p[i].second)) return false; if (i) { int dr = std::abs(p[i].first - p[i - 1].first), dc = std::abs(p[i].second - p[i - 1].second); if (dr > 1 || dc > 1 || !(dr + dc)) return false; if (!g.diag && dr + dc != 1) return false;
         if (dr && dc && (!g.ok(p[i - 1].first, p[i].second) || !g.ok(p[i].first, p[i - 1].second))) return false; c += dr && dc ? 14 : 10; } } return c == cost; }
+long oracle(const Grid& g, P s, P t) {                                                                    // nb() 와 따로 쓴 기준 풀이: 방향 표 + 모서리 가로지르기 금지를 직접 적은 다익스트라 (벽·격자 밖은 모두 '막힘')
+    const int DR[8] = {-1, 1, 0, 0, -1, -1, 1, 1}, DC[8] = {0, 0, -1, 1, -1, 1, -1, 1}; auto blocked = [&](int r, int c) { return r < 0 || c < 0 || r >= g.R || c >= g.C || g.w[r][c] == '#'; };
+    std::vector<long> d(g.R * g.C, -1); std::set<std::pair<long, int>> open; d[s.first * g.C + s.second] = 0; open.insert({0, s.first * g.C + s.second});
+    while (!open.empty()) { auto [du, u] = *open.begin(); open.erase(open.begin()); int r = u / g.C, c = u % g.C; if (r == t.first && c == t.second) return du;
+        for (int k = 0; k < (g.diag ? 8 : 4); k++) { int nr = r + DR[k], nc = c + DC[k]; if (blocked(nr, nc)) continue; if (k >= 4 && (blocked(nr, c) || blocked(r, nc))) continue; long nd = du + (k >= 4 ? 14 : 10); int v = nr * g.C + nc; if (d[v] < 0 || nd < d[v]) { if (d[v] >= 0) open.erase({d[v], v}); d[v] = nd; open.insert({nd, v}); } } } return -1; }
 std::string pathPicture(const Grid& g, P s, P t, const std::vector<P>& path) {         // 그림: S 시작, G 목표, * 경로, # 벽
     std::vector<std::string> m = g.w; for (P p : path) m[p.first][p.second] = '*'; m[s.first][s.second] = 'S'; m[t.first][t.second] = 'G';
     std::string out; for (const auto& row : m) out += row + "\n"; return out;
@@ -1333,16 +1356,21 @@ int main() {
         assert(pathPicture(g, {0, 0}, {4, 6}, a.path) == pic && a.cost == 100 && d.cost == 100);          // 10 칸 x 비용 10
         assert(pathPicture(g, {0, 0}, {4, 6}, d.path) == pic && a.expanded < d.expanded);                   // 같은 경로, 하지만 A* 는 목표 쪽 칸만 파서 덜 펼친다
         std::cout << pic << "expanded: A*=" << a.expanded << " Dijkstra=" << d.expanded << std::endl; }
-    std::mt19937 gen(2); long aExp = 0, dExp = 0, solved = 0, suboptimal = 0;
+    {   Grid g{12, 12, std::vector<std::string>(12, std::string(12, '.'))}; long pairs = 0;                    // 빈 격자: 닫힌 식 — 8방향 10·max + 4·min (= 대각 min 번 + 직선 나머지), 4방향 10·(dr + dc)
+        for (int mode = 0; mode < 2; mode++) { g.diag = mode; for (int sr : {0, 5, 11}) for (int sc : {0, 4, 11}) for (int r = 0; r < 12; r++) for (int c = 0; c < 12; c++) { int dr = std::abs(r - sr), dc = std::abs(c - sc); long want = g.diag ? 10 * std::max(dr, dc) + 4 * std::min(dr, dc) : 10 * (dr + dc);
+            Res a = astar(g, {sr, sc}, {r, c}, 1.0); assert(a.cost == want && validPath(g, a.path, a.cost)); pairs++; } }
+        long e[3]; g.diag = true; for (int k = -1; k <= 1; k++) e[k + 1] = astar(g, {0, 0}, {11, 5}, 1.0, k).expanded; assert(e[2] == 12 && e[2] * 3 < e[1] && e[2] <= e[0]);          // 빈 격자는 동점투성이: g 큰 쪽 먼저면 경로 위 12 칸만 연다
+        std::cout << "open 12x12 grid: " << pairs << " start/goal pairs match the closed form (diagonal 14, straight 10); (0,0)->(11,5) expands " << e[2] << " cells with larger-g-first ties vs " << e[1] << " without" << std::endl; }
+    std::mt19937 gen(2); long aExp = 0, dExp = 0, solved = 0, suboptimal = 0, tieExp[3] = {0, 0, 0};
     for (int t = 0; t < 400; t++) {
         Grid g{28, 28, std::vector<std::string>(28, std::string(28, '.'))}; g.diag = t % 2; for (auto& row : g.w) for (auto& ch : row) if (gen() % 100 < 25) ch = '#';
         P s{(int)(gen() % 28), (int)(gen() % 28)}, e{(int)(gen() % 28), (int)(gen() % 28)}; g.w[s.first][s.second] = '.'; g.w[e.first][e.second] = '.';
-        Res a = astar(g, s, e, 1.0), d = astar(g, s, e, 0.0); assert(a.cost == d.cost);                              // 4방향·8방향 모두 Dijkstra 와 같은 최적 비용 (도달 불가도 일치)
-        if (a.cost < 0) continue; solved++; assert(validPath(g, a.path, a.cost) && a.path.front() == s && a.path.back() == e); aExp += a.expanded; dExp += d.expanded;
+        Res a = astar(g, s, e, 1.0), d = astar(g, s, e, 0.0); assert(a.cost == d.cost && a.cost == oracle(g, s, e));    // 4방향·8방향 모두 Dijkstra 와 같고, 이웃 함수를 공유하지 않는 기준 풀이와도 같은 최적 비용 (도달 불가도 일치)
+        if (a.cost < 0) continue; solved++; assert(validPath(g, a.path, a.cost) && a.path.front() == s && a.path.back() == e); aExp += a.expanded; dExp += d.expanded; for (int k = -1; k <= 1; k++) { Res r = astar(g, s, e, 1.0, k); assert(r.cost == a.cost); tieExp[k + 1] += r.expanded; }
         Res bad = astar(g, s, e, 3.0); assert(bad.cost >= a.cost && validPath(g, bad.path, bad.cost)); suboptimal += bad.cost > a.cost;        // 과대 추정: 경로는 유효하지만 최적이 아닐 수 있다
     }
-    assert(aExp < dExp && suboptimal > 0);
-    std::cout << "AStar: optimal on " << solved << " solvable maps (== Dijkstra), expansions A* " << aExp << " vs Dijkstra " << dExp << "; with inadmissible 3x heuristic " << suboptimal << " paths were suboptimal" << std::endl; return 0;
+    assert(aExp < dExp && suboptimal > 0 && tieExp[2] == aExp && tieExp[2] * 20 < tieExp[1] * 19 && tieExp[1] < tieExp[0]);     // 동점 처리: g 큰 쪽 먼저 < 처리 안 함 < g 작은 쪽 먼저 (확장 수 합)
+    std::cout << "AStar: optimal on " << solved << " solvable maps (== Dijkstra), expansions A* " << aExp << " vs Dijkstra " << dExp << "; with inadmissible 3x heuristic " << suboptimal << " paths were suboptimal; ties broken larger-g-first/none/smaller-g-first expand " << tieExp[2] << "/" << tieExp[1] << "/" << tieExp[0] << std::endl; return 0;
 }
 // Time Complexity: 최악 O(b^d), 좋은 휴리스틱에서는 O(경로 주변)
 // Space Complexity: O(탐색한 노드 수)
@@ -1355,12 +1383,13 @@ int main() {
 #include <iostream>
 #include <queue>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 #include <cassert>
 
 // 가중 A*(Pohl 1970): f = g + w·h (w >= 1). 휴리스틱을 더 믿어서 목표 쪽으로 더 곧장 가므로 확장이 크게 줄고, 대가로 비용이 최적의 w 배 이내라는 보장(경계가 있는 차선책, bounded suboptimality)이 남는다.
-// w = 1 이면 A*, w 가 커질수록 탐욕 최선 우선 탐색에 가까워진다.  게임·로봇에서 "최적이 아니어도 빨리" 가 필요할 때의 기본 도구이고, ARA* 는 w 를 줄여 가며 해를 개선하는 anytime 판이다(Part 16)
+// w = 1 이면 A*, w 가 커질수록 탐욕 최선 우선 탐색에 가까워진다.  게임·로봇에서 "최적이 아니어도 빨리" 가 필요할 때의 기본 도구이고, ARA* 는 w 를 줄여 가며 해를 개선하는 anytime 판이다(Part 16).  이 항목의 시험: 기준이 되는 최적 비용은 이 항목의 A* 가 아니라 이웃 규칙을 따로 쓴 다익스트라다 — 빈 10x10 격자의 모든 쌍에서 옥타일 거리가 참 거리와 같고, 무작위 지도 300개에서 w = 1 의 비용 = 그 값, w > 1 의 비용은 [최적, w × 최적] 안(경계가 헐렁하지 않도록 실제로 최적이 아닌 경우가 있음도 확인), 도달 불가한 지도에서는 모든 w 에서 해가 없고, w 가 클수록 확장 수가 줄어든다
 typedef std::pair<int, int> P;
 struct Grid { int R, C; std::vector<std::string> w;
     bool ok(int r, int c) const { return r >= 0 && r < R && c >= 0 && c < C && w[r][c] != '#'; }
@@ -1374,17 +1403,24 @@ Res wastar(const Grid& g, P s, P t, double w) {
         g.nb(u / g.C, u % g.C, [&](int nr, int nc, int c) { int v = nr * g.C + nc; if (closed[v]) return; long ng = gc[u] + c; if (ng < gc[v]) { gc[v] = ng; pq.push({{ng + w * octile({nr, nc}, t), -ng}, v}); } }); }
     return res;
 }
+long dijkstraRef(const Grid& g, P s, P t) {                                                                 // nb()·octile()·wastar() 와 따로 쓴 기준 풀이: 방향 표와 모서리 규칙을 직접 적은 다익스트라 (벽·격자 밖은 막힘), 도달 불가면 -1
+    const int DR[8] = {-1, 1, 0, 0, -1, -1, 1, 1}, DC[8] = {0, 0, -1, 1, -1, 1, -1, 1}; auto blocked = [&](int r, int c) { return r < 0 || c < 0 || r >= g.R || c >= g.C || g.w[r][c] == '#'; };
+    std::vector<long> d(g.R * g.C, -1); std::set<std::pair<long, int>> open; d[s.first * g.C + s.second] = 0; open.insert({0, s.first * g.C + s.second});
+    while (!open.empty()) { auto [du, u] = *open.begin(); open.erase(open.begin()); int r = u / g.C, c = u % g.C; if (r == t.first && c == t.second) return du;
+        for (int k = 0; k < 8; k++) { int nr = r + DR[k], nc = c + DC[k]; if (blocked(nr, nc) || (k >= 4 && (blocked(nr, c) || blocked(r, nc)))) continue; long nd = du + (k >= 4 ? 14 : 10); int v = nr * g.C + nc; if (d[v] < 0 || nd < d[v]) { if (d[v] >= 0) open.erase({d[v], v}); d[v] = nd; open.insert({nd, v}); } } } return -1; }
 int main() {
-    std::mt19937 gen(3); const double ws[5] = {1.0, 1.5, 2.0, 3.0, 5.0}; long exp[5] = {0}; double worst[5] = {0}; int solved = 0;
+    {   Grid o{10, 10, std::vector<std::string>(10, std::string(10, '.'))}; for (int a = 0; a < 100; a++) for (int b = 0; b < 100; b++) assert(octile({a / 10, a % 10}, {b / 10, b % 10}) == dijkstraRef(o, {a / 10, a % 10}, {b / 10, b % 10})); }      // 빈 격자에서 옥타일 거리 = 참 거리: 휴리스틱이 허용적이므로 w = 1 이 최적이고 w > 1 의 경계가 성립한다
+    std::mt19937 gen(3); const double ws[5] = {1.0, 1.5, 2.0, 3.0, 5.0}; long exp[5] = {0}; double worst[5] = {0}; int solved = 0, unreachable = 0;
     for (int t = 0; t < 300; t++) {
         Grid g{32, 32, std::vector<std::string>(32, std::string(32, '.'))}; for (auto& row : g.w) for (auto& ch : row) if (gen() % 100 < 27) ch = '#';
         P s{(int)(gen() % 32), (int)(gen() % 32)}, e{(int)(gen() % 32), (int)(gen() % 32)}; g.w[s.first][s.second] = '.'; g.w[e.first][e.second] = '.';
-        Res opt = wastar(g, s, e, 1.0); if (opt.cost < 0) continue; solved++;
-        for (int k = 0; k < 5; k++) { Res r = wastar(g, s, e, ws[k]); assert(r.cost >= opt.cost && r.cost <= ws[k] * opt.cost + 1e-9); exp[k] += r.expanded; worst[k] = std::max(worst[k], (double)r.cost / opt.cost); }          // 비용 <= w × 최적
+        long ref = dijkstraRef(g, s, e); if (ref < 0) { for (int k = 0; k < 5; k++) assert(wastar(g, s, e, ws[k]).cost < 0); unreachable++; continue; }                        // 도달 불가이면 어떤 w 로도 해가 없다(완전성)
+        solved++; assert(octile(s, e) <= ref);
+        for (int k = 0; k < 5; k++) { Res r = wastar(g, s, e, ws[k]); assert(r.cost >= ref && r.cost <= ws[k] * ref + 1e-9 && (k > 0 || r.cost == ref)); exp[k] += r.expanded; worst[k] = std::max(worst[k], (double)r.cost / ref); }          // 비용 <= w × (독립 다익스트라의) 최적, w = 1 은 정확히 최적
     }
     for (int k = 1; k < 5; k++) assert(exp[k] <= exp[k - 1]);               // w 를 키울수록 확장 수는 줄어든다
-    assert(exp[4] * 2 < exp[0]);
-    std::cout << "WeightedAStar over " << solved << " maps: w=1 expansions " << exp[0] << ", w=2 " << exp[2] << ", w=5 " << exp[4] << "; worst cost ratio w=2: " << worst[2] << " (bound 2), w=5: " << worst[4] << " (bound 5)" << std::endl; return 0;
+    assert(exp[4] * 2 < exp[0] && worst[2] > 1.0 && worst[4] > worst[2] && unreachable > 5);                                        // 경계가 헐렁하지 않다: w 가 크면 실제로 최적이 아닌 경로가 나온다
+    std::cout << "WeightedAStar over " << solved << " reachable maps (" << unreachable << " unreachable ones gave no path for every w): w=1 expansions " << exp[0] << ", w=2 " << exp[2] << ", w=5 " << exp[4] << "; worst cost ratio w=2: " << worst[2] << " (bound 2), w=5: " << worst[4] << " (bound 5)" << std::endl; return 0;
 }
 // Time Complexity: w 가 클수록 빠름, 최악 O(b^d)
 // Space Complexity: O(탐색한 노드 수)
@@ -2516,7 +2552,7 @@ int main() {
 // 충돌 기반 탐색(CBS, Sharon et al. 2015): 비용 합(SOC)이 최소인 다중 에이전트 경로를 구하는 최적 알고리즘. 두 단계로 나뉜다.
 // 상위 단계는 "제약 트리" 를 최선 우선으로 탐색한다. 노드는 에이전트별 제약 집합과 그 제약 아래 각 에이전트가 독립적으로 구한 최적 경로들이고, 비용은 경로 비용의 합이다. 노드의 경로들에서 처음 발견한 충돌(i, j, 칸, 시각)이 있으면 자식 둘을 만든다 —
 // "i 는 그 칸 그 시각에 있으면 안 된다" / "j 는 안 된다". 충돌이 없으면 그 노드가 최적해이다(비용이 가장 작은 노드부터 확장하므로). 하위 단계는 한 에이전트의 제약을 지키는 시공간 A* 이며 정점 제약과 간선(맞교환) 제약을 쓴다.
-// 목표 판정은 "목표 칸에서 그 시각 이후의 정점 제약이 없음" 이어야 한다(안 그러면 도착 후 길을 막힌다). 검증: 2~3 에이전트의 작은 격자에서, 각 에이전트가 목표에 가서 "영구히 머무른다" 고 확정(done)하는 시점을 상태에 넣은 결합 상태 Dijkstra 와 SOC 가 같은지 대조한다
+// 목표 판정은 "목표 칸에서 그 시각 이후의 정점 제약이 없음" 이어야 한다(안 그러면 도착 후 길을 막힌다). 검증: 2~3 에이전트의 작은 격자에서, 각 에이전트가 목표에 가서 "영구히 머무른다" 고 확정(done)하는 시점을 상태에 넣은 결합 상태 Dijkstra 와 SOC 가 같은지 대조한다. 시작이나 목표가 벽에 갇혀 목표에 갈 수 없는 에이전트가 있으면 해가 없으므로 -1 을 돌려주고(빈 경로로 충돌 검사를 하면 정의되지 않은 동작), 갇힌 시작·갇힌 목표 두 경우를 따로 시험한다
 const int INF = 1 << 28; int R, C, N; std::vector<std::string> w; const int dr[5] = {0, 1, -1, 0, 0}, dc[5] = {0, 0, 0, 1, -1};
 struct Con { int agent, type, a, b, t; bool operator<(const Con& o) const { return std::tie(agent, type, a, b, t) < std::tie(o.agent, o.type, o.a, o.b, o.t); } };    // type 0: 정점(a 칸, 시각 t), type 1: 간선(a→b, 시각 t 에 도착)
 std::vector<int> staticDist(int goal) { std::vector<int> d(N, INF); std::queue<int> q; d[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = 1; k < 5; k++) { int r = u / C + dr[k], c = u % C + dc[k]; if (r < 0 || c < 0 || r >= R || c >= C || w[r][c] == '#' || d[r * C + c] < INF) continue; d[r * C + c] = d[u] + 1; q.push(r * C + c); } } return d; }
@@ -2534,7 +2570,8 @@ bool firstConflict(const std::vector<std::vector<int>>& P, Conflict& out) {
 long cbs(const std::vector<int>& st, const std::vector<int>& gl, long& nodes) {
     int A = st.size(); std::vector<std::vector<int>> hs; for (int i = 0; i < A; i++) hs.push_back(staticDist(gl[i]));
     struct Node { std::set<Con> cons; std::vector<std::vector<int>> paths; long cost; }; auto cmp = [](const Node* a, const Node* b) { return a->cost > b->cost; }; std::priority_queue<Node*, std::vector<Node*>, decltype(cmp)> open(cmp); std::vector<Node*> owned;
-    Node* root = new Node(); owned.push_back(root); root->cost = 0; for (int i = 0; i < A; i++) { root->paths.push_back(lowLevel(i, st[i], gl[i], hs[i], root->cons)); root->cost += root->paths.back().size() - 1; } open.push(root); nodes = 0; long answer = -1;
+    Node* root = new Node(); owned.push_back(root); root->cost = 0; nodes = 0; for (int i = 0; i < A; i++) { root->paths.push_back(lowLevel(i, st[i], gl[i], hs[i], root->cons)); if (root->paths.back().empty()) { delete root; return -1; } root->cost += (long)root->paths.back().size() - 1; } open.push(root); long answer = -1;       // 목표에 못 가는 에이전트가 있으면 해가 없다(빈 경로로 충돌 검사를 하지 않는다)
+   
     while (!open.empty() && nodes < 20000) { Node* cur = open.top(); open.pop(); nodes++; Conflict cf; if (!firstConflict(cur->paths, cf)) { answer = cur->cost; break; }
         for (int side = 0; side < 2; side++) { int ag = side ? cf.j : cf.i; Node* ch = new Node(*cur); owned.push_back(ch);
             if (cf.type == 0) ch->cons.insert({ag, 0, cf.a, 0, cf.t}); else ch->cons.insert(side ? Con{ag, 1, cf.b, cf.a, cf.t} : Con{ag, 1, cf.a, cf.b, cf.t});          // 간선 제약: 각자 자신의 이동 금지
@@ -2557,10 +2594,14 @@ int main() {
     for (int trial = 0; trial < 75; trial++) {
         int A = trial < 55 ? 2 : 3; R = A == 2 ? 5 : 4; C = 4; N = R * C; w.assign(R, std::string(C, '.')); for (int k = 0; k < 2; k++) w[g() % R][g() % C] = '#';
         std::vector<int> cells; for (int i = 0; i < N; i++) if (w[i / C][i % C] == '.') cells.push_back(i); std::shuffle(cells.begin(), cells.end(), g); std::vector<int> st(cells.begin(), cells.begin() + A), gl(cells.begin() + A, cells.begin() + 2 * A);
-        long ref = jointOptimum(st, gl); if (ref < 0) continue; long nodes; long got = cbs(st, gl, nodes); assert(got == ref); checked++; nodeTotal += nodes; long indep = 0; for (int i = 0; i < A; i++) indep += staticDist(gl[i])[st[i]]; if (got > indep) hard++;
+        long ref = jointOptimum(st, gl), nodes; long got = cbs(st, gl, nodes); assert(got == ref); if (ref < 0) continue; checked++; nodeTotal += nodes; long indep = 0; for (int i = 0; i < A; i++) indep += staticDist(gl[i])[st[i]]; if (got > indep) hard++;
     }
     assert(checked > 40 && hard > 5);
-    std::cout << "ConflictBasedSearch: " << checked << " instances, SOC equals the joint-state optimum in all; " << hard << " needed more than the independent shortest paths (" << nodeTotal << " constraint-tree nodes)" << std::endl; return 0;
+    {   R = 3; C = 3; N = 9; w = {".#.", "#..", "..."}; long nodes;                                                   // 칸 0 은 (0,1)·(1,0) 벽에 둘러싸여 있다
+        assert(cbs({0, 2}, {8, 6}, nodes) == -1 && jointOptimum({0, 2}, {8, 6}) == -1);                                  // 시작이 갇힘: 해 없음(-1), 빈 경로로 충돌 검사를 하지 않는다
+        assert(cbs({8, 2}, {0, 6}, nodes) == -1 && jointOptimum({8, 2}, {0, 6}) == -1);                                  // 목표가 갇힘
+        long ok = jointOptimum({4, 2}, {8, 6}); assert(ok > 0 && cbs({4, 2}, {8, 6}, nodes) == ok); }                  // 같은 지도에서 도달 가능한 쌍은 풀린다
+    std::cout << "ConflictBasedSearch: " << checked << " instances, SOC equals the joint-state optimum in all; " << hard << " needed more than the independent shortest paths (" << nodeTotal << " constraint-tree nodes); walled-in start or goal gave -1 (no solution)" << std::endl; return 0;
 }
 // Time Complexity: 최악 지수(제약 트리), 실전에서는 충돌 수에 따라 증가
 // Space Complexity: O(제약 트리 노드 × 에이전트 × 경로 길이)
@@ -2689,7 +2730,7 @@ int main() {
 
 // 내비게이션 메시(NavMesh): 걸을 수 있는 영역을 볼록 다각형(여기서는 삼각형)들로 덮고, 다각형 사이의 공유 변(포털)으로 인접 그래프를 만든 지도 표현이다. 격자보다 노드가 적고 경로가 격자 방향에 얽매이지 않는다.
 // 길찾기는 두 단계다. ① 삼각형 그래프에서 A*/Dijkstra 로 "복도"(삼각형 열)를 구한다. ② 복도의 포털들을 따라 깔때기(funnel) 알고리즘(Lee & Preparata, 게임에서는 Mononen 의 "Simple Stupid Funnel")으로 줄을 팽팽히 당긴 최단 경로를 뽑는다 — 꺾이는 곳은 장애물 모서리뿐이다.
-// 검증(무작위 지터 격자 메시, 삼각형 약 32% 를 막고 핀치 제거): ① 깔때기 경로의 모든 선분이 걸을 수 있는 영역 안 ② 같은 메시에서 모서리 정점 가시성 그래프로 구한 "정확한 최단 경로" 이상 ③ 포털 중점을 잇는 경로 이하 ④ 정확 최단과 일치하는 비율과 평균 오차 보고
+// 검증(무작위 지터 격자 메시, 삼각형 약 32% 를 막고 핀치 제거): ① 깔때기 경로의 모든 선분이 걸을 수 있는 영역 안 ② 같은 메시에서 모서리 정점 가시성 그래프로 구한 "정확한 최단 경로" 이상 ③ 포털 중점을 잇는 경로 이하 ④ 깔때기 길이 = 같은 복도 안의 최단 경로(포털 끝점 그래프의 브루트 포스 다익스트라, 깔때기와 코드를 공유하지 않음) ⑤ 가시성 그래프의 visible() 이 참인 쌍은 조밀한 표본으로 다시 확인 ⑥ 정확 최단과 일치하는 비율과 평균 오차 보고(복도는 중심 거리로 고르므로 전체 최단과 다를 수 있다) ⑦ 볼록한 호 복도에서 깔때기가 훑은 포털 수가 포털 수의 40 배를 넘음(최악 이차)
 typedef std::pair<double, double> V;
 double cross(V a, V b, V c) { return (b.first - a.first) * (c.second - a.second) - (b.second - a.second) * (c.first - a.first); }       // >0: c 는 a→b 의 왼쪽
 double dist(V a, V b) { return std::hypot(a.first - b.first, a.second - b.second); }
@@ -2712,24 +2753,44 @@ struct Mesh {
     bool inTri(int t, V p) const { for (int k = 0; k < 3; k++) if (cross(v[tri[t][k]], v[tri[t][(k + 1) % 3]], p) < -1e-12) return false; return true; }
     int locate(V p) const { for (size_t t = 0; t < tri.size(); t++) if (walk[t] && inTri(t, p)) return t; return -1; }
     V centroid(int t) const { return {(v[tri[t][0]].first + v[tri[t][1]].first + v[tri[t][2]].first) / 3, (v[tri[t][0]].second + v[tri[t][1]].second + v[tri[t][2]].second) / 3}; }
-    bool visible(V a, V b) const {                                                                                                  // 선분이 어떤 경계 변도 진짜로 가로지르지 않고 영역 안에 머무는가
-        const double e = 1e-9; for (auto [pi, qi] : boundary) { V p = v[pi], q = v[qi]; double d1 = cross(a, b, p), d2 = cross(a, b, q), d3 = cross(p, q, a), d4 = cross(p, q, b); if (((d1 > e && d2 < -e) || (d1 < -e && d2 > e)) && ((d3 > e && d4 < -e) || (d3 < -e && d4 > e))) return false; }
-        for (int s = 1; s < 8; s++) { V m{a.first + (b.first - a.first) * s / 8, a.second + (b.second - a.second) * s / 8}; if (locate(m) < 0) return false; } return true; }
+    bool visible(V a, V b) const {                                                                                                  // 선분 전체가 걸을 수 있는 영역(닫힌 집합) 안인가: 경계 변과 만나는 지점(가로지름·꼭짓점 스침·변 위로 겹침)의 매개변수로 선분을 조각내고 조각마다 중점이 걸을 수 있는 삼각형 안인지 본다
+        const double e = 1e-9; std::vector<double> ts = {0.0, 1.0}; double len2 = (b.first - a.first) * (b.first - a.first) + (b.second - a.second) * (b.second - a.second); if (len2 == 0) return locate(a) >= 0;
+        for (auto [pi, qi] : boundary) { V p = v[pi], q = v[qi]; double d1 = cross(a, b, p), d2 = cross(a, b, q), d3 = cross(p, q, a), d4 = cross(p, q, b);
+            if (std::min(d1, d2) > e || std::max(d1, d2) < -e || std::min(d3, d4) > e || std::max(d3, d4) < -e) continue;                                                                  // 경계 변과 만나지 않음
+            if (std::fabs(d1) <= e && std::fabs(d2) <= e) { for (V x : {p, q}) ts.push_back(((x.first - a.first) * (b.first - a.first) + (x.second - a.second) * (b.second - a.second)) / len2); }      // 같은 직선 위: 겹침의 양 끝
+            else if (d3 != d4) ts.push_back(d3 / (d3 - d4)); }
+        for (double& t : ts) t = std::min(1.0, std::max(0.0, t)); std::sort(ts.begin(), ts.end());
+        for (size_t k = 0; k + 1 < ts.size(); k++) if (ts[k + 1] - ts[k] > 1e-9) { double t = (ts[k] + ts[k + 1]) / 2; if (locate(V{a.first + (b.first - a.first) * t, a.second + (b.second - a.second) * t}) < 0) return false; } return true; }
 };
+long funnelSteps = 0;                                                                                                                         // 깔때기가 훑은 포털 수(복잡도 확인용)
 std::vector<V> funnel(V s, V t, const std::vector<std::pair<V, V>>& portals) {                                                       // portals[i] = (왼쪽, 오른쪽)
     std::vector<std::pair<V, V>> P = {{s, s}}; P.insert(P.end(), portals.begin(), portals.end()); P.push_back({t, t});
     std::vector<V> path = {s}; V apex = s, left = s, right = s; int leftI = 0, rightI = 0;
-    for (int i = 1; i < (int)P.size(); i++) {
+    for (int i = 1; i < (int)P.size(); i++) { funnelSteps++;
         V nl = P[i].first, nr = P[i].second;
         if (cross(apex, right, nr) >= 0) { if (apex == right || cross(apex, left, nr) < 0) { right = nr; rightI = i; } else { path.push_back(left); apex = left; int ai = leftI; left = right = apex; leftI = rightI = ai; i = ai; continue; } }     // 오른쪽 변이 안쪽으로 좁아짐 / 왼쪽 변을 넘으면 왼쪽 점이 새 꼭짓점
         if (cross(apex, left, nl) <= 0) { if (apex == left || cross(apex, right, nl) > 0) { left = nl; leftI = i; } else { path.push_back(right); apex = right; int ai = rightI; left = right = apex; leftI = rightI = ai; i = ai; continue; } }
     }
     if (path.back() != t) path.push_back(t); return path; }
+// 복도 안의 최단 경로를 깔때기와 따로 구한다: 노드 = 시작·목표·각 포털의 두 끝점, 간선 = 두 점 사이 선분이 그 사이의 모든 포털을 (닫힌 선분으로) 순서대로 가로지르는 경우.
+// 복도는 이웃한 삼각형의 열이므로, 연속한 두 포털 사이의 조각은 볼록한 삼각형 안에 있어 이 간선들은 모두 복도 안이다. 이 그래프의 다익스트라가 복도 안 최단 경로의 길이다.
+double pipeOptimum(V s, V e, const std::vector<std::pair<V, V>>& pt) {
+    int m = pt.size(), N = 2 * m + 2; std::vector<V> node(N); std::vector<int> lvl(N); node[0] = s; lvl[0] = -1; node[N - 1] = e; lvl[N - 1] = m;      // lvl: 노드가 놓인 포털 번호 (시작 = -1, 목표 = m)
+    for (int i = 0; i < m; i++) { node[1 + 2 * i] = pt[i].first; node[2 + 2 * i] = pt[i].second; lvl[1 + 2 * i] = lvl[2 + 2 * i] = i; }
+    auto edge = [&](int u, int w) { V a = node[u], b = node[w]; double prevT = -1e18;
+        for (int j = lvl[u] + 1; j < lvl[w]; j++) { V L = pt[j].first, R = pt[j].second; if (a == b) { if (a != L && a != R) return false; continue; }
+            double da = cross(L, R, a), db = cross(L, R, b), ca = cross(a, b, L), cb = cross(a, b, R); const double eps = 1e-9;
+            if (std::min(da, db) > eps || std::max(da, db) < -eps || std::min(ca, cb) > eps || std::max(ca, cb) < -eps) return false;                      // 포털 선분을 가로지르지 않음
+            if (da != db) { double t = da / (da - db); if (t < prevT - 1e-9) return false; prevT = t; } }                                                 // 포털을 지나는 순서가 뒤집히면 복도를 거꾸로 가는 선분
+        return true; };
+    std::vector<double> d(N, 1e18); std::vector<char> done(N, 0); d[0] = 0;
+    for (;;) { int u = -1; for (int i = 0; i < N; i++) if (!done[i] && d[i] < 1e17 && (u < 0 || d[i] < d[u])) u = i; if (u < 0) return 1e18; if (u == N - 1) return d[u]; done[u] = 1;
+        for (int w = 0; w < N; w++) if (lvl[w] > lvl[u] && !done[w] && d[u] + dist(node[u], node[w]) < d[w] && edge(u, w)) d[w] = d[u] + dist(node[u], node[w]); } }
 int main() {
-    std::mt19937 g(14); int queries = 0, exactMatch = 0; double ratioSum = 0, worst = 1;
+    std::mt19937 g(14); int queries = 0, exactMatch = 0, visPairs = 0, pipeQueries = 0; double ratioSum = 0, worst = 1;
     for (int mesh = 0; mesh < 8; mesh++) {
         Mesh M; M.build(7, g, 32); int T = M.tri.size(); std::vector<int> vid; std::vector<int> index(M.v.size(), -1); for (auto [p, q] : M.boundary) for (int x : {p, q}) if (index[x] < 0) { index[x] = vid.size(); vid.push_back(x); }
-        int nv = vid.size(); std::vector<std::vector<char>> vis(nv, std::vector<char>(nv, 0)); for (int i = 0; i < nv; i++) for (int j = i + 1; j < nv; j++) vis[i][j] = vis[j][i] = M.visible(M.v[vid[i]], M.v[vid[j]]);
+        int nv = vid.size(); std::vector<std::vector<char>> vis(nv, std::vector<char>(nv, 0)); for (int i = 0; i < nv; i++) for (int j = i + 1; j < nv; j++) { bool ok = M.visible(M.v[vid[i]], M.v[vid[j]]); vis[i][j] = vis[j][i] = ok; if (ok) { visPairs++; V a = M.v[vid[i]], b = M.v[vid[j]]; for (int k = 0; k <= 48; k++) assert(M.locate(V{a.first + (b.first - a.first) * k / 48, a.second + (b.second - a.second) * k / 48}) >= 0); } }       // ⑤ visible() 이 참이면 조밀한 표본(49 점)도 모두 걸을 수 있는 영역 안
         for (int q = 0; q < 25; q++) {
             auto randomPoint = [&](int& tri) { for (;;) { tri = g() % T; if (!M.walk[tri]) continue; double a = (g() % 1000) / 1000.0, b = (g() % 1000) / 1000.0; if (a + b > 1) { a = 1 - a; b = 1 - b; } V p0 = M.v[M.tri[tri][0]], p1 = M.v[M.tri[tri][1]], p2 = M.v[M.tri[tri][2]]; return V{p0.first + a * (p1.first - p0.first) + b * (p2.first - p0.first), p0.second + a * (p1.second - p0.second) + b * (p2.second - p0.second)}; } };
             int ts, tt; V s = randomPoint(ts), e = randomPoint(tt);
@@ -2737,17 +2798,21 @@ int main() {
             while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; if (u == tt) break; for (int k = 0; k < 3; k++) { int w = M.nb[u][k]; if (w < 0) continue; double nd = du + dist(M.centroid(u), M.centroid(w)); if (nd < d[w]) { d[w] = nd; par[w] = u; pq.push({nd, w}); } } }
             if (d[tt] > 1e17) continue; std::vector<int> corridor; for (int x = tt; x >= 0; x = par[x]) corridor.push_back(x); std::reverse(corridor.begin(), corridor.end());
             std::vector<std::pair<V, V>> portals; double mid = 0; V prev = s; for (size_t i = 0; i + 1 < corridor.size(); i++) { int u = corridor[i], k = 0; while (M.nb[u][k] != corridor[i + 1]) k++; V p = M.v[M.tri[u][k]], r = M.v[M.tri[u][(k + 1) % 3]]; portals.push_back({r, p}); V m{(p.first + r.first) / 2, (p.second + r.second) / 2}; mid += dist(prev, m); prev = m; } mid += dist(prev, e);
-            std::vector<V> path = funnel(s, e, portals); double len = 0; for (size_t i = 1; i < path.size(); i++) { len += dist(path[i - 1], path[i]); assert(M.visible(path[i - 1], path[i])); }       // ② 모든 선분이 영역 안
+            std::vector<V> path = funnel(s, e, portals); double pipe = pipeOptimum(s, e, portals), len = 0; for (size_t i = 1; i < path.size(); i++) { len += dist(path[i - 1], path[i]); assert(M.visible(path[i - 1], path[i])); }       // ② 모든 선분이 영역 안
             std::vector<double> best(nv + 2, 1e18); std::vector<V> pts; for (int x : vid) pts.push_back(M.v[x]); pts.push_back(s); pts.push_back(e); auto see = [&](int i, int j) { if (i < nv && j < nv) return (bool)vis[i][j]; return M.visible(pts[i], pts[j]); };
             best[nv] = 0; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> p2; p2.push({0, nv}); while (!p2.empty()) { auto [du, u] = p2.top(); p2.pop(); if (du > best[u]) continue; for (int w = 0; w < nv + 2; w++) if (w != u && see(u, w) && du + dist(pts[u], pts[w]) < best[w] - 1e-12) { best[w] = du + dist(pts[u], pts[w]); p2.push({best[w], w}); } }
             double exact = best[nv + 1]; assert(exact <= len + 1e-7 && len <= mid + 1e-7);                                                              // 정확한 최단 ≤ 깔때기 ≤ 포털 중점 경로
+            assert(std::fabs(len - pipe) < 1e-7 && pipe <= mid + 1e-7); pipeQueries++;                                                              // ③' 깔때기 길이 == 복도 안 최단 경로(따로 구한 브루트 포스)
             queries++; exactMatch += len <= exact + 1e-7; ratioSum += len / exact; worst = std::max(worst, len / exact);
         }
     }
-    assert(queries > 100 && ratioSum / queries < 1.05);
-    std::cout << "NavigationMesh: " << queries << " queries; funnel path inside the mesh and never longer than the portal-midpoint route; equals the exact visibility-graph optimum in " << exactMatch << ", mean ratio " << ratioSum / queries << " (worst " << worst << ")" << std::endl; return 0;
+    long steps = 0; {   const double PI = std::acos(-1.0), R = 100; const int K = 200; std::vector<std::pair<V, V>> portals;                                  // 복잡도: 볼록한 호를 따라 꺾이는 경로 — 꺾일 때마다 그 꼭짓점 다음 포털부터 다시 훑는다
+        for (int i = 0; i < K; i++) { double th = -PI / 2 + (PI / 2) * (i + 1.0) / (K + 1.0); portals.push_back({V{R * std::cos(th), R * std::sin(th)}, V{3 * R * std::cos(th), 3 * R * std::sin(th)}}); }
+        funnelSteps = 0; std::vector<V> path = funnel(V{-1, -R}, V{R, 0}, portals); steps = funnelSteps; assert((int)path.size() == K + 2 && steps > 40 * K && std::fabs(pipeOptimum(V{-1, -R}, V{R, 0}, portals) - [&] { double L = 0; for (size_t i = 1; i < path.size(); i++) L += dist(path[i - 1], path[i]); return L; }()) < 1e-7); }
+    assert(queries > 100 && pipeQueries == queries && visPairs > 500 && ratioSum / queries < 1.05);
+    std::cout << "NavigationMesh: " << queries << " queries; funnel path inside the mesh and never longer than the portal-midpoint route; equals the shortest path inside its own corridor (brute force over portal endpoints) in all of them and the exact visibility-graph optimum in " << exactMatch << ", mean ratio " << ratioSum / queries << " (worst " << worst << "); " << visPairs << " visible vertex pairs were re-checked by dense sampling; a K=200 convex-arc corridor made the funnel scan " << steps << " portals (quadratic worst case)" << std::endl; return 0;
 }
-// Time Complexity: 삼각형 그래프 탐색 O(T log T) + 깔때기 O(포털 수)
+// Time Complexity: 삼각형 그래프 탐색 O(T log T) + 깔때기 O(포털 수 × 꺾임 수) — 꺾을 때마다 그 꼭짓점 다음 포털부터 다시 훑으므로 최악 O(포털 수²), 보통은 거의 선형
 // Space Complexity: O(T)
 ```
 ## WaypointGraph()
@@ -3331,6 +3396,7 @@ int main() {
 #include <cstdlib>
 #include <iostream>
 #include <queue>
+#include <set>
 #include <random>
 #include <string>
 #include <vector>
@@ -3339,7 +3405,7 @@ int main() {
 // 상태 격자(state lattice) 계획기(Pivtoraiko & Kelly): 연속 공간을 "미리 계산해 둔 운동 기본형(motion primitive)" 으로 이산화한다. 상태는 (정수 x, 정수 y, 헤딩 k = 45°·k) 이고 기본형은 헤딩마다 정의한 짧은 곡선이다 —
 // 직진(헤딩 유지, 변위 d[k]), 좌 45° 회전(변위 d[k] + d[k+1], 헤딩 k+1), 우 45° 회전(변위 d[k] + d[k−1], 헤딩 k−1; d[k] 는 헤딩 k 방향 단위 이동). 모든 기본형이 격자점에서 격자점으로 이어지므로 상태 공간이 닫혀 있고
 // 한 번에 헤딩이 45° 이상 바뀌지 않아 방향 연속성이 구조에 들어 있다. 기본형이 지나는 칸을 미리 알기에 충돌 검사는 칸 조회뿐이다. 비용은 기본형의 길이 + 회전 벌점이며 유클리드 거리가 허용적이고 일관적인 휴리스틱이다(기본형 비용 ≥ 변위의 유클리드 거리).
-// 검증(무작위 30×30 지도(장애물 6%) 40개): ① A* 비용 == 같은 격자 위 Dijkstra 비용 ② 경로의 모든 걸음이 기본형이고 지나는 칸이 비어 있으며 종단이 목표 자세 ③ A* 확장 수가 Dijkstra 보다 적음 ④ 헤딩을 무시한 8방향 최단 비용보다 작지 않음
+// 검증(무작위 30×30 지도(장애물 6%) 40개): ① A* 비용 == 같은 격자 위 Dijkstra 비용 == 기본형·충돌 코드를 공유하지 않고 새로 쓴 기준 다익스트라(방향은 cos/sin, 기본형은 걸음 목록) 비용 ② 경로의 모든 걸음에서 헤딩 변화가 0·±45° 이고, 걸음 목록 [h] 또는 [h, 새 헤딩](종단 헤딩 = 마지막 걸음의 방향)을 따로 걸어 보면 도착 칸이 상태와 같고 지나는 칸이 비어 있으며(모서리 자르기 금지) 시작·종단이 목표 자세 ③ A* 확장 수가 Dijkstra 보다 적음 ④ 헤딩을 무시한 8방향 최단 비용보다 작지 않음 ⑤ 빈 지도의 모든 기본형에서 휴리스틱 일관성 h(u) ≤ 비용 + h(v) (과대 추정은 무작위 지도에서는 거의 안 드러나므로 직접 확인)
 const int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1}, DY[8] = {0, 1, 1, 1, 0, -1, -1, -1}; const int W = 30; const double TURN = 0.5; std::vector<std::string> w;
 bool free_(int x, int y) { return x >= 0 && y >= 0 && x < W && y < W && w[y][x] != '#'; }
 bool stepFree(int x, int y, int dx, int dy) { if (!free_(x + dx, y + dy)) return false; return !(dx && dy && (!free_(x + dx, y) || !free_(x, y + dy))); }                       // 모서리 자르기 금지
@@ -3348,26 +3414,44 @@ Prim primitive(int k, int type) {                                               
     Prim p{}; int k2 = type == 1 ? (k + 1) % 8 : (k + 7) % 8; if (type == 0) { p.dx = DX[k]; p.dy = DY[k]; p.dh = 0; p.cost = std::hypot(DX[k], DY[k]); p.ns = 1; p.steps[0][0] = DX[k]; p.steps[0][1] = DY[k]; return p; }
     p.dx = DX[k] + DX[k2]; p.dy = DY[k] + DY[k2]; p.dh = type == 1 ? 1 : -1; p.cost = std::hypot(DX[k], DY[k]) + std::hypot(DX[k2], DY[k2]) + TURN; p.ns = 2; p.steps[0][0] = DX[k]; p.steps[0][1] = DY[k]; p.steps[1][0] = DX[k2]; p.steps[1][1] = DY[k2]; return p; }
 bool primFree(int x, int y, const Prim& p) { for (int i = 0; i < p.ns; i++) { if (!stepFree(x, y, p.steps[i][0], p.steps[i][1])) return false; x += p.steps[i][0]; y += p.steps[i][1]; } return true; }
+double heur(int x, int y, int gx, int gy) { return std::hypot(x - gx, y - gy); }                                                                                     // 유클리드 거리
 struct Result { double cost; long expanded; std::vector<int> states; };
 Result search(int sx, int sy, int sh, int gx, int gy, int gh, bool useH) {
-    int n = W * W * 8; std::vector<double> d(n, 1e18); std::vector<int> par(n, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; auto id = [&](int x, int y, int h) { return (y * W + x) * 8 + h; }; auto H = [&](int x, int y) { return useH ? std::hypot(x - gx, y - gy) : 0.0; };
+    int n = W * W * 8; std::vector<double> d(n, 1e18); std::vector<int> par(n, -1); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; auto id = [&](int x, int y, int h) { return (y * W + x) * 8 + h; }; auto H = [&](int x, int y) { return useH ? heur(x, y, gx, gy) : 0.0; };
     int s = id(sx, sy, sh), t = id(gx, gy, gh); d[s] = 0; pq.push({H(sx, sy), s}); long ex = 0;
     while (!pq.empty()) { auto [f, u] = pq.top(); pq.pop(); int x = u / 8 % W, y = u / 8 / W, h = u % 8; if (f > d[u] + H(x, y) + 1e-12) continue; ex++; if (u == t) break;
         for (int type = 0; type < 3; type++) { Prim p = primitive(h, type); if (!primFree(x, y, p)) continue; int v = id(x + p.dx, y + p.dy, (h + p.dh + 8) % 8); if (d[u] + p.cost < d[v] - 1e-12) { d[v] = d[u] + p.cost; par[v] = u; pq.push({d[v] + H(x + p.dx, y + p.dy), v}); } } }
     Result r{d[t] > 1e17 ? -1 : d[t], ex, {}}; if (r.cost >= 0) { for (int v = t; v >= 0; v = par[v]) r.states.push_back(v); std::reverse(r.states.begin(), r.states.end()); } return r; }
 double octile(int sx, int sy, int gx, int gy) { std::vector<double> d(W * W, 1e18); typedef std::pair<double, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[sy * W + sx] = 0; pq.push({0, sy * W + sx}); while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; for (int k = 0; k < 8; k++) { int x = u % W, y = u / W; if (!stepFree(x, y, DX[k], DY[k])) continue; int v = (y + DY[k]) * W + x + DX[k]; double nd = du + std::hypot(DX[k], DY[k]); if (nd < d[v]) { d[v] = nd; pq.push({nd, v}); } } } return d[gy * W + gx]; }
+// ---- 기본형 코드(primitive, primFree, stepFree, DX/DY)와 따로 쓴 기준: 방향은 각도(cos, sin 반올림), 기본형은 "걸음 목록" 으로 표현하고 종단 헤딩은 마지막 걸음의 방향이다
+std::pair<int, int> dir(int k) { double a = (((k % 8) + 8) % 8) * std::acos(-1.0) / 4; return {(int)std::lround(std::cos(a)), (int)std::lround(std::sin(a))}; }
+bool empty(int x, int y) { return x >= 0 && y >= 0 && x < W && y < W && w[y][x] == '.'; }
+std::vector<int> stepList(int h, int type) { std::vector<int> ks = {h}; if (type == 1) ks.push_back(h + 1); if (type == 2) ks.push_back(h - 1); return ks; }                                // 기본형 = 걸음 방향 목록
+bool walk(int& x, int& y, int k, double& cost) { auto [ux, uy] = dir(k); bool ok = empty(x + ux, y + uy) && (!(ux && uy) || (empty(x + ux, y) && empty(x, y + uy))); x += ux; y += uy; cost += std::hypot(ux, uy); return ok; }          // 한 걸음: 도착 칸이 비고 대각이면 두 직선 이웃도 비어야 함
+double refCost(int sx, int sy, int sh, int gx, int gy, int gh) {
+    std::vector<double> d(W * W * 8, 1e18); std::set<std::pair<double, int>> open; auto id = [&](int x, int y, int h) { return (y * W + x) * 8 + h; }; d[id(sx, sy, sh)] = 0; open.insert({0, id(sx, sy, sh)});
+    while (!open.empty()) { auto [du, u] = *open.begin(); open.erase(open.begin()); int x = u / 8 % W, y = u / 8 / W, h = u % 8; if (u == id(gx, gy, gh)) return du;
+        for (int type = 0; type < 3; type++) { std::vector<int> ks = stepList(h, type); int cx = x, cy = y; double c = type ? TURN : 0; bool ok = true; for (int k : ks) ok = walk(cx, cy, k, c) && ok;
+            int v = id(cx, cy, ((ks.back() % 8) + 8) % 8); if (ok && du + c < d[v] - 1e-12) { if (d[v] < 1e17) open.erase({d[v], v}); d[v] = du + c; open.insert({d[v], v}); } } }
+    return -1; }
 int main() {
-    std::mt19937 rng(23); int solved = 0, infeasible = 0, turns = 0; long exA = 0, exD = 0;
+    {   w.assign(W, std::string(W, '.')); long edges = 0; for (auto [gx, gy] : {std::make_pair(15, 15), std::make_pair(2, 27), std::make_pair(27, 3)})          // ⑤ 휴리스틱 일관성: 모든 기본형에서 h(u) ≤ 비용 + h(v) (따로 쓴 걸음 목록으로 잰 비용; h(목표) = 0 이므로 허용적이기도 하다)
+            for (int x = 3; x < W - 3; x++) for (int y = 3; y < W - 3; y++) for (int h = 0; h < 8; h++) for (int type = 0; type < 3; type++) { int cx = x, cy = y; double c = type ? TURN : 0; bool ok = true; for (int k : stepList(h, type)) ok = walk(cx, cy, k, c) && ok; assert(ok && heur(x, y, gx, gy) <= c + heur(cx, cy, gx, gy) + 1e-12); edges++; }
+        assert(edges > 40000 && heur(5, 7, 5, 7) == 0); }
+    std::mt19937 rng(23); int solved = 0, infeasible = 0, turns = 0, extra = 0; long exA = 0, exD = 0;
     for (int m = 0; m < 40; m++) {
-        w.assign(W, std::string(W, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 6) ch = '#'; w[1][1] = w[W - 2][W - 2] = '.'; Result a = search(1, 1, 0, W - 2, W - 2, 1, true), dj = search(1, 1, 0, W - 2, W - 2, 1, false);
-        assert(std::fabs(a.cost - dj.cost) < 1e-9);                                                                                                                               // ① A* == Dijkstra
+        w.assign(W, std::string(W, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 6) ch = '#'; w[1][1] = w[W - 2][W - 2] = '.'; Result a = search(1, 1, 0, W - 2, W - 2, 1, true), dj = search(1, 1, 0, W - 2, W - 2, 1, false); double ref = refCost(1, 1, 0, W - 2, W - 2, 1);
+        assert(std::fabs(a.cost - dj.cost) < 1e-9 && std::fabs(a.cost - ref) < 1e-9);                                                                                             // ① A* == 같은 격자 Dijkstra == 따로 쓴 기준 풀이(도달 불가면 모두 -1)
+        for (int q = 0; q < 2; q++) { int sx, sy, tx, ty; do { sx = rng() % W; sy = rng() % W; tx = rng() % W; ty = rng() % W; } while (w[sy][sx] == '#' || w[ty][tx] == '#'); int sh = rng() % 8, th = rng() % 8;        // 지도마다 무작위 시작·목표 자세 2개를 더 — 허용적이지 않은 휴리스틱은 가까운 비용의 경로 사이에서 틀리기 쉽다
+            double r2 = refCost(sx, sy, sh, tx, ty, th); assert(std::fabs(search(sx, sy, sh, tx, ty, th, true).cost - r2) < 1e-9); extra++; }
         if (a.cost < 0) { infeasible++; continue; } solved++; exA += a.expanded; exD += dj.expanded; double sum = 0;
-        for (size_t i = 1; i < a.states.size(); i++) { int u = a.states[i - 1], v = a.states[i], x = u / 8 % W, y = u / 8 / W, h = u % 8; bool matched = false;
-            for (int type = 0; type < 3 && !matched; type++) { Prim p = primitive(h, type); if (x + p.dx == v / 8 % W && y + p.dy == v / 8 / W && (h + p.dh + 8) % 8 == v % 8) { matched = true; assert(primFree(x, y, p) && std::abs(p.dh) <= 1); sum += p.cost; turns += p.dh != 0; } } assert(matched); }                  // ② 모든 걸음이 기본형
+        for (size_t i = 1; i < a.states.size(); i++) { int u = a.states[i - 1], v = a.states[i], x = u / 8 % W, y = u / 8 / W, h = u % 8, nh = v % 8, dh = (nh - h + 8) % 8; assert(dh == 0 || dh == 1 || dh == 7);        // ② 한 걸음에 헤딩은 45° 이상 안 바뀐다
+            int cx = x, cy = y; double c = dh ? TURN : 0; bool ok = walk(cx, cy, h, c); if (dh) ok = walk(cx, cy, nh, c) && ok;                                          // 기본형 = [헤딩 h 로 한 걸음] (+ 회전이면 [새 헤딩 nh 로 한 걸음]): 종단 헤딩 = 마지막 걸음의 방향
+            assert(ok && cx == v / 8 % W && cy == v / 8 / W); sum += c; turns += dh != 0; }
         assert(std::fabs(sum - a.cost) < 1e-9 && a.states.front() == (1 * W + 1) * 8 + 0 && a.states.back() == ((W - 2) * W + W - 2) * 8 + 1);
         assert(a.cost >= octile(1, 1, W - 2, W - 2) - 1e-9); }                                                                                                                       // ④ 헤딩 제약은 비용을 줄일 수 없음
     assert(solved > 20 && exA < exD);
-    std::cout << "LatticePlanner: " << solved << " maps solved (" << infeasible << " infeasible), A* cost == Dijkstra cost on all; " << exA << " vs " << exD << " expansions; paths use only 45-degree-turn primitives (" << turns << " turn primitives in total)" << std::endl; return 0;
+    std::cout << "LatticePlanner: " << solved << " maps solved (" << infeasible << " infeasible) plus " << extra << " random start/goal poses, A* cost == Dijkstra cost == independently written reference on all; " << exA << " vs " << exD << " expansions; paths use only 45-degree-turn primitives (" << turns << " turn primitives in total)" << std::endl; return 0;
 }
 // Time Complexity: O((W² · 헤딩 수 · 기본형 수) log)
 // Space Complexity: O(W² · 헤딩 수)
@@ -3763,12 +3847,12 @@ int main() {
 #include <cassert>
 
 // 슬라이딩 퍼즐(8퍼즐·15퍼즐) 풀이: 상태 공간이 거대(15퍼즐 약 10¹³)해서 A* 의 메모리가 먼저 바닥나므로 IDA*(Korf 1985)를 쓴다. 허용적 휴리스틱은 맨해튼 거리(각 타일이 목표까지 가야 할 최소 칸 수의 합)이고
-// 선형 충돌(linear conflict)을 더하면 더 강해진다 — 같은 행(열)에서 둘 다 자기 목표 행(열)에 있으면서 순서가 뒤바뀐 두 타일은 서로 비켜 가려면 한 타일이 행(열)을 벗어났다 돌아와야 하므로 추가로 최소 2 수가 든다(충돌 그래프의 최소 제거 수는 이 구현에서 쌍 단위로 근사: 타일마다 가장 많은 충돌 상대 하나씩 제외하며 센다).
-// 풀 수 있는 배치는 반전 수의 홀짝으로 판정된다(3×3: 반전 수가 짝수, 4×4: 빈칸 행 번호와 반전 수의 합의 홀짝). 검증: ① 8퍼즐은 목표에서 BFS 로 181,440 개 상태 전체의 정확한 거리를 만들고 IDA* 길이가 모두 일치(허용 휴리스틱의 최적성), 풀 수 없는 배치는 BFS 표에 없음 ② 선형 충돌이 맨해튼보다 확장 노드가 적음 ③ 15퍼즐 무작위 섞기 30개를 IDA* 로 풀고 해를 실제로 적용해 목표에 닿으며 길이의 홀짝이 섞은 횟수와 같음
+// 선형 충돌(linear conflict)을 더하면 더 강해진다 — 같은 행(열)에서 둘 다 자기 목표 행(열)에 있으면서 순서가 뒤바뀐 두 타일은 서로 비켜 가려면 한 타일이 행(열)을 벗어났다 돌아와야 하므로 추가로 최소 2 수가 든다(충돌 그래프의 최소 제거 수는 이 구현에서 근사한다: 충돌이 가장 많은 타일부터 하나씩 제외하며 센다. 이 탐욕은 줄의 타일이 4개 이하이면 최소 제거 수와 같지만 5개부터는 더 셀 수 있다 — 예: 목표 열 번호가 [1,3,0,4,2] 순서면 3 개를 제외하지만 최소는 2 개라 허용적이지 않게 된다 — 그래서 3×3·4×4 에서만 쓰고 코드에 N ≤ 4 를 assert 한다).
+// 풀 수 있는 배치는 반전 수의 홀짝으로 판정된다(3×3: 반전 수가 짝수, 4×4: 빈칸 행 번호와 반전 수의 합의 홀짝). 검증: ① 8퍼즐은 목표에서 BFS 로 181,440 개 상태 전체의 정확한 거리를 만들고 무작위로 고른 300개 상태에서 IDA* 길이가 모두 일치(허용 휴리스틱의 최적성), 풀 수 없는 배치는 BFS 표에 없음 ② 선형 충돌이 맨해튼보다 확장 노드가 적음(엄밀히 작음) ③ 15퍼즐 무작위 섞기 30개를 IDA* 로 풀고 해를 실제로 적용해 목표에 닿으며 길이의 홀짝이 섞은 횟수와 같음 ④ 8퍼즐 BFS 표의 181,440 개 상태 전부에서 맨해튼 ≤ 선형 충돌 ≤ 참 거리 ⑤ 줄(열) 하나의 모든 순열(n = 3, 4)에서 충돌 가중치가 2 × (n − 최장 증가 부분수열)과 같음 ⑥ 15퍼즐 12개를 맨해튼 IDA* 와 선형 충돌 IDA* 로 풀어 최적 길이가 같음 ⑦ 풀 수 없는 4×4 배치(14-15 교환과, 풀 수 있는 배치에서 두 타일만 교환한 30개)를 거부
 typedef std::vector<int> Board; int N;
 bool solvable(const Board& b) { int inv = 0, blank = 0; for (size_t i = 0; i < b.size(); i++) { if (!b[i]) blank = i / N; for (size_t j = i + 1; j < b.size(); j++) if (b[i] && b[j] && b[i] > b[j]) inv++; } return N % 2 ? inv % 2 == 0 : (inv + blank) % 2 == 1; }
 int manhattan(const Board& b) { int h = 0; for (int i = 0; i < N * N; i++) if (b[i]) { int g = b[i] - 1; h += std::abs(i / N - g / N) + std::abs(i % N - g % N); } return h; }
-int linearConflict(const Board& b) { int h = manhattan(b);
+int linearConflict(const Board& b) { assert(N <= 4); int h = manhattan(b);                                                                    // 충돌 제거 수의 탐욕 근사는 줄(열)의 타일이 4개 이하일 때만 정확하다
     for (int r = 0; r < N; r++) { std::vector<int> row; for (int c = 0; c < N; c++) { int t = b[r * N + c]; if (t && (t - 1) / N == r) row.push_back((t - 1) % N); } std::vector<int> cnt(row.size(), 0); for (size_t i = 0; i < row.size(); i++) for (size_t j = i + 1; j < row.size(); j++) if (row[i] > row[j]) { cnt[i]++; cnt[j]++; }
         while (true) { int mx = -1; for (size_t i = 0; i < cnt.size(); i++) if (cnt[i] > 0 && (mx < 0 || cnt[i] > cnt[mx])) mx = i; if (mx < 0) break; h += 2; for (size_t j = 0; j < row.size(); j++) if ((int)j != mx && ((j > (size_t)mx && row[mx] > row[j]) || (j < (size_t)mx && row[j] > row[mx])) && cnt[j] > 0) cnt[j]--; cnt[mx] = 0; } }
     for (int c = 0; c < N; c++) { std::vector<int> col; for (int r = 0; r < N; r++) { int t = b[r * N + c]; if (t && (t - 1) % N == c) col.push_back((t - 1) / N); } std::vector<int> cnt(col.size(), 0); for (size_t i = 0; i < col.size(); i++) for (size_t j = i + 1; j < col.size(); j++) if (col[i] > col[j]) { cnt[i]++; cnt[j]++; }
@@ -3783,12 +3867,23 @@ Board scramble(int moves, std::mt19937& rng) { Board b = goalBoard(); int blank 
 int main() {
     std::mt19937 rng(11); N = 3; Board g3 = goalBoard(); std::map<Board, int> dist; { std::queue<Board> q; dist[g3] = 0; q.push(g3); const int dr[4] = {-1, 1, 0, 0}, dc[4] = {0, 0, -1, 1}; while (!q.empty()) { Board b = q.front(); q.pop(); int blank = std::find(b.begin(), b.end(), 0) - b.begin(); for (int k = 0; k < 4; k++) { int r = blank / 3 + dr[k], c = blank % 3 + dc[k]; if (r < 0 || c < 0 || r >= 3 || c >= 3) continue; Board n = b; std::swap(n[blank], n[r * 3 + c]); if (!dist.count(n)) { dist[n] = dist[b] + 1; q.push(n); } } } }
     assert(dist.size() == 181440);                                                                                                                                          // 풀 수 있는 배치 = 9!/2
+    long lcBetter = 0; for (auto& [b, d] : dist) { int m = manhattan(b), l = linearConflict(b); assert(m <= l && l <= d); lcBetter += l > m; }                              // ④ 181,440 개 상태 전부에서 맨해튼 ≤ 선형 충돌 ≤ 참 거리(허용적), 그리고 실제로 더 강한 상태가 많다
+    assert(lcBetter > 10000);
+    for (int n = 3; n <= 4; n++) { N = n; for (int byCol = 0; byCol < 2; byCol++) for (int x = 0; x < n; x++) {                                                            // ⑤ 줄 하나(모든 행·열; 마지막 줄은 빈칸 때문에 n−1 칸)의 모든 순열: 충돌 가중치 = 2 × (타일 수 − 최장 증가 부분수열) = 2 × 최소 제거 수
+            int k = x == n - 1 ? n - 1 : n; std::vector<int> p(k); for (int i = 0; i < k; i++) p[i] = i;
+            do { std::vector<int> d(k, 1); int best = 0; for (int a = 0; a < k; a++) { for (int c = 0; c < a; c++) if (p[c] < p[a]) d[a] = std::max(d[a], d[c] + 1); best = std::max(best, d[a]); }
+                Board b = goalBoard(); for (int i = 0; i < k; i++) { int cell = byCol ? i * n + x : x * n + i, goalOf = byCol ? p[i] * n + x : x * n + p[i]; b[cell] = goalOf + 1; } assert(linearConflict(b) - manhattan(b) == 2 * (k - best)); } while (std::next_permutation(p.begin(), p.end())); } }
+    N = 3;
     long nodesM = 0, nodesL = 0; for (int t = 0; t < 300; t++) { Board b = scramble(10 + rng() % 40, rng); assert(solvable(b) && dist.count(b)); int a = ida(b, manhattan); nodesM += nodes; int c = ida(b, linearConflict); nodesL += nodes; assert(a == dist[b] && c == dist[b]); }      // ① 최적 길이
     for (int t = 0; t < 100; t++) { Board b = goalBoard(); std::shuffle(b.begin(), b.end(), rng); if (solvable(b)) assert(dist.count(b)); else assert(!dist.count(b)); }
-    assert(nodesL <= nodesM);                                                                                                                                               // ② 선형 충돌이 더 강함
-    N = 4; int solved = 0; for (int t = 0; t < 30; t++) { int moves = 20 + rng() % 17; Board b = scramble(moves, rng); assert(solvable(b)); int len = ida(b, linearConflict); assert(len <= moves && (len % 2) == (moves % 2) && len >= manhattan(b));
+    assert(nodesL < nodesM);                                                                                                                                                // ② 선형 충돌이 더 강함
+    N = 4; int solved = 0; for (int t = 0; t < 30; t++) { int moves = 20 + rng() % 17; Board b = scramble(moves, rng); assert(solvable(b)); int len = ida(b, linearConflict); assert(len <= moves && (len % 2) == (moves % 2) && len >= linearConflict(b));
         Board c = b; int blank = std::find(c.begin(), c.end(), 0) - c.begin(); for (int nb : sol) { assert(std::abs(nb / 4 - blank / 4) + std::abs(nb % 4 - blank % 4) == 1); std::swap(c[blank], c[nb]); blank = nb; } assert(c == goalBoard()); solved++; }                                  // ③ 해를 적용해 검증
-    std::cout << "PuzzleSolver: 8-puzzle IDA* optimal on 300 states against a BFS table of 181440 states; nodes " << nodesM << " (Manhattan) vs " << nodesL << " (linear conflict); " << solved << " 15-puzzle instances solved and replayed to the goal" << std::endl; return 0;
+    long n15M = 0, n15L = 0; for (int t = 0; t < 12; t++) { Board b = scramble(12 + rng() % 11, rng); int a = ida(b, manhattan); n15M += nodes; int c = ida(b, linearConflict); n15L += nodes; assert(a == c); }          // ⑥ 15퍼즐: 두 허용 휴리스틱의 최적 길이가 같다(선형 충돌이 과대 추정이면 어긋남)
+    assert(n15L < n15M);
+    int unsolv = 0; assert(!solvable([] { Board b = goalBoard(); std::swap(b[13], b[14]); return b; }()));                                                                 // ⑦ 풀 수 없는 4×4: 두 타일 교환(Sam Loyd 의 14-15 퍼즐)과, 풀 수 있는 배치에서 두 타일만 맞바꾼 것
+    for (int t = 0; t < 30; t++) { Board b = scramble(10 + rng() % 30, rng); assert(solvable(b)); int x, y; do { x = rng() % 16; y = rng() % 16; } while (x == y || !b[x] || !b[y]); std::swap(b[x], b[y]); assert(!solvable(b)); unsolv++; }
+    std::cout << "PuzzleSolver: 8-puzzle IDA* optimal on 300 states against a BFS table of 181440 states; both heuristics are admissible on all 181440 states (linear conflict strictly stronger on " << lcBetter << "), conflict weights match 2*(n-LIS) for every row/column permutation (n=3,4); nodes " << nodesM << " (Manhattan) vs " << nodesL << " (linear conflict); " << solved << " 15-puzzle instances solved and replayed to the goal, 12 more optimal by both heuristics (" << n15M << " vs " << n15L << " nodes); " << unsolv + 1 << " unsolvable 4x4 boards rejected" << std::endl; return 0;
 }
 // Time Complexity: IDA* 최악 O(b^d), 휴리스틱이 강할수록 지수의 밑이 작아짐
 // Space Complexity: O(d) (경로 길이)
@@ -4307,9 +4402,9 @@ int main() {
 #include <cassert>
 
 // 환승 노드 라우팅(Transit Node Routing, Bast et al. 2007): 먼 거리의 최단 경로는 소수의 "환승 노드"(교통의 요충: 고속도로 진입로 같은 곳)를 반드시 지난다는 관찰에 기대어 질의를 표 조회 몇 번으로 줄인다.
-// 여기서는 CH 의 순위가 가장 높은 k 개 정점을 환승 노드 T 로 둔다. 전처리: T 의 모든 쌍 사이 정확한 거리표 D, 그리고 각 정점 v 의 접근 노드(access node) = v 에서 상향 탐색으로 도달하는 환승 노드와 그 거리(환승 노드를 넘어서는 확장은 하지 않음 — 환승 노드는 최고 순위라 그 뒤는 모두 T 안).
-// 질의 s→t: ① 환승 경유 후보 min_{a∈A(s), b∈A(t)} d(s,a) + D[a][b] + d(b,t) ② 국지 후보: 환승 노드를 만나지 않는 상향 탐색 두 개의 교차 최소. 둘 중 작은 값이 정확한 거리다(CH 최단 경로는 상향–하향 꼴이고 환승 노드를 포함하면 그 부분은 모두 T 안에 있기 때문).
-// 검증: ① 600개 질의에서 TNR == Dijkstra ② 질의의 대부분은 ①이 이기는 '먼' 질의이며(국지 후보가 이기는 질의 비율 보고) 접근 노드 수의 평균이 작음 ③ k 를 키우면 국지 질의 비율이 줄어듦
+// 여기서는 CH 의 순위가 가장 높은 k 개 정점을 환승 노드 T 로 둔다. 전처리: T 의 모든 쌍 사이 정확한 거리표(코드의 table; CH 질의로 채움), 그리고 각 정점 v 의 접근 노드(access node) = v 에서 상향 탐색으로 도달하는 환승 노드와 그 거리(환승 노드를 넘어서는 확장은 하지 않음 — 환승 노드는 최고 순위라 그 뒤는 모두 T 안).
+// 질의 s→t: ① 환승 경유 후보 min_{a∈A(s), b∈A(t)} d(s,a) + table[a][b] + d(b,t) ② 국지 후보: 환승 노드를 만나지 않는 상향 탐색 두 개의 교차 최소. 둘 중 작은 값이 정확한 거리다(CH 최단 경로는 상향–하향 꼴이고 환승 노드를 포함하면 그 부분은 모두 T 안에 있기 때문).
+// 검증: ① 600개 질의에서 TNR == Dijkstra ② 환승 노드 쌍의 거리표 table 은 CH 질의로 채워 Dijkstra 와 대조하고(단축 간선을 풀어 쓴 경로도 원래 간선으로 이어지고 길이가 같은지 확인), 질의는 이 표만 읽는다 ③ 국지 탐색은 환승 노드에서 멈춘다(환승 노드에는 국지 거리가 없음) ④ k=8 에서는 국지 후보가 이기는 질의가 과반이고 접근 노드가 거의 전부(8 개 중 약 7.7)지만, k=40 에서는 국지 질의가 줄어들고(assert) 접근 노드 평균이 k 의 절반 미만(assert)이다 — 국지 질의 비율과 접근 노드 수는 출력으로 보고
 struct Graph { int n; std::vector<std::vector<std::pair<int, int>>> adj; };
 Graph makeGraph(int W, int H, std::mt19937& rng, int maxW, int extra) {                                                                 // 가중치가 불규칙한 격자형 도시 + 약간의 장거리 간선
     Graph g{W * H, std::vector<std::vector<std::pair<int, int>>>(W * H)}; std::map<std::pair<int, int>, int> best; auto add = [&](int a, int b, int w) { if (a == b) return; auto k = std::make_pair(std::min(a, b), std::max(a, b)); if (!best.count(k) || w < best[k]) best[k] = w; };
@@ -4335,17 +4430,22 @@ struct CH {
         if (path && best < (1L << 49)) { std::vector<int> fw; for (int v = meet; v >= 0; v = par[0][v]) fw.push_back(v); std::reverse(fw.begin(), fw.end()); path->assign(1, fw[0]); for (size_t i = 1; i < fw.size(); i++) unpack(fw[i - 1], fw[i], *path); for (int v = meet; par[1][v] >= 0; v = par[1][v]) unpack(v, par[1][v], *path); } return best; }
 };
 int main() {
-    std::mt19937 rng(14); Graph g = makeGraph(20, 20, rng, 9, 20); CH ch; ch.build(g); int n = g.n; std::vector<std::vector<long>> D(n); for (int s = 0; s < n; s++) D[s] = dijkstra(g, s); double avgAccessByK[2] = {0, 0}, localShare[2] = {0, 0}; const int Ks[2] = {8, 40};
+    std::mt19937 rng(14); Graph g = makeGraph(20, 20, rng, 9, 20); CH ch; ch.build(g); int n = g.n; std::vector<std::vector<long>> D(n); for (int s = 0; s < n; s++) D[s] = dijkstra(g, s); double avgAccessByK[2] = {0, 0}, localShare[2] = {0, 0}; const int Ks[2] = {8, 40}; long unpackedTotal = 0;
     for (int ki = 0; ki < 2; ki++) { int K = Ks[ki]; std::vector<int> byRank(n); for (int v = 0; v < n; v++) byRank[ch.rank[v]] = v; std::set<int> T; for (int i = 0; i < K; i++) T.insert(byRank[n - 1 - i]); std::vector<int> tl(T.begin(), T.end());
-        std::vector<std::vector<long>> table(K, std::vector<long>(K)); for (int i = 0; i < K; i++) for (int j = 0; j < K; j++) table[i][j] = D[tl[i]][tl[j]];
+        std::vector<int> idx(n, -1); for (int i = 0; i < K; i++) idx[tl[i]] = i; std::vector<std::vector<long>> table(K, std::vector<long>(K, -1)); long unpacked = 0;
+        for (int i = 0; i < K; i++) for (int j = 0; j < K; j++) { long st; table[i][j] = ch.query(tl[i], tl[j], st); assert(table[i][j] == D[tl[i]][tl[j]]);                             // 전처리: 환승 노드 쌍의 거리표는 CH 질의로 채우고 (오라클 D 와 대조), 질의는 이 표만 읽는다
+            if ((i + j) % 7 == 0 && i < j) { std::vector<int> path; long dq = ch.query(tl[i], tl[j], st, &path); assert(dq == table[i][j] && path.front() == tl[i] && path.back() == tl[j]); long len = 0;     // 단축 간선을 풀어 쓴 경로가 원래 간선들로 이어지고 길이가 거리와 같음
+                for (size_t x = 1; x < path.size(); x++) { long w = -1; for (auto [v, ww] : g.adj[path[x - 1]]) if (v == path[x]) w = ww; assert(w > 0); len += w; } assert(len == dq); unpacked++; } }
+        unpackedTotal += unpacked;
         auto upSearch = [&](int s, std::map<int, long>& access, std::vector<long>& local) { local.assign(n, 1L << 50); std::vector<long> d(n, 1L << 50); typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; d[s] = 0; pq.push({0, s});
             while (!pq.empty()) { auto [du, u] = pq.top(); pq.pop(); if (du > d[u]) continue; if (T.count(u)) { access[u] = du; continue; } local[u] = du; for (const Arc& a : ch.up[u]) if (du + a.w < d[a.to]) { d[a.to] = du + a.w; pq.push({d[a.to], a.to}); } } };       // 환승 노드에서 멈춤
         int checked = 0, localWins = 0; long accessTotal = 0;
-        for (int q = 0; q < 600; q++) { int s = rng() % n, t = rng() % n; if (s == t) continue; std::map<int, long> As, At; std::vector<long> ls, lt; upSearch(s, As, ls); upSearch(t, At, lt); long viaT = 1L << 50; for (auto& [a, da] : As) for (auto& [b, db] : At) viaT = std::min(viaT, da + D[a][b] + db);
-            long local = 1L << 50; for (int v = 0; v < n; v++) local = std::min(local, ls[v] + lt[v]); long ans = std::min(viaT, local); assert(ans == D[s][t]); checked++; localWins += local < viaT; accessTotal += As.size() + At.size(); }                           // ① 정확
+        for (int q = 0; q < 600; q++) { int s = rng() % n, t = rng() % n; if (s == t) continue; std::map<int, long> As, At; std::vector<long> ls, lt; upSearch(s, As, ls); upSearch(t, At, lt); long viaT = 1L << 50; for (auto& [a, da] : As) for (auto& [b, db] : At) viaT = std::min(viaT, da + table[idx[a]][idx[b]] + db);
+            long local = 1L << 50; for (int v = 0; v < n; v++) local = std::min(local, ls[v] + lt[v]); for (int x : tl) assert(ls[x] > (1L << 49) && lt[x] > (1L << 49)); long ans = std::min(viaT, local); assert(ans == D[s][t]); checked++;       // 국지 탐색은 환승 노드를 만나기 전에 멈춘다(환승 노드에는 거리가 없음)
+            localWins += local < viaT; accessTotal += As.size() + At.size(); }                           // ① 정확
         avgAccessByK[ki] = (double)accessTotal / (2 * checked); localShare[ki] = (double)localWins / checked; }
-    assert(localShare[1] < localShare[0] && avgAccessByK[0] > 0);
-    std::cout << "TransitNodeRouting: 600 queries equal Dijkstra for both transit sets; k=" << Ks[0] << ": " << 100 * localShare[0] << "% local queries, " << avgAccessByK[0] << " access nodes per endpoint; k=" << Ks[1] << ": " << 100 * localShare[1] << "% local, " << avgAccessByK[1] << " access nodes" << std::endl; return 0;
+    assert(localShare[1] < localShare[0] && avgAccessByK[0] > 0 && avgAccessByK[0] <= Ks[0] && avgAccessByK[1] * 2 < Ks[1] && unpackedTotal > 20);       // 접근 노드: k=40 에서는 환승 노드의 절반 미만
+    std::cout << "TransitNodeRouting: 600 queries equal Dijkstra for both transit sets; k=" << Ks[0] << ": " << 100 * localShare[0] << "% local queries, " << avgAccessByK[0] << " access nodes per endpoint; k=" << Ks[1] << ": " << 100 * localShare[1] << "% local, " << avgAccessByK[1] << " access nodes; the transit-node tables were filled by CH queries and agree with Dijkstra, and " << unpackedTotal << " of their shortcut paths unpacked into valid original-edge paths" << std::endl; return 0;
 }
 // Time Complexity: 질의 O(|A(s)| · |A(t)|) 표 조회 + 국지 탐색; 전처리는 CH + k² 거리표
 // Space Complexity: O(k² + V · 접근 노드 수)
@@ -4416,7 +4516,7 @@ int main() {
 
 // ALT 알고리즘(A*, Landmarks, Triangle inequality) — 양방향 판: 랜드마크 하한으로 만든 일관적 퍼텐셜을 정·역방향 탐색에 모두 쓴다(Goldberg & Harrelson 2005, Ikeda 평균 퍼텐셜).
 // h_t(v) = max_L |d(L,t) − d(L,v)| (v→t 하한), h_s(v) = max_L |d(L,s) − d(L,v)| (s→v 하한)일 때 φ(v) = (h_t(v) − h_s(v)) / 2. 간선 (u,v)의 줄어든 비용 w + φ(v) − φ(u) = ½[(w + h_t(v) − h_t(u)) + (w + h_s(u) − h_s(v))] ≥ 0 이므로 정·역방향이 같은 비음 비용으로 양방향 Dijkstra 를 돌릴 수 있다.
-// 줄어든 거리에서 두 탐색의 큐 맨 위 합이 지금까지 찾은 최선 경로 μ′ = μ − φ(s) + φ(t) 이상이면 종료. 검증(가중 도시 24×24, 랜드마크 8개 = 가장 먼 점 선택): ① 500개 질의에서 ALT 양방향 == Dijkstra ② 확장 정점 수: ALT 양방향 < 일반 양방향 < 단방향 Dijkstra 순으로 합이 줄어듦 ③ 모든 간선에서 줄어든 비용이 0 이상(퍼텐셜의 일관성)
+// 줄어든 거리에서 두 탐색의 큐 맨 위 합이 지금까지 찾은 최선 경로 μ′ = μ − φ(s) + φ(t) 이상이면 종료. 검증(가중 도시 24×24, 랜드마크 8개 = 가장 먼 점 선택, 개수·중복 없음을 assert): ① 500개 질의에서 ALT 양방향 == Dijkstra ② 확장 정점 수: ALT 양방향 < 일반 양방향 < 단방향 Dijkstra 순으로 합이 줄어듦 ③ 모든 간선에서 줄어든 비용이 0 이상(퍼텐셜의 일관성)
 struct Graph { int n; std::vector<std::vector<std::pair<int, int>>> adj; };
 Graph makeGraph(int W, int H, std::mt19937& rng, int maxW, int extra) {                                                                 // 가중치가 불규칙한 격자형 도시 + 약간의 장거리 간선
     Graph g{W * H, std::vector<std::vector<std::pair<int, int>>>(W * H)}; std::map<std::pair<int, int>, int> best; auto add = [&](int a, int b, int w) { if (a == b) return; auto k = std::make_pair(std::min(a, b), std::max(a, b)); if (!best.count(k) || w < best[k]) best[k] = w; };
@@ -4426,6 +4526,7 @@ std::vector<long> dijkstra(const Graph& g, int s) { std::vector<long> d(g.n, 1L 
 int main() {
     std::mt19937 rng(18); Graph g = makeGraph(24, 24, rng, 9, 24); int n = g.n; std::vector<int> L = {(int)(rng() % n)}; std::vector<long> mn(n, 1L << 50); std::vector<std::vector<long>> dl; dl.push_back(dijkstra(g, L[0]));
     while (L.size() < 8) { for (int v = 0; v < n; v++) mn[v] = std::min(mn[v], dl.back()[v]); int best = 0; for (int v = 0; v < n; v++) if (mn[v] > mn[best]) best = v; L.push_back(best); dl.push_back(dijkstra(g, best)); }                                // 가장 먼 점 선택
+    assert(L.size() == 8 && std::set<int>(L.begin(), L.end()).size() == 8);                                                                                               // 랜드마크 8개, 서로 다른 점
     auto hb = [&](int v, int x) { long b = 0; for (auto& d : dl) b = std::max(b, std::labs(d[x] - d[v])); return b; };                                                                    // |d(L,x) − d(L,v)|
     long exAlt = 0, exBi = 0, exUni = 0; int checked = 0; typedef std::pair<double, int> Q;
     for (int q = 0; q < 500; q++) { int s = rng() % n, t = rng() % n; if (s == t) continue; std::vector<long> D = dijkstra(g, s);
@@ -4556,24 +4657,27 @@ int main() {
 // 몬테카를로 트리 탐색(MCTS)의 UCT 변형: 상태 공간이 너무 커서 전체를 펼칠 수 없을 때 "무작위 시뮬레이션의 평균 결과" 로 선택을 평가한다. 한 번의 반복 = ① 선택: 루트에서 UCB1 = 평균 보상 + c·√(ln N_부모 / N_자식) 이 가장 큰 자식을 따라 내려감(탐험과 활용의 균형)
 // ② 확장: 방문 안 한 행동 하나를 자식으로 추가 ③ 시뮬레이션(rollout): 말단에서 끝까지 기본 정책으로 무작위 진행 ④ 역전파: 얻은 보상을 경로의 모든 노드에 누적. 반복 후 루트에서 방문 수가 가장 많은 행동이 답이다.
 // 길찾기에 적용: 12×12 미로에서 시작에서 목표까지 H 걸음 이내에 도착하면 보상 1 − 걸음/H. rollout 정책은 맨해튼 거리로 목표 쪽 행동을 40% 확률로 고르는 ε-탐욕(정확한 거리를 쓰지 않으므로 벽에서는 틀림).
-// 검증: ① 밴딧 문제(성공 확률 0.2/0.5/0.8)에서 UCB1 이 최선 팔에 80% 넘게 몰림 ② 미로 60개에서 방문 수 최다 행동이 BFS 로 구한 "최단 경로의 첫 걸음" 인 비율이 반복 수 6 ≤ 40 ≤ 2000 에서 증가하고 2000 에서 85% 이상
+// 검증: ① 밴딧 문제(성공 확률 0.2/0.5/0.8)에서 UCB1 이 최선 팔에 80% 넘게 몰림 ② 무작위 미로 150개를 만들어 필터(도달 가능, 최단 거리 ≤ 40, 첫 걸음이 사실상 유일하지 않은 것)를 통과한 미로(25개 넘게 assert)에서 방문 수 최다 행동이 BFS 로 구한 "최단 경로의 첫 걸음" 인 비율이 반복 수 6 ≤ 40 ≤ 2000 에서 증가하고 2000 에서 85% 이상 ③ rollout 의 ε-탐욕(40%)이 실제로 효과가 있음: 같은 미로·시작에서 순수 무작위 rollout 보다 평균 보상이 20 배 넘게 크고, 2000 번 반복 탐색 중 rollout 의 5% 넘게가 목표에 닿음
 const int R = 12, C = 12, H = 60; std::vector<std::string> w; const int DR[4] = {-1, 1, 0, 0}, DC[4] = {0, 0, -1, 1};
 bool freeCell(int r, int c) { return r >= 0 && c >= 0 && r < R && c < C && w[r][c] != '#'; }
 struct Node { int pos, depth, parent, action; int visits = 0; double total = 0; int child[4] = {-1, -1, -1, -1}; };
+const int EPS = 40;                                                                                                                                          // rollout 에서 목표 쪽 행동을 고르는 확률(%)
+double rollout(int pos, int depth, int goal, int eps, std::mt19937& rng) {                                                                                  // ③ 시뮬레이션: 말단에서 끝까지 무작위(eps% 는 맨해튼 거리가 가장 작은 행동), 보상 = 도착하면 1 − 걸음/H
+    while (pos != goal && depth < H) { std::vector<int> acts; for (int a = 0; a < 4; a++) if (freeCell(pos / C + DR[a], pos % C + DC[a])) acts.push_back(a); if (acts.empty()) break; int pick = acts[rng() % acts.size()]; if ((int)(rng() % 100) < eps) { int bestA = pick, bd = 1 << 28; for (int a : acts) { int r = pos / C + DR[a], c = pos % C + DC[a], d = std::abs(r - goal / C) + std::abs(c - goal % C); if (d < bd) { bd = d; bestA = a; } } pick = bestA; } pos = (pos / C + DR[pick]) * C + pos % C + DC[pick]; depth++; }
+    return pos == goal ? 1.0 - (double)depth / H : 0.0; }
 int main() {
     std::mt19937 rng(4); { const double p[3] = {0.2, 0.5, 0.8}; int n[3] = {0, 0, 0}; double sum[3] = {0, 0, 0}; for (int t = 1; t <= 3000; t++) { int pick = -1; for (int a = 0; a < 3; a++) if (n[a] == 0) pick = a; if (pick < 0) { double best = -1; for (int a = 0; a < 3; a++) { double u = sum[a] / n[a] + std::sqrt(2 * std::log((double)t) / n[a]); if (u > best) { best = u; pick = a; } } } n[pick]++; sum[pick] += (rng() % 1000) / 1000.0 < p[pick]; } assert(n[2] > 2400 && n[0] < 150); }       // ① UCB1: 최선 팔에 80% 이상
-    const int Ns[3] = {6, 40, 2000}; int ok[3] = {0, 0, 0}, maps = 0;
+    const int Ns[3] = {6, 40, 2000}; int ok[3] = {0, 0, 0}, maps = 0; long hits = 0, iters = 0; std::mt19937 rr(9); double guided = 0, blind = 0; const int ROLLS = 40;                 // rr: ε-탐욕 rollout 효과를 재는 별도 난수(위 결과에 영향 없음)
     for (int m = 0; m < 150; m++) {
         w.assign(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 30) ch = '#'; w[0][0] = w[R - 1][C - 1] = '.'; int start = 0, goal = R * C - 1;
-        std::vector<int> dist(R * C, -1); { std::queue<int> q; dist[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); for (int a = 0; a < 4; a++) { int r = u / C + DR[a], c = u % C + DC[a]; if (freeCell(r, c) && dist[r * C + c] < 0) { dist[r * C + c] = dist[u] + 1; q.push(r * C + c); } } } } if (dist[start] < 0 || dist[start] > 40) continue; { int a0 = 0; for (int a = 0; a < 4; a++) { int r = start / C + DR[a], c = start % C + DC[a]; a0 += freeCell(r, c) && dist[r * C + c] == dist[start] - 1; } if (a0 == 4) continue; } maps++;
+        std::vector<int> dist(R * C, -1); { std::queue<int> q; dist[goal] = 0; q.push(goal); while (!q.empty()) { int u = q.front(); q.pop(); for (int a = 0; a < 4; a++) { int r = u / C + DR[a], c = u % C + DC[a]; if (freeCell(r, c) && dist[r * C + c] < 0) { dist[r * C + c] = dist[u] + 1; q.push(r * C + c); } } } } if (dist[start] < 0 || dist[start] > 40) continue; { int a0 = 0; for (int a = 0; a < 4; a++) { int r = start / C + DR[a], c = start % C + DC[a]; a0 += freeCell(r, c) && dist[r * C + c] == dist[start] - 1; } if (a0 == 4) continue; } maps++; for (int k = 0; k < ROLLS; k++) { guided += rollout(start, 0, goal, EPS, rr); blind += rollout(start, 0, goal, 0, rr); }          // ε-탐욕 rollout 이 순수 무작위보다 평균 보상이 크다
         for (int ni = 0; ni < 3; ni++) { std::vector<Node> tree = {{start, 0, -1, -1}}; for (int it = 0; it < Ns[ni]; it++) { int cur = 0;
                 while (true) { Node& nd = tree[cur]; if (nd.pos == goal || nd.depth >= H) break; int untried = -1; for (int a = 0; a < 4; a++) if (nd.child[a] < 0 && freeCell(nd.pos / C + DR[a], nd.pos % C + DC[a])) { untried = a; break; } if (untried >= 0) { int a = untried; int id = tree.size(); tree.push_back({(nd.pos / C + DR[a]) * C + nd.pos % C + DC[a], nd.depth + 1, cur, a}); tree[cur].child[a] = id; cur = id; break; }
                     int best = -1; double bu = -1e18; for (int a = 0; a < 4; a++) { int ch = nd.child[a]; if (ch < 0) continue; double u = tree[ch].total / tree[ch].visits + 1.0 * std::sqrt(std::log((double)nd.visits + 1) / tree[ch].visits); if (u > bu) { bu = u; best = ch; } } if (best < 0) break; cur = best; }
-                int pos = tree[cur].pos, depth = tree[cur].depth; while (pos != goal && depth < H) { std::vector<int> acts; for (int a = 0; a < 4; a++) if (freeCell(pos / C + DR[a], pos % C + DC[a])) acts.push_back(a); if (acts.empty()) break; int pick = acts[rng() % acts.size()]; if (rng() % 100 < 40) { int bestA = pick, bd = 1 << 28; for (int a : acts) { int r = pos / C + DR[a], c = pos % C + DC[a], d = std::abs(r - goal / C) + std::abs(c - goal % C); if (d < bd) { bd = d; bestA = a; } } pick = bestA; } pos = (pos / C + DR[pick]) * C + pos % C + DC[pick]; depth++; }
-                double reward = pos == goal ? 1.0 - (double)depth / H : 0.0; for (int v = cur; v >= 0; v = tree[v].parent) { tree[v].visits++; tree[v].total += reward; } }
+                double reward = rollout(tree[cur].pos, tree[cur].depth, goal, EPS, rng); if (ni == 2) { hits += reward > 0; iters++; } for (int v = cur; v >= 0; v = tree[v].parent) { tree[v].visits++; tree[v].total += reward; } }
             int bestA = -1, bv = -1; for (int a = 0; a < 4; a++) if (tree[0].child[a] >= 0 && tree[tree[0].child[a]].visits > bv) { bv = tree[tree[0].child[a]].visits; bestA = a; } int next = (start / C + DR[bestA]) * C + start % C + DC[bestA]; ok[ni] += dist[next] == dist[start] - 1; } }
-    assert(maps > 25 && ok[0] <= ok[1] && ok[1] <= ok[2] && ok[2] * 100 >= maps * 85 && ok[0] < ok[2]);
-    std::cout << "MonteCarloTreeSearch: UCB1 sends >80% of bandit pulls to the best arm; on " << maps << " mazes the most-visited root action is a shortest-path first step in " << ok[0] << "/" << ok[1] << "/" << ok[2] << " cases after " << Ns[0] << "/" << Ns[1] << "/" << Ns[2] << " iterations" << std::endl; return 0;
+    assert(maps > 25 && ok[0] <= ok[1] && ok[1] <= ok[2] && ok[2] * 100 >= maps * 85 && ok[0] < ok[2] && guided > 20 * blind && hits * 20 > iters);   // ε-탐욕 rollout(40%)의 평균 보상이 순수 무작위(0%)의 20 배 넘고, 트리 탐색의 rollout 도 5% 넘게 목표에 닿음(MCTS 가 실제로 그 정책을 씀)
+    std::cout << "MonteCarloTreeSearch: UCB1 sends >80% of bandit pulls to the best arm; on " << maps << " mazes the most-visited root action is a shortest-path first step in " << ok[0] << "/" << ok[1] << "/" << ok[2] << " cases after " << Ns[0] << "/" << Ns[1] << "/" << Ns[2] << " iterations; epsilon-greedy rollouts earn " << guided / (maps * ROLLS) << " mean reward vs " << blind / (maps * ROLLS) << " for blind ones; " << hits << " of " << iters << " tree-search rollouts reached the goal" << std::endl; return 0;
 }
 // Time Complexity: 반복당 O(트리 깊이 + rollout 길이)
 // Space Complexity: O(반복 수) (트리 노드)
@@ -5032,7 +5136,7 @@ int main() {
 
 // A* 가 최적인 이유 — 증명의 뼈대를 코드의 불변식으로 확인한다. 허용적(admissible) 휴리스틱 h(n) ≤ h*(n)(참 남은 거리)이면 목표 노드 g 가 큐에서 처음 꺼내질 때 f(g) = g(g) 는 C*(최적 비용)이다.
 // 귀류법: 최적이 아닌 비용 C > C* 의 목표가 먼저 꺼낸다고 하자. 최적 경로 위의 노드 중 아직 OPEN 에 있는 가장 앞 노드 n′ 가 반드시 존재하고 그 노드는 g(n′) = g*(n′) 이다(앞 노드들이 최적으로 확장됐으므로). 따라서 f(n′) = g*(n′) + h(n′) ≤ g*(n′) + h*(n′) = C* < C = f(목표) 라서 n′ 가 먼저 꺼내져야 한다 — 모순.
-// 즉 핵심 불변식은 "임의 시점에 OPEN 에 최적 경로 위의 노드가 있고, 그 노드의 f 는 C* 이하" 이다. 증거(8방향 격자): ① 불변식 자체를 매 반복 확인(최적 경로를 미리 구해 둔 Dijkstra 와 대조) ② 허용적 휴리스틱(참 거리 × [0,1] 난수)에서는 5000개 질의 모두 최적 ③ 무작위 과대평가(참 거리의 1~3 배)에서는 최적이 깨지는 질의가 실제로 존재 ④ h ≤ (1+ε)·h* 이면 비용 ≤ (1+ε)·C* 임을 ε = 0.25, 0.5, 1 에서 확인
+// 즉 핵심 불변식은 "임의 시점에 OPEN 에 최적 경로 위의 노드가 있고, 그 노드의 f 는 C* 이하" 이다. 증거(8방향 격자): ① 불변식 자체를 매 반복 확인(최적 경로를 미리 구해 둔 Dijkstra 와 대조) ② 허용적 휴리스틱(참 거리 × [0,1] 난수)에서는 도달 가능한 질의(30개 맵 × 6 질의 중 약 110개, 100개 초과를 assert) 모두 최적 ③ 무작위 과대평가(참 거리의 1~3 배)에서는 최적이 깨지는 질의가 실제로 존재 ④ h ≤ (1+ε)·h* 이면 비용 ≤ (1+ε)·C* 임을 ε = 0.25, 0.5, 1 에서 확인
 const int R = 20, C = 20; std::vector<std::string> w;
 bool freeCell(int r, int c) { return r >= 0 && c >= 0 && r < R && c < C && w[r][c] != '#'; }
 bool stepOk(int r, int c, int dr, int dc) { if (!freeCell(r + dr, c + dc)) return false; return !(dr && dc && (!freeCell(r + dr, c) || !freeCell(r, c + dc))); }

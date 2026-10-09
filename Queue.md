@@ -1135,11 +1135,11 @@ int floorLog2(std::size_t n) { int k = 0; while (n > 1) { n >>= 1; k++; } return
 int main() {
     std::mt19937 rng(8);
     for (int t = 0; t < 200; t++) { std::vector<int> h(rng() % 150); for (int& x : h) x = rng() % 40; std::make_heap(h.begin(), h.end()); std::vector<int> expected = h; std::sort(expected.rbegin(), expected.rend()); std::vector<int> got; int v;
-        while (!h.empty()) { std::size_t n = h.size(); long before = cmpClassic; assert(popClassic(h, v) && cmpClassic - before <= 2 * floorLog2(n) + 0); got.push_back(v); assert(isMaxHeap(h)); } assert(got == expected); }                       // ① ②
+        while (!h.empty()) { std::size_t n = h.size(); long before = cmpClassic; bool popped = popClassic(h, v); assert(popped && cmpClassic - before <= 2 * floorLog2(n) + 0); got.push_back(v); assert(isMaxHeap(h)); } assert(got == expected); }                       // ① ②
     { double ratioSum = 0; int runs = 0; for (int t = 0; t < 30; t++) { std::vector<int> a(2000); for (int& x : a) x = (int)rng(); std::make_heap(a.begin(), a.end()); std::vector<int> b = a; cmpClassic = cmpBottomUp = 0; int v, w; std::vector<int> ga, gb;
         while (!a.empty()) { popClassic(a, v); popBottomUp(b, w); ga.push_back(v); gb.push_back(w); assert(isMaxHeap(b)); } assert(ga == gb); ratioSum += (double)cmpBottomUp / cmpClassic; runs++; } double ratio = ratioSum / runs; assert(ratio < 0.75); std::cout << "bottom-up used " << ratio * 100 << "% of the classic comparisons; "; }   // ③
     { std::vector<int> mine(100), stl; for (int& x : mine) x = rng() % 1000; std::make_heap(mine.begin(), mine.end()); stl = mine; int v; popClassic(mine, v); std::pop_heap(stl.begin(), stl.end()); assert(v == stl.back()); }                  // ④
-    { std::vector<int> e; int v = -1; assert(!popClassic(e, v) && !popBottomUp(e, v) && v == -1); std::vector<int> one = {7}; assert(popClassic(one, v) && v == 7 && one.empty()); }                                                  // ⑤
+    { std::vector<int> e; int v = -1; bool p1 = popClassic(e, v), p2 = popBottomUp(e, v); assert(!p1 && !p2 && v == -1); std::vector<int> one = {7}; bool p3 = popClassic(one, v); assert(p3 && v == 7 && one.empty()); }                                                  // ⑤
     std::cout << "PopHeap: the classic sift-down stayed within 2*floor(log2 N) comparisons per pop and produced fully sorted output; the bottom-up variant gave identical results with fewer comparisons" << std::endl; return 0;
 }
 // Time Complexity: O(log N) (클래식 최대 2 log N 비교, bottom-up 평균 ≈ log N)
@@ -1328,7 +1328,7 @@ int main() {
         maxBuckets = std::max(maxBuckets, q.buckets()); up += q.resizesUp; down += q.resizesDown;
         while (q.size()) pop(); assert(oracle.empty());
     }
-    {   CalendarQueue q; std::multiset<std::pair<long long, long long>> oracle; for (long long i = 0; i < 5000; ++i) { q.push(7); oracle.insert({7, i}); } while (q.size()) { assert(q.pop() == *oracle.begin()); oracle.erase(oracle.begin()); } }    // 전부 같은 우선순위: 입력 순서
+    {   CalendarQueue q; std::multiset<std::pair<long long, long long>> oracle; for (long long i = 0; i < 5000; ++i) { q.push(7); oracle.insert({7, i}); } while (q.size()) { auto e = q.pop(); assert(e == *oracle.begin()); oracle.erase(oracle.begin()); } }    // 전부 같은 우선순위: 입력 순서
     assert(maxBuckets >= 64 && up > 3 && down > 3 && worstAvgScan < 12.0);
     std::cout << "CalendarQueue: dequeue order matched a (priority, insertion-order) multiset oracle over " << totalPops << " pops in 6 workloads (hold model with 3 increment distributions, past-dated inserts, bulk fill/drain, equal priorities); the calendar grew to " << maxBuckets << " buckets (" << up << " doublings, " << down << " halvings) and a dequeue scanned " << worstAvgScan << " buckets on average" << std::endl;
     return 0;
@@ -2440,7 +2440,9 @@ int main() {
 
 // 작업 훔치기 큐(Work-Stealing Queue): 작업 스케줄러의 워커마다 자기 덱을 하나씩 갖는다. 주인(owner)은 덱의 아래쪽(bottom)에서만 push/pop 하고(LIFO: 방금 만든 작은 일을 먼저, 캐시에 따뜻한 데이터), 일이 없는 다른 워커(도둑)는 위쪽(top)에서 훔친다(FIFO: 가장 오래된, 곧 가장 큰 일을 가져간다). 주인은 거의 경쟁 없이 움직이고 도둑끼리·도둑과 주인의 마지막 항목 경쟁만 CAS 로 해결한다.
 // 이 코드는 Chase–Lev 덱(2005)이다: top 과 bottom 두 개의 원자 인덱스, 2 의 거듭제곱 크기의 원형 배열(가득 차면 두 배로 늘리고 옛 배열은 소멸자까지 보관 — 도둑이 옛 배열을 읽고 있을 수 있기 때문), pop 은 마지막 한 개일 때만 top 에 CAS, steal 은 항상 top 에 CAS. 모든 원자 연산은 순차적 일관성(seq_cst)이라 pop 의 `bottom 쓰기 → top 읽기` 순서(저장–적재 재배열 금지)가 보장된다.
-// 검증: ① 순차 의미: 무작위 push/pop/steal 20 만 번이 std::deque 모델(pop=뒤, steal=앞)과 같고, 용량 2 에서 수천 개까지 늘어나도 내용이 보존된다. DFS 소유자 시나리오에서 훔친 노드의 깊이는 항상 덱 안의 최소 깊이(= 가장 큰 일) ② 동시성: 주인 1 + 도둑 3 이 18 만 개 작업을 처리할 때 모든 작업이 정확히 한 번 실행되고, 각 도둑이 훔친 id 는 단조 증가 ③ 포크–조인 트리(깊이 14, 32767 노드)를 워커 4 개가 서로 훔쳐 가며 실행: 모든 노드가 정확히 한 번 실행되고 종료 감지(대기 중 작업 수 0)가 정확.
+// 검증: ① 순차 의미: 무작위 push/pop/steal 20 만 번이 std::deque 모델(pop=뒤, steal=앞)과 같고, 용량 2 에서 수천 개까지 늘어나도 내용이 보존된다. DFS 소유자 시나리오에서 훔친 노드의 깊이는 항상 덱 안의 최소 깊이(= 가장 큰 일) ② 동시성: 주인 1 + 도둑 1·3·5·2·4 명이 5 라운드에 걸쳐 라운드마다 6 만 개 작업을 처리할 때(주인이 push 한 만큼 매번·1/3·1/2·매번·매번 pop 하고 한 번에 1·1·1·2·3 개씩 push — 모두 pop 하는 라운드는 마지막 한두 개를 두고 도둑과 다툰다) 모든 작업이 정확히 한 번 실행되고, 각 도둑이 훔친 id 는 단조 증가하며, 라운드마다 훔치기가 적어도 한 번 실제로 일어난다 ③ 포크–조인 트리(깊이 14, 32767 노드)를 워커 2·4·6 개가 서로 훔쳐 가며 실행: 모든 노드가 정확히 한 번 실행되고 종료 감지(대기 중 작업 수 0)가 정확하며 훔치기가 적어도 한 번 일어난다. 훔치기는 악수로 보장한다 — 도둑이 하나 훔칠 때까지 주인이 기다리는데, 시간이 아니라 반복 횟수 한도(SPIN_LIMIT)로 끊고, 같은 한도가 작업을 잃어 영원히 도는 경우(pending 이 0 이 되지 못함)도 무한 대기 대신 단언 실패로 바꾼다.
+const long SPIN_LIMIT = 5000000;                                                                                         // 반복 횟수 한도(시간이 아니라 횟수): 정상 실행은 한참 못 미치고, 버그로 멈추면 단언이 실패한다
+struct Round { int thieves, popEvery, burst; };
 struct Array {                                                                                                       // 원형 배열: 인덱스는 단조 증가하는 long, 슬롯은 i & (cap-1)
     long cap; std::unique_ptr<std::atomic<int>[]> a;
     explicit Array(long c) : cap(c), a(new std::atomic<int>[c]()) {}
@@ -2480,27 +2482,42 @@ int main() {
           else { Steal r = dq.steal(v); assert((r == Steal::Success) == !model.empty() && r != Steal::Abort); if (r == Steal::Success) { assert(v == model.front()); model.pop_front(); steals++; } else empties++; }
           assert(dq.size() == (long)model.size() && (long)model.size() <= dq.capacity()); }
       assert(steals > 10000 && pops > 10000 && empties > 20); }
-    { ChaseLev dq(2); for (int i = 0; i < 5000; i++) dq.push(i); assert(dq.capacity() == 8192 && dq.size() == 5000); int v; for (int i = 0; i < 2500; i++) { assert(dq.steal(v) == Steal::Success && v == i); } for (int i = 4999; i >= 2500; i--) { assert(dq.pop(v) && v == i); } assert(!dq.pop(v) && dq.steal(v) == Steal::Empty); }   // 성장 + 내용 보존
+    { ChaseLev dq(2); for (int i = 0; i < 5000; i++) dq.push(i); assert(dq.capacity() == 8192 && dq.size() == 5000); int v = 0; for (int i = 0; i < 2500; i++) { Steal r = dq.steal(v); assert(r == Steal::Success && v == i); } for (int i = 4999; i >= 2500; i--) { bool ok = dq.pop(v); assert(ok && v == i); } bool popped = dq.pop(v); Steal last = dq.steal(v); assert(!popped && last == Steal::Empty); }   // 성장 + 내용 보존
     { ChaseLev dq(4); std::deque<int> model; std::mt19937 rng(3); dq.push(1); model.push_back(1); long stolen = 0;                                      // DFS 소유자: 도둑은 항상 가장 얕은(큰) 일을 가져간다
-      while (!model.empty()) { int v; assert(dq.pop(v) && v == model.back()); model.pop_back(); if (v < 4096) { for (int c : {2 * v, 2 * v + 1}) { dq.push(c); model.push_back(c); } }
-          if (rng() % 4 == 0 && !model.empty()) { int minDepth = 99; for (int x : model) minDepth = std::min(minDepth, depthOf(x)); int s; assert(dq.steal(s) == Steal::Success && s == model.front() && depthOf(s) == minDepth); model.pop_front(); stolen++; } }
+      while (!model.empty()) { int v = 0; bool ok = dq.pop(v); assert(ok && v == model.back()); model.pop_back(); if (v < 4096) { for (int c : {2 * v, 2 * v + 1}) { dq.push(c); model.push_back(c); } }
+          if (rng() % 4 == 0 && !model.empty()) { int minDepth = 99; for (int x : model) minDepth = std::min(minDepth, depthOf(x)); int s = 0; Steal r = dq.steal(s); assert(r == Steal::Success && s == model.front() && depthOf(s) == minDepth); model.pop_front(); stolen++; } }
       assert(stolen >= 3); }
-    {   const int N = 180000, T = 3; ChaseLev dq(2); std::atomic<bool> done{false}; std::vector<std::vector<int>> got(T + 1); std::vector<std::thread> thieves;     // ② 주인 1 + 도둑 3
-        for (int t = 0; t < T; t++) thieves.emplace_back([&, t] { for (;;) { int v; Steal r = dq.steal(v); if (r == Steal::Success) got[t + 1].push_back(v); else if (r == Steal::Empty && done.load()) { if (dq.steal(v) == Steal::Success) got[t + 1].push_back(v); else if (dq.size() == 0) break; } else std::this_thread::yield(); } });
-        std::mt19937 rng(11); for (int i = 0; i < N; i++) { dq.push(i); if (rng() % 3 == 0) { int v; if (dq.pop(v)) got[0].push_back(v); } }
-        { int v; while (dq.pop(v)) got[0].push_back(v); } done.store(true); for (auto& th : thieves) th.join();
+    long thefts = 0;                                                                                                       // ② 주인 1 + 도둑 1·3·5·2·4 (라운드마다 6 만 개), 주인이 pop 하는 비율도 라운드마다 다르다
+    for (Round rd : {Round{1, 1, 1}, Round{3, 3, 1}, Round{5, 2, 1}, Round{2, 1, 2}, Round{4, 1, 3}}) {                                                           // {도둑 수, 주인의 pop 확률 1/popEvery, 한 번에 push 하는 개수}: popEvery 1 이면 push 직후 모두 pop 해 마지막 한두 개를 두고 도둑과 다툰다
+        const int N = 60000, T = rd.thieves; ChaseLev dq(2); std::atomic<bool> done{false}; std::atomic<long> taken{0}; std::atomic<int> gaveUp{0}; std::vector<std::vector<int>> got(T + 1); std::vector<std::thread> thieves;
+        for (int t = 0; t < T; t++) thieves.emplace_back([&, t] { long afterDone = 0;
+            for (;;) { if (done.load() && ++afterDone > SPIN_LIMIT) { gaveUp++; break; }                                   // 끝났다고 알린 뒤에도 못 빠져나가면(인덱스가 깨진 경우) 영원히 돌지 않고 포기해 단언이 실패하게 한다
+                int v = 0; Steal r = dq.steal(v);
+                if (r == Steal::Success) { got[t + 1].push_back(v); taken++; }
+                else if (r == Steal::Empty && done.load()) { Steal again = dq.steal(v); if (again == Steal::Success) { got[t + 1].push_back(v); taken++; } else if (dq.size() == 0) break; }
+                else std::this_thread::yield(); } });
+        std::mt19937 rng(11 + T);
+        for (int i = 0; i < N; i += rd.burst) { for (int k = 0; k < rd.burst; k++) dq.push(i + k);
+            if (i == N / 2) { for (long s = 0; s < SPIN_LIMIT && taken.load() == 0; s++) std::this_thread::yield(); }                // 방금 넣은 항목을 그대로 둔 채 도둑이 적어도 하나 훔칠 때까지 기다린다(횟수 한도 안에서) → 훔치기가 실제로 일어난다
+            else for (int k = 0; k < rd.burst; k++) if (rng() % rd.popEvery == 0) { int v = 0; if (dq.pop(v)) got[0].push_back(v); } }
+        { int v = 0; while (dq.pop(v)) got[0].push_back(v); } done.store(true); for (auto& th : thieves) th.join();
+        assert(gaveUp.load() == 0 && taken.load() >= 1); thefts += taken.load();
         std::vector<int> all; for (auto& g : got) all.insert(all.end(), g.begin(), g.end()); std::sort(all.begin(), all.end()); assert((int)all.size() == N); for (int i = 0; i < N; i++) assert(all[i] == i);   // 정확히 한 번씩
         for (int t = 1; t <= T; t++) assert(std::is_sorted(got[t].begin(), got[t].end()) && std::adjacent_find(got[t].begin(), got[t].end()) == got[t].end());          // 각 도둑이 훔친 id 는 단조 증가
     }
-    {   const int W = 4, LEAF = 1 << 14, TOTAL = 2 * LEAF - 1; std::vector<std::unique_ptr<ChaseLev>> dqs; for (int w = 0; w < W; w++) dqs.emplace_back(new ChaseLev(2));
-        std::unique_ptr<std::atomic<int>[]> ran(new std::atomic<int>[TOTAL + 1]()); std::atomic<long> pending{1}, stolen{0}; dqs[0]->push(1);                           // ③ 포크–조인 트리: 노드 i 는 자식 2i, 2i+1 을 만든다
-        auto worker = [&](int me) { while (pending.load() > 0) { int task; bool have = dqs[me]->pop(task);
+    long stolenTotal = 0;                                                                                                  // ③ 포크–조인 트리: 노드 i 는 자식 2i, 2i+1 을 만든다. 워커 2·4·6 개로 세 번
+    for (int W : {2, 4, 6}) { const int LEAF = 1 << 14, TOTAL = 2 * LEAF - 1; std::vector<std::unique_ptr<ChaseLev>> dqs; for (int w = 0; w < W; w++) dqs.emplace_back(new ChaseLev(2));
+        std::unique_ptr<std::atomic<int>[]> ran(new std::atomic<int>[TOTAL + 1]()); std::atomic<long> pending{1}, stolen{0}; std::atomic<int> stuck{0}; dqs[0]->push(1);
+        auto worker = [&](int me) { long idle = 0; bool gated = false;
+            while (pending.load() > 0 && stuck.load() == 0) { int task = 0; bool have = dqs[me]->pop(task);
                 for (int k = 1; !have && k < W; k++) { Steal r; do { r = dqs[(me + k) % W]->steal(task); } while (r == Steal::Abort); if (r == Steal::Success) { have = true; stolen++; } }
-                if (!have) { std::this_thread::yield(); continue; }
-                ran[task].fetch_add(1); if (task < LEAF) { pending.fetch_add(2); dqs[me]->push(2 * task); dqs[me]->push(2 * task + 1); } pending.fetch_sub(1); } };        // 자식을 먼저 계수하고 자신을 뺀다 → 0 이 일찍 보이지 않음
+                if (!have) { if (++idle > SPIN_LIMIT) stuck.store(1); std::this_thread::yield(); continue; }                // 일을 못 찾는 횟수가 한도를 넘으면(작업을 잃어 pending 이 0 이 되지 못하는 경우) 멈추고 단언이 실패하게 한다
+                idle = 0; ran[task].fetch_add(1); if (task < LEAF) { pending.fetch_add(2); dqs[me]->push(2 * task); dqs[me]->push(2 * task + 1); } pending.fetch_sub(1);        // 자식을 먼저 계수하고 자신을 뺀다 → 0 이 일찍 보이지 않음
+                if (me == 0 && !gated) { gated = true; for (long s = 0; s < SPIN_LIMIT && stolen.load() == 0; s++) std::this_thread::yield(); } } };           // 악수: 첫 일을 끝낸 주인은 자식이 큐에 놓인 채 도둑이 하나 훔칠 때까지 기다린다
         std::vector<std::thread> ws; for (int w = 0; w < W; w++) ws.emplace_back(worker, w); for (auto& t : ws) t.join();
-        for (int i = 1; i <= TOTAL; i++) assert(ran[i].load() == 1); assert(pending.load() == 0); for (auto& d : dqs) assert(d->size() == 0);
-        std::cout << "WorkStealingQueue: 200000 sequential operations matched a deque model; 180000 tasks were executed exactly once with one owner and three thieves (thieves saw increasing ids); a " << TOTAL << "-node fork-join tree ran each node exactly once on " << W << " workers (" << stolen.load() << " steals) with correct termination" << std::endl; }
+        assert(stuck.load() == 0 && pending.load() == 0 && stolen.load() >= 1); for (int i = 1; i <= TOTAL; i++) assert(ran[i].load() == 1); for (auto& d : dqs) assert(d->size() == 0);
+        stolenTotal += stolen.load(); }
+    std::cout << "WorkStealingQueue: 200000 sequential operations matched a deque model; 5 x 60000 tasks were executed exactly once with one owner and 1, 3, 5, 2 and 4 thieves (" << thefts << " steals, thieves saw increasing ids); a 32767-node fork-join tree ran each node exactly once on 2, 4 and 6 workers (" << stolenTotal << " steals, at least one per run) with correct termination" << std::endl;
     return 0;
 }
 // Time Complexity: push·pop O(1) (성장은 분할상환 O(1)), steal O(1) (CAS 재시도 가능)

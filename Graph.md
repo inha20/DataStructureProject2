@@ -5617,8 +5617,8 @@ int main() {
     assert(worse > 0 && gExp < aExp);                                      // 최적이 아닌 경우가 실제로 있고, 확장은 A* 보다 적다
     std::cout << "GreedyBestFirstSearch: " << found << " solvable maps; greedy path longer than optimal in " << worse << " (avg ratio " << ratioSum / trials << "), expansions greedy " << gExp << " vs A* " << aExp << std::endl; return 0;
 }
-// Time Complexity: 최악 O(b^m), 좋은 휴리스틱에서는 매우 빠름
-// Space Complexity: O(b^m)
+// Time Complexity: O(V log V) (닫힌 집합으로 정점마다 한 번만 확장; 닫힌 집합이 없는 트리 탐색이라면 최악 O(b^m)), 좋은 휴리스틱에서는 훨씬 적게 확장
+// Space Complexity: O(V)
 ```
 ## BidirectionalSearch()
 ### 대표코드

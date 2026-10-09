@@ -202,7 +202,7 @@
 | `DialAlgorithm` | 9 | O(E + V·C) — 간선 한 번씩 + 버킷 훑기(최대 거리 <= V·C) | O(V + E + C) |
 | `AStar` | 10 | O((V + E) log V) 이하 (좋은 휴리스틱에서 확장 수가 크게 줄어듦) | O(V) |
 | `JumpPointSearch` | 10 | 최악 O(V) 이지만 열린 공간에서 A* 의 수분의 1~수십분의 1 확장 (점프마다 직선 스캔) | O(점프 포인트 수) |
-| `GreedyBestFirstSearch` | 10 | 최악 O(b^m), 좋은 휴리스틱에서는 매우 빠름 | O(b^m) |
+| `GreedyBestFirstSearch` | 10 | O(V log V) (닫힌 집합으로 정점마다 한 번만 확장; 닫힌 집합이 없는 트리 탐색이라면 최악 O(b^m)), 좋은 휴리스틱에서는 훨씬 적게 확장 | O(V) |
 | `BidirectionalSearch` | 10 | O(b^(d/2)) vs O(b^d) for unidirectional | O(b^(d/2)) |
 | `IDDFS` | 10 | O(b^d) | O(d) |
 | `IDAStar` | 10 | O(b^d) (휴리스틱이 좋을수록 지수의 밑이 작아진다) | O(d) |
@@ -558,7 +558,7 @@
 | `SPFA` | 3 | 평균 O(k·E), 최악 O(V·E) | O(V) |
 | `FloydWarshall` | 3 | O(V³) | O(V²) |
 | `Johnson` | 3 | O(V·E log V) | O(V²) (결과 행렬) |
-| `GreedyBestFirstSearch` | 4 | 최악 O(b^m), 좋은 휴리스틱에서는 매우 빠름 | O(b^m) |
+| `GreedyBestFirstSearch` | 4 | O(V log V) (닫힌 집합으로 칸마다 한 번만 확장; 닫힌 집합이 없는 트리 탐색이라면 최악 O(b^m)), 좋은 휴리스틱에서는 훨씬 적게 확장 | O(V) |
 | `AStar` | 4 | 최악 O(b^d), 좋은 휴리스틱에서는 O(경로 주변) | O(탐색한 노드 수) |
 | `WeightedAStar` | 4 | w 가 클수록 빠름, 최악 O(b^d) | O(탐색한 노드 수) |
 | `IDAStar` | 4 | O(b^d) (휴리스틱이 좋을수록 지수의 밑이 작아진다) | O(d) |
@@ -584,7 +584,7 @@
 | `ConflictBasedSearch` | 9 | 최악 지수(제약 트리), 실전에서는 충돌 수에 따라 증가 | O(제약 트리 노드 × 에이전트 × 경로 길이) |
 | `MultiAgentPathFinding` | 9 | 우선순위 계획 O(A · V · T), 결합 정확 탐색 O((V · 5)^A) — 에이전트 수에 지수 | O(V · T) / 결합 상태 O(V^A) |
 | `ReservationTable` | 9 | 예약/조회 O(1) 평균(해시), 안전 구간 생성 O(T), SIPP O(안전 구간 수 × log) | O(예약 수) |
-| `NavigationMesh` | 10 | 삼각형 그래프 탐색 O(T log T) + 깔때기 O(포털 수) | O(T) |
+| `NavigationMesh` | 10 | 삼각형 그래프 탐색 O(T log T) + 깔때기 O(포털 수 × 꺾임 수) — 꺾을 때마다 그 꼭짓점 다음 포털부터 다시 훑으므로 최악 O(포털 수²), 보통은 거의 선형 | O(T) |
 | `WaypointGraph` | 10 | 전처리 O(웨이포인트² × 시선 검사), 질의 O(W log W + W × 시선 검사) | O(W + 간선) |
 | `VisibilityGraph` | 10 | 순진한 구성 O(n³), 회전 스위프 O(n² log n); Dijkstra O(E log V) | O(n²) |
 | `VoronoiDiagram` | 10 | O(RC) 거리장·스켈레톤, 질의 O(RC) BFS | O(RC) |
@@ -716,7 +716,7 @@
 | `Size` | 1 | 크기 조회 O(1) (순회로 세면 O(N)) | O(1) |
 | `IsEmpty` | 1 | O(1) (비트 집합은 최악 O(워드 수)) | O(1) |
 | `Copy` | 1 | 표 복제 O(용량), 재삽입 O(N), 쓰기 시 복사 O(1) (쓰기 때 O(용량)) | O(N) |
-| `Union` | 2 | 병합 O(\|A\| + \|B\|), 해시 기대 O(\|A\| + \|B\|), 비트 O(U/64), k 개 O(N log k) | O(\|A\| + \|B\|) |
+| `Union` | 2 | 병합 O(\|A\| + \|B\|), 해시 기대 O(\|A\| + \|B\|) (테스트용 출력 정렬은 제외), 비트 O(U/64), k 개 O(N log k) | O(\|A\| + \|B\|) |
 | `union() (Python Style)` | 2 | - | - |
 | `Intersection` | 0 | 병합 O(\|A\| + \|B\|), 해시 O(min) 기대, 지수 탐색 O(\|A\| log(\|B\|/\|A\|)) | O(min(\|A\|, \|B\|)) |
 | `Difference` | 0 | 병합 O(\|A\| + \|B\|), 해시 기대 O(\|A\| + \|B\|), 비트 O(U/64) | O(\|A\| + \|B\|) |
@@ -724,12 +724,12 @@
 | `Complement` | 0 | 비트 O(U/64), 정렬 배열 O(\|U\|) | O(U/64) |
 | `CartesianProduct` | 0 | 생성 O(\|A\|·\|B\|), 번호로 접근 O(1) | 저장하면 O(\|A\|·\|B\|), 게으른 접근 O(1) |
 | `PowerSet` | 0 | O(2ⁿ · n) | 열거 O(n) (모두 저장하면 O(2ⁿ · n)) |
-| `IsSubset` | 3 | 병합 O(\|A\| + \|B\|), 해시 O(\|A\|) 기대, 비트 O(U/64) | O(1) (해시 방식은 O(\|B\|)) |
+| `IsSubset` | 3 | 병합 O(\|A\| + \|B\|), 해시 기대 O(\|A\| + \|B\|) (B 의 해시가 이미 있으면 O(\|A\|)), 비트 O(U/64) | O(1) (해시 방식은 O(\|B\|)) |
 | `IsProperSubset` | 3 | 부분집합 검사 + O(1) 크기 비교 | O(1) |
 | `IsSuperset` | 3 | 병합식 O(\|A\| + \|B\|), 해시식 O(\|B\|) 기대 | O(1) 추가 공간 |
-| `IsDisjoint` | 3 | 병합 O(\|A\| + \|B\|) (조기 종료), 해시 기대 O(min), 비트 O(U/64) | O(1) (해시 방식은 O(\|큰 쪽\|)) |
+| `IsDisjoint` | 3 | 병합 O(\|A\| + \|B\|) (조기 종료), 해시 기대 O(\|A\| + \|B\|) (큰 쪽의 해시가 이미 있으면 O(min)), 비트 O(U/64) | O(1) (해시 방식은 O(\|큰 쪽\|)) |
 | `Equals` | 3 | 정렬 비교 O(N), 해시 O(N) 기대, 지문 비교 O(1) (지문 계산은 O(N)) | O(1) (해시 방식은 O(N)) |
-| `Iterator` | 4 | begin/end O(1), 전체 순회 O(용량) (해시) 또는 O(N) (트리) | O(1) 반복자 |
+| `Iterator` | 4 | begin 과 ++ 한 번은 최악 O(용량) (해시: 빈 슬롯을 건너뜀), 전체 순회 O(용량) (해시) 또는 O(N) (트리) | O(1) 반복자 |
 | `ForEach` | 4 | O(용량) (해시) / O(N) (트리) | O(1) |
 | `Find` | 4 | 해시 기대 O(1), 트리 O(log N), 정렬 배열 O(log N), find_if O(N) | O(1) |
 | `Filter` | 4 | 필터링 O(N) (해시: O(용량)) | O(N) (새 집합) / O(걸러낼 원소 수) (모았다 지우기) |
@@ -754,7 +754,7 @@
 | `UnionByRank` | 7 | find O(log n) (압축 없을 때), 합치기 O(log n) | O(n) |
 | `PathCompression` | 7 | 단독 사용 시 분할상환 O(log n), 랭크와 함께면 O(α(n)) | O(n) |
 | `ConnectedComponents` | 7 | O((n + m) α(n)) | O(n) |
-| `Combination` | 8 | 열거 분할상환 O(1)/조합 (k ≤ n/2), C(n,k) 계산 O(min(k, n−k)) | O(k) |
+| `Combination` | 8 | 열거 분할상환 O(1)/조합 (k ≤ n/2), C(n,k) 계산 O(min(k, n−k)), rank/unrank O(n) | O(k) |
 | `Permutation` | 8 | 열거 O(n·n!), 순위/역순위 O(n²) | O(n) |
 | `CombinationWithReplacement` | 8 | 다음 조합 구하기 O(k), 전체 O(C(n+k-1, k) · k) | O(k) |
 | `NextPermutation` | 8 | 호출당 O(n) (평균 O(1)), 전체 순열 열거 O(n!) | O(1) |
@@ -774,7 +774,7 @@
 | `Projection` | 11 | 사영 O(n), 중복 제거 포함 O(n) 기대(해시) 또는 O(n log n) | O(결과 크기) |
 | `Selection` | 11 | 스캔 O(n), 정렬 인덱스 범위 O(log n + k) | O(결과 크기) |
 | `Join` | 11 | 중첩 루프 O(\|R\|\|S\|), 해시 조인 O(\|R\| + \|S\| + 출력) 기대, 병합 조인 O(n log n + 출력) | 해시 조인 O(\|S\|), 병합 조인 정렬 복사본 O(\|R\| + \|S\|) |
-| `GroupBy` | 11 | 해시 집계 O(n), 정렬 집계 O(n log n) | O(그룹 수) |
+| `GroupBy` | 11 | 해시 집계 기대 O(n) (이 코드는 결과를 키 순서 std::map 으로 옮겨 O(g log g) 가 더해짐, g = 그룹 수), 정렬 집계 O(n log n) | O(그룹 수) |
 | `DuplicateElimination` | 11 | 해시 O(n), 정렬 O(n log n), 블룸 앞단 + 정확 집합 O(n) 기대 | O(고유 수) (정확 집합), 블룸 앞단은 고정 비트 수 |
 | `InvertedIndex` | 12 | 질의 O(포스팅 길이의 합) (정렬 병합) | O(총 단어 출현 수) |
 | `PostingList` | 12 | 교집합 O(m log(n/m)) (갤로핑), 인코딩/디코딩 O(n) | O(n) (압축 시 항목당 ~1~2 바이트) |
@@ -796,7 +796,7 @@
 | `ConcurrentHashSet` | 15 | 연산 기대 O(1) + 스트라이프 잠금, resize 는 O(n) (전체 잠금) | O(n) |
 | `PersistentSet` | 16 | 조회·삽입·삭제 기대 O(log n) | 버전당 기대 O(log n) 새 노드 |
 | `ImmutableBitSet` | 16 | test O(1), rank O(1), select O(log(U/64)), 변경·집합 연산 O(U/64) | O(U/8) 바이트 (+ 접두사 합) |
-| `CompressedBitSet` | 16 | 연산 O(두 압축열의 런 수), 압축 O(워드 수) | O(런 수) |
+| `CompressedBitSet` | 16 | 연산 O(두 압축열의 런 수) (채움 대 리터럴은 워드 단위로 진행하지만 리터럴 런이 한 워드씩이라 이 합을 넘지 않음), 압축 O(워드 수) | O(런 수) |
 | `RoaringBitmap` | 16 | contains O(log 청크 수 + log 4096), 합·교집합 O(공통 청크 수 · 컨테이너 연산) | 청크당 min(2·원소 수, 8192) 바이트 |
 | `SuccinctSet` | 16 | access O(1) 분할상환(표본 + 워드 훑기), 조회 O(log n) | n(2 + log₂(U/n)) 비트 + select 표본 |
 | `LearnedSetIndex` | 16 | 조회 O(1) 예측 + O(log ε) 구간 이분 탐색 | O(세그먼트 수) 모델 (키 배열 제외) |

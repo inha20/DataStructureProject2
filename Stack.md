@@ -45,19 +45,19 @@ public:
     bool pop(int& out) { if (!top_) return false; Node* t = top_; out = t->v; top_ = t->next; delete t; n_--; return true; }
     bool peek(int& out) const { if (!top_) return false; out = top_->v; return true; }
 };
-template <class S> void checkFresh(S& s) { int v = 123; assert(s.empty() && s.size() == 0 && !s.peek(v) && !s.pop(v) && v == 123); }                // ① 초기 불변식 (실패한 호출은 출력 인자를 건드리지 않는다)
+template <class S> void checkFresh(S& s) { int v = 123; bool pk = s.peek(v), po = s.pop(v); assert(s.empty() && s.size() == 0 && !pk && !po && v == 123); }                // ① 초기 불변식 (실패한 호출은 출력 인자를 건드리지 않는다)
 int main() {
     long baseLive = liveBlocks;
     { ArrayStack a(16); LinkedStack l; checkFresh(a); checkFresh(l); }
     long b0 = newCalls; { ArrayStack a(16); assert(newCalls - b0 == 1); } long b1 = newCalls; { LinkedStack l; assert(newCalls == b1); l.push(1); assert(newCalls - b1 == 1); }          // ② 할당 횟수
     for (int i = 0; i < 3000; i++) { ArrayStack a(i % 40); LinkedStack l; for (int k = 0; k < i % 7; k++) { a.push(k); l.push(k); } } assert(liveBlocks == baseLive);                    // ③ 누수 0
-    { ArrayStack zero(0); int v; assert(zero.empty() && !zero.push(1) && !zero.pop(v) && !zero.peek(v)); }                                                                            // ④ 용량 0
-    { ArrayStack a(4); a.push(7); a.push(8); ArrayStack b(std::move(a)); int v; assert(a.empty() && a.size() == 0 && !a.push(1) && b.size() == 2 && b.pop(v) && v == 8 && b.pop(v) && v == 7); }        // ⑤ 이동
+    { ArrayStack zero(0); int v = 0; bool r1 = zero.push(1), r2 = zero.pop(v), r3 = zero.peek(v); assert(zero.empty() && !r1 && !r2 && !r3); }                                                                            // ④ 용량 0
+    { ArrayStack a(4); a.push(7); a.push(8); ArrayStack b(std::move(a)); int v1 = 0, v2 = 0; bool r1 = a.push(1); std::size_t bs = b.size(); bool g1 = b.pop(v1), g2 = b.pop(v2); assert(a.empty() && a.size() == 0 && !r1 && bs == 2 && g1 && v1 == 8 && g2 && v2 == 7); }        // ⑤ 이동
     {   std::mt19937 rng(5); for (int cap : {1, 2, 3, 7, 64}) { ArrayStack a(cap); LinkedStack l; std::stack<int> ma, ml; long refused = 0;                                         // ⑦ 무작위 대조
             for (int step = 0; step < 100000; ++step) { int v = (int)rng();
                 if (rng() % 3 != 0) { bool okA = a.push(v), okL = l.push(v); assert(okA == (ma.size() < (std::size_t)cap) && okL); if (okA) ma.push(v); else ++refused; ml.push(v); }
                 else { int x = -1, y = -1; bool gotA = a.pop(x), gotL = l.pop(y); assert(gotA == !ma.empty() && gotL == !ml.empty()); if (gotA) { assert(x == ma.top()); ma.pop(); } if (gotL) { assert(y == ml.top()); ml.pop(); } }
-                assert(a.size() == ma.size() && l.size() == ml.size() && a.size() <= (std::size_t)cap); int f = 0, g = 0; assert(a.peek(f) == !ma.empty() && l.peek(g) == !ml.empty()); if (!ma.empty()) assert(f == ma.top() && g == ml.top()); }
+                assert(a.size() == ma.size() && l.size() == ml.size() && a.size() <= (std::size_t)cap); int f = 0, g = 0; bool pa = a.peek(f), pl = l.peek(g); assert(pa == !ma.empty() && pl == !ml.empty()); if (!ma.empty()) assert(f == ma.top() && g == ml.top()); }
             assert(refused > 0 && a.empty() == ma.empty()); } }
     { std::stack<int> s; assert(s.empty() && s.size() == 0); }                                                                                                                         // ⑥ 실무의 std::stack
     std::cout << "CreateStack: fresh array and linked stacks satisfy the empty-state invariants; array stack costs 1 allocation, linked stack 0 until the first push; 3000 create/destroy cycles left no live blocks" << std::endl; return 0;
@@ -106,7 +106,7 @@ public:
     void pop() { a_[--n_].~T(); }
 };
 int main() {
-    { int raw[10]; for (int& x : raw) x = -999; FixedStack s(raw + 1, 8); for (int i = 0; i < 8; i++) assert(s.push(i)); assert(!s.push(8) && !s.push(9) && s.size() == 8 && raw[0] == -999 && raw[9] == -999); int v; for (int i = 7; i >= 0; i--) { assert(s.pop(v) && v == i); } }          // ①
+    { int raw[10]; for (int& x : raw) x = -999; FixedStack s(raw + 1, 8); for (int i = 0; i < 8; i++) { bool ok = s.push(i); assert(ok); } bool r8 = s.push(8), r9 = s.push(9); assert(!r8 && !r9 && s.size() == 8 && raw[0] == -999 && raw[9] == -999); int v = 0; for (int i = 7; i >= 0; i--) { bool ok = s.pop(v); assert(ok && v == i); } }          // ①
     { Stack<Counted> s; const int N = 5000; Counted::copies = 0; for (int i = 0; i < N; i++) { Counted c(i); s.push(c); assert((s.capacity() & (s.capacity() - 1)) == 0); } long growth = Counted::copies - N; assert(growth < 2L * N && s.size() == N); std::cout << "growth copies for " << N << " pushes: " << growth << "; "; }          // ②
     { std::mt19937 rng(5); std::stack<int> ref; Stack<Counted> s; for (int step = 0; step < 20000; step++) { if (rng() % 3) { int v = rng() % 1000; ref.push(v); s.push(Counted(v)); } else if (!ref.empty()) { assert(s.at(s.size() - 1).v == ref.top()); ref.pop(); s.pop(); } assert(s.size() == ref.size()); } }                          // ③
     { Counted::live = 0; { Stack<Counted> s; for (int i = 0; i < 4; i++) s.push(Counted(i)); assert(s.size() == 4 && s.capacity() == 4 && Counted::live == 4);
@@ -133,7 +133,7 @@ int main() {
 
 // 팝(Pop): 맨 위 원소를 제거한다. 설계 질문 두 가지. (1) 빈 스택에서 팝하면? std::stack 은 사용자의 책임(정의되지 않은 동작)으로 두고, 이 책의 스택은 false 를 돌려주고 상태를 바꾸지 않는다. (2) 제거한 값을 돌려줄까? std::stack::pop() 이 void 인 데는 이유가 있다 — 값을 돌려주려면 원소를 제거한 "뒤에" 호출자에게 복사해야 하는데, 복사가 예외를 던지면 원소는 이미 사라져 영영 잃는다(강한 예외 보장 위반).
 // 그래서 읽기(top)와 제거(pop)를 둘로 나눈다: 먼저 top 을 복사하고(실패해도 스택은 그대로), 성공한 뒤에 pop 이 파괴자만 부른다. 또한 pop 은 원소의 소멸자를 반드시 호출해야 자원이 돌아온다.
-// 검증: ① N 개를 올리고 모두 꺼내면 정확히 역순(LIFO) ② 빈 스택 pop 은 false 이고 출력 인자·상태 불변 ③ 소멸자 호출 수: pop 한 만큼 소멸하고 스택이 파괴되면 나머지도 소멸 ④ 복사가 던지는 타입에서 "값 반환 pop" 설계는 원소를 잃고 "top 후 pop" 설계는 보존 ⑤ std::stack 과 무작위 차분
+// 검증: ① N 개를 올리고 모두 꺼내면 정확히 역순(LIFO) ② 빈 스택 pop 은 false 이고 상태 불변(그 뒤 push·pop 이 정상) ③ 소멸자 호출 수: pop 한 만큼 소멸하고 스택이 파괴되면 나머지도 소멸 ④ 복사가 던지는 타입에서 "값 반환 pop" 설계는 원소를 잃고 "top 후 pop" 설계는 보존 ⑤ std::stack 과 무작위 차분
 struct Fragile { int v; static bool armed; static long live; Fragile(int x) : v(x) { live++; } Fragile(Fragile&& o) noexcept : v(o.v) { live++; }
     Fragile(const Fragile& o) : v(o.v) { if (armed) throw std::runtime_error("copy failed"); live++; } ~Fragile() { live--; } };
 bool Fragile::armed = false; long Fragile::live = 0;
@@ -151,8 +151,8 @@ public:
     }
 };
 int main() {
-    { Stack<int> s; for (int i = 0; i < 1000; i++) s.push(i); for (int i = 999; i >= 0; i--) { assert(s.top() == i && s.pop()); } assert(s.size() == 0); }                                                             // ① LIFO
-    { Stack<int> s; assert(!s.pop() && s.size() == 0); s.push(5); assert(s.pop() && !s.pop()); }                                                                                                                  // ②
+    { Stack<int> s; for (int i = 0; i < 1000; i++) s.push(i); for (int i = 999; i >= 0; i--) { int t = s.top(); bool ok = s.pop(); assert(t == i && ok); } assert(s.size() == 0); }                                                             // ① LIFO
+    { Stack<int> s; bool e1 = s.pop(); assert(!e1 && s.size() == 0); s.push(5); bool g1 = s.pop(), g2 = s.pop(); assert(g1 && !g2); }                                                                                                                  // ②
     { Fragile::live = 0; { Stack<Fragile> s; for (int i = 0; i < 6; i++) s.push(Fragile(i)); assert(Fragile::live == 6); s.pop(); s.pop(); assert(Fragile::live == 4 && s.size() == 4); } assert(Fragile::live == 0); }  // ③ 소멸 계수
     { Stack<Fragile> a, b; for (int i = 1; i <= 5; i++) { a.push(Fragile(i)); b.push(Fragile(i)); }
       Fragile::armed = true; bool threwA = false, threwB = false;
@@ -160,7 +160,7 @@ int main() {
       try { Fragile r = b.top(); (void)r; b.pop(); } catch (const std::runtime_error&) { threwB = true; }                                                                                                          // 복사 먼저(top), 성공해야 pop
       Fragile::armed = false; assert(threwA && threwB); assert(a.size() == 4 && a.top().v == 4);                                                                                                                  // ④ 값 반환 설계: 5 를 영영 잃었다
       assert(b.size() == 5 && b.top().v == 5); }                                                                                                                                                                      // 분리 설계: 5 가 그대로 남아 재시도 가능
-    { std::mt19937 rng(8); std::stack<int> ref; Stack<int> s; for (int step = 0; step < 30000; step++) { if (rng() % 2) { int v = rng(); ref.push(v); s.push(v); } else { bool had = !ref.empty(); if (had) { assert(s.top() == ref.top()); ref.pop(); } assert(s.pop() == had); } assert(s.size() == ref.size()); } }       // ⑤
+    { std::mt19937 rng(8); std::stack<int> ref; Stack<int> s; for (int step = 0; step < 30000; step++) { if (rng() % 2) { int v = rng(); ref.push(v); s.push(v); } else { bool had = !ref.empty(); if (had) { assert(s.top() == ref.top()); ref.pop(); } bool got = s.pop(); assert(got == had); } assert(s.size() == ref.size()); } }       // ⑤
     std::cout << "Pop: LIFO order, safe empty pops, destructor accounting and the top()+pop() split design verified; a value-returning pop lost an element when its copy threw" << std::endl; return 0;
 }
 // Time Complexity: O(1)
@@ -194,12 +194,12 @@ int main() {
     for (int step = 0; step < 20000; step++) {
         int op = rng() % 4;
         if (op < 2) { int v = rng() % 100; s.push(v); ref.push(v); model.push_back(v); }
-        else if (op == 2 && !ref.empty()) { int p; assert(s.peek(p) && p == ref.top()); int q; assert(s.pop(q) && q == p); ref.pop(); model.pop_back(); }                      // ⑤ peek 한 값이 pop 된다
+        else if (op == 2 && !ref.empty()) { int p = 0; bool okp = s.peek(p); assert(okp && p == ref.top()); int q = 0; bool okq = s.pop(q); assert(okq && q == p); ref.pop(); model.pop_back(); }                      // ⑤ peek 한 값이 pop 된다
         else { std::vector<int> before = s.snapshotTopFirst(); std::size_t n = s.size(); for (int t = 0; t < 5; t++) { int v; bool ok = s.peek(v); assert(ok == !ref.empty() && (!ok || v == ref.top())); std::size_t k = rng() % (n + 2); int w; bool ok2 = s.peekAt(k, w); assert(ok2 == (k < n) && (!ok2 || w == model[n - 1 - k])); } assert(s.snapshotTopFirst() == before && s.size() == n); }   // ① ② ④
         if (s.size() > 300) { int d; for (int i = 0; i < 150; i++) { s.pop(d); ref.pop(); model.pop_back(); } }
     }
     const ArrayStack& cs = s; int v; (void)cs.peek(v); (void)cs.peekAt(0, v);                                                                                                         // ③ const 접근
-    ArrayStack empty; assert(!empty.peek(v) && !empty.peekAt(0, v));
+    ArrayStack empty; bool e1 = empty.peek(v), e2 = empty.peekAt(0, v); assert(!e1 && !e2);
     std::cout << "Peek: 20000 randomized operations; peek and peekAt never changed the stack and agreed with std::stack::top and a vector model" << std::endl; return 0;
 }
 // Time Complexity: O(1)
@@ -220,7 +220,7 @@ int main() {
 // 톱(Top): 맨 위 원소에 대한 "참조" 를 돌려준다(std::stack::top()). 값을 복사하는 Peek 과 달리 참조로 받으면 제자리 수정이 가능하다 — s.top() += 5. 큰 객체를 복사하지 않아도 되는 이점이 있다.
 // 그러나 참조는 스택이 재배치되면 매달린다(dangling): 동적 배열 스택에서 push 가 용량을 넘겨 버퍼를 새로 잡으면 옛 참조가 가리키던 주소는 해제된다. 연결 스택은 노드가 움직이지 않아 push 뒤에도 참조가 유효하고, 고정 배열도 마찬가지다. 해제된 메모리를 읽는 것은 정의되지 않은 동작이므로 아래 실험은 값을 읽지 않고 주소(정수로 바꾼 값)만 비교한다.
 // 빈 스택의 top() 은 정의되지 않은 동작이다 — 호출 전에 empty() 를 확인하는 것이 호출자의 책임이다.
-// 검증: ① 참조로 제자리 수정이 스택에 반영된다 ② const 스택은 const 참조만 준다 ③ 동적 배열 스택은 용량이 늘 때마다 원소 주소가 바뀌지만(바닥 원소의 주소 변화를 센다) 연결 스택의 첫 노드는 제자리 ④ reserve 로 용량을 미리 잡으면 주소가 바뀌지 않음 ⑤ std::stack 의 top 과 일치(차분)
+// 검증: ① 참조로 제자리 수정이 스택에 반영된다 ② const 스택은 const 참조만 주고 원소가 여러 개여도 맨 위를 돌려준다 ③ 동적 배열 스택은 용량이 늘 때마다 원소 주소가 바뀌지만(바닥 원소의 주소 변화를 센다) 연결 스택의 첫 노드는 제자리이고 끝까지 pop 하면 모든 값이 역순으로 나온다(사슬 온전) ④ reserve 로 용량을 미리 잡으면 주소가 바뀌지 않음 ⑤ std::stack 의 top 과 일치(차분)
 template <class T> class VectorStack {
     std::vector<T> a_;
 public:
@@ -228,20 +228,22 @@ public:
     T& top() { return a_.back(); } const T& top() const { return a_.back(); } T& bottom() { return a_.front(); } void reserve(std::size_t n) { a_.reserve(n); }
 };
 template <class T> class LinkedStack {
-    struct Node { T v; Node* next; }; Node* top_ = nullptr;
+    struct Node { T v; Node* next; }; Node* top_ = nullptr; std::size_t n_ = 0;
 public:
     ~LinkedStack() { while (top_) { Node* t = top_; top_ = t->next; delete t; } }
-    void push(const T& v) { top_ = new Node{v, top_}; } T& top() { return top_->v; } const T& top() const { return top_->v; }
+    void push(const T& v) { top_ = new Node{v, top_}; ++n_; } void pop() { Node* t = top_; top_ = t->next; delete t; --n_; } bool empty() const { return top_ == nullptr; } std::size_t size() const { return n_; }
+    T& top() { return top_->v; } const T& top() const { return top_->v; }
 };
 uintptr_t addr(const void* p) { return reinterpret_cast<uintptr_t>(p); }
 int main() {
     { VectorStack<int> s; s.push(10); s.top() += 5; assert(s.top() == 15); s.push(20); s.top() *= 2; assert(s.top() == 40); s.pop(); assert(s.top() == 15); }                                      // ① 제자리 수정
-    { VectorStack<int> s; s.push(1); const VectorStack<int>& cs = s; static_assert(std::is_same<decltype(cs.top()), const int&>::value, "const stack gives const reference"); assert(cs.top() == 1); }       // ② const 정확성
+    { VectorStack<int> s; s.push(1); s.push(2); s.push(3); const VectorStack<int>& cs = s; static_assert(std::is_same<decltype(cs.top()), const int&>::value, "const stack gives const reference"); assert(cs.top() == 3 && &cs.top() == &s.top()); }       // ② const 정확성
     { VectorStack<int> s; s.push(0); uintptr_t at = addr(&s.bottom()); int relocations = 0; for (int i = 1; i < 1000; i++) { s.push(i); if (addr(&s.bottom()) != at) { relocations++; at = addr(&s.bottom()); } } assert(relocations >= 5);       // ③ 배열 스택: 용량이 늘 때마다 모든 원소가 이사한다
       VectorStack<int> r; r.reserve(1000); r.push(0); uintptr_t fixed = addr(&r.bottom()); for (int i = 1; i < 1000; i++) { r.push(i); assert(addr(&r.bottom()) == fixed); }                                // ④ reserve 로 용량을 미리 잡으면 이사하지 않는다
-      LinkedStack<int> l; l.push(0); int* pinned = &l.top(); for (int i = 1; i < 1000; i++) l.push(i); assert(*pinned == 0 && pinned != &l.top()); }                                                    // 연결 스택: 첫 노드는 제자리, 참조가 계속 유효 (값을 읽어도 안전)
+      LinkedStack<int> l; l.push(0); int* pinned = &l.top(); for (int i = 1; i < 1000; i++) l.push(i); assert(*pinned == 0 && pinned != &l.top() && l.size() == 1000);
+      const LinkedStack<int>& cl = l; static_assert(std::is_same<decltype(cl.top()), const int&>::value, "const linked stack gives const reference"); for (int i = 999; i >= 0; i--) { assert(!l.empty() && l.size() == (std::size_t)i + 1 && cl.top() == i && l.top() == i); l.pop(); } assert(l.empty() && l.size() == 0); }                                                    // 연결 스택: 첫 노드는 제자리, 참조가 계속 유효 (값을 읽어도 안전); 끝까지 pop 하며 999..0 이 차례로 나와야 사슬이 온전하다
     { std::stack<int> ref; VectorStack<int> s; for (int i = 0; i < 5000; i++) { int x = (i * 37) % 101; ref.push(x); s.push(x); assert(s.top() == ref.top()); if (i % 3 == 2) { ref.pop(); s.pop(); assert(s.top() == ref.top()); } } }          // ⑤
-    std::cout << "Top: in-place modification through the reference works; reallocation moved the bottom of an array stack repeatedly but never the nodes of a linked stack" << std::endl; return 0;
+    std::cout << "Top: in-place modification through the reference works; reallocation moved the bottom of an array stack repeatedly but never the nodes of a linked stack, whose chain was popped back node by node in exact reverse order" << std::endl; return 0;
 }
 // Time Complexity: O(1)
 // Space Complexity: O(1)
@@ -326,12 +328,12 @@ public:
 int main() {
     for (std::size_t cap = 0; cap <= 16; cap++) {
         FixedStack s(cap); assert(s.empty() && (s.full() == (cap == 0)) && (s.full() && s.empty()) == (cap == 0));                                                                    // ③ 용량 0 만 둘 다 참
-        for (std::size_t i = 0; i < cap; i++) { assert(!s.full() && s.push((int)i)); } assert(s.full() && s.size() == cap);                                                          // ① 정확히 cap 개
-        assert(!s.push(-1) && s.size() == cap && s.full()); int v; if (cap) { assert(s.pop(v) && v == (int)cap - 1 && !s.full()); assert(s.push(7) && s.full()); }                       // ② pop 하면 거짓, 다시 push 하면 참
+        for (std::size_t i = 0; i < cap; i++) { bool nf = !s.full(), ok = s.push((int)i); assert(nf && ok); } assert(s.full() && s.size() == cap);                                                          // ① 정확히 cap 개
+        bool over = s.push(-1); assert(!over && s.size() == cap && s.full()); int v = 0; if (cap) { bool got = s.pop(v); assert(got && v == (int)cap - 1 && !s.full()); bool again = s.push(7); assert(again && s.full()); }                       // ② pop 하면 거짓, 다시 push 하면 참
     }
     { LimitedStack s(100); for (int i = 0; i < 100; i++) s.push(i); assert(s.full()); bool threw = false; try { s.push(100); } catch (const std::length_error&) { threw = true; } assert(threw && s.size() == 100); }       // ④
-    { TwoStacks t(10); int pushed = 0; for (int i = 0; i < 100 && !t.full(); i++) { if (i % 3) t.push1(i); else t.push2(i); pushed++; } assert(pushed == 10 && t.size1() + t.size2() == 10 && !t.push1(0) && !t.push2(0));          // ⑤ 합이 용량이 되는 순간만 가득
-      TwoStacks u(10); for (int i = 0; i < 10; i++) assert(u.push1(i)); assert(u.size1() == 10 && u.size2() == 0 && u.full()); }                                                               // 한쪽이 전부 써도 된다
+    { TwoStacks t(10); int pushed = 0; for (int i = 0; i < 100 && !t.full(); i++) { if (i % 3) t.push1(i); else t.push2(i); pushed++; } bool x1 = t.push1(0), x2 = t.push2(0); assert(pushed == 10 && t.size1() + t.size2() == 10 && !x1 && !x2);          // ⑤ 합이 용량이 되는 순간만 가득
+      TwoStacks u(10); for (int i = 0; i < 10; i++) { bool ok = u.push1(i); assert(ok); } assert(u.size1() == 10 && u.size2() == 0 && u.full()); }                                                               // 한쪽이 전부 써도 된다
     std::cout << "IsFull: for capacities 0..16 full() became true exactly when the next push was refused; only capacity 0 is both empty and full; limited and shared-array stacks agree" << std::endl; return 0;
 }
 // Time Complexity: O(1)
@@ -348,7 +350,7 @@ int main() {
 
 // 크기(Size): 스택에 들어 있는 원소 수. 두 방식이 있다. ① 카운터를 두고 push/pop 에서 갱신: size() 는 O(1) 이지만 모든 변경 연산이 카운터를 정확히 유지해야 한다 ② 저장하지 않고 필요할 때 센다(연결 스택에서 노드를 끝까지 따라감): 메모리는 아끼지만 size() 가 O(N).
 // 카운터는 불변식 "size == 성공한 push 수 − 성공한 pop 수" 를 지켜야 한다. 실패한 연산(가득 찬 push, 빈 pop)에서는 바뀌면 안 되고, clear 후에는 0 이어야 한다. 이 불변식을 어기는 것이 카운터 버그의 대부분이다.
-// 검증: ① 카운터형 연결 스택의 size() 가 무작위 push/pop 에서 항상 std::stack::size() 와 같고 방문 노드가 0 개 ② 세는 방식은 size() 마다 N 개를 방문 ③ 실패한 연산은 크기를 바꾸지 않음 ④ clear 후 0 ⑤ 불변식(성공 push − 성공 pop)이 항상 성립
+// 검증: ① 카운터형 연결 스택의 size() 가 무작위 push/pop 에서 항상 std::stack::size() 와 같고 방문 노드가 0 개 ② 세는 방식은 size() 마다 N 개를 방문 ③ 실패한 연산(상한 500 에서 거절된 push, 빈 스택의 pop)은 크기를 바꾸지 않고 거절 여부는 상한을 아는 std::stack 오라클과 일치하며 두 경우가 실제로 일어난다(오르막·내리막 걸음을 번갈아 상한과 빈 상태에 닿는다) ④ clear 후 0 ⑤ 불변식(성공 push − 성공 pop)이 항상 성립
 class LinkedStack {
     struct Node { int v; Node* next; }; Node* top_ = nullptr; std::size_t n_ = 0, cap_; mutable long walked_ = 0;
 public:
@@ -362,17 +364,18 @@ public:
     long walked() const { return walked_; } void resetWalked() { walked_ = 0; }
 };
 int main() {
-    std::mt19937 rng(11); LinkedStack s(500); std::stack<int> ref; long okPush = 0, okPop = 0; int sink;
+    std::mt19937 rng(11); LinkedStack s(500); std::stack<int> ref; long okPush = 0, okPop = 0, refusedPush = 0, refusedPop = 0; int sink = 0;
     for (int step = 0; step < 100000; step++) {
-        std::size_t before = s.size();
-        if (rng() % 2) { bool ok = s.push(step); if (ok) { ref.push(step); okPush++; } else assert(s.size() == before && before == 500); }                                              // ③ 가득 찬 push 는 크기 불변
-        else { bool ok = s.pop(sink); if (ok) { ref.pop(); okPop++; } else assert(s.size() == before && before == 0); }                                                                  // ③ 빈 pop 도 크기 불변
+        std::size_t before = s.size(); bool up = ((step / 2500) % 2 == 1) ? rng() % 10 < 7 : rng() % 10 < 3;                                                      // 2500 걸음마다 오르막(push 70%)과 내리막(30%)을 번갈아 상한 500 과 빈 상태에 모두 닿는다
+        if (up) { bool ok = s.push(step); assert(ok == (ref.size() < 500)); if (ok) { ref.push(step); okPush++; } else { refusedPush++; assert(s.size() == before && before == 500); } }                                              // ③ 가득 찬 push 는 크기 불변
+        else { bool ok = s.pop(sink); assert(ok == !ref.empty()); if (ok) { assert(sink == ref.top()); ref.pop(); okPop++; } else { refusedPop++; assert(s.size() == before && before == 0); } }                                                                  // ③ 빈 pop 도 크기 불변
         assert(s.size() == ref.size() && (long)s.size() == okPush - okPop);                                                                                                                // ① ⑤
     }
+    assert(refusedPush > 0 && refusedPop > 0);
     s.resetWalked(); for (int i = 0; i < 1000; i++) (void)s.size(); assert(s.walked() == 0);                                                                                               // O(1): 노드 방문 0
     s.resetWalked(); std::size_t n = s.size(); for (int i = 0; i < 10; i++) assert(s.sizeByCounting() == n); assert(s.walked() == (long)(10 * n));                                          // ② 세는 방식은 호출마다 N
     s.clear(); assert(s.size() == 0 && s.sizeByCounting() == 0);                                                                                                                         // ④
-    std::cout << "Size: counter-based size() matched std::stack::size() and the push-minus-pop invariant over 100000 operations; counting by walking cost " << 10 * n << " node visits for 10 calls versus 0" << std::endl; return 0;
+    std::cout << "Size: counter-based size() matched std::stack::size() and the push-minus-pop invariant over 100000 operations (" << refusedPush << " pushes refused at the cap of 500, " << refusedPop << " pops refused when empty); counting by walking cost " << 10 * n << " node visits for 10 calls versus 0" << std::endl; return 0;
 }
 // Time Complexity: 카운터 방식 O(1), 세는 방식 O(N)
 // Space Complexity: 카운터 방식 O(1) 추가
@@ -439,7 +442,7 @@ int main() {
 // 배열 스택(ArrayStack): 연속된 배열 하나와 "다음에 쓸 위치(= 크기)" 하나로 이루어진 가장 단순하고 빠른 스택이다. push 는 a[n++] = x, pop 은 a[--n]. 메모리가 연속이라 캐시 지역성이 좋고 원소당 포인터 오버헤드가 없다. 용량이 고정이라 가득 차면 거절한다(용량 가변은 DynamicStack).
 // 자원을 직접 쥐므로 "다섯 가지 규칙(rule of five)" 을 지켜야 한다: 소멸자, 복사 생성자(깊은 복사), 복사 대입(복사 후 교환 관용구로 자기 대입과 예외에 안전), 이동 생성자, 이동 대입. 하나라도 빠지면 얕은 복사로 이중 해제가 난다.
 // 아래 구현은 바닥부터 위로 순회하는 반복자 쌍(begin/end)과 범위를 검사하는 at(i)(i = 0 이 바닥)를 제공한다.
-// 검증: ① 무작위 push/pop 을 std::vector 모델과 대조(내용·크기·가득/빈) ② 복사본은 독립적(원본을 바꿔도 복사본 불변, 복사본을 바꿔도 원본 불변) ③ 자기 대입 안전 ④ 이동 후 원본이 빈 스택 ⑤ at 의 범위 검사와 순회 순서 ⑥ swap
+// 검증: ① 무작위 push/pop 을 std::vector 모델과 대조(내용·크기·가득/빈·peek 이 돌려주는 값) ② 복사본은 독립적(원본을 바꿔도 복사본 불변, 복사본을 바꿔도 원본 불변) ③ 자기 대입 안전 ④ 이동 후 원본이 빈 스택 ⑤ at 의 범위 검사와 순회 순서 ⑥ swap
 class ArrayStack {
     int* a_; std::size_t cap_, n_;
 public:
@@ -461,14 +464,14 @@ int main() {
     for (int step = 0; step < 50000; step++) {
         if (rng() % 2) { int v = rng() % 1000; bool ok = s.push(v); assert(ok == (model.size() < 64)); if (ok) model.push_back(v); }
         else { int v = -1; bool ok = s.pop(v); assert(ok == !model.empty()); if (ok) { assert(v == model.back()); model.pop_back(); } }
-        int p; assert(s.peek(p) == !model.empty() && s.size() == model.size() && s.empty() == model.empty() && s.full() == (model.size() == 64));                               // ①
+        int p = 0; bool pk = s.peek(p); assert(pk == !model.empty() && (!pk || p == model.back()) && s.size() == model.size() && s.empty() == model.empty() && s.full() == (model.size() == 64));                               // ①
         if (step % 5000 == 0) assert(std::vector<int>(s.begin(), s.end()) == model);                                                                                                   // ⑤ 바닥 -> 위 순서
     }
     { ArrayStack a(8); for (int i = 0; i < 5; i++) a.push(i); ArrayStack b(a); int v; a.pop(v); a.push(100); assert(std::vector<int>(b.begin(), b.end()) == (std::vector<int>{0, 1, 2, 3, 4}) && a.at(4) == 100);          // ② 복사본은 독립
       b.push(7); assert(a.size() == 5 && b.size() == 6 && a.at(4) == 100);
       ArrayStack c(2); c = a; assert(std::vector<int>(c.begin(), c.end()) == std::vector<int>(a.begin(), a.end()) && c.capacity() == 8);                                         // 복사 대입
       c = c; assert(c.size() == 5); }                                                                                                                                                      // ③ 자기 대입
-    { ArrayStack a(4); a.push(1); a.push(2); ArrayStack b(std::move(a)); assert(a.empty() && a.capacity() == 0 && !a.push(9) && b.size() == 2); ArrayStack c(1); c = std::move(b); assert(b.empty() && c.size() == 2 && c.capacity() == 4); }     // ④ 이동
+    { ArrayStack a(4); a.push(1); a.push(2); ArrayStack b(std::move(a)); bool r9 = a.push(9); assert(a.empty() && a.capacity() == 0 && !r9 && b.size() == 2); ArrayStack c(1); c = std::move(b); assert(b.empty() && c.size() == 2 && c.capacity() == 4); }     // ④ 이동
     { ArrayStack a(4); a.push(1); bool threw = false; try { a.at(1); } catch (const std::out_of_range&) { threw = true; } assert(threw && a.at(0) == 1); }                                                         // ⑤ 범위 검사
     { ArrayStack a(3), b(5); a.push(1); b.push(2); b.push(3); a.swap(b); assert(a.size() == 2 && a.capacity() == 5 && b.size() == 1 && b.capacity() == 3); }                                                           // ⑥
     std::cout << "ArrayStack: bounded array stack matched a vector model over 50000 operations; deep copy, copy-and-swap assignment, self-assignment and move all verified" << std::endl; return 0;
@@ -540,7 +543,7 @@ int main() {
 // 동적 스택(DynamicStack): 배열 스택의 가득 참 문제를 풀어, 용량이 모자라면 두 배로 키우고 너무 남으면 줄이는 스택이다. 늘릴 때는 새 버퍼로 옮기는 O(N) 이 들지만 두 배씩 키우므로 N 번 push 의 총 이동이 2N 미만이라 분할상환 O(1) 이다.
 // 줄이는 규칙이 중요하다. "절반 이하일 때 절반으로" 줄이면 가득 찬 경계에서 push·pop 을 번갈아 하는 열이 매번 전체를 옮긴다(thrashing). 크기가 용량의 1/4 이하일 때 용량을 절반으로 줄이면 줄인 직후 용량의 절반이 비어 있으므로 다시 늘리거나 줄이기까지 최소 용량/4 번의 연산이 필요해 분할상환 O(1) 이 유지된다. 최소 용량(4)은 작은 스택이 계속 재할당되는 것을 막는다.
 // 불변식: 항상 크기 ≤ 용량, 그리고 용량이 최소값보다 크면 크기 > 용량/4.
-// 검증: ① std::stack 과 무작위 차분 ② 불변식이 매 연산 뒤에 성립 ③ 적대적 열(가득 찬 경계에서 push/pop 교대)에서 연산당 이동 횟수가 상수 ④ 1/2 규칙으로 줄이는 변형은 같은 열에서 연산당 Θ(N) ⑤ N 번 push 의 총 이동 < 2N, 비운 뒤 용량이 최소값으로 돌아감
+// 검증: ① std::stack 과 무작위 차분 ② 불변식이 매 연산 뒤에 성립 ③ 적대적 열(가득 찬 경계에서 push/pop 교대)에서 성장 한 번의 이동(1024)뿐 더는 이동하지 않음 ④ 1/2 규칙으로 줄이는 변형은 같은 열에서 연산당 Θ(N) ⑤ N 번 push 의 총 이동 < 2N, 비운 뒤 용량이 최소값으로 돌아감 ⑥ 2000 개까지 키웠다가 모두 꺼내며 매 값과 용량(원소 수에 맞는 2 의 거듭제곱이고, 줄어드는 것은 크기 ≤ 용량/4 가 되는 pop 에서만)을 확인 ⑦ 최소 용량 4 에서는 push·pop 을 반복해도 이동이 0
 class DynamicStack {
     static constexpr std::size_t MIN_CAP = 4;
     int* a_; std::size_t n_ = 0, cap_ = MIN_CAP; long moved_ = 0; double shrinkAt_;
@@ -554,11 +557,18 @@ public:
     bool invariant() const { return n_ <= cap_ && (cap_ == MIN_CAP || n_ > cap_ / 4); }
 };
 int main() {
-    { std::mt19937 rng(6); DynamicStack s; std::stack<int> ref; int v; for (int step = 0; step < 100000; step++) { if (rng() % 5 < 2 || ref.empty()) { int x = rng(); s.push(x); ref.push(x); } else { assert(s.top() == ref.top()); assert(s.pop(v) && v == ref.top()); ref.pop(); } assert(s.size() == ref.size() && s.invariant()); } }          // ① ②
-    { DynamicStack s; int v; for (int i = 0; i < 1024; i++) s.push(i); long before = s.moved(); const int OPS = 20000; for (int i = 0; i < OPS; i++) { s.push(i); assert(s.pop(v)); } assert(s.moved() - before <= 3L * OPS && s.capacity() == 2048); }        // ③ 적대적 열: 경계에서 push/pop 교대 (1/4 규칙은 이동 0)
-    { DynamicStack half(0.5); int v; for (int i = 0; i < 1024; i++) half.push(i); half.push(0); half.pop(v); long before = half.moved(); const int OPS = 2000; for (int i = 0; i < OPS; i++) { half.push(i); half.pop(v); } assert(half.moved() - before > 100L * OPS); std::cout << "1/2-rule moves per op: " << (half.moved() - before) / OPS << "; "; }       // ④ 1/2 규칙은 연산당 수백 번 이동
+    { std::mt19937 rng(6); DynamicStack s; std::stack<int> ref; int v; for (int step = 0; step < 100000; step++) { if (rng() % 5 < 2 || ref.empty()) { int x = rng(); s.push(x); ref.push(x); } else { assert(s.top() == ref.top()); bool ok = s.pop(v); assert(ok && v == ref.top()); ref.pop(); } assert(s.size() == ref.size() && s.invariant()); } }          // ① ②
+    { DynamicStack s; int v; for (int i = 0; i < 1024; i++) s.push(i); long before = s.moved(); const int OPS = 20000; for (int i = 0; i < OPS; i++) { s.push(i); bool ok = s.pop(v); assert(ok && v == i); } assert(s.moved() - before == 1024 && s.capacity() == 2048); }        // ③ 적대적 열: 경계에서 push/pop 교대 (1/4 규칙은 이동 0)
+    { DynamicStack half(0.5); int v; for (int i = 0; i < 1024; i++) half.push(i); half.push(0); half.pop(v); long before = half.moved(); const int OPS = 2000; for (int i = 0; i < OPS; i++) { half.push(i); half.pop(v); } assert(half.moved() - before > 100L * OPS); std::cout << "1/2-rule moves per push+pop pair: " << (half.moved() - before) / OPS << "; "; }       // ④ 1/2 규칙은 push+pop 한 쌍마다 천 번 넘게 이동
     { DynamicStack s; const int N = 100000; for (int i = 0; i < N; i++) s.push(i); assert(s.moved() < 2L * N); int v; while (s.size()) s.pop(v); assert(s.capacity() == 4 && s.invariant()); }                                                         // ⑤ 총 이동 < 2N, 비우면 최소 용량
-    std::cout << "DynamicStack: matched std::stack over 100000 operations with the capacity invariant intact; after one growth the 1/4 shrink rule moved no further elements on the adversarial boundary sequence" << std::endl; return 0;
+    {   DynamicStack s; std::stack<int> ref; std::size_t expCap = 4; int v = 0; const int N = 2000;                                                                              // ⑥ 2000 개까지 키웠다가 모두 꺼낸다 (용량 4 -> 2048 -> 4)
+        for (int i = 0; i < N; i++) { int x = i * 7 + 3; s.push(x); ref.push(x); if (ref.size() > expCap) expCap *= 2; assert(s.top() == ref.top() && s.size() == ref.size() && s.capacity() == expCap && s.invariant()); }
+        assert(expCap == 2048 && s.capacity() == 2048);
+        while (!ref.empty()) { std::size_t capBefore = s.capacity(); int want = ref.top(); bool ok = s.pop(v); assert(ok && v == want); ref.pop(); bool shrink = capBefore > 4 && ref.size() <= capBefore / 4;
+            assert(s.capacity() == (shrink ? capBefore / 2 : capBefore) && s.size() == ref.size() && s.invariant()); if (!ref.empty()) assert(s.top() == ref.top()); }
+        assert(s.capacity() == 4 && s.size() == 0); }
+    { DynamicStack s; int v = 0; for (int round = 0; round < 50; round++) { for (int i = 0; i < 4; i++) s.push(i); for (int i = 0; i < 4; i++) { bool ok = s.pop(v); assert(ok && v == 3 - i); } } assert(s.moved() == 0 && s.capacity() == 4 && s.size() == 0); }          // ⑦ 최소 용량에서는 키우지도 줄이지도 않아 이동 0
+    std::cout << "DynamicStack: matched std::stack over 100000 operations and a 2000-element grow-and-drain with the capacity invariant and the exact shrink moments intact; after one growth the 1/4 shrink rule moved no further elements on the adversarial boundary sequence" << std::endl; return 0;
 }
 // Time Complexity: push·pop 분할상환 O(1) (최악 O(N))
 // Space Complexity: O(N), 용량은 크기의 4 배 이하
@@ -599,7 +609,7 @@ public:
 };
 long LinkedStack::liveNodes_ = 0;
 int main() {
-    { std::mt19937 rng(12); LinkedStack s; std::stack<int> ref; int v; for (int step = 0; step < 60000; step++) { if (rng() % 2) { int x = rng(); s.push(x); ref.push(x); } else { bool ok = s.pop(v); assert(ok == !ref.empty()); if (ok) { assert(v == ref.top()); ref.pop(); } } int p; assert(s.peek(p) == !ref.empty() && s.size() == ref.size() && s.empty() == ref.empty()); assert((std::size_t)LinkedStack::liveNodes() == s.size()); } }   // ① ②
+    { std::mt19937 rng(12); LinkedStack s; std::stack<int> ref; int v; for (int step = 0; step < 60000; step++) { if (rng() % 2) { int x = rng(); s.push(x); ref.push(x); } else { bool ok = s.pop(v); assert(ok == !ref.empty()); if (ok) { assert(v == ref.top()); ref.pop(); } } int p = 0; bool pk = s.peek(p); assert(pk == !ref.empty() && (!pk || p == ref.top()) && s.size() == ref.size() && s.empty() == ref.empty()); assert((std::size_t)LinkedStack::liveNodes() == s.size()); } }   // ① ②
     assert(LinkedStack::liveNodes() == 0);
     { LinkedStack a; for (int i = 1; i <= 5; i++) a.push(i); LinkedStack b(a); assert(b.topFirst() == a.topFirst() && LinkedStack::liveNodes() == 10); int v; a.pop(v); b.push(99); assert(a.topFirst() == (std::vector<int>{4, 3, 2, 1}) && b.topFirst() == (std::vector<int>{99, 5, 4, 3, 2, 1}));          // ③ 순서까지 같고 독립
       LinkedStack c; c = a; assert(c.topFirst() == a.topFirst()); }
@@ -802,14 +812,16 @@ int main() {
 // 중위 → 후위 변환(InfixToPostfix, 다익스트라의 션팅 야드 알고리즘): 사람이 쓰는 중위 표기 "1+2*3" 을 괄호와 우선순위가 필요 없는 후위 표기 "1 2 3 * +" 로 바꾼다. 연산자 스택을 쓴다. 규칙: ① 피연산자는 바로 출력 ② 연산자 o 는 스택 top 이 o 보다 우선순위가 높거나(같고 o 가 좌결합이면) 먼저 꺼내 출력한 뒤 o 를 push ③ 여는 괄호는 push, 닫는 괄호는 여는 괄호가 나올 때까지 pop 해 출력 ④ 끝에 스택을 비운다.
 // 결합법칙: a-b-c 는 (a-b)-c 로 좌결합, a^b^c 는 a^(b^c) 로 우결합이다. 우결합 연산자는 같은 우선순위의 top 을 꺼내지 않고 쌓는다. 단항 마이너스(−x)는 이항 연산자 바로 뒤나 여는 괄호 뒤, 식의 맨 앞에 오는 '−' 이며 접두 연산자라 아무것도 꺼내지 않고 push 한다. 이 구현의 단항 마이너스 우선순위는 곱셈보다 높고 ^ 보다 낮다(-2^2 = -(2^2)).
 // 오류도 알려야 한다: 짝이 맞지 않는 괄호, 피연산자 자리에 연산자가 오는 것(1+*2), 연산자가 모자란 것(1 2), 빈 식. 토큰은 여러 자리 정수를 지원한다.
-// 검증: 무작위 식 트리를 만들어 ① 최소 괄호의 중위 문자열로 쓰고(공백·불필요한 괄호도 섞어) 변환한 결과가 트리의 후위 순회와 정확히 같다(좌/우결합·우선순위·단항 포함) ② 여러 자리 정수 ③ 오류 사례들이 모두 거절된다 ④ 변환한 후위식을 계산하면 트리 값과 같다
+// 검증: 무작위 식 트리를 만들어 ① 최소 괄호의 중위 문자열로 쓰고(공백·불필요한 괄호도 섞어) 변환한 결과가 트리의 후위 순회와 정확히 같다(좌/우결합·우선순위·단항 포함) ② 여러 자리 정수 ③ 오류 사례들이 모두 거절된다 ④ 변환한 후위식을 계산하면 트리 값과 같고, 우선순위 표와 스택을 전혀 쓰지 않는 재귀 하강 계산기(독립 오라클)가 중위 문자열을 바로 계산한 값·실패 여부와도 같다(표가 틀리면 생성기·변환기가 같이 틀려도 여기서 드러난다) ⑤ 우선순위 표를 손으로 쓴 후위식으로 직접 확인(%·좌결합 + -·^ 와 * 의 단계·단항 마이너스는 곱셈보다 먼저)
 struct E { char op; long long v; int l, r; };                                                 // op: '#' 숫자, 'n' 단항 마이너스, 그 외 이항 + - * / % ^
 int prec(char o) { return o == '+' || o == '-' ? 1 : o == '*' || o == '/' || o == '%' ? 2 : o == 'n' ? 3 : o == '^' ? 4 : 0; }
-bool rightAssoc(char o) { return o == '^' || o == 'n'; }
+bool rightAssoc(char o) { return o == '^'; }
 int gen(std::vector<E>& pool, int depth, std::mt19937& rng) {
     if (depth == 0 || rng() % 4 == 0) { pool.push_back({'#', (long long)(rng() % 120), -1, -1}); return (int)pool.size() - 1; }
     if (rng() % 8 == 0) { int c = gen(pool, depth - 1, rng); pool.push_back({'n', 0, c, -1}); return (int)pool.size() - 1; }
-    const char ops[] = {'+', '-', '*', '/', '%', '^'}; char o = ops[rng() % 6]; int l = gen(pool, depth - 1, rng); int r = o == '^' ? (pool.push_back({'#', (long long)(rng() % 4), -1, -1}), (int)pool.size() - 1) : gen(pool, depth - 1, rng);
+    const char ops[] = {'+', '-', '*', '/', '%', '^'}; char o = ops[rng() % 6]; int l = gen(pool, depth - 1, rng); int r;
+    if (o == '^') { auto lit = [&]() { pool.push_back({'#', (long long)(rng() % 4), -1, -1}); return (int)pool.size() - 1; }; r = lit(); if (rng() % 3 == 0) { int x = lit(); pool.push_back({'^', 0, r, x}); r = (int)pool.size() - 1; } }          // 지수는 작은 수 또는 a^b (a^b^c 의 우결합 중첩)
+    else r = gen(pool, depth - 1, rng);
     pool.push_back({o, 0, l, r}); return (int)pool.size() - 1;
 }
 std::string infixOf(const std::vector<E>& p, int i, std::mt19937& rng) {                       // 최소 괄호 (가끔 불필요한 괄호·공백 추가)
@@ -835,19 +847,31 @@ bool toPostfix(const std::string& s, std::vector<std::string>& out) {           
     if (expectOperand || open != 0) return false;
     while (!st.empty()) { out.push_back(std::string(1, st.top() == 'n' ? '~' : st.top())); st.pop(); } return true;
 }
+bool applyOp(char o, long long a, long long b, long long& r) {                              // 이항 연산 하나 (0 으로 나누기·음수 지수·넘침은 실패)
+    if (o == '+') r = a + b; else if (o == '-') r = a - b; else if (o == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return false; r = a * b; } else if (o == '/') { if (!b) return false; r = a / b; } else if (o == '%') { if (!b) return false; r = a % b; } else { if (b < 0) return false; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return false; r *= a; } }
+    return !(r > (1LL << 50) || r < -(1LL << 50));
+}
 bool evalPostfix(const std::vector<std::string>& t, long long& result) {
     std::vector<long long> st;
     for (auto& tok : t) { if (isdigit((unsigned char)tok[0])) { st.push_back(std::stoll(tok)); continue; } if (tok == "~") { if (st.empty()) return false; st.back() = -st.back(); continue; } if (st.size() < 2) return false;
-        long long b = st.back(); st.pop_back(); long long a = st.back(); long long r; char o = tok[0];
-        if (o == '+') r = a + b; else if (o == '-') r = a - b; else if (o == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return false; r = a * b; } else if (o == '/') { if (!b) return false; r = a / b; } else if (o == '%') { if (!b) return false; r = a % b; } else { if (b < 0) return false; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return false; r *= a; } }
-        if (r > (1LL << 50) || r < -(1LL << 50)) return false; st.back() = r; }
+        long long b = st.back(); st.pop_back(); long long a = st.back(); long long r = 0;
+        if (!applyOp(tok[0], a, b, r)) return false; st.back() = r; }
     if (st.size() != 1) return false; result = st[0]; return true;
 }
 bool evalTree(const std::vector<E>& p, int i, long long& out) {
     const E& e = p[i]; if (e.op == '#') { out = e.v; return true; } long long a, b = 0; if (!evalTree(p, e.l, a)) return false; if (e.op == 'n') { out = -a; return true; } if (!evalTree(p, e.r, b)) return false;
-    long long r; if (e.op == '+') r = a + b; else if (e.op == '-') r = a - b; else if (e.op == '*') { if (std::fabs((long double)a * (long double)b) > 1e15L) return false; r = a * b; } else if (e.op == '/') { if (!b) return false; r = a / b; } else if (e.op == '%') { if (!b) return false; r = a % b; } else { if (b < 0) return false; r = 1; for (long long k = 0; k < b; k++) { if (std::fabs((long double)r * (long double)a) > 1e15L) return false; r *= a; } }
-    if (r > (1LL << 50) || r < -(1LL << 50)) return false; out = r; return true;
+    long long r = 0; if (!applyOp(e.op, a, b, r)) return false; out = r; return true;
 }
+struct RD {                                                                                     // 독립 오라클: 우선순위·결합을 문법(재귀 하강)으로 적어 중위 문자열을 바로 계산한다 (연산자 스택·우선순위 표 없음)
+    const std::string& s; std::size_t i = 0; bool ok = true; explicit RD(const std::string& str) : s(str) {}
+    char peek() { while (i < s.size() && s[i] == ' ') i++; return i < s.size() ? s[i] : '\0'; }
+    long long bin(char o, long long a, long long b) { long long r = 0; if (!applyOp(o, a, b, r)) { ok = false; r = 0; } return r; }
+    long long expr() { long long v = term(); while (peek() == '+' || peek() == '-') { char o = s[i++]; v = bin(o, v, term()); } return v; }                                   // + - 좌결합
+    long long term() { long long v = unary(); while (peek() == '*' || peek() == '/' || peek() == '%') { char o = s[i++]; v = bin(o, v, unary()); } return v; }                  // * / % 좌결합
+    long long unary() { if (peek() == '-') { i++; return -unary(); } return power(); }                                                                                        // 단항 마이너스: 곱셈보다 높고 ^ 보다 낮다
+    long long power() { long long b = atom(); if (peek() == '^') { i++; return bin('^', b, unary()); } return b; }                                                            // ^ 우결합
+    long long atom() { if (peek() == '(') { i++; long long v = expr(); peek(); i++; return v; } long long v = 0; while (i < s.size() && isdigit((unsigned char)s[i])) v = v * 10 + (s[i++] - '0'); return v; }
+};
 std::string shuntingTrace(const std::string& s) {                      // 그림: 토큰을 하나 읽을 때마다 (출력, 연산자 스택) — 한 자리 숫자·이항 연산자·괄호만 다루는 단순판
     std::string out, st, trace;
     auto row = [&](const std::string& tok) { trace += tok + " | out=" + out + " | stack=" + st + "\n"; };
@@ -868,17 +892,21 @@ int main() {
                                 "( | out=342* | stack=+/(\n1 | out=342*1 | stack=+/(\n- | out=342*1 | stack=+/(-\n5 | out=342*15 | stack=+/(-\n) | out=342*15- | stack=+/\n"
                                 "^ | out=342*15- | stack=+/^\n2 | out=342*15-2 | stack=+/^\n^ | out=342*15-2 | stack=+/^^\n3 | out=342*15-23 | stack=+/^^\nend | out=342*15-23^^/+ | stack=\n";
         assert(shuntingTrace(expr) == pic);                                                           // '/' 는 같은 우선순위의 '*' 를 먼저 꺼내고(좌결합), 두 번째 '^' 는 첫 '^' 를 꺼내지 않는다(우결합)
-        std::vector<std::string> tokens; assert(toPostfix(expr, tokens)); std::string joined; for (const auto& t : tokens) joined += t;
+        std::vector<std::string> tokens; bool conv = toPostfix(expr, tokens); assert(conv); std::string joined; for (const auto& t : tokens) joined += t;
         assert(joined == "342*15-23^^/+");                                                            // 본 구현(toPostfix)도 같은 후위식
         std::cout << pic; }
     std::mt19937 rng(11); int checked = 0, evaluated = 0;
     for (int t = 0; t < 4000; t++) { std::vector<E> pool; int root = gen(pool, 1 + rng() % 5, rng); std::string infix = infixOf(pool, root, rng); std::vector<std::string> want, got; postfixOf(pool, root, want);
-        assert(toPostfix(infix, got) && got == want); checked++;                                                                                                                       // ① 트리의 후위 순회와 정확히 같다
-        long long a, b; bool okTree = evalTree(pool, root, a), okPost = evalPostfix(got, b); assert(okTree == okPost && (!okTree || a == b)); evaluated += okTree; }                  // ④ 계산 결과도 같다
-    { std::vector<std::string> out; assert(toPostfix("12+345*6", out) && out == (std::vector<std::string>{"12", "345", "6", "*", "+"})); assert(toPostfix("2^3^2", out) && out == (std::vector<std::string>{"2", "3", "2", "^", "^"}));          // ② 여러 자리, 우결합
-      assert(toPostfix("8-3-2", out) && out == (std::vector<std::string>{"8", "3", "-", "2", "-"}) && toPostfix("-2^2", out) && out == (std::vector<std::string>{"2", "2", "^", "~"}) && toPostfix("2*-3", out) && out == (std::vector<std::string>{"2", "3", "~", "*"})); }
-    for (const char* bad : {"", "(1+2", "1+2)", "1+*2", "1 2", "()", "1+", "*3", "(1+2))", "1+(2*)", "a+b", "2^"}) { std::vector<std::string> out; assert(!toPostfix(bad, out)); }                                      // ③ 오류
-    std::cout << "InfixToPostfix: " << checked << " random expressions (with associativity, unary minus, redundant parentheses and spaces) converted to exactly the tree's postfix order; " << evaluated << " of them evaluated identically; 12 malformed inputs were rejected" << std::endl; return 0;
+        bool conv = toPostfix(infix, got); assert(conv && got == want); checked++;                                                                                                                       // ① 트리의 후위 순회와 정확히 같다
+        long long a = 0, b = 0; bool okTree = evalTree(pool, root, a), okPost = evalPostfix(got, b); assert(okTree == okPost && (!okTree || a == b)); evaluated += okTree;
+        RD rd(infix); long long c = rd.expr(); assert(rd.peek() == '\0' && rd.ok == okPost && (!okPost || c == b)); }                  // ④ 계산 결과도 같다
+    typedef std::vector<std::string> V;
+    { std::vector<std::string> out; bool c1 = toPostfix("12+345*6", out); assert(c1 && out == (V{"12", "345", "6", "*", "+"})); bool c2 = toPostfix("2^3^2", out); assert(c2 && out == (V{"2", "3", "2", "^", "^"}));          // ② 여러 자리, 우결합
+      bool c3 = toPostfix("8-3-2", out); assert(c3 && out == (V{"8", "3", "-", "2", "-"})); bool c4 = toPostfix("-2^2", out); assert(c4 && out == (V{"2", "2", "^", "~"})); bool c5 = toPostfix("2*-3", out); assert(c5 && out == (V{"2", "3", "~", "*"})); bool c11 = toPostfix("-2*3", out); assert(c11 && out == (V{"2", "~", "3", "*"}));
+      bool c6 = toPostfix("1+7%3", out); assert(c6 && out == (V{"1", "7", "3", "%", "+"})); bool c7 = toPostfix("1+2-3", out); assert(c7 && out == (V{"1", "2", "+", "3", "-"})); bool c8 = toPostfix("1-2+3", out); assert(c8 && out == (V{"1", "2", "-", "3", "+"}));
+      bool c9 = toPostfix("8/2*3%5", out); assert(c9 && out == (V{"8", "2", "/", "3", "*", "5", "%"})); bool c10 = toPostfix("2*3^2+1", out); assert(c10 && out == (V{"2", "3", "2", "^", "*", "1", "+"})); }                       // ② 우선순위 표를 손으로 확인: % 는 * 와 같은 단계, + 와 - 는 같은 단계(좌결합)
+    for (const char* bad : {"", "(1+2", "1+2)", "1+*2", "1 2", "()", "1+", "*3", "(1+2))", "1+(2*)", "a+b", "2^"}) { std::vector<std::string> out; bool accepted = toPostfix(bad, out); assert(!accepted); }                                      // ③ 오류
+    std::cout << "InfixToPostfix: " << checked << " random expressions (with associativity, unary minus, redundant parentheses and spaces) converted to exactly the tree's postfix order; " << evaluated << " of them evaluated identically, also by an independent recursive-descent evaluator; 12 malformed inputs were rejected" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(N)
@@ -1160,7 +1188,9 @@ int main() {
         assert(h.current() == a.current());                                                                                                                                            // ①
         assert(h.backSize() + h.forwardSize() + 1 == a.length());                                                                                                                       // ④ 배열 모델의 길이 = back + 현재 + forward
     }
-    { BrowserHistory e("start"); assert(e.back(3) == 0 && e.forward(3) == 0 && e.current() == "start"); e.visit("a"); e.visit("b"); assert(e.back(1) == 1 && e.current() == "a" && e.forward(5) == 1 && e.current() == "b" && e.back(5) == 2 && e.current() == "start"); e.visit("c"); assert(e.forward(1) == 0 && e.back(1) == 1 && e.current() == "start"); }          // ⑤
+    { BrowserHistory e("start"); int b0 = e.back(3), f0 = e.forward(3); assert(b0 == 0 && f0 == 0 && e.current() == "start"); e.visit("a"); e.visit("b");
+      int b1 = e.back(1); assert(b1 == 1 && e.current() == "a"); int f1 = e.forward(5); assert(f1 == 1 && e.current() == "b"); int b2 = e.back(5); assert(b2 == 2 && e.current() == "start");
+      e.visit("c"); int f2 = e.forward(1), b3 = e.back(1); assert(f2 == 0 && b3 == 1 && e.current() == "start"); }          // ⑤
     std::cout << "BrowserHistory: the two-stack history matched an array-plus-index model over 50000 random operations (" << visits << " visits, " << backs << " pages back, " << forwards << " pages forward)" << std::endl; return 0;
 }
 // Time Complexity: visit O(1) (forward 비우기는 O(forward 크기)), back·forward O(이동한 칸 수)
@@ -1372,15 +1402,17 @@ int main() {
 // 단조 스택(Monotonic Stack): 스택의 값이 항상 한 방향(예: 위로 갈수록 작아지는 감소)으로 정렬되도록 유지하는 기법이다. 새 값 x 를 넣기 전에 규칙을 어기는 top 들을 pop 한다. pop 되는 순간이 바로 "그 원소의 다음으로 큰 값이 x" 라는 사실이 확정되는 순간이므로, O(N²) 비교 없이 모든 원소의 "다음/이전 더 큰/작은 값" 을 O(N) 에 구한다.
 // 왜 O(N): 각 원소는 한 번 push 되고 많아야 한 번 pop 되므로 반복문 안의 pop 총합이 N 이하다(분할상환).
 // 변형 네 가지: 이전/다음 × 더 큰/더 작은. 또 "엄격히(>)" 인지 "같아도(>=)" 인지에 따라 값이 같은 원소 처리가 달라지므로 중복이 있는 입력에서 특히 중요하다. 이 항목은 네 변형 모두를 같은 틀(비교 함수만 교체)로 구현해 브루트포스(O(N²))와 대조한다. 응용: NextGreaterElement, PreviousGreaterElement, LargestRectangle, DailyTemperatures, StockSpan.
-// 검증: 무작위 배열(중복 많음)에서 ① 네 변형의 모든 결과가 브루트포스와 같다 ② 스택의 값이 매 단계 단조(비교 규칙에 맞게 정렬) ③ pop 총 횟수 ≤ N 이고 push 횟수 == N ④ 엄격/비엄격 차이가 중복 입력에서 실제로 다른 결과를 낸다
+// 검증: 무작위 배열(중복 많음)에서 ① 네 변형의 모든 결과가 브루트포스와 같다 ② nearest 안에서 매 push 직전 top 이 새 원소와 비교 규칙을 만족함을 확인(인접한 쌍마다 성립하므로 스택 전체가 단조) ③ nearest 가 직접 센 값으로 push 횟수 == N, pop 횟수 ≤ N, pop + 남은 원소 == push ④ 엄격/비엄격 차이가 중복 입력에서 실제로 다른 결과를 낸다(배열×방향 쌍 기준)
 enum Dir { NEXT, PREV };
 // 각 i 에 대해 NEXT 는 i 오른쪽에서, PREV 는 왼쪽에서 pred(candidate, value) 를 처음 만족하는 원소의 인덱스(없으면 -1)를 구한다. pred 는 "더 크다/작다(엄격 또는 비엄격)" 판정.
-template <class Pred> std::vector<int> nearest(const std::vector<int>& a, Dir dir, Pred pred, long* pops = nullptr) {
-    int n = a.size(); std::vector<int> res(n, -1); std::stack<int> st; long p = 0;
+struct Stats { long pushes = 0, pops = 0, left = 0; bool monotone = true; };                               // nearest 가 스스로 센 값
+template <class Pred> std::vector<int> nearest(const std::vector<int>& a, Dir dir, Pred pred, Stats* stats = nullptr) {
+    int n = a.size(); std::vector<int> res(n, -1); std::stack<int> st; Stats s;
     for (int step = 0; step < n; step++) { int i = dir == NEXT ? n - 1 - step : step;                              // NEXT 는 오른쪽에서 왼쪽으로 훑는다
-        while (!st.empty() && !pred(a[st.top()], a[i])) { st.pop(); p++; }                                         // 후보가 되지 못하는(조건을 만족 못 하는) top 은 이후에도 쓸모없다
-        res[i] = st.empty() ? -1 : st.top(); st.push(i); }
-    if (pops) *pops = p; return res;
+        while (!st.empty() && !pred(a[st.top()], a[i])) { st.pop(); s.pops++; }                                    // 후보가 되지 못하는(조건을 만족 못 하는) top 은 이후에도 쓸모없다
+        s.monotone = s.monotone && (st.empty() || pred(a[st.top()], a[i]));                                      // ② 새 원소를 얹기 전, top 은 규칙을 만족해야 한다
+        res[i] = st.empty() ? -1 : st.top(); st.push(i); s.pushes++; }
+    s.left = (long)st.size(); if (stats) *stats = s; return res;
 }
 template <class Pred> std::vector<int> brute(const std::vector<int>& a, Dir dir, Pred pred) {
     int n = a.size(); std::vector<int> res(n, -1); for (int i = 0; i < n; i++) { if (dir == NEXT) { for (int j = i + 1; j < n; j++) if (pred(a[j], a[i])) { res[i] = j; break; } } else { for (int j = i - 1; j >= 0; j--) if (pred(a[j], a[i])) { res[i] = j; break; } } } return res;
@@ -1407,15 +1439,15 @@ int main() {
         std::cout << pic; }
     std::mt19937 rng(21); long popsMax = 0;
     auto greater = [](int c, int v) { return c > v; }; auto greaterEq = [](int c, int v) { return c >= v; }; auto less = [](int c, int v) { return c < v; }; auto lessEq = [](int c, int v) { return c <= v; };
-    int strictDiffers = 0;
-    for (int t = 0; t < 3000; t++) { int n = rng() % 30; std::vector<int> a(n); for (int& x : a) x = rng() % 8; long pops;
-        for (Dir d : {NEXT, PREV}) { assert(nearest(a, d, greater, &pops) == brute(a, d, greater) && pops <= n); popsMax = std::max(popsMax, pops); assert(nearest(a, d, greaterEq) == brute(a, d, greaterEq) && nearest(a, d, less) == brute(a, d, less) && nearest(a, d, lessEq) == brute(a, d, lessEq));       // ① ③
-            strictDiffers += nearest(a, d, greater) != nearest(a, d, greaterEq); }                                                                                                                                                                  // ④
-        // ② 불변식: 단조 감소 스택 (아래 -> 위로 값이 줄어든다)을 직접 유지하며 매번 확인
-        std::stack<int> st; std::vector<int> vals; for (int x : a) { while (!st.empty() && st.top() <= x) { st.pop(); vals.pop_back(); } st.push(x); vals.push_back(x); for (size_t k = 1; k < vals.size(); k++) assert(vals[k - 1] > vals[k]); } }
+    int strictDiffers = 0, pairs = 0;
+    for (int t = 0; t < 3000; t++) { int n = rng() % 30; std::vector<int> a(n); for (int& x : a) x = rng() % 8;
+        for (Dir d : {NEXT, PREV}) {
+            auto check = [&](auto pred) { Stats s; std::vector<int> got = nearest(a, d, pred, &s); assert(got == brute(a, d, pred)); assert(s.pushes == n && s.pops <= n && s.pops + s.left == s.pushes && s.monotone); popsMax = std::max(popsMax, s.pops); return got; };   // ① ② ③
+            std::vector<int> g = check(greater), ge = check(greaterEq); check(less); check(lessEq);
+            strictDiffers += g != ge; pairs++; } }                                                                                                                                                                                                                   // ④
     assert(strictDiffers > 100);
     { std::vector<int> a = {2, 1, 2, 4, 3}; auto ng = nearest(a, NEXT, greater); assert((ng == std::vector<int>{3, 2, 3, -1, -1})); auto nge = nearest(a, NEXT, greaterEq); assert((nge == std::vector<int>{2, 2, 3, -1, -1})); }
-    std::cout << "MonotonicStack: all four nearest-greater/smaller variants (strict and non-strict) matched brute force on 3000 random arrays with many duplicates; pops never exceeded N (max " << popsMax << " for N<=29); strict vs non-strict differed on " << strictDiffers << " inputs" << std::endl; return 0;
+    std::cout << "MonotonicStack: all four nearest-greater/smaller variants (strict and non-strict) matched brute force on 3000 random arrays with many duplicates; pops never exceeded N (max " << popsMax << " for N<=29); strict vs non-strict differed on " << strictDiffers << " of " << pairs << " (array, direction) pairs" << std::endl; return 0;
 }
 // Time Complexity: O(N) (각 원소가 한 번 push, 한 번 pop)
 // Space Complexity: O(N)
@@ -1557,7 +1589,7 @@ int main() {
 
 // 일일 온도(DailyTemperatures): 각 날짜에 대해 더 따뜻한 날까지 며칠을 기다려야 하는지(없으면 0). 다음 큰 원소의 "값" 대신 "거리(인덱스 차이)" 를 구하는 문제다. 아직 답을 못 찾은 날짜의 인덱스를 스택에 쌓고, 오늘 온도가 top 날의 온도보다 높으면 그 날의 답은 오늘 − 그 날이다.
 // 뒤에서부터 훑는 방법도 있다: 오른쪽에서 왼쪽으로 가며 오늘보다 같거나 낮은 날들은 pop 하면 top 이 더 따뜻한 첫날이다(답 = 거리). 두 방향이 같은 결과를 줌을 확인한다. 스택 없이 "이미 구한 답을 건너뛰며 점프" 하는 O(N) 방법(답 배열로 다음 후보를 찾음)도 있다.
-// 검증: ① 무작위 온도열에서 앞→뒤 스택, 뒤→앞 스택, 점프 방식이 모두 O(N²) 브루트포스와 같다 ② 답이 0 인 날은 정확히 "그 날 이후 더 따뜻한 날이 없는" 날 ③ 증가열의 답은 모두 1, 감소열은 모두 0 ④ 최대 대기 일수와 답의 합이 브루트포스와 같다
+// 검증: ① 무작위 온도열에서 앞→뒤 스택, 뒤→앞 스택, 점프 방식이 모두 O(N²) 브루트포스와 같다 ② 답이 0 인 날은 정확히 "그 날 이후 더 따뜻한 날이 없는" 날 — 브루트포스가 아니라 뒤에서 앞으로 한 번 훑은 접미 최댓값과 스택 해답을 대조 ③ 증가열의 답은 마지막 날만 0 이고 나머지는 모두 1, 감소열은 모두 0, 고전 예제 하나
 std::vector<int> forwardStack(const std::vector<int>& t) {
     std::vector<int> ans(t.size(), 0); std::stack<int> st;
     for (int i = 0; i < (int)t.size(); ++i) { while (!st.empty() && t[st.top()] < t[i]) { ans[st.top()] = i - st.top(); st.pop(); } st.push(i); }
@@ -1577,8 +1609,8 @@ int main() {
     std::mt19937 rng(8);
     for (int t = 0; t < 4000; t++) { int n = rng() % 30; std::vector<int> a(n); for (int& x : a) x = 30 + rng() % 8; std::vector<int> want(n, 0); for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (a[j] > a[i]) { want[i] = j - i; break; }
         assert(forwardStack(a) == want && backwardStack(a) == want && jumping(a) == want);                                                                                                         // ①
-        for (int i = 0; i < n; i++) { bool warmerLater = false; for (int j = i + 1; j < n; j++) warmerLater |= a[j] > a[i]; assert((want[i] == 0) == !warmerLater); }                                 // ②
-        int mx = 0, sum = 0; for (int x : want) { mx = std::max(mx, x); sum += x; } int mx2 = 0, sum2 = 0; for (int x : forwardStack(a)) { mx2 = std::max(mx2, x); sum2 += x; } assert(mx == mx2 && sum == sum2); }          // ④
+        std::vector<int> f = forwardStack(a), sufMax(n + 1, -1); for (int i = n - 1; i >= 0; i--) sufMax[i] = std::max(sufMax[i + 1], a[i]);
+        for (int i = 0; i < n; i++) assert((f[i] == 0) == (a[i] >= sufMax[i + 1])); }                                                                                                             // ② 0 인 날 == 뒤에 더 따뜻한 날이 없는 날 (접미 최댓값은 스택도 이중 반복도 아니다)
     { std::vector<int> inc = {1, 2, 3, 4, 5}, dec = {5, 4, 3, 2, 1}; assert((forwardStack(inc) == std::vector<int>{1, 1, 1, 1, 0}) && (forwardStack(dec) == std::vector<int>{0, 0, 0, 0, 0}) && (forwardStack({73, 74, 75, 71, 69, 72, 76, 73}) == std::vector<int>{1, 1, 4, 2, 1, 1, 0, 0})); }       // ③
     std::cout << "DailyTemperatures: forward-stack, backward-stack and jumping solutions all matched brute force on 4000 random temperature sequences" << std::endl; return 0;
 }
