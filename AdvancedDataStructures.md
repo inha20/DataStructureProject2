@@ -3557,7 +3557,7 @@ int main() {
 //  최근에 쓴 키가 다시 빨리 나오는 접근 패턴에 강하다 (정적 최적성, 순차 접근 O(N) 등).  여기서는 재귀 없이 *위에서 아래로* 한 번에 끝내는 top-down 스플레이(Sleator–Tarjan)를 보인다 —
 //  내려가면서 경로를 "왼쪽 트리(작은 키)"와 "오른쪽 트리(큰 키)"에 떼어 붙이고 마지막에 조립한다.  깊이가 10^5 인 사슬에도 안전하다.
 //  ① 전수: 키 7 개의 모든 삽입 순서(5040) 뒤 각 키를 접근하면 그 키가 루트가 되고 BST 가 유지됨, 모든 삭제 순서 일부  ② 무작위 삽입·삭제·조회 100 만 번을 std::set 과 대조
-//  ③ *순차 접근 정리*: 무작위 순서로 만든 n = 10^5 트리(와 정렬 입력으로 생긴 사슬)를 키 순서대로 한 번 훑는 총 비용 ≤ 4n 스플레이 단계(zig-zig·zig-zag 한 쌍이 한 단계)이고 실제로 내려간 링크 수로 세면 ≤ 8n — 왼쪽으로 기운 사슬과 오른쪽으로 기운 사슬(내림차순 삽입 + 내림차순 훑기) 모두에서  ④ *작업 집합 성질*: 64 개 핫키를 반복 접근하면 접근당 비용이 O(log 64) 로 작아진다 — 10^5 개 트리 안인데도 평균 < 12 링크 (균형 트리는 17 근처; 링크는 단계 수와 달리 zig-zig 를 둘로 센 실제 내려간 간선 수).
+//  ③ *순차 접근 정리*: 무작위 순서로 만든 n = 10^5 트리(와 정렬 입력으로 생긴 사슬)를 키 순서대로 한 번 훑는 총 비용 ≤ 4n 스플레이 단계(zig-zig·zig-zag 한 쌍이 한 단계)이고 실제로 내려간 링크 수로 세면 ≤ 8n — 왼쪽으로 기운 사슬과 오른쪽으로 기운 사슬(내림차순 삽입 + 내림차순 훑기) 모두에서  ④ *작업 집합 성질*: 64 개 핫키를 반복 접근하면 접근당 비용이 O(log 64) 로 작아진다 — 10^5 개 트리 안인데도 평균 < 10 링크 (균형 트리는 17 근처; 링크는 단계 수와 달리 zig-zig 를 둘로 센 실제 내려간 간선 수).
 struct Splay {
     std::vector<int> key, L, R; std::vector<int> freeList; int root = -1; size_t cnt = 0; long steps = 0, links = 0;     // 인덱스 0 은 조립용 머리 노드.  steps = 스플레이 단계 수(반복 한 번; zig-zig·zig-zag 는 링크 2 개를 내려가도 한 단계), links = 실제로 내려간 링크 수
     Splay() { key.push_back(0); L.push_back(-1); R.push_back(-1); }
@@ -3596,7 +3596,7 @@ int main() {
       Splay mirror; for (int k = n - 1; k >= 0; --k) mirror.insert(k); assert(mirror.valid() && mirror.depthOf(n - 1) >= n / 2);                    // 내림차순 삽입 -> 오른쪽으로 기운 사슬
       mirror.steps = mirror.links = 0; for (int k = n - 1; k >= 0; --k) assert(mirror.contains(k)); long mirrorSteps = mirror.steps, mirrorLinks = mirror.links; assert(mirrorSteps <= 4L * n && mirrorLinks <= 8L * n);   // 거울 대칭 (오른쪽 zig-zig)
       int hot[64]; for (int& h : hot) h = keys[rng() % n]; for (int rep = 0; rep < 100; ++rep) for (int h : hot) t.contains(h);                                      // 워밍업
-      t.links = 0; const int reps = 2000; for (int rep = 0; rep < reps; ++rep) for (int h : hot) assert(t.contains(h)); double avg = (double)t.links / (reps * 64.0); assert(avg < 12.0);   // ④ 작업 집합
+      t.links = 0; const int reps = 2000; for (int rep = 0; rep < reps; ++rep) for (int h : hot) assert(t.contains(h)); double avg = (double)t.links / (reps * 64.0); assert(avg < 10.0);   // ④ 작업 집합
       std::cout << "SplayTree: top-down splaying matched std::set over 10^6 operations and every 7-key insertion order; scanning all 10^5 keys in ascending order cost " << (double)scanSteps / n << " splay steps (" << (double)scanLinks / n << " links) per key on a random tree, " << (double)chainSteps / n << " (" << (double)chainLinks / n << ") on a left-leaning chain and " << (double)mirrorSteps / n << " (" << (double)mirrorLinks / n << ") on its mirror image (sequential access theorem: O(1) each), and 64 hot keys cost " << avg << " links per access" << std::endl; }
     return 0;
 }
@@ -3681,7 +3681,9 @@ int main() {
 // 구조: 키 1..N(N=2^H-1)에 대한 완전 이진 "참조 트리" P 를 두고(실제로 저장하지 않고 산술로 계산), 각 노드에 "선호 자식"(마지막으로 접근한 쪽)을 둔다.
 // 선호 자식을 따라 이어진 사슬이 "선호 경로" 이고, 경로마다 크기가 <= H 인 보조 BST(여기서는 깊이 정보를 덧붙인 트립)를 만든다 -> 보조 트리 탐색은 O(log log N).
 // 접근 x 는 "경로 안 탐색" 과 "선호 자식이 바뀌는 지점에서의 cut(깊이로 아래쪽 자르기) / join(다른 경로 이어 붙이기)" 의 반복이고, 선호 자식이 바뀐 횟수 k 에 대해 시간이 O(k (1 + log log N)).
-// 이 k 는 Wilber 의 interleave 하한과 정확히 같다 — 아래 main 이 독립적으로 계산한 interleave 값과 대조해 확인한다
+// 선호 자식이 왼쪽<->오른쪽으로 *교대한* 횟수 flips 는 Wilber 의 interleave 하한과 정확히 같다 — 아래 main 이 독립적으로 계산한 interleave 값과 대조해 확인한다.
+// 그러나 실제 일(join·cut 횟수)은 flips 와 같지 않다: 선호 자식이 처음 정해질 때, 그리고 노드 자신이 접근되어 선호가 지워진 뒤 다시 정해질 때도 join 이 일어난다.  main 이 joins <= flips + N + 접근 수, cuts <= joins + 접근 수 를 단언한다.
+// 보조 트리는 키 순서 BST 이기만 하면 되므로 여기서는 트립(무작위 우선순위)으로 구현했다 -> 보조 트리 연산은 크기 <= H 에서 *기대* O(log H) = O(log log N) 이고 최악이 아니다 (논문은 균형 트리로 최악 보장).
 int H, N;
 int ctz(int k) { return __builtin_ctz(k); }
 int depthOf(int k) { return H - 1 - ctz(k); }                              // 키 k 의 참조 트리 깊이 (루트 0)
@@ -3753,7 +3755,8 @@ int main() {
     for (int i = 0; i < N; i++) { int v = 0; for (int b = 0; b < H; b++) if (i >> b & 1) v |= 1 << (H - 1 - b); if (v >= 1 && v <= N) seqs[2].push_back(v); }   // 비트 역순
     for (auto& s : seqs) {
         Tango t; int cnt = 0; for (int x : s) { t.access(x); if (++cnt % 250 == 0) assert(t.verify()); }
-        assert(t.verify() && t.flips == interleave(s));                    // 선호 자식 변경 횟수 == interleave 하한
+        assert(t.verify() && t.flips == interleave(s));                    // 선호 자식의 좌우 교대 횟수 == interleave 하한
+        assert(t.joins <= t.flips + N + (long)s.size() && t.cuts <= t.joins + (long)s.size() && t.joins >= t.flips);        // 처음 지정 (노드당 한 번) + 자기 접근 뒤 재지정 (접근당 한 번)을 합쳐도 이 이상은 없다
         std::cout << "sequence of " << s.size() << " accesses: preferred-child flips " << t.flips << ", cuts " << t.cuts << ", joins " << t.joins << std::endl;
     }
     Tango seq; for (int r = 0; r < 1; r++) for (int i = 1; i <= N; i++) seq.access(i);
@@ -3761,7 +3764,7 @@ int main() {
     std::cout << "TangoTree: flips == interleave bound on 3 access patterns; sequential pass flips " << seq.flips << " for N=" << N << std::endl;
     return 0;
 }
-// Time Complexity: 접근열 X 에 대해 O((k + 1)(1 + log log N)) (k = 선호 자식 변경 횟수 = interleave 하한)
+// Time Complexity: 접근열 X 에 대해 기대 O((k + 1)(1 + log log N)) (k = 선호 자식이 바뀐(join 한) 횟수 <= interleave 하한 + N + |X|; 보조 트리가 트립이므로 log log N 은 기대값)
 // Space Complexity: O(N)
 ```
 
@@ -8548,10 +8551,13 @@ int main() {
 #include <vector>
 #include <cassert>
 
-// 벡터 검색은 "질의와 가까운 k 개" 를 찾는 일이고, 차원이 높으면 공간 분할 트리(KD, Ball)는 거의 모든 가지를 방문해 전수 탐색과 다를 바 없어진다. 남는 선택이 IVF(군집 -> 일부 군집만 탐색)와 근접 그래프(HNSW 계열)이다.
-// IVF 는 군집 수를 √N 으로 두면 탐색량이 ~√N 으로 늘어난다. 근접 그래프는 "이웃의 이웃이 더 가깝다" 는 성질로 질의 쪽으로 걸어가기 때문에 같은 recall 에서 거리 계산이 N 에 거의 무관하게 천천히(~로그) 늘고,
-// 새 벡터를 넣을 때 재학습 없이 이웃 몇 개와 연결만 하면 되며(군집 중심을 다시 학습할 필요가 없다), 압축 없이도 정확한 거리를 쓴다. 대가는 메모리(벡터 + 간선)와 삭제의 어려움이다.
-// 아래는 같은 데이터에서 N 을 키우며 "recall@10 >= 0.9 를 처음 달성하는 설정" 의 평균 거리 계산 수를 전수 탐색·IVF·근접 그래프(계층 없는 단순판)로 비교한다 (HNSW 본체는 이 책 Part 12 HNSW 항목)
+// 벡터 검색은 "질의와 가까운 k 개" 를 찾는 일이다. 구조 없는 고차원 데이터에서는 공간 분할 트리(KD, Ball)가 거의 모든 가지를 방문해 전수 탐색과 다를 바 없어진다 — 아래에서 16 차원 가우시안 데이터로 직접 재면 KD 트리가 N 의 99% 이상을 본다.
+// (군집이 뚜렷한 데이터에서는 KD 트리도 훨씬 적게 본다: 같은 군집 데이터에서는 N 의 9~22%.  그러니 근거는 "구조가 없으면 트리는 소용없다" 이지 "트리는 항상 나쁘다" 가 아니다.)  남는 선택이 IVF(군집 -> 일부 군집만 탐색)와 근접 그래프(HNSW 계열)이다.
+// IVF 는 군집 수를 √N 으로 두면 탐색량이 ~√N 으로 늘어난다 (여기서 N 이 8 배일 때 약 3.8 배).  근접 그래프는 "이웃의 이웃이 더 가깝다" 는 성질로 질의 쪽으로 걸어가기 때문에 같은 recall 에서 거리 계산이 N 보다 훨씬 느리게 늘어난다
+// (여기서 N 이 8 배일 때 약 2.5 배 — N 에 "무관" 한 것은 아니고, 작은 N 에서는 IVF 와 비슷하다: N=1000 에서 103 대 100.  격차는 N 이 클수록 벌어진다).  실제 HNSW 는 새 벡터를 재학습 없이 이웃 몇 개와 연결만 하면 되고(군집 중심을 다시 학습할 필요가 없다) 압축 없이도 정확한 거리를 쓴다. 대가는 메모리(벡터 + 간선)와 삭제의 어려움이다.
+// 아래는 같은 데이터에서 N 을 키우며 "recall@10 >= 0.9 를 처음 달성하는 설정" (후보 격자에서 가장 싼 설정) 의 평균 거리 계산 수를 전수 탐색·IVF(k-means 6 회)·근접 그래프(계층 없는 단순판)로 비교한다 (HNSW 본체와 삽입으로 그래프를 만드는 방법은 이 책 Part 12 HNSW 항목)
+// 단순화(주의): 여기서 그래프는 삽입으로 만든 것이 아니라 O(N²) 전수 계산으로 만든 정확한 kNN 그래프(이웃 10 개 + 무작위 간선 2 개)이고 그 빌드 비용은 거리 계산 수에 넣지 않았다. 그래서 "재학습 없는 삽입" 같은 구성 쪽 장점은 이 항목이 아니라 HNSW 항목이 보인다.
+// 검증: 모든 N 에서 그래프가 N 의 25% 미만만 보고, N 이 8 배가 될 때 그래프의 증가 배율이 IVF 의 0.8 배 미만이며 N=8000 에서 IVF 보다 적고, KD 트리는 정확(전수 탐색과 같은 집합)한 답을 내며 가우시안 데이터에서는 N 의 90% 이상을 보고, IVF 의 k-means 가 군집 내 제곱 거리 합을 실제로 줄인다
 const int D = 16; typedef std::array<float, D> V;
 float dist(const V& a, const V& b) { float s = 0; for (int i = 0; i < D; i++) s += (a[i] - b[i]) * (a[i] - b[i]); return s; }
 struct Graph {
@@ -8566,10 +8572,23 @@ struct Graph {
         std::vector<PI> v; while (!res.empty()) { v.push_back(res.top()); res.pop(); } std::reverse(v.begin(), v.end()); std::vector<int> out; for (int i = 0; i < k && i < (int)v.size(); i++) out.push_back(v[i].second); return out;
     }
 };
+struct KD {                                                                // 정확한 k-NN 용 KD 트리: 가장 퍼진 축에서 중앙값으로 분할, 분할 평면까지의 거리로 가지치기
+    const std::vector<V>* P; std::vector<int> idx; std::vector<char> ax; long evals = 0; std::vector<std::pair<float, int>> heap;
+    void build(const std::vector<V>& pts) { P = &pts; idx.resize(pts.size()); ax.assign(pts.size(), 0); for (size_t i = 0; i < idx.size(); i++) idx[i] = (int)i; rec(0, (int)idx.size()); }
+    void rec(int lo, int hi) { if (hi - lo <= 1) return; int best = 0; float bw = -1; for (int a = 0; a < D; a++) { float mn = 1e30f, mx = -1e30f; for (int i = lo; i < hi; i++) { mn = std::min(mn, (*P)[idx[i]][a]); mx = std::max(mx, (*P)[idx[i]][a]); } if (mx - mn > bw) { bw = mx - mn; best = a; } }
+        int mid = (lo + hi) / 2; std::nth_element(idx.begin() + lo, idx.begin() + mid, idx.begin() + hi, [&](int x, int y) { return (*P)[x][best] < (*P)[y][best]; }); ax[mid] = (char)best; rec(lo, mid); rec(mid + 1, hi); }
+    void knn(const V& q, int lo, int hi, int k) { if (lo >= hi) return; int mid = (lo + hi) / 2, id = idx[mid]; float d = dist(q, (*P)[id]); evals++; heap.push_back({d, id}); std::push_heap(heap.begin(), heap.end()); if ((int)heap.size() > k) { std::pop_heap(heap.begin(), heap.end()); heap.pop_back(); }
+        if (hi - lo == 1) return; float diff = q[(int)ax[mid]] - (*P)[id][(int)ax[mid]]; bool left = diff < 0; if (left) knn(q, lo, mid, k); else knn(q, mid + 1, hi, k);
+        if ((int)heap.size() < k || diff * diff < heap.front().first) { if (left) knn(q, mid + 1, hi, k); else knn(q, lo, mid, k); } }
+    std::vector<int> search(const V& q, int k) { heap.clear(); knn(q, 0, (int)idx.size(), k); std::vector<int> out; for (auto& h : heap) out.push_back(h.second); return out; }
+};
 struct IVF {
-    const std::vector<V>* P; std::vector<V> cents; std::vector<std::vector<int>> lists; long evals = 0;
+    const std::vector<V>* P; std::vector<V> cents; std::vector<std::vector<int>> lists; long evals = 0; double sse0 = 0, sse1 = 0;
     void build(const std::vector<V>& pts, int nlist, std::mt19937& g) { P = &pts; for (int c = 0; c < nlist; c++) cents.push_back(pts[g() % pts.size()]); lists.assign(nlist, {});
-        for (size_t i = 0; i < pts.size(); i++) { int b = 0; float bd = 1e30f; for (int c = 0; c < nlist; c++) { float d = dist(pts[i], cents[c]); if (d < bd) { bd = d; b = c; } } lists[b].push_back(i); } }
+        assign(); sse0 = sse();           // 무작위 표본으로 시작해 k-means 6 회 (평균으로 중심 갱신 -> 재배정)
+        for (int it = 0; it < 6; it++) { std::vector<V> sum(nlist); for (auto& v : sum) v.fill(0); for (int c = 0; c < nlist; c++) { for (int id : lists[c]) for (int j = 0; j < D; j++) sum[c][j] += pts[id][j]; if (!lists[c].empty()) for (int j = 0; j < D; j++) cents[c][j] = sum[c][j] / lists[c].size(); } assign(); } sse1 = sse(); }
+    double sse() const { double s = 0; for (size_t c = 0; c < lists.size(); c++) for (int id : lists[c]) s += dist((*P)[id], cents[c]); return s; }      // 군집 내 제곱 거리 합 (k-means 목적함수)
+    void assign() { for (auto& l : lists) l.clear(); for (size_t i = 0; i < P->size(); i++) { int b = 0; float bd = 1e30f; for (int c = 0; c < (int)cents.size(); c++) { float d = dist((*P)[i], cents[c]); if (d < bd) { bd = d; b = c; } } lists[b].push_back((int)i); } }
     std::vector<int> search(const V& q, int k, int nprobe) {
         std::vector<std::pair<float, int>> cd; for (size_t c = 0; c < cents.size(); c++) cd.push_back({dist(q, cents[c]), (int)c}); evals += cents.size(); std::partial_sort(cd.begin(), cd.begin() + nprobe, cd.end());
         std::vector<std::pair<float, int>> cand; for (int p = 0; p < nprobe; p++) for (int id : lists[cd[p].second]) { cand.push_back({dist(q, (*P)[id]), id}); evals++; }
@@ -8577,21 +8596,27 @@ struct IVF {
     }
 };
 int main() {
-    std::mt19937 g(5); std::normal_distribution<float> N(0, 1); const int Q = 60, K = 10; double gEv[4], iEv[4]; int sizes[4] = {1000, 2000, 4000, 8000};
+    std::mt19937 g(5); std::normal_distribution<float> N(0, 1); const int Q = 60, K = 10; double gEv[4], iEv[4], kdC[4], kdU[4]; int sizes[4] = {1000, 2000, 4000, 8000};
     for (int s = 0; s < 4; s++) {
         int n = sizes[s]; std::vector<V> centers(20); for (auto& c : centers) for (auto& x : c) x = N(g) * 4; auto sample = [&]() { V p = centers[g() % 20]; for (auto& x : p) x += N(g); return p; };
         std::vector<V> pts; for (int i = 0; i < n; i++) pts.push_back(sample()); std::vector<V> qs; std::vector<std::vector<int>> exact;
         for (int t = 0; t < Q; t++) { qs.push_back(sample()); std::vector<std::pair<float, int>> d; for (int i = 0; i < n; i++) d.push_back({dist(qs.back(), pts[i]), i}); std::partial_sort(d.begin(), d.begin() + K, d.end()); std::vector<int> e; for (int i = 0; i < K; i++) e.push_back(d[i].second); exact.push_back(e); }
         auto recall = [&](std::vector<std::vector<int>>& got) { double r = 0; for (int t = 0; t < Q; t++) { int hit = 0; for (int a : got[t]) hit += std::find(exact[t].begin(), exact[t].end(), a) != exact[t].end(); r += (double)hit / K; } return r / Q; };
         Graph gr; gr.build(pts, 10); gEv[s] = 1e18; for (int ef : {16, 24, 32, 48, 64, 96, 128, 192, 256}) { gr.evals = 0; std::vector<std::vector<int>> got; for (auto& q : qs) got.push_back(gr.search(q, K, ef)); if (recall(got) >= 0.9) { gEv[s] = (double)gr.evals / Q; break; } }
-        int nlist = (int)std::sqrt((double)n); IVF iv; iv.build(pts, nlist, g); iEv[s] = n; for (int np = 1; np <= nlist; np = np < 4 ? np + 1 : np * 3 / 2) { iv.evals = 0; std::vector<std::vector<int>> got; for (auto& q : qs) got.push_back(iv.search(q, K, np)); if (recall(got) >= 0.9) { iEv[s] = (double)iv.evals / Q; break; } }
-        std::cout << "N=" << n << ": distance evaluations for recall@10>=0.9  flat " << n << " | IVF " << iEv[s] << " | proximity graph " << gEv[s] << std::endl;
+        { KD kd; kd.build(pts); std::vector<std::vector<int>> got; for (auto& q : qs) got.push_back(kd.search(q, K)); assert(recall(got) == 1.0); kdC[s] = (double)kd.evals / Q; }                       // 군집 데이터에서의 정확한 KD 트리 (재현율 1)
+        { std::mt19937 gu(77 + s); std::normal_distribution<float> NU(0, 1); std::vector<V> up(n); for (auto& p : up) for (auto& x : p) x = NU(gu); KD kd; kd.build(up); long ev = 0;       // 구조 없는 16 차원 가우시안 데이터
+          for (int t = 0; t < Q; t++) { V q; for (auto& x : q) x = NU(gu); kd.evals = 0; auto r = kd.search(q, K); ev += kd.evals; std::vector<std::pair<float, int>> d; for (int i = 0; i < n; i++) d.push_back({dist(q, up[i]), i}); std::partial_sort(d.begin(), d.begin() + K, d.end());
+            std::vector<int> e; for (int i = 0; i < K; i++) e.push_back(d[i].second); std::sort(e.begin(), e.end()); std::sort(r.begin(), r.end()); assert(e == r); } kdU[s] = (double)ev / Q; assert(kdU[s] >= 0.9 * n); }    // 거의 전수 탐색
+        int nlist = (int)std::sqrt((double)n); IVF iv; iv.build(pts, nlist, g); assert(iv.sse1 < iv.sse0); iEv[s] = n; for (int np = 1; np <= nlist; np = np < 4 ? np + 1 : np * 3 / 2) { iv.evals = 0; std::vector<std::vector<int>> got; for (auto& q : qs) got.push_back(iv.search(q, K, np)); if (recall(got) >= 0.9) { iEv[s] = (double)iv.evals / Q; break; } }
+        std::cout << "N=" << n << ": distance evaluations for recall@10>=0.9  flat " << n << " | IVF " << iEv[s] << " | proximity graph " << gEv[s] << "  (exact KD-tree: " << kdC[s] << " on this clustered data, " << kdU[s] << " = " << 100 * kdU[s] / n << "% of N on structureless Gaussian data)" << std::endl;
     }
-    assert(gEv[3] < 0.15 * sizes[3] && gEv[3] / gEv[0] < (double)sizes[3] / sizes[0] / 2 && gEv[3] < iEv[3]);        // 그래프: N 이 8 배가 되어도 계산량은 8/2 배보다 훨씬 덜 늘고, IVF 보다 적다
+    for (int s = 0; s < 4; s++) assert(gEv[s] < 0.25 * sizes[s]);                                                                  // 그래프는 모든 N 에서 전수 탐색의 1/4 미만
+    assert(gEv[3] / gEv[0] < (double)sizes[3] / sizes[0] / 2 && gEv[3] / gEv[0] < 0.8 * (iEv[3] / iEv[0]) && gEv[3] < iEv[3]);      // N 이 8 배가 되어도 그래프의 계산량은 4 배 미만이고, IVF 보다 덜 늘며, 큰 N 에서는 IVF 보다 적다
+    std::cout << "growth for N x" << sizes[3] / sizes[0] << ": proximity graph x" << gEv[3] / gEv[0] << " (exponent " << std::log(gEv[3] / gEv[0]) / std::log((double)sizes[3] / sizes[0]) << "), IVF x" << iEv[3] / iEv[0] << " (exponent " << std::log(iEv[3] / iEv[0]) / std::log((double)sizes[3] / sizes[0]) << "), flat x" << sizes[3] / sizes[0] << std::endl;
     return 0;
 }
-// Time Complexity: 그래프 질의 경험적으로 O(log N) 거리 계산, IVF 는 O(√N), 플랫은 O(N)
-// Space Complexity: 그래프 O(N·(D + M)), IVF O(N·D)
+// Time Complexity: 그래프 질의는 경험적으로 부선형 (이 데모에서 N 이 8 배일 때 약 2.5 배; 저차원 가정 하에서 O(log N) 으로 보고됨, 보장 아님), IVF 는 이상적으로 O(√N)(여기서 약 3.8 배), 플랫·구조 없는 고차원의 KD 트리는 O(N) (그래프 구성은 이 데모에서 전수 kNN 이라 O(N² D))
+// Space Complexity: 그래프 O(N·(D + M)), IVF·KD 트리 O(N·D)
 ```
 ## 현대 데이터베이스가 B+Tree와 LSMTree를 함께 사용하는 이유
 ### 대표코드

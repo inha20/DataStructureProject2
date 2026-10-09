@@ -2773,16 +2773,16 @@ struct Heap {
         uint32_t b = top; mem[b] = (uint64_t)need | ((uint64_t)nrefs << 24); for (uint32_t i = 1; i < need; ++i) mem[b + i] = 0; top += need; return b;
     }
     void mark() {
-        std::vector<uint32_t> st; for (uint32_t r : roots) { if (r) st.push_back(r); }
-        while (!st.empty()) { uint32_t b = st.back(); st.pop_back(); if (mem[b] & MARK) continue; mem[b] |= MARK;
-            for (uint32_t i = 0; i < nrefsOf(mem[b]); ++i) { uint32_t c = (uint32_t)ref(b, i); if (c && !(mem[c] & MARK)) st.push_back(c); } }
+        std::vector<uint32_t> st; auto push = [&](uint32_t b) { if (b && !(mem[b] & MARK)) { mem[b] |= MARK; st.push_back(b); } };     // 푸시할 때 표시: 한 객체는 스택에 한 번만 들어간다
+        for (uint32_t r : roots) push(r);
+        while (!st.empty()) { uint32_t b = st.back(); st.pop_back(); for (uint32_t i = 0; i < nrefsOf(mem[b]); ++i) push((uint32_t)ref(b, i)); }
     }
     long compact(long* liveOut = nullptr) {                                                     // 옮긴 객체 수를 돌려준다
         mark(); uint32_t next = 1, oldTop = top; long live = 0, moved = 0;
         for (uint32_t b = 1; b < top; b += sizeOf(mem[b])) { if (mem[b] & MARK) { mem[b + 1] = next; next += sizeOf(mem[b]); ++live; } }      // (2) 새 주소
         for (uint32_t& r : roots) { if (r) r = (uint32_t)mem[r + 1]; }                                                                       // (3) 루트와 참조 갱신
         for (uint32_t b = 1; b < top; b += sizeOf(mem[b])) { if (mem[b] & MARK) for (uint32_t i = 0; i < nrefsOf(mem[b]); ++i) { if (ref(b, i)) ref(b, i) = mem[ref(b, i) + 1]; } }
-        for (uint32_t b = 1; b < top;) {                                                                                                     // (4) 이동
+        for (uint32_t b = 1; b < top;) {                                                                                                     // (4) 이동 (원천과 목적지가 겹칠 수 있어 memmove: memcpy 로 바꾸면 ASan 이 겹침을 잡는다)
             uint32_t sz = sizeOf(mem[b]);
             if (mem[b] & MARK) { uint32_t dst = (uint32_t)mem[b + 1]; if (dst != b) { std::memmove(&mem[dst], &mem[b], (size_t)sz * 8); ++moved; } mem[dst] &= ~MARK; mem[dst + 1] = 0; }
             b += sz;
@@ -2899,8 +2899,8 @@ int main() {
         for (int i = 0; i < N; ++i) { if (c.live[i]) { if ((size_t)i >= L) ++expectMoves; if (seenDead) ++lisp2; } else seenDead = true; }
         long moved = c.twoFinger();
         assert(moved == expectMoves && moved <= lisp2 && c.cells.size() == L);                                               // 이동 수 == L 이상에 있던 산 칸 수
-        std::vector<int> after; for (size_t i = 0; i < L; ++i) { after.push_back(c.cells[i].id); int id = c.cells[i].id; for (int k = 0; k < 3; ++k) { int r = c.cells[i].refs[k]; assert((r >= 0 ? c.cells[r].id : 0) == graph[id][k]); } }
-        for (size_t i = 0; i < c.roots.size(); ++i) assert(c.cells[c.roots[i]].id == rootIds[i]);
+        std::vector<int> after; for (size_t i = 0; i < L; ++i) { after.push_back(c.cells[i].id); int id = c.cells[i].id; for (int k = 0; k < 3; ++k) { int r = c.cells[i].refs[k]; assert(r < (int)L && (r >= 0 ? c.cells[r].id : 0) == graph[id][k]); } }     // 참조는 압축된 범위 [0,L) 안을 가리킨다
+        for (size_t i = 0; i < c.roots.size(); ++i) { assert(c.roots[i] < (int)L); assert(c.cells[c.roots[i]].id == rootIds[i]); }
         std::vector<int> a2 = after, b2 = liveOrder; std::sort(a2.begin(), a2.end()); std::sort(b2.begin(), b2.end()); assert(a2 == b2);   // 같은 집합
         if (after != liveOrder) ++permuted;                                                                                  // 순서는 바뀔 수 있다
         tfMoved += moved; lispMoved += lisp2; ++cellRuns;
@@ -2911,7 +2911,7 @@ int main() {
     return 0;
 }
 // Time Complexity: O(힙 크기) · 4 패스 (표시 + 주소 계산 + 갱신 + 이동), 두 손가락은 표시 뒤 O(셀 수) 한 번
-// Space Complexity: O(1) 추가 (forwarding 주소는 객체 헤더에 저장), 표시 스택 O(깊이)
+// Space Complexity: O(1) 추가 (forwarding 주소는 객체 헤더에 저장) + 표시 스택 최악 O(살아 있는 객체 수) (푸시할 때 표시하므로 한 객체는 한 번만 들어간다)
 ```
 ## CopyingGC()
 ### 대표코드
@@ -2927,18 +2927,18 @@ int main() {
 #include <vector>
 
 // 복사 수집(Cheney 알고리즘): 힙을 from-space/to-space 로 나눈다.  루트에서 닿는 객체를 to-space 로 "복사" 하며 원본에는 전달 주소(forwarding pointer)를 남겨
-// 공유된 객체가 두 번 복사되지 않게 한다.  to-space 의 scan 포인터가 free 포인터를 따라잡으면 끝(BFS).  비용은 살아있는 객체에 비례(쓰레기는 방문조차 안 함),
+// 공유된 객체가 두 번 복사되지 않게 한다.  to-space 의 scan 포인터가 free 포인터를 따라잡으면 끝(BFS).  비용은 살아있는 객체에 비례(쓰레기는 방문조차 안 함; 아래 poison 채우기는 디버그 전용이라 예외),
 // 결과가 자동으로 압축된다.  단점: 힙의 절반만 쓸 수 있다
 // 이 구현은 워드 배열 두 개 위에서 진짜로 만든다: 객체 = [헤더][참조 n][데이터 d], 복사하고 나면 원본의 헤더를 "전달됨 + 새 주소" 로 덮어쓴다.  할당은 범프 포인터.
-// 검증: ① 임의 그래프 400 개(순환·공유·자기 참조): 수집 뒤 to-space 의 객체 순서 == 루트부터의 너비 우선 발견 순서(Cheney 의 정확한 성질), 살아 있는 객체가 정확히 한 번씩 복사(복사 횟수 == 도달 가능 수),
-//        공유·순환이 보존, 참조·데이터 보존, 옛 공간은 오염값으로 채워 낡은 참조가 있으면 바로 드러남  ② 비용은 쓰레기 양과 무관: 같은 산 구조에 쓰레기를 0 / 100 / 1000 개 섞어도 복사한 워드 수·스캔 수가 같다
+// 검증: ① 임의 그래프 400 개(순환·공유·자기 참조): 수집 뒤 to-space 의 객체 순서 == 루트부터의 너비 우선 발견 순서(Cheney 의 정확한 성질), 살아 있는 객체가 정확히 한 번씩 복사(복사 횟수 == 도달 가능 수, 복사한 워드 수 == 살아 있는 객체 크기의 합을 모형에서 따로 계산한 값),
+//        공유·순환이 보존, 참조·데이터 보존, 옛 공간은 오염값으로 채워 낡은 참조가 있으면 바로 드러남  ② 비용은 쓰레기 양과 무관: 같은 산 구조에 쓰레기를 0 / 100 / 1000 개 섞어도 복사한 워드 수·스캔 수가 같고(poison 채우기를 끈 상태), 옛 공간에서 전달 표시가 붙은 것은 복사한 객체뿐 — 쓰레기는 건드리지 않는다
 //        ③ 무작위 변경 프로그램 4 000 번(할당 실패 시 수집, 루트 갱신): id 모형 대조  ④ 두 번 연속 수집하면 두 번째는 순서까지 같은 배치(고정점)
 const uint64_t FWD = 1ull << 63, POISON = 0xDEADDEADDEADDEADull;
 inline uint32_t sizeOf(uint64_t h) { return (uint32_t)(h & 0xFFFFFF); }
 inline uint32_t nrefsOf(uint64_t h) { return (uint32_t)((h >> 24) & 0xFFFF); }
 
 struct Heap {
-    std::vector<uint64_t> from, to; uint32_t top = 1; std::vector<uint32_t> roots; long copiedObjects = 0, copiedWords = 0, scanned = 0, collections = 0;
+    std::vector<uint64_t> from, to; uint32_t top = 1; std::vector<uint32_t> roots; long copiedObjects = 0, copiedWords = 0, scanned = 0, collections = 0; bool poison = true;
     explicit Heap(uint32_t semiWords) : from(semiWords + 1, 0), to(semiWords + 1, 0) {}
     uint64_t& ref(uint32_t b, uint32_t i) { return from[b + 1 + i]; }
     uint64_t& data(uint32_t b, uint32_t j) { return from[b + 1 + nrefsOf(from[b]) + j]; }
@@ -2960,7 +2960,8 @@ struct Heap {
             for (uint32_t i = 0; i < n; ++i) { to[scan + 1 + i] = copy((uint32_t)to[scan + 1 + i]); }
             scan += sz;
         }
-        std::fill(from.begin(), from.end(), POISON); from.swap(to); top = freePtr;                              // 역할 교대, 옛 from 은 오염값
+        if (poison) std::fill(from.begin(), from.end(), POISON);                                                 // 디버그 전용: 옛 공간을 오염값으로 채워 낡은 참조를 드러낸다 (이 채우기만 O(힙); 끄면 옛 공간은 건드리지 않는다)
+        from.swap(to); top = freePtr;                                                                             // 역할 교대
     }
     std::vector<uint32_t> objects() const { std::vector<uint32_t> v; for (uint32_t b = 1; b < top; b += sizeOf(from[b])) { assert(sizeOf(from[b]) >= 2); v.push_back(b); } return v; }
 };
@@ -2977,6 +2978,8 @@ int main() {
         h.ref(o[0], 0) = o[1]; h.ref(o[0], 1) = o[2]; h.ref(o[1], 0) = o[3]; h.ref(o[2], 0) = o[3]; h.ref(o[3], 0) = o[0]; h.ref(o[4], 0) = o[5]; h.ref(o[5], 0) = o[4]; h.roots = {o[0]};
         h.collect(); assert(h.copiedObjects == 4 && h.objects().size() == 4);                                        // 도달 가능한 0,1,2,3 만 복사
         uint32_t r = h.roots[0]; assert(h.data(r, 0) == 0);
+        Heap e(10); uint32_t e1 = e.alloc(0, 0), e2 = e.alloc(0, 0); assert(sizeOf(e.from[e1]) == 2 && e2 - e1 == 2);   // 빈 객체도 최소 2 워드(헤더 + 한 칸)를 차지한다
+        e.roots = {e1, e2}; e.collect(); assert(e.copiedWords == 4 && e.objects().size() == 2);
         uint32_t c1 = (uint32_t)h.ref(r, 0), c2 = (uint32_t)h.ref(r, 1); uint32_t p1 = (uint32_t)h.ref(c1, 0), p2 = (uint32_t)h.ref(c2, 0);
         assert(p1 == p2 && h.data(p1, 0) == 3 && h.ref(p1, 0) == r);                                                 // 공유된 객체 3 은 하나, 순환 3 -> 0 보존
     }
@@ -3002,7 +3005,8 @@ int main() {
         std::vector<int> got; for (uint32_t b : h.objects()) { int id = (int)h.data(b, 0); got.push_back(id);
             for (uint32_t k = 0; k < nrefsOf(h.from[b]); ++k) { uint32_t c = (uint32_t)h.ref(b, k); assert((c ? (int)h.data(c, 0) : 0) == graph[id][k]); }
             for (uint32_t j = 0; j < h.dataWords(b); ++j) { assert(h.data(b, j) == payload[id][j]); } }
-        assert(got == order && h.copiedObjects == (long)order.size() && h.scanned == (long)order.size());              // 순서 == BFS 발견 순서, 정확히 한 번씩
+        long expectWords = 0; for (int id : order) expectWords += std::max<long>(2, 1 + (long)graph[id].size() + (long)payload[id].size());      // 객체 크기 = 헤더 + 참조 + 데이터 (최소 2)
+        assert(got == order && h.copiedObjects == (long)order.size() && h.scanned == (long)order.size() && h.copiedWords == expectWords && (long)h.top - 1 == expectWords);   // 순서 == BFS 발견 순서, 정확히 한 번씩, 워드 수도 맞다
         for (size_t i = 0; i < h.roots.size(); ++i) assert((int)h.data(h.roots[i], 0) == rootIds[i]);
         for (uint32_t i = h.top; i < h.to.size(); ++i) assert(h.to[i] == POISON);                                       // 옛 공간(to 벡터로 바뀐 것)은 오염값
         std::vector<uint64_t> snap(h.from.begin() + 1, h.from.begin() + h.top); std::vector<uint32_t> r2 = h.roots;
@@ -3012,8 +3016,9 @@ int main() {
 
     // ② 비용은 살아있는 객체에만 비례
     {   long words[3], scans[3]; int gs[3] = {0, 100, 1000};
-        for (int k = 0; k < 3; ++k) { Heap h(40000); std::map<int, std::vector<int>> graph; std::vector<int> rootIds; std::map<int, std::vector<uint64_t>> payload;
-            build(h, 80, gs[k], graph, rootIds, payload, 777); h.collect(); words[k] = (long)h.copiedWords; scans[k] = (long)h.scanned; }
+        for (int k = 0; k < 3; ++k) { Heap h(40000); h.poison = false; std::map<int, std::vector<int>> graph; std::vector<int> rootIds; std::map<int, std::vector<uint64_t>> payload;
+            build(h, 80, gs[k], graph, rootIds, payload, 777); h.collect(); words[k] = (long)h.copiedWords; scans[k] = (long)h.scanned;
+            assert(std::count_if(h.to.begin(), h.to.end(), [](uint64_t w) { return (w & FWD) != 0; }) == h.copiedObjects); }          // 옛 공간에서 전달 표시(최상위 비트)가 붙은 헤더는 복사한 객체뿐: 쓰레기는 방문하지 않았다
         assert(words[0] > 0 && words[0] == words[1] && words[1] == words[2] && scans[0] == scans[1] && scans[1] == scans[2]); }                     // 쓰레기를 1000 개 섞어도 복사량이 같다
 
     // ③ 무작위 변경 프로그램
@@ -3046,11 +3051,11 @@ int main() {
         }
         collectAndVerify(); assert(gcs > 30 && allocs > 1500);
     }
-    std::cout << "CopyingGC verified: " << graphs << " graphs (" << liveTotal << " survivors copied exactly once in BFS order, " << garbageTotal << " garbage objects never touched), "
+    std::cout << "CopyingGC verified: " << graphs << " graphs (" << liveTotal << " survivors copied exactly once in BFS order, " << garbageTotal << " garbage objects never copied or scanned), "
               << gcs << " collections in the mutator run; copy cost independent of garbage." << std::endl;
     return 0;
 }
-// Time Complexity: O(살아있는 객체) (쓰레기는 방문하지 않는다), 할당 O(1)
+// Time Complexity: O(살아있는 객체) (쓰레기는 방문하지 않는다; 디버그용 poison 채우기만 O(힙)), 할당 O(1)
 // Space Complexity: O(힙) · 2 (두 공간), 큐/스택 없이 scan 포인터 하나로 BFS
 ```
 ## GenerationalGC()
@@ -4030,11 +4035,13 @@ int main() {
 
 // 주소 변환(MMU): 가상 주소를 (페이지 번호, 오프셋) 으로 나누고, 페이지 테이블 항목(PTE)에서 프레임 번호를 찾아 (프레임 번호 << 12 | 오프셋) 을 만든다.
 // PTE 에는 present(메모리에 있음), writable, user 비트가 있고, 위반하면 CPU 가 페이지 폴트(예외)를 일으킨다
-// 이 구현은 실제 MMU 처럼 ① 접근 종류(읽기/쓰기/실행)와 NX 비트 ② x86 식 오류 코드(bit0 보호 위반인가, bit1 쓰기, bit2 사용자, bit4 명령어 인출) ③ accessed/dirty 비트 갱신(성공한 접근에서만, 쓰기에서 dirty)
+// 이 구현은 실제 MMU 처럼 ① 접근 종류(읽기/쓰기/실행)와 NX 비트 ② x86 식 오류 코드(bit0 보호 위반인가, bit1 쓰기, bit2 사용자, bit4 명령어 인출) ③ accessed/dirty 비트 갱신(쓰기에서 dirty; 이 모델은 성공한 접근에서만 올린다 — 실제 x86 은 권한 검사에서 폴트가 나도 이미 거친 항목의 A 비트를 올릴 수 있으니 단순화다)
 //  ④ TLB(세트 연관, 세트마다 LRU) 를 갖춘다.  OS 가 PTE 를 바꾸면 해당 TLB 항목을 무효화(INVLPG)해야 한다
 // 검증: 세 구현을 같은 무작위 연산열(map/unmap/protect/접근 40 000 번)에 적용해 결과를 맞춘다 — A: TLB 를 쓰는 MMU, B: TLB 없이 매번 테이블을 걷는 MMU, C: std::map 으로 짠 독립 기준.
 //        모든 접근에서 (상태, 물리 주소, 오류 코드) 가 같고, 마지막에 accessed/dirty 비트까지 같다.  D: INVLPG 를 빼먹은 MMU 는 낡은 변환 때문에 틀린 결과가 나온다(횟수 확인).
-//        TLB 닫힌 형태: 완전 연관 LRU 에서 P <= 항목 수인 순환 접근의 미스 = P, P = 항목 수 + 1 이면 전부 미스, 세트 연관에서는 같은 세트로 몰리면 용량이 남아도 전부 미스
+//        오류 코드는 기준 C 가 따로 쓴 리터럴 비트(1/2/4/16)로 정하고, 명령어 인출 폴트는 값 21(P|U|X)·17·20 을 직접 확인한다. TLB 계수는 접근마다 조회 한 번이라 적중+미스 = 접근 수, 미스 = 테이블 걷기 수.
+//        TLB 닫힌 형태: 완전 연관 LRU 에서 P <= 항목 수인 순환 접근의 미스 = P, P = 항목 수 + 1 이면 전부 미스, 세트 연관에서는 같은 세트로 몰리면 용량이 남아도 전부 미스,
+//        LRU 와 FIFO 의 구별: 2 방향에 a,b,a,c,a 를 넣으면 LRU 는 미스 3·적중 2, 적중 때 최근 순서로 올리지 않는 FIFO 는 미스 4
 struct PTE { bool present = false, writable = false, user = false, nx = false, accessed = false, dirty = false; uint32_t frame = 0; };
 enum Access { READ, WRITE, EXEC };
 enum Status { OK, NOT_PRESENT, PROTECTION };
@@ -4049,7 +4056,6 @@ class Tlb {
 public:
     long hits = 0, misses = 0;
     Tlb(size_t nsets, size_t nways) : sets(nsets), ways(nways), s(nsets ? nsets : 1) {}
-    bool enabled() const { return sets > 0; }
     PTE* lookup(uint64_t vpn) {
         if (!sets) return nullptr;
         auto& set = s[vpn % sets];
@@ -4071,10 +4077,9 @@ public:
             ++walks;
             if (page >= table.size() || !table[page].present) return {NOT_PRESENT, 0, errCode(false, a, user)};
             if (!allowed(table[page], a, user)) return {PROTECTION, 0, errCode(true, a, user)};
-            table[page].accessed = true; tlb.insert(page, table[page]); e = tlb.lookup(page); if (!e) { static PTE copy; copy = table[page]; e = &copy; }   // 성공한 접근만 TLB 에 채운다
-            if (a == WRITE && !table[page].dirty) table[page].dirty = true;
-            if (tlb.enabled()) { PTE* t = tlb.lookup(page); if (t) { t->accessed = true; t->dirty = table[page].dirty; } --tlb.hits; }
-            return {OK, (uint64_t)table[page].frame << 12 | off, 0};
+            PTE& t = table[page]; t.accessed = true; if (a == WRITE) t.dirty = true;
+            tlb.insert(page, t);                                                                // 성공한 접근만, A/D 비트를 올린 뒤의 항목을 TLB 에 채운다 (다시 조회하지 않으므로 적중 수가 부풀지 않는다)
+            return {OK, (uint64_t)t.frame << 12 | off, 0};
         }
         if (!allowed(*e, a, user)) return {PROTECTION, 0, errCode(true, a, user)};              // 캐시된 권한으로 검사 (낡았으면 틀린다)
         if (a == WRITE && !e->dirty) { e->dirty = true; if (page < table.size() && table[page].present) table[page].dirty = true; }   // 처음 쓰기: 테이블의 dirty 비트도 올린다
@@ -4086,14 +4091,15 @@ public:
     void protect(uint64_t page, bool w, bool u, bool nx) { if (!table[page].present) return; table[page].writable = w; table[page].user = u; table[page].nx = nx; if (invlpg) tlb.invalidate(page); }
 };
 
-struct Oracle {                                                                                  // 독립 기준: 페이지 -> PTE 맵과 직접 쓴 진리표
+struct Oracle {                                                                                  // 독립 기준: 페이지 -> PTE 맵과 직접 쓴 진리표(오류 코드도 리터럴 비트로 따로 조립)
     std::map<uint64_t, PTE> m;
+    static unsigned code(unsigned p, Access a, bool user) { unsigned c = p; if (a == WRITE) c += 2; if (user) c += 4; if (a == EXEC) c += 16; return c; }
     Result translate(uint64_t va, Access a, bool user) {
-        auto it = m.find(va >> 12); if (it == m.end() || !it->second.present) return {NOT_PRESENT, 0, errCode(false, a, user)};
+        auto it = m.find(va >> 12); if (it == m.end() || !it->second.present) return {NOT_PRESENT, 0, code(0, a, user)};
         PTE& e = it->second;
-        if (a == WRITE && !e.writable) return {PROTECTION, 0, errCode(true, a, user)};
-        if (user && !e.user) return {PROTECTION, 0, errCode(true, a, user)};
-        if (a == EXEC && e.nx) return {PROTECTION, 0, errCode(true, a, user)};
+        if (a == WRITE && !e.writable) return {PROTECTION, 0, code(1, a, user)};
+        if (user && !e.user) return {PROTECTION, 0, code(1, a, user)};
+        if (a == EXEC && e.nx) return {PROTECTION, 0, code(1, a, user)};
         e.accessed = true; if (a == WRITE) e.dirty = true; return {OK, (uint64_t)e.frame << 12 | (va & 0xfff), 0};
     }
 };
@@ -4105,7 +4111,12 @@ int main() {
         assert(mmu.translate(4 * 4096, WRITE, true).st == PROTECTION && mmu.translate(4 * 4096, READ, true).st == OK);
         assert(mmu.translate(5 * 4096, READ, true).st == PROTECTION && mmu.translate(5 * 4096, READ, false).st == OK);
         Result nf = mmu.translate(9 * 4096, READ, true); assert(nf.st == NOT_PRESENT && nf.err == 4);                       // P=0, U=1
-        Result pf = mmu.translate(4 * 4096, WRITE, true); assert(pf.err == (1u | 2u | 4u)); }                              // P=1, W=1, U=1
+        Result pf = mmu.translate(4 * 4096, WRITE, true); assert(pf.err == (1u | 2u | 4u));                                 // P=1, W=1, U=1
+        mmu.map(6, 5, true, true, true);                                                                                    // NX 페이지: 쓰기·읽기는 되고 실행만 막힌다
+        Result xf = mmu.translate(6 * 4096, EXEC, true); assert(xf.st == PROTECTION && xf.err == 21);                       // P=1, U=1, I/D=1 (비트 0+2+4)
+        Result xk = mmu.translate(6 * 4096, EXEC, false); assert(xk.st == PROTECTION && xk.err == 17);                     // 커널 모드 인출: P=1, I/D=1
+        assert(mmu.translate(6 * 4096, READ, true).st == OK && mmu.translate(6 * 4096, WRITE, true).st == OK);
+        Result xn = mmu.translate(11 * 4096, EXEC, true); assert(xn.st == NOT_PRESENT && xn.err == 20); }                   // 없는 페이지에서 인출: P=0, U=1, I/D=1
     // 세 구현 차분 + 낡은 TLB
     const size_t PAGES = 48; long accesses = 0, faultsNP = 0, faultsProt = 0, staleWrong = 0;
     {   Mmu A(PAGES, 4, 4), B(PAGES, 0, 0), D(PAGES, 4, 4, false); Oracle C; std::mt19937 rng(77);
@@ -4126,6 +4137,7 @@ int main() {
             if (it != C.m.end()) assert(it->second.accessed == x.accessed && it->second.dirty == x.dirty && it->second.present == x.present);
         }
         assert(A.tlb.hits > 5000 && A.walks < B.walks && staleWrong > 100 && faultsNP > 1000 && faultsProt > 1000);          // TLB 는 걷기를 줄이고, INVLPG 없는 쪽은 틀린다
+        assert(A.tlb.hits + A.tlb.misses == accesses && A.walks == A.tlb.misses && B.walks == accesses);                    // 접근마다 조회 한 번: 적중이 부풀지 않는다
     }
     // TLB 닫힌 형태
     {   auto misses = [](size_t sets, size_t ways, const std::vector<uint64_t>& pages, int reps) {
@@ -4135,6 +4147,9 @@ int main() {
         assert(misses(1, 16, p17, 50) == 17 * 50);                                               // 한 페이지 더 -> LRU 가 매번 가장 오래된 것을 내쫓아 전부 미스
         assert(misses(4, 2, same, 50) == 3 * 50);                                                // 용량 8 이지만 세 페이지가 같은 세트(번호 % 4 == 0) -> 2 방향을 넘어 전부 미스
         std::vector<uint64_t> spread = {0, 1, 2, 3, 4, 5}; assert(misses(4, 2, spread, 50) == 6);   // 같은 용량에서 고르게 퍼지면 처음 6 번만
+        std::vector<uint64_t> abac = {0, 1, 0, 2, 0}; assert(misses(1, 2, abac, 1) == 3);           // LRU: a,b,a,c,a -> a 가 적중으로 최근이 되어 c 가 b 를 내쫓는다 (FIFO 였다면 a 를 내쫓아 4)
+        std::vector<uint64_t> abacSet = {0, 4, 0, 8, 0}; assert(misses(4, 2, abacSet, 1) == 3);      // 세트 연관(세트 0, 2 방향)에서도 세트별 LRU
+        { Tlb t(1, 2); for (uint64_t p : abac) if (!t.lookup(p)) t.insert(p, PTE()); assert(t.hits == 2 && t.misses == 3); }
         assert(Tlb(16, 4).capacity() * 4096 == 256 * 1024ULL); }                                  // TLB 도달 범위(reach) = 항목 수 x 페이지 크기
     std::cout << "AddressTranslation verified: " << accesses << " accesses (" << faultsNP << " not-present, " << faultsProt << " protection faults) agreed across TLB/no-TLB/oracle; skipping INVLPG gave " << staleWrong << " stale results." << std::endl;
     return 0;
@@ -8393,11 +8408,12 @@ int main() {
 // CHERI 의 핵심 아이디어 두 가지: (1) 케이퍼빌리티는 16바이트로 정렬된 메모리에 저장되고, 메모리 16바이트마다 숨은 "태그 비트" 가 붙는다.
 // (2) 케이퍼빌리티를 저장하면 태그가 1 이 되지만, 같은 16바이트에 일반 데이터를 쓰면 태그가 자동으로 0 이 된다 -> 바이트를 조작해 케이퍼빌리티를 위조할 수 없다.
 // 태그가 꺼진 케이퍼빌리티는 사용하려 하면 예외.  이 두 가지로 "포인터 위조 불가" 가 하드웨어 수준에서 성립한다
+// 이 항목이 모형화하는 것은 메모리 쪽의 태그 무결성뿐이다: use() 는 태그만 검사하고 경계·권한·단조 파생(축소만 가능)은 다루지 않는다 — 그 검사는 CapabilityPointer() 항목의 몫이다.
 // 이 구현은 케이퍼빌리티를 진짜 128비트(축소된 32비트 주소 공간: base 32 + length 32 + cursor 32 + perms 16 + otype 16)로 인코딩해 메모리 바이트에 쓰고, 태그는 바이트와 별도의 비트 배열에 둔다.
-//  연산: 데이터 저장(1/2/4/8 바이트; 겹치는 16바이트 칸의 태그를 지움), 케이퍼빌리티 저장(16 바이트 정렬; 태그는 값의 태그), 케이퍼빌리티 읽기, 데이터 memcpy(태그를 버림), 케이퍼빌리티 인식 memcpy(정렬되어 있으면 태그째 복사),
+//  연산: 데이터 저장(1/2/4/8 바이트; 겹치는 16바이트 칸의 태그를 지움 — 정렬 안 된 저장이 두 칸에 걸쳐도 둘 다), 케이퍼빌리티 저장(16 바이트 정렬; 태그는 값의 태그), 케이퍼빌리티 읽기, 데이터 memcpy(태그를 버림), 케이퍼빌리티 인식 memcpy(원천·목적지·길이가 모두 16 의 배수면 태그째 복사, 하나라도 어긋나면 데이터 복사로 물러남),
 //  해제 영역을 가리키는 케이퍼빌리티의 태그를 지우는 회수(revocation) 훑기
-// 검증: ① 인코딩 왕복 200 000 개  ② 무작위 연산 30 000 번을 "칸마다 값/무효 표시를 따로 둔 모형" 과 대조 — 모든 칸의 태그가 같고, 태그가 켜진 칸을 읽으면 모형의 케이퍼빌리티와 같음
-//        ③ 위조 불가: 데이터 연산(저장·memcpy)만 가진 공격자가 메모리를 10 만 번 만져도 태그가 켜진 케이퍼빌리티는 처음에 신뢰된 코드가 넣어 둔 값들뿐이고, 케이퍼빌리티 인식 복사로는 복제만 될 뿐 새 값은 안 생김
+// 검증: ① 인코딩 왕복 200 000 개  ② 무작위 연산 30 000 번(정렬 안 된 저장과 칸에 걸친 저장, 어긋난 memcpyCap 포함)을 "칸마다 값/무효 표시를 따로 둔 모형" 과 대조 — 모형은 바이트마다 칸을 지워 구현과 식이 다르다. 모든 칸의 태그가 같고, 태그가 켜진 칸을 읽으면 모형의 케이퍼빌리티와 같음
+//        ③ 위조 불가: 데이터 연산(저장·memcpy)만 가진 공격자가 메모리를 10 만 번 만져도 태그가 켜진 케이퍼빌리티는 처음에 신뢰된 코드가 넣어 둔 값들뿐이고, 케이퍼빌리티 인식 복사로는 복제만 될 뿐 새 값은 안 생김 — 연산마다 건드린 칸을 곧바로 검사하므로 잠깐 생겼다 사라지는 위조도 잡는다
 //        ④ 회수: 훑은 뒤 해제 영역을 가리키는 유효한 케이퍼빌리티가 하나도 없고(use-after-free 차단), 그 외 케이퍼빌리티는 그대로
 const size_t GRANULE = 16;
 struct Cap { uint32_t base = 0, length = 0, cursor = 0; uint16_t perms = 0, otype = 0xFFFF; bool tag = false;
@@ -8438,38 +8454,46 @@ int main() {
     std::mt19937_64 rng(77);
     for (int i = 0; i < 200000; ++i) { Cap c; c.base = (uint32_t)rng(); c.length = (uint32_t)rng(); c.cursor = (uint32_t)rng(); c.perms = (uint16_t)rng(); c.otype = (uint16_t)rng(); uint8_t buf[16]; encode(c, buf); assert(decode(buf).sameValue(c)); }
     // ② 모형과 대조
-    {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<bool> isCap(G, false); std::vector<Cap> val(G); long capStores = 0, strips = 0, copies = 0;
+    {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<bool> isCap(G, false); std::vector<Cap> val(G); long capStores = 0, strips = 0, copies = 0, straddles = 0, fallbacks = 0;
         auto randomCap = [&](bool tag) { Cap c; c.base = (uint32_t)(rng() % 3000); c.length = (uint32_t)(rng() % 1000); c.cursor = c.base; c.perms = (uint16_t)(rng() & 127); c.otype = 0xFFFF; c.tag = tag; return c; };
         for (int step = 0; step < 30000; ++step) {
             int op = (int)(rng() % 100);
-            if (op < 40) { unsigned sz = 1u << (rng() % 4); size_t addr = rng() % (N - 8); addr &= ~(size_t)(sz - 1); mem.storeData(addr, sz, rng()); for (size_t g = addr / GRANULE; g <= (addr + sz - 1) / GRANULE; ++g) isCap[g] = false; ++strips; }
+            if (op < 40) { unsigned sz = 1u << (rng() % 4); size_t addr = rng() % (N - 8); if (rng() % 2) addr &= ~(size_t)(sz - 1);                      // 절반은 정렬 안 된 저장 (두 칸에 걸칠 수 있다)
+                mem.storeData(addr, sz, rng()); for (size_t b = addr; b < addr + sz; ++b) isCap[b / GRANULE] = false; ++strips; straddles += addr / GRANULE != (addr + sz - 1) / GRANULE; }
             else if (op < 65) { size_t g = rng() % G; Cap c = randomCap(true); mem.storeCap(g * GRANULE, c); isCap[g] = true; val[g] = c; ++capStores; }
             else if (op < 72) { size_t g = rng() % G; Cap c = randomCap(false); mem.storeCap(g * GRANULE, c); isCap[g] = false; }
-            else if (op < 90) { size_t n = (1 + rng() % 8) * GRANULE, dst = (rng() % (G - 8)) * GRANULE, src = (rng() % (G - 8)) * GRANULE; if (dst < src + n && src < dst + n) continue;
-                mem.memcpyCap(dst, src, n); for (size_t k = 0; k < n / GRANULE; ++k) { isCap[dst / GRANULE + k] = isCap[src / GRANULE + k]; val[dst / GRANULE + k] = val[src / GRANULE + k]; } ++copies; }
-            else if (op < 97) { size_t n = 1 + rng() % 64, dst = rng() % (N - 80), src = rng() % (N - 80); if (dst < src + n && src < dst + n) continue; mem.memcpyData(dst, src, n); for (size_t g = dst / GRANULE; g <= (dst + n - 1) / GRANULE; ++g) isCap[g] = false; }
+            else if (op < 90) { size_t n = (1 + rng() % 8) * GRANULE, dst = (rng() % (G - 9)) * GRANULE, src = (rng() % (G - 9)) * GRANULE; unsigned skew = (unsigned)(rng() % 8);
+                if (skew == 5) dst += 1 + rng() % 15; else if (skew == 6) src += 1 + rng() % 15; else if (skew == 7) n -= 1 + rng() % 15;    // 5~7: 목적지·원천·길이 중 하나만 16 의 배수가 아님 -> 데이터 복사로 물러나 태그를 버린다
+                if (dst < src + n && src < dst + n) continue;
+                mem.memcpyCap(dst, src, n);
+                if (skew < 5) { for (size_t k = 0; k < n / GRANULE; ++k) { isCap[dst / GRANULE + k] = isCap[src / GRANULE + k]; val[dst / GRANULE + k] = val[src / GRANULE + k]; } ++copies; }
+                else { for (size_t b = dst; b < dst + n; ++b) isCap[b / GRANULE] = false; ++fallbacks; } }
+            else if (op < 97) { size_t n = 1 + rng() % 64, dst = rng() % (N - 80), src = rng() % (N - 80); if (dst < src + n && src < dst + n) continue; mem.memcpyData(dst, src, n); for (size_t b = dst; b < dst + n; ++b) isCap[b / GRANULE] = false; }
             else { uint32_t lo = (uint32_t)(rng() % 3000), hi = lo + (uint32_t)(rng() % 400); mem.revoke(lo, hi); for (size_t g = 0; g < G; ++g) { if (isCap[g] && (uint64_t)val[g].base < hi && lo < (uint64_t)val[g].base + val[g].length) isCap[g] = false; } }
             if (step % 7 == 0) for (size_t g = 0; g < G; ++g) { assert(mem.tagAt(g * GRANULE) == isCap[g]); if (isCap[g]) { Cap c = mem.loadCap(g * GRANULE); assert(c.tag && c.sameValue(val[g])); } }
         }
-        assert(capStores > 5000 && strips > 8000 && copies > 3000); }
+        assert(capStores > 5000 && strips > 8000 && copies > 2500 && straddles > 500 && fallbacks > 1000); }
     // ③ 위조 불가
-    {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<Cap> original; std::set<std::vector<uint32_t>> originalValues;
-        for (size_t g = 0; g < G; g += 3) { Cap c; c.base = (uint32_t)(g * 100); c.length = (uint32_t)(16 + g); c.cursor = c.base; c.perms = 7; c.tag = true; mem.storeCap(g * GRANULE, c); originalValues.insert({c.base, c.length, c.cursor, c.perms}); }
+    {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<std::pair<size_t, Cap>> trusted; std::set<std::vector<uint32_t>> originalValues; long clones = 0, survivors = 0;
+        auto vet = [&](size_t byteLo, size_t byteEnd) { for (size_t g = byteLo / GRANULE; g <= (byteEnd - 1) / GRANULE; ++g) { if (!mem.tagAt(g * GRANULE)) continue; Cap c = mem.loadCap(g * GRANULE); assert(originalValues.count({c.base, c.length, c.cursor, c.perms})); } };   // 건드린 칸에 태그가 켜져 있으면 처음 값의 복제여야 한다
+        for (size_t g = 0; g < G; g += 3) { Cap c; c.base = (uint32_t)(g * 100); c.length = (uint32_t)(16 + g); c.cursor = c.base; c.perms = 7; c.tag = true; trusted.push_back({g * GRANULE, c}); originalValues.insert({c.base, c.length, c.cursor, c.perms}); }
+        auto install = [&] { for (auto& t : trusted) mem.storeCap(t.first, t.second); }; install();                  // 신뢰된 코드가 케이퍼빌리티를 넣어 둔다 (아래에서 주기적으로 다시 넣는다: 공격이 길어지면 데이터 저장이 전부 지워 버려 검사가 헛돌기 때문)
         for (int step = 0; step < 100000; ++step) {                                                          // 공격자: 데이터 저장과 memcpy 와 케이퍼빌리티 인식 복사만 쓴다 (새 값을 만들 수단이 없다)
             int op = (int)(rng() % 3);
-            if (op == 0) { unsigned sz = 1u << (rng() % 4); size_t addr = (rng() % (N - 8)) & ~(size_t)(sz - 1); mem.storeData(addr, sz, rng()); }
-            else if (op == 1) { size_t n = 1 + rng() % 40, dst = rng() % (N - 64), src = rng() % (N - 64); if (!(dst < src + n && src < dst + n)) mem.memcpyData(dst, src, n); }
-            else { size_t n = (1 + rng() % 4) * GRANULE, dst = (rng() % (G - 4)) * GRANULE, src = (rng() % (G - 4)) * GRANULE; if (!(dst < src + n && src < dst + n)) mem.memcpyCap(dst, src, n); }
+            if (op == 0) { unsigned sz = 1u << (rng() % 4); size_t addr = rng() % (N - 8); if (rng() % 2) addr &= ~(size_t)(sz - 1); mem.storeData(addr, sz, rng()); vet(addr, addr + sz); }
+            else if (op == 1) { size_t n = 1 + rng() % 40, dst = rng() % (N - 64), src = rng() % (N - 64); if (!(dst < src + n && src < dst + n)) { mem.memcpyData(dst, src, n); vet(dst, dst + n); } }
+            else { size_t n = (1 + rng() % 4) * GRANULE, dst = (rng() % (G - 4)) * GRANULE, src = (rng() % (G - 4)) * GRANULE; if (!(dst < src + n && src < dst + n)) { mem.memcpyCap(dst, src, n); vet(dst, dst + n); clones += mem.tagAt(dst); } }
+            if (step % 200 == 199) { for (size_t g = 0; g < G; ++g) survivors += mem.tagAt(g * GRANULE); install(); }
             if (step % 500 == 0) for (size_t g = 0; g < G; ++g) { if (!mem.tagAt(g * GRANULE)) continue; Cap c = mem.loadCap(g * GRANULE); assert(originalValues.count({c.base, c.length, c.cursor, c.perms})); }   // 태그가 켜진 것은 모두 처음 값의 복제
         }
-        size_t tagged = 0; for (size_t g = 0; g < G; ++g) tagged += mem.tagAt(g * GRANULE); assert(tagged <= G / 3 + 1 + G); }
+        size_t tagged = 0; for (size_t g = 0; g < G; ++g) tagged += mem.tagAt(g * GRANULE); assert(tagged <= G && survivors > 5000 && clones > 1000); }   // 검사가 헛돌지 않았다: 공격을 견디고 남은 태그 칸이 많았고 태그째 복제도 실제로 일어났다 (복제는 원본 수를 넘길 수 있으므로 상한은 칸 수)
     // ④ 회수
     {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<Cap> caps(G); long toFree = 0, keep = 0;
         for (size_t g = 0; g < G; ++g) { Cap c; c.base = (uint32_t)(rng() % 3500); c.length = (uint32_t)(1 + rng() % 200); c.cursor = c.base; c.perms = 3; c.tag = true; caps[g] = c; mem.storeCap(g * GRANULE, c); }
         const uint32_t lo = 1000, hi = 1600; size_t cleared = mem.revoke(lo, hi);
         for (size_t g = 0; g < G; ++g) { bool refers = (uint64_t)caps[g].base < hi && lo < (uint64_t)caps[g].base + caps[g].length; assert(mem.tagAt(g * GRANULE) == !refers); toFree += refers; keep += !refers; }   // 해제 영역을 가리키는 것만 꺼졌다
         assert(cleared == (size_t)toFree && toFree > 30 && keep > 30 && mem.revoke(lo, hi) == 0); }                  // 두 번째 훑기에는 더 지울 것이 없다
-    std::cout << "CHERIArchitecture verified: 128-bit encoding round-trips, tag semantics match the per-granule model over 30000 operations, a data-only attacker forged nothing in 100000 operations, and revocation cleared exactly the capabilities that referred to freed memory." << std::endl;
+    std::cout << "CHERIArchitecture verified: 128-bit encoding round-trips, tag semantics match the per-granule model over 30000 operations, a data-only attacker forged nothing in 100000 operations, and revocation cleared exactly the capabilities that referred to freed memory (tag integrity only; bounds and permissions are CapabilityPointer's job)." << std::endl;
     return 0;
 }
 // Time Complexity: 저장·읽기 O(1), 회수 훑기 O(메모리 / 16)

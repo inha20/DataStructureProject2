@@ -250,6 +250,7 @@ int main() {
 ### 대표코드
 ```cpp
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <random>
@@ -257,9 +258,9 @@ int main() {
 #include <utility>
 #include <vector>
 
-// 크기 조정(Resize): 적재율 α = n/m 이 문턱을 넘으면 버킷 수를 늘리고 모든 항목을 새 표에 다시 넣는다(rehash). 한 번의 확장은 O(n) 이지만 *늘리는 비율이 일정(예: 2 배)* 이면 n 번 삽입하는 동안 옮긴 항목의 총합이 2n 미만이라 삽입 하나당 분할상환 O(1) 이다 — 확장 시점의 크기가 n₀·2^k 이므로 합이 등비급수 (1 + 2 + 4 + … ) < 2n. *일정한 크기만큼* 더하는 방식(+16)은 합이 n²/32 라 이차 시간이다.
+// 크기 조정(Resize): 적재율 α = n/m 이 문턱을 넘으면 버킷 수를 늘리고 모든 항목을 새 표에 다시 넣는다(rehash). 한 번의 확장은 O(n) 이지만 *늘리는 비율이 일정(예: 2 배)* 이면 n 번 삽입하는 동안 옮긴 항목의 총합이 2n 미만이라 삽입 하나당 분할상환 O(1) 이다 — 확장 시점의 크기가 n₀·2^k 이므로 합이 등비급수 (1 + 2 + 4 + … ) < 2n. *일정한 크기만큼* 더하는 방식(+16)은 n 번 삽입하는 동안 옮긴 합이 n²/(2·16·α) (α = 0.75 이면 n²/24) 라 이차 시간이다.
 // 한 번에 O(n) 이 일어나는 꼬리 지연이 문제라면 *점진적 재구성(incremental rehash)* — 옛 표와 새 표를 함께 두고 연산마다 옛 버킷 k 개를 새 표로 옮긴다(Redis 가 이 방식). 검색은 두 표를 모두 보고, 삽입은 새 표에만 한다. 연산당 일이 상수로 묶이면서 최종 내용은 같다.
-// 검증: ① 증가 비율별 총 이동 수 — 2 배: 정확히 마지막 확장 전까지의 크기 합 < 2n, 1.5 배: < 3n, +16: n²/32 근처(100 배 이상 큼) ② 확장 중에도 모든 내용 보존(무작위 삽입 10 만 번을 unordered_map 과 비교) ③ 점진적 재구성에서 연산당 이동한 버킷 수가 k 를 넘지 않고 각 시점에 검색이 맞음, 끝나면 옛 표가 비어 있음 ④ 적재율은 확장 직후 문턱의 절반 이하로 떨어졌다가 다시 오른다.
+// 검증: ① 증가 비율별 총 이동 수 — 2 배: 정확히 마지막 확장 전까지의 크기 합 < 2n, 1.5 배: < 3n, +16: n²/24 의 ±2% (2 배의 100 배 이상) ② 확장 중에도 모든 내용 보존(무작위 삽입 10 만 번을 unordered_map 과 비교) ③ 점진적 재구성에서 연산 하나가 옮긴 *버킷* 수가 정확히 k (한 번에 k 개씩, 그 이상도 이하도 아님), 옮긴 항목은 소수, 각 시점에 검색이 맞음, 끝나면 옛 표가 비어 있고 버킷 수는 8·2^j (2 배씩) 이며 적재율이 (0.37, 0.75] (문턱 0.75) ④ 적재율은 확장 직후 문턱의 절반 이하로 떨어졌다가 다시 오른다.
 struct Growing {
     using Entry = std::pair<std::uint64_t, int>;
     std::vector<std::vector<Entry>> b; std::size_t n = 0; double threshold; double factor; long add; long moved = 0; int resizes = 0; double minAlphaAfter = 1e9;
@@ -276,17 +277,17 @@ struct Growing {
 // 점진적 재구성: 옛 표 old 와 새 표 cur 를 함께 둔다
 struct Incremental {
     using Entry = std::pair<std::uint64_t, int>;
-    std::vector<std::vector<Entry>> cur, old; std::size_t n = 0, nextOld = 0; int stepsPerOp; long maxMovedPerOp = 0;
+    std::vector<std::vector<Entry>> cur, old; std::size_t n = 0, nextOld = 0; int stepsPerOp; long maxMovedPerOp = 0, maxBucketsPerOp = 0;
     explicit Incremental(std::size_t m, int k) : cur(m), stepsPerOp(k) {}
     static std::size_t h(std::uint64_t k, std::size_t m) { return Growing::h(k, m); }
     bool migrating() const { return !old.empty(); }
     void migrateSome() {
-        long moved = 0;
+        long moved = 0, buckets = 0;
         for (int s = 0; s < stepsPerOp && migrating(); ++s) {
-            for (Entry& e : old[nextOld]) { cur[h(e.first, cur.size())].push_back(e); ++moved; } old[nextOld].clear();
+            ++buckets; for (Entry& e : old[nextOld]) { cur[h(e.first, cur.size())].push_back(e); ++moved; } old[nextOld].clear();
             if (++nextOld == old.size()) { old.clear(); old.shrink_to_fit(); nextOld = 0; }
         }
-        maxMovedPerOp = std::max(maxMovedPerOp, moved);
+        maxMovedPerOp = std::max(maxMovedPerOp, moved); maxBucketsPerOp = std::max(maxBucketsPerOp, buckets);
     }
     const int* get(std::uint64_t k) const {
         for (const Entry& e : cur[h(k, cur.size())]) if (e.first == k) return &e.second;
@@ -309,12 +310,14 @@ int main() {
     Growing dbl = run(2.0, 0), mid = run(1.5, 0), lin = run(0.0, 16);
     assert(dbl.moved < 2 * (long)N && mid.moved < 3 * (long)N && lin.moved > 100 * dbl.moved);      // 등비 증가는 분할상환 O(1), 상수 증가는 이차
     assert(dbl.n == N && mid.n == N && lin.n == N && dbl.resizes < 20);
+    assert(std::abs((double)lin.moved - (double)N * (double)N / 24.0) < 0.02 * (double)N * (double)N / 24.0);                   // 상수 증가의 합은 n²/(2·16·α) = n²/24 (α = 0.75)
     // 2 배의 정확한 합: 확장 시점마다 그때의 원소 수가 이동 → 합은 등비수열
     {   Growing g(8, 0.75, 2.0, 0); long expect = 0; std::size_t m = 8; std::size_t nn = 0; for (std::size_t i = 0; i < N; ++i) { g.put(i + 1, 1); ++nn; if ((double)nn / (double)m > 0.75) { expect += (long)nn; m = (std::size_t)((double)m * 2.0) + 1; } } assert(g.moved == expect); }
     // ② 확장 중에도 내용 보존: 무작위 삽입(갱신 포함) 10 만 번을 unordered_map 과 비교, 확장 직후 적재율은 문턱보다 훨씬 낮다
+    int preservedResizes = 0;
     {   Growing g(4, 0.75, 2.0, 0); std::unordered_map<std::uint64_t, int> ref;
         for (int i = 0; i < 100000; ++i) { std::uint64_t k = rng() % 60000; int v = (int)(rng() % 1000); g.put(k, v); ref[k] = v; }
-        assert(g.n == ref.size()); for (auto& [k, v] : ref) { const int* p = g.get(k); assert(p && *p == v); } assert(g.minAlphaAfter < 0.4 && (double)g.n / (double)g.b.size() <= 0.75 + 1e-9); }
+        assert(g.n == ref.size()); for (auto& [k, v] : ref) { const int* p = g.get(k); assert(p && *p == v); } assert(g.minAlphaAfter < 0.4 && (double)g.n / (double)g.b.size() <= 0.75 + 1e-9); preservedResizes = g.resizes; }
     // ③ 점진적 재구성: 연산당 이동한 버킷은 stepsPerOp 개 이하(→ 한 연산이 훑는 항목 수가 한 번에 O(n) 이 되지 않는다), 모든 시점에서 검색이 맞음
     {   Incremental t(8, 2); std::unordered_map<std::uint64_t, int> ref; int sawMigrating = 0;
         for (int i = 0; i < 100000; ++i) {
@@ -324,8 +327,11 @@ int main() {
         while (t.migrating()) t.migrateSome();
         assert(t.old.empty() && t.n == ref.size() && sawMigrating > 1000);
         for (auto& [k, v] : ref) { const int* p = t.get(k); assert(p && *p == v); }
-        assert(t.maxMovedPerOp < 200);                                                                      // 버킷 2 개 분량 (적재율 ≤ 0.75 라 평균 두세 개씩)
-        std::cout << "Resize: total moved entries for 8,000 inserts were " << dbl.moved << " when doubling (< 2n), " << mid.moved << " at x1.5 (< 3n) and " << lin.moved << " when growing by a constant 16 (over 100 times worse); growth preserved every entry through " << dbl.resizes << " rehashes, and incremental rehashing kept the per-operation migration to at most " << t.maxMovedPerOp << " entries while lookups stayed correct throughout" << std::endl; }
+        assert(t.maxBucketsPerOp == t.stepsPerOp);                                                          // 연산 하나가 옮긴 버킷은 정확히 k = 2 개 (그 이상이면 꼬리 지연, 1 이하면 끝나지 않을 수 있다)
+        assert(t.maxMovedPerOp < 40);                                                                       // 버킷 2 개 분량 (적재율 ≤ 0.75 라 버킷당 평균 두세 개, 실측 최대 9)
+        std::size_t q = t.cur.size() / 8; assert(t.cur.size() % 8 == 0 && (q & (q - 1)) == 0);              // 버킷 수 = 8·2^j (매번 정확히 2 배)
+        double alphaEnd = (double)t.n / (double)t.cur.size(); assert(alphaEnd > 0.37 && alphaEnd <= 0.75);   // 문턱 0.75 를 넘으면 2 배: 확장 직후 ≈ 0.375, 그 후 0.75 까지
+        std::cout << "Resize: total moved entries for 8,000 inserts were " << dbl.moved << " when doubling (< 2n), " << mid.moved << " at x1.5 (< 3n) and " << lin.moved << " when growing by a constant 16 (over 100 times worse); growth preserved every entry of 100,000 random puts through " << preservedResizes << " rehashes, and incremental rehashing moved exactly " << t.maxBucketsPerOp << " buckets (at most " << t.maxMovedPerOp << " entries) per operation while lookups stayed correct throughout" << std::endl; }
     return 0;
 }
 // Time Complexity: 삽입 분할상환 O(1), 확장 1회는 O(n)
@@ -632,13 +638,18 @@ int main() {
 ## UniversalHashing()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <iostream>
 #include <cstdint>
 #include <random>
+#include <utility>
 #include <cassert>
 
 // 전역 해시 족: h_{a,b}(k) = ((a*k + b) mod p) mod m,  p는 소수, a in [1,p-1], b in [0,p-1]
-// 서로 다른 두 키가 충돌할 확률이 (무작위 a,b에 대해) 1/m 이하로 보장된다
+// 서로 다른 두 키(0 <= k1 != k2 < p, 즉 p 로 줄여도 달라야 한다)가 충돌할 확률이 (무작위 a,b에 대해) 약 1/m 이하로 보장된다.
+// 검증: 키 쌍 7 개(m 만큼 차이 나는 쌍, 0 을 포함한 쌍, p-1 근처 쌍 포함)에 대해 무작위 (a,b) 40000 개씩으로 충돌률을 재고,
+//       모든 쌍에서 [0.5/m, 2/m] 의 *양쪽* 범위에 드는지 본다 — 한쪽(상한)만 보면 아무 결정적 해시(k mod m 등)가 한 쌍에서 통과할 수 있고,
+//       k mod m 은 m 만큼 차이 나는 쌍에서 항상 충돌(상한 위반), 충돌이 전혀 없는 해시는 하한 위반으로 걸린다.
 struct Universal {
     static constexpr uint64_t P = 2147483647ULL;      // 2^31 - 1
     uint64_t a, b, m;
@@ -647,16 +658,21 @@ struct Universal {
 
 int main() {
     std::mt19937_64 rng(12345);
-    const uint64_t m = 64;
+    const uint64_t m = 64, P = Universal::P;
     const int trials = 40000;
-    int collide = 0;
-    for (int t = 0; t < trials; t++) {
-        Universal h{rng() % (Universal::P - 1) + 1, rng() % Universal::P, m};
-        if (h(1000003) == h(7000001)) collide++;       // 고정된 두 키
+    const std::pair<uint64_t, uint64_t> pairs[] = {{1000003, 7000001}, {5, 5 + m}, {0, m}, {1, 2}, {P - 2, P - 1}, {123456, 123456 + 1000 * m}, {42, P - 1}};
+    double lo = 1, hi = 0;
+    for (auto [k1, k2] : pairs) {
+        int collide = 0;
+        for (int t = 0; t < trials; t++) {
+            Universal h{rng() % (P - 1) + 1, rng() % P, m};
+            if (h(k1) == h(k2)) collide++;
+        }
+        double rate = double(collide) / trials;
+        assert(rate >= 0.5 / m && rate <= 2.0 / m);    // 이론값 ≈ 1/m = 0.0156 의 절반 이상, 2배 이하
+        lo = std::min(lo, rate); hi = std::max(hi, rate);
     }
-    double rate = double(collide) / trials;
-    assert(rate < 2.0 / m);                            // 이론 상한 1/m = 0.0156 의 2배 이내
-    std::cout << "collision rate " << rate << " (bound " << 1.0 / m << ")" << std::endl;
+    std::cout << "collision rate over 7 key pairs: min " << lo << ", max " << hi << " (expected about " << 1.0 / m << "; accepted band [" << 0.5 / m << ", " << 2.0 / m << "])" << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
@@ -1101,9 +1117,9 @@ int main() {
 // 개방 주소법: 모든 원소를 테이블 안에 저장하고 충돌하면 다음 후보 칸을 탐사한다.  탐사열: 선형 h+i, 이차 h+i(i+1)/2, 이중 해싱 h+i·step(k).
 // 삭제는 비우지 않고 묘비(DELETED)를 남겨야 뒤쪽 키의 탐사 경로가 끊기지 않는다.  묘비가 쌓이면 빈 칸이 사라져 실패하는 조회도 테이블 전체를 훑으므로 가끔 다시 지어야 한다.
 // 선형 탐사에는 묘비 없이 뒤쪽 키를 앞으로 당기는 *뒤로 밀기 삭제* 도 있다.  선형 탐사의 평균 탐사 수(Knuth): 성공 ½(1+1/(1-α)), 실패 ½(1+1/(1-α)²)
-// 검증: ① 손으로 짠 묘비 시나리오  ② 세 탐사열이 테이블 전체를 방문하는지 전수 확인(2^k 크기에서 삼각수·홀수 보폭은 순열, 소수 크기에서 i² 는 (m+1)/2 칸만, 짝수 보폭은 일부만)
-//        ③ 세 방식을 std::set 과 40 000 번 대조(가득 찬 경우 삽입 실패 포함)하고 불변식(모든 키가 홈에서 빈 칸을 만나지 않고 닿음)  ④ 묘비 누적 실험: 정리하지 않으면 실패 조회가 거의 테이블 전체를 훑고(평균 > 40칸), 정리하면 3칸 이하
-//        ⑤ 선형 탐사의 평균 탐사 수가 α = 0.5, 0.8 에서 Knuth 공식과 일치(성공·실패 모두 10~15 % 이내)  ⑥ 뒤로 밀기 삭제를 std::set 과 대조하고 불변식 확인
+// 검증: ① 손으로 짠 묘비 시나리오  ② 구현된 탐사열 slotAt 자체를 검사(항등 해시에서 공식 (k+i)%m, (k+i(i+1)/2)%m, (k+i·step)%m 와 같고, 2^k 크기에서 세 방식 모두 순열, 소수 101 에서 삼각수는 (m+1)/2 칸만, 보폭은 홀수이고 키마다 다름); 짝수 보폭은 일부만 도는 수식 시연
+//        ③ 세 방식을 std::set 과 40 000 번 대조(가득 찬 경우 삽입 실패 포함)하고 불변식(모든 키가 홈에서 빈 칸을 만나지 않고 닿음)  ④ 묘비 누적 실험: 정리하지 않으면 실패 조회가 거의 테이블 전체를 훑고(평균 > 40칸), 정리하면 3칸 미만(실측 2.33)
+//        ⑤ 선형 탐사의 평균 탐사 수가 α = 0.5, 0.8 에서 Knuth 공식과 일치(성공·실패 모두 10~15 % 이내)  ⑥ 뒤로 밀기 삭제를 std::set 과 대조하고 불변식 확인  ⑦ 꽉 찬 뒤로 밀기 표(m = 1..31)에서도 삭제·조회·삽입이 끝나고(없는 키는 false) 불변식이 유지된다
 enum Probe { LINEAR, QUADRATIC, DOUBLE };
 uint32_t mix(uint32_t x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16; return x; }
 class OpenTable {
@@ -1117,6 +1133,8 @@ class OpenTable {
     }
 public:
     explicit OpenTable(size_t m, Probe p = LINEAR, bool identityHash = false) : t(m), mode(p), identity(identityHash) {}
+    size_t probeSlot(unsigned k, size_t i) const { return slotAt(k, i); }        // 시험용: 구현된 탐사열 그대로
+    size_t stepOf(unsigned k) const { return step(k); }
     bool insert(unsigned k) {
         long firstFree = -1;
         for (size_t i = 0; i < t.size(); i++) {
@@ -1172,13 +1190,13 @@ public:
     bool erase(unsigned k) {
         size_t j = home(k), n = t.size(); long steps = 0; while (t[j] >= 0 && t[j] != (long)k && steps++ < (long)n) j = (j + 1) % n;
         if (t[j] != (long)k) return false;
-        size_t i = j;                                                    // i = 비워야 할 칸, j 를 앞으로 훑으며 홈이 (i, j] 밖에 있는 키를 i 로 당긴다
+        size_t i = j; t[i] = -1;                                         // i = 비워야 할 칸(먼저 비워 둔다: 꽉 찬 표에서도 훑기가 이 빈 칸에서 끝난다), j 를 앞으로 훑으며 홈이 (i, j] 밖에 있는 키를 i 로 당긴다
         for (;;) {
             j = (j + 1) % n; if (t[j] < 0) break;
             size_t h = home((unsigned)t[j]); bool inRange = i <= j ? (i < h && h <= j) : (i < h || h <= j);
-            if (!inRange) { t[i] = t[j]; i = j; }
+            if (!inRange) { t[i] = t[j]; t[j] = -1; i = j; }
         }
-        t[i] = -1; --live; return true;
+        --live; return true;
     }
     size_t size() const { return live; }
     bool valid() const { size_t f = 0; for (size_t j = 0; j < t.size(); j++) { if (t[j] < 0) continue; ++f; size_t s = home((unsigned)t[j]); while (s != j) { if (t[s] < 0) return false; s = (s + 1) % t.size(); } } return f == live; }
@@ -1194,11 +1212,19 @@ int main() {
     assert(t.size() == 3 && t.tombstones() == 0 && t.valid());
     OpenTable full(4, LINEAR, true); for (unsigned k = 0; k < 4; k++) assert(full.insert(k)); assert(!full.insert(4) && !full.find(99) && !full.insert(2) && full.size() == 4);      // 경계: 가득 찬 테이블에서도 조회는 끝난다
     // ② 탐사열이 방문하는 칸
-    for (size_t m = 1; m <= 1024; m *= 2) {
-        std::set<size_t> tri, dbl; for (size_t i = 0; i < m; i++) { tri.insert((5 + i * (i + 1) / 2) % m); dbl.insert((5 + i * 7) % m); }
-        assert(tri.size() == m && dbl.size() == m);                      // 삼각수 탐사와 홀수 보폭은 모든 칸을 정확히 한 번씩
+    for (size_t m = 2; m <= 1024; m *= 2) for (Probe mode : {LINEAR, QUADRATIC, DOUBLE}) {          // 구현(slotAt) 자체: 항등 해시라 홈 = k mod m
+        OpenTable tb(m, mode, true);
+        for (unsigned k : {5u, 12345u, 7777u, 1023u}) {
+            std::set<size_t> seen; for (size_t i = 0; i < m; i++) {
+                size_t s = tb.probeSlot(k, i), want = mode == LINEAR ? (k % m + i) % m : mode == QUADRATIC ? (k % m + i * (i + 1) / 2) % m : (k % m + i * tb.stepOf(k)) % m;
+                assert(s == want); seen.insert(s);
+            }
+            assert(seen.size() == m);                                    // 선형·삼각수·홀수 보폭은 2^k 에서 모든 칸을 정확히 한 번씩
+        }
     }
-    { std::set<size_t> sq, evenStep; for (size_t i = 0; i < 101; i++) sq.insert((3 + i * i) % 101); assert(sq.size() == 51);        // 소수 101: i² 는 (m+1)/2 = 51 칸만
+    { OpenTable big(1024, DOUBLE, true); std::set<size_t> steps; for (unsigned k = 0; k < 64; k++) { assert(big.stepOf(k) % 2 == 1 && big.stepOf(k) < 1024); steps.insert(big.stepOf(k)); } assert(steps.size() > 20);       // 보폭은 홀수이고 키마다 다르다
+      OpenTable prime(101, QUADRATIC, true); std::set<size_t> tri; for (size_t i = 0; i < 101; i++) tri.insert(prime.probeSlot(3, i)); assert(tri.size() == 51);   // 소수 101: 삼각수 (2i+1)² 의 제곱수 구조라 (m+1)/2 = 51 칸만
+      std::set<size_t> sq, evenStep; for (size_t i = 0; i < 101; i++) sq.insert((3 + i * i) % 101); assert(sq.size() == 51);        // 같은 성질의 i² 시연
       for (size_t i = 0; i < 64; i++) evenStep.insert((3 + i * 6) % 64); assert(evenStep.size() == 32); }                            // 짝수 보폭 6 은 2^k 에서 절반만
     // ③ std::set 대조
     std::mt19937 rng(2025); long fails = 0, succ = 0;
@@ -1224,7 +1250,7 @@ int main() {
         for (int step = 0; step < 20000; ++step) { size_t at = rng() % live.size(); assert(tb.erase(live[at])); live[at] = next; tb.insert(next++); if (variant == 1 && tb.tombstones() > 16) tb.rebuild(); }
         tb.resetProbes(); const int Q = 2000; for (int q = 0; q < Q; q++) assert(!tb.find(900000u + (unsigned)q));
         double avg = (double)tb.probeCount() / Q;
-        if (variant == 0) assert(avg > 40 && tb.tombstones() > 20); else assert(avg < 3.5);
+        if (variant == 0) assert(avg > 40 && tb.tombstones() > 20); else assert(avg < 3);
     }
     // ⑤ 선형 탐사의 평균 탐사 수
     for (double alpha : {0.5, 0.8}) {
@@ -1248,10 +1274,20 @@ int main() {
         assert(sh.size() == model.size()); if (step % 1000 == 0) assert(sh.valid());
     }
     assert(sh.valid());
-    std::cout << "OpenAddressing verified." << std::endl;
+    // ⑦ 꽉 찬 표: 모든 칸이 차도 삭제는 끝나야 하고(예전에는 빈 칸을 못 만나 영원히 돌았다), 없는 키는 false, 지웠다 다시 넣으면 다시 꽉 찬다
+    for (size_t m : {1u, 2u, 3u, 4u, 5u, 8u, 16u, 31u}) {
+        ShiftTable f(m); std::vector<unsigned> ks; std::set<unsigned> uniq; while (ks.size() < m) { unsigned k = (unsigned)(rng() % 1000); if (uniq.insert(k).second) { assert(f.insert(k)); ks.push_back(k); } }
+        assert(f.size() == m && f.valid() && !f.insert(5000) && !f.find(5000) && !f.erase(5000) && !f.insert(ks[0]));
+        for (int round = 0; round < 3 * (int)m; ++round) {
+            unsigned k = ks[rng() % ks.size()]; assert(f.erase(k) && f.size() == m - 1 && !f.find(k) && f.valid());
+            for (unsigned o : ks) assert(f.find(o) == (o != k));
+            assert(!f.erase(k) && f.insert(k) && f.size() == m && f.valid());
+        }
+    }
+    std::cout << "OpenAddressing: the implemented probe sequences matched their formulas and were permutations of 2^k tables, tombstone and backward-shift deletion agreed with std::set over 40,000 random operations per mode, linear-probing averages matched Knuth, and a completely full backward-shift table still erased and re-inserted every key" << std::endl;
     return 0;
 }
-// Time Complexity: 평균 O(1/(1-α)), 최악 O(m)
+// Time Complexity: 평균 탐사 수 선형 ½(1+1/(1-α)) 성공 / ½(1+1/(1-α)²) 실패, 이차·이중 해싱은 실패 ≈ 1/(1-α); 최악 O(m)
 // Space Complexity: O(m)
 ```
 ## LinearProbing()
@@ -4614,23 +4650,29 @@ int main() {
 
 // Redis dict: 해시 테이블 2개(ht[0], ht[1]) + 점진적 재해시(incremental rehashing).
 // 한 번에 전부 옮기면 큰 테이블에서 서버가 멈추므로, 명령을 처리할 때마다 버킷 1개씩 옮긴다.
-// 재해시 중에는 조회가 두 테이블을 모두 보고, 새 키는 ht[1] 에만 넣는다.  채움이 10 % 아래로 떨어지면 줄이는 재해시도 시작한다
+// 재해시 중에는 조회가 두 테이블을 모두 보고, 새 키는 ht[1] 에만 넣는다.  채움이 1/8 이하(used·8 <= size)로 떨어지면 줄이는 재해시도 시작한다.
+// 어느 Redis 를 모델링했나(정확한 상수는 해당 버전의 dict.c / server.h 로 확인할 것): dict.c 와 같은 부분 — 확장은 used >= size 일 때 2의 거듭제곱 크기로(used == size 이므로 2·size), 연산마다 버킷 1개씩 옮기되 빈 버킷은 한 단계에 최대 10개만 건너뜀(dictRehash(d, 1) 의 empty_visits = n·10),
+//   재해시 중 새 키는 ht[1] 에만, SCAN 은 마스크 비트를 뒤집은 순서의 커서. 축소는 버전마다 다르다 — Redis 7.4 이후는 삭제 안에서 used·8 <= size (HASHTABLE_MIN_FILL 8 = 12.5 %) 이면 줄이기 시작하고 (여기서 모델링한 쪽),
+//   Redis 7.2 이하는 삭제가 아니라 serverCron 의 주기 작업에서 채움이 10 % 미만(HASHTABLE_MIN_FILL 10)일 때 줄인다.  생략한 것: dict_can_resize (자식 프로세스가 fork 중이면 확장·축소를 미루고 비율이 force ratio(7.2 이하 5, 7.4 이후 4)를 넘어야 강제),
+//   SipHash (여기서는 FNV-1a), 시작 크기 0 (여기서는 4).
 // SCAN: 커서를 "마스크 비트를 뒤집은 순서로 1 증가" 시켜 순회한다 — 테이블 크기가 호출 사이에 두 배·절반이 되어도 *처음부터 끝까지 있던 키는 최소 한 번 반환* 된다(중복은 있을 수 있음)
 // 검증: ① 원래 예(재해시 중에도 모든 키 조회, 조회만으로 재해시 완료)  ② std::map 과 60 000 번 대조(set/get/del)하고 불변식(모든 항목이 자기 테이블의 올바른 버킷, rehashidx 앞쪽 버킷은 비어 있음, 재해시 중이 아니면 ht[1] 비어 있음),
-//        늘리기·줄이기 재해시가 모두 완료됨, 한 단계가 옮긴 항목 수가 작음  ③ 변경 없는 SCAN 은 모든 키를 *정확히 한 번*  ④ SCAN 도중 삽입·삭제·재해시가 일어나도(300 회) 끝까지 살아 있던 키는 모두 반환
+//        늘리기·줄이기 재해시가 모두 완료됨, 한 단계가 옮긴 항목 수가 작고 들여다본 버킷 수가 빈 버킷 10개 + 1개 이하(빈 버킷 상한이 실제로 작동)  ③ 변경 없는 SCAN 은 모든 키를 *정확히 한 번*  ④ SCAN 도중 삽입·삭제·재해시가 일어나도(300 회) 끝까지 살아 있던 키는 모두 반환
+//        ⑤ 정확한 크기: 키 i 개 삽입 후 표 크기 = nextpow2(max(4, i)) (i = 1..300, 크기 4 → 8 → … 로 정확히 두 배씩), 1000 개를 넣고 하나씩 지우면 줄이기가 정확히 used = 128, 16, 2 에서(= 크기 1024, 128, 16 의 1/8) 시작하고 새 크기는 128, 16, 4
 class Dict {
     struct Entry { std::string key; int val; Entry* next; };
     struct Table { std::vector<Entry*> t; size_t used = 0; };
     Table ht[2];
     long rehashidx = -1;
-    size_t maxMoved_ = 0, finished_ = 0, grows_ = 0, shrinks_ = 0;
+    size_t maxMoved_ = 0, finished_ = 0, grows_ = 0, shrinks_ = 0, maxScanned_ = 0, emptyCaps_ = 0;
     static size_t hash(const std::string& k) { size_t h = 1469598103934665603ULL; for (unsigned char c : k) { h ^= c; h *= 1099511628211ULL; } return h; }
     bool rehashing() const { return rehashidx != -1; }
     void rehashStep() {
         if (!rehashing()) return;
-        int emptyVisits = 10;
-        while (ht[0].used > 0 && !ht[0].t[rehashidx]) { rehashidx++; if (--emptyVisits == 0) return; }
+        int emptyVisits = 10; size_t scanned = 0;                          // scanned: 이 단계가 들여다본 버킷 수 (빈 버킷 + 옮긴 버킷 1개)
+        while (ht[0].used > 0 && !ht[0].t[rehashidx]) { rehashidx++; ++scanned; if (--emptyVisits == 0) { maxScanned_ = std::max(maxScanned_, scanned); ++emptyCaps_; return; } }
         if (ht[0].used > 0) {
+            ++scanned;
             Entry* e = ht[0].t[rehashidx]; size_t moved = 0;
             while (e) {
                 Entry* nx = e->next;
@@ -4641,6 +4683,7 @@ class Dict {
             }
             ht[0].t[rehashidx++] = nullptr; maxMoved_ = std::max(maxMoved_, moved);
         }
+        maxScanned_ = std::max(maxScanned_, scanned);
         if (ht[0].used == 0) { ht[0] = std::move(ht[1]); ht[1] = Table(); rehashidx = -1; ++finished_; }   // 재해시 완료: 테이블 교체
     }
     Entry* findIn(int which, const std::string& k) const {
@@ -4680,7 +4723,7 @@ public:
         for (int which = 0; which < 2; which++) {
             if (ht[which].t.empty()) continue;
             Entry** pp = &ht[which].t[hash(k) % ht[which].t.size()];
-            while (*pp) { if ((*pp)->key == k) { Entry* d = *pp; *pp = d->next; delete d; ht[which].used--; if (!rehashing() && ht[0].t.size() > 4 && ht[0].used * 10 < ht[0].t.size()) { size_t n = 4; while (n < ht[0].used) n <<= 1; if (n < ht[0].t.size()) { startRehash(n); ++shrinks_; } } return true; } pp = &(*pp)->next; }
+            while (*pp) { if ((*pp)->key == k) { Entry* d = *pp; *pp = d->next; delete d; ht[which].used--; if (!rehashing() && ht[0].t.size() > 4 && ht[0].used * 8 <= ht[0].t.size()) { size_t n = 4; while (n < ht[0].used) n <<= 1; if (n < ht[0].t.size()) { startRehash(n); ++shrinks_; } } return true; } pp = &(*pp)->next; }
         }
         return false;
     }
@@ -4696,6 +4739,8 @@ public:
     bool isRehashing() const { return rehashing(); }
     size_t size() const { return ht[0].used + ht[1].used; }
     size_t maxMoved() const { return maxMoved_; }
+    size_t maxScanned() const { return maxScanned_; }
+    size_t emptyCaps() const { return emptyCaps_; }
     size_t finished() const { return finished_; }
     size_t grows() const { return grows_; }
     size_t shrinks() const { return shrinks_; }
@@ -4729,10 +4774,29 @@ int main() {
         assert(dd.size() == ref.size()); rehashingOps += dd.isRehashing(); if (step % 200 == 0) assert(dd.valid());
     }
     assert(dd.valid() && dd.finished() >= 8 && dd.grows() >= 4 && rehashingOps > 1000 && dd.maxMoved() < 20);
-    {   std::vector<std::string> ks; for (auto& kv : ref) ks.push_back(kv.first); std::shuffle(ks.begin(), ks.end(), rng);          // 전부 지우면 채움이 10 % 아래로 떨어져 줄이는 재해시가 일어난다
+    {   std::vector<std::string> ks; for (auto& kv : ref) ks.push_back(kv.first); std::shuffle(ks.begin(), ks.end(), rng);          // 전부 지우면 채움이 1/8 이하로 떨어져 줄이는 재해시가 일어난다
         for (size_t i = 0; i < ks.size(); i++) { assert(dd.del(ks[i])); ref.erase(ks[i]); int val; if (i % 3 == 0) dd.get("k0", val); assert(dd.size() == ref.size()); if (i % 200 == 0) assert(dd.valid()); }
         for (int i = 0; i < 100 && dd.isRehashing(); i++) { int val; dd.get("none", val); }
         assert(dd.size() == 0 && dd.shrinks() >= 3 && dd.tableSize(0) == 4 && dd.valid()); }
+    // ⑤ 정확한 크기. 확장: i 개를 넣은 뒤(재해시를 끝내고) 표 크기는 nextpow2(max(4, i)) — i = 5 에서 4 → 8, i = 9 에서 8 → 16 ...
+    {   Dict e; int val; auto finish = [&] { for (int i = 0; i < 100000 && e.isRehashing(); i++) e.get("none", val); assert(!e.isRehashing()); };
+        for (int i = 1; i <= 300; i++) {
+            e.set("g" + std::to_string(i), i); if (i == 5) assert(e.isRehashing() && e.tableSize(0) == 4 && e.tableSize(1) == 8);      // used 4 >= size 4 가 되는 5 번째 삽입에서 2 배 확장 시작
+            finish(); size_t want = 4; while (want < (size_t)i) want <<= 1; assert(e.tableSize(0) == want && e.tableSize(1) == 0 && e.valid());
+        }
+        // 축소: 1000 개를 넣어 크기 1024 로 만든 뒤 하나씩 지운다 — 줄이기는 used·8 <= size 가 되는 순간(used = 128, 16, 2) 시작하고 새 크기는 used 이상의 최소 2의 거듭제곱(최소 4)
+        Dict z; for (int i = 0; i < 1000; i++) z.set("z" + std::to_string(i), i);
+        auto settle = [&] { for (int i = 0; i < 100000 && z.isRehashing(); i++) z.get("none", val); assert(!z.isRehashing()); };
+        settle(); assert(z.tableSize(0) == 1024);
+        std::vector<std::pair<size_t, size_t>> events; size_t lastShrinks = 0;
+        for (int i = 0; i < 1000; i++) {
+            assert(z.del("z" + std::to_string(i)));
+            if (z.shrinks() != lastShrinks) { lastShrinks = z.shrinks(); assert(z.isRehashing()); events.push_back({z.size(), z.tableSize(1)}); }
+            settle();
+        }
+        assert(events.size() == 3 && events[0] == std::make_pair((size_t)128, (size_t)128) && events[1] == std::make_pair((size_t)16, (size_t)16) && events[2] == std::make_pair((size_t)2, (size_t)4) && z.size() == 0 && z.tableSize(0) == 4);
+        assert(z.maxScanned() <= 11 && z.emptyCaps() > 0 && dd.maxScanned() <= 11);                // 성긴 표를 줄일 때 한 단계가 빈 버킷을 10개까지만 훑고 멈춘다(상한이 실제로 걸렸다)
+    }
     // ③ 변경 없는 SCAN: 정확히 한 번씩
     for (int size : {1, 5, 50, 1000}) {
         Dict s; for (int i = 0; i < size; i++) s.set("s" + std::to_string(i), i);
@@ -5878,7 +5942,9 @@ int main() {
 // 두 문서의 비트가 다를 확률 ≈ θ/π (θ = 두 tf 벡터 사이 각) → 해밍 거리 ≈ 64·arccos(cos)/π 이므로 비슷한 문서는 지문이 가깝다 (구글의 중복 웹페이지 탐지).
 //  ① 코사인과 해밍 거리의 관계를 여러 유사도에서 측정. ② 해밍 거리 ≤ k 를 모두 찾는 색인: 64 비트를 k+1 조각으로 나누면 비둘기집 원리로 최소 한 조각은 정확히 같다.
 //  ③ 그 색인이 거리 ≤ 3 의 모든 변형(C(64,≤3) = 43745 가지)을 놓치지 않는지 전수 확인, 무작위·계획된 중복쌍에서 무차별 탐색과 대조.
-//  ④ 가족(원본+약간 고친 변형) 문서 모음에서 가족 내 거리와 가족 간 거리가 분리되는지 확인.
+//  ④ 가족(원본+약간 고친 변형) 문서 모음에서 가족 내 거리와 가족 간 거리가 분리되는지 확인 (불용어 30 개 제거 + 부분선형 tf 를 함께 켠 경우; 둘 중 하나만으로도 이 임계값은 넘으므로 각각의 기여는 구분하지 않고, 부분선형 가중치의 모양은 ⑤ 가 따로 본다).
+//  ⑤ 부분선형 tf 1 + 2·ln(tf) 는 따로 확인: 단어 60 개 문서에 tf = 30 인 단어 하나를 더했을 때 뒤집히는 지문 비트가 평균 22 개 안팎 (선형 가중 tf 였다면 그 한 단어가 지문을 거의 결정해 32 개).
+//  ①의 gap 은 *평균끼리의 차이* (|평균 해밍/64 − 평균 θ/π|, 편향) 이지 쌍마다의 오차 한계가 아니다 — 쌍 하나의 해밍 거리는 이항분포라 평균 둘레로 흩어진다.
 typedef std::uint64_t u64; typedef std::uint32_t u32; typedef std::int64_t i64;
 static inline u64 mix(u64 x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
 typedef std::map<int, int> Doc;                                          // 단어 번호 → 빈도(tf)
@@ -5904,7 +5970,7 @@ public:
 
 int main() {
     std::mt19937_64 rng(6);
-    // ① 코사인 ↔ 해밍: 원본에서 단어 일부를 새 단어로 갈아 끼운 변형 (남기는 비율 f)
+    // ① 코사인 ↔ 해밍 (유사도마다 300 쌍의 *평균* 을 비교한다): 원본에서 단어 일부를 새 단어로 갈아 끼운 변형 (남기는 비율 f)
     double worstGap = 0;
     for (double f : {0.99, 0.95, 0.9, 0.8, 0.6, 0.4, 0.2, 0.0}) {
         double sumH = 0, sumTheta = 0; const int T = 300;
@@ -5912,7 +5978,7 @@ int main() {
             Doc a, b; int next = 1000000; for (int i = 0; i < 150; ++i) { int w = (int)(rng() % 20000), tf = 1 + (int)(rng() % 5); a[w] = tf; if ((double)(rng() % 1000) / 1000 < f) b[w] = tf; else b[next++] = tf; }
             sumH += hamming(simhash(a), simhash(b)) / 64.0; sumTheta += std::acos(std::min(1.0, cosine(a, b))) / M_PI;
         }
-        double gap = std::abs(sumH - sumTheta) / T; worstGap = std::max(worstGap, gap); assert(gap < 0.03);
+        double gap = std::abs(sumH - sumTheta) / T; worstGap = std::max(worstGap, gap); assert(gap < 0.03);      // 300 쌍 평균의 편향
     }
     // ② 색인 vs 무차별 탐색: 지문 2 만 개 + 계획된 중복쌍 (거리 0~3 으로 비트 뒤집기), 질의 2000 개
     for (int k : {1, 2, 3, 5}) {
@@ -5939,9 +6005,19 @@ int main() {
             std::vector<u64> fp; for (auto& d : docs) fp.push_back(simhash(d, stop)); const int T = 10; long within = 0, withinOk = 0, across = 0, acrossBad = 0; double sumWithin = 0, sumAcross = 0;
             for (std::size_t i = 0; i < docs.size(); ++i) for (std::size_t j = i + 1; j < docs.size(); ++j) { int h = hamming(fp[i], fp[j]); if (family[i] == family[j]) { ++within; withinOk += h <= T; sumWithin += h; } else { ++across; acrossBad += h <= T; sumAcross += h; } }
             double recall = (double)withinOk / within, fpr = (double)acrossBad / across;
-            if (stop == 0) { assert(sumAcross / across < 14 && fpr > 0.3 && recall > 0.9); std::cout << "SimHash: |measured Hamming/64 - arccos(cos)/pi| stayed below " << worstGap << " at every similarity; the index matched brute force for k=1,2,3,5 and found all 43745 variants within distance 3; in a 400-document Zipf corpus, raw tf weights let stop words dominate (unrelated documents averaged only " << sumAcross / across << " bits apart, so " << 100 * fpr << "% of cross-family pairs fell within 10 bits), "; }
-            else { assert(recall > 0.9 && fpr < 0.002 && sumAcross / across > 20); std::cout << "while dropping the 30 most common words and using 1+2ln(tf) put " << 100 * recall << "% of same-family pairs and " << 100 * fpr << "% of cross-family pairs within 10 bits (means " << sumWithin / within << " vs " << sumAcross / across << ")" << std::endl; }
+            if (stop == 0) { assert(sumAcross / across < 14 && fpr > 0.3 && recall > 0.9); std::cout << "SimHash: the mean over 300 pairs of Hamming/64 differed from the mean of arccos(cos)/pi by at most " << worstGap << " at every similarity; the index matched brute force for k=1,2,3,5 and found all 43745 variants within distance 3; in a 400-document Zipf corpus, raw tf weights let stop words dominate (unrelated documents averaged only " << sumAcross / across << " bits apart, so " << 100 * fpr << "% of cross-family pairs fell within 10 bits), "; }
+            else { assert(recall > 0.9 && fpr < 0.002 && sumAcross / across > 20); std::cout << "while dropping the 30 most common words and weighting the rest by 1+2ln(tf) put " << 100 * recall << "% of same-family pairs and " << 100 * fpr << "% of cross-family pairs within 10 bits (means " << sumWithin / within << " vs " << sumAcross / across << ")" << std::endl; }
         }
+    }
+    // ⑤ 부분선형 tf: 불용어 아닌 60 개 단어(tf = 1) 문서에 tf 가 큰 단어 하나를 더하면 지문이 얼마나 바뀌나 (선형 가중이면 tf 30 에서 거의 32 비트 = 무관한 지문)
+    {   std::mt19937_64 r5(99); double avg[3]; int idx = 0;
+        for (int tfY : {1, 5, 30}) {
+            double sum = 0; const int T = 400;
+            for (int t = 0; t < T; ++t) { Doc x; for (int i = 0; i < 60; ++i) x[100 + (int)(r5() % 100000)] = 1; Doc y = x; y[200000 + t] = tfY; sum += hamming(simhash(x, 30), simhash(y, 30)); }
+            avg[idx++] = sum / T;
+        }
+        assert(avg[0] < 6 && avg[0] < avg[1] && avg[1] < avg[2] && avg[2] > 18 && avg[2] < 26);        // 실측 3.3 / 12.5 / 22.2 (선형 가중이면 3.3 / 15.4 / 32.0)
+        std::cout << "SimHash: with 1+2ln(tf) weights a word of tf 1/5/30 added to a 60-word document flipped " << avg[0] << " / " << avg[1] << " / " << avg[2] << " fingerprint bits on average (linear tf weights would flip 32 at tf 30)" << std::endl;
     }
     return 0;
 }

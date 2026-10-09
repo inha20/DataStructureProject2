@@ -64,7 +64,7 @@
 | `Treap` | 7 | 삽입·삭제·탐색 기대 O(log N) | O(N) |
 | `SplayTree` | 7 | 분할상환 O(log N), 작업 집합 크기 w 에서 O(log w) | O(N) |
 | `ScapegoatTree` | 7 | 삽입·삭제 분할상환 O(log N), 검색 O(log N) | O(N) (노드마다 부분 트리 크기) |
-| `TangoTree` | 7 | 접근열 X 에 대해 O((k + 1)(1 + log log N)) (k = 선호 자식 변경 횟수 = interleave 하한) | O(N) |
+| `TangoTree` | 7 | 접근열 X 에 대해 기대 O((k + 1)(1 + log log N)) (k = 선호 자식이 바뀐(join 한) 횟수 <= interleave 하한 + N + \|X\|; 보조 트리가 트립이므로 l | O(N) |
 | `BTree` | 8 | 검색·삽입·삭제 O(t · log_t N), 디스크 접근 O(log_t N) | O(N) |
 | `BPlusTree` | 8 | 검색·삽입·삭제 O(log_M N), 범위 질의 O(log_M N + k) | O(N) |
 | `BStarTree` | 8 | 삽입·탐색 O(log N) 노드 접근 | O(N), 노드 이용률 >= 2/3 |
@@ -139,7 +139,7 @@
 | `Exact vs Approximate 자료구조` | 0 | 근사 구조 연산은 모두 O(1)~O(d) | 근사 구조는 원소 수와 무관한 고정 크기(ε, δ, p 로 결정), 정확 구조는 O(N) |
 | `CPU 자료구조 vs GPU 자료구조` | 0 | 이 시뮬레이션은 O(N) | O(N) |
 | `LSM Tree가 SSD에 적합한 이유` | 0 | 시뮬레이션 O(쓰기 수 × 블록 수) | O(물리 페이지 수) |
-| `벡터 데이터베이스는 왜 HNSW를 사용하는가?` | 0 | 그래프 질의 경험적으로 O(log N) 거리 계산, IVF 는 O(√N), 플랫은 O(N) | 그래프 O(N·(D + M)), IVF O(N·D) |
+| `벡터 데이터베이스는 왜 HNSW를 사용하는가?` | 0 | 그래프 질의는 경험적으로 부선형 (이 데모에서 N 이 8 배일 때 약 2.5 배; 저차원 가정 하에서 O(log N) 으로 보고됨, 보장 아님), IVF 는 이상적으로 O(√N)(여기서 약 3.8  | 그래프 O(N·(D + M)), IVF·KD 트리 O(N·D) |
 | `현대 데이터베이스가 B+Tree와 LSMTree를 함께 사용하는 이유` | 0 | 시뮬레이션 O(연산 수 · log N) | O(N) |
 | `생성형 AI 시대의 자료구조` | 0 | 블록 할당·해제 O(1), 논리 위치 -> 물리 블록 변환 O(1) (블록 테이블 조회) | 요청당 O(길이/블록) 테이블 + 사용한 블록 |
 
@@ -274,7 +274,7 @@
 | `xxHash` | 2 | O(len) | O(1)  (스트리밍 상태 48 바이트) |
 | `SipHash` | 2 | O(len) | O(1) |
 | `Chaining` | 3 | 평균 O(1 + α), 최악 O(n) | O(n + m) |
-| `OpenAddressing` | 3 | 평균 O(1/(1-α)), 최악 O(m) | O(m) |
+| `OpenAddressing` | 3 | 평균 탐사 수 선형 ½(1+1/(1-α)) 성공 / ½(1+1/(1-α)²) 실패, 이차·이중 해싱은 실패 ≈ 1/(1-α); 최악 O(m) | O(m) |
 | `LinearProbing` | 3 | 성공 탐색 ≈ ½(1 + 1/(1−α)), 실패 탐색 ≈ ½(1 + 1/(1−α)²), 최악 O(n) (키가 한 클러스터에 몰릴 때) | O(m) |
 | `QuadraticProbing` | 3 | 평균 O(1/(1−α)), 군집은 선형 탐사보다 완화 | O(m) |
 | `DoubleHashing` | 3 | 평균 O(1/(1−α)) (1차·2차 군집 없음) | O(m) |
@@ -453,8 +453,8 @@
 | `BuddyAllocator` | 6 | 할당·해제 O(차수) = O(log N) (집합 연산 포함 O(log N · log 블록 수)) | O(블록 수) |
 | `ArenaAllocator` | 6 | 할당 O(1) (덩어리 증설 시 O(덩어리 크기)), rollback/reset O(되돌릴 객체 수 + 덩어리 수) | O(용량) |
 | `MarkSweep` | 7 | 마크 O(살아있는 객체와 참조), 스윕 O(힙 전체), 할당 O(자유 블록 수) | O(깊이) 마크 스택 (포인터 역전 표시는 O(1)) |
-| `MarkCompact` | 7 | O(힙 크기) · 4 패스 (표시 + 주소 계산 + 갱신 + 이동), 두 손가락은 표시 뒤 O(셀 수) 한 번 | O(1) 추가 (forwarding 주소는 객체 헤더에 저장), 표시 스택 O(깊이) |
-| `CopyingGC` | 7 | O(살아있는 객체) (쓰레기는 방문하지 않는다), 할당 O(1) | O(힙) · 2 (두 공간), 큐/스택 없이 scan 포인터 하나로 BFS |
+| `MarkCompact` | 7 | O(힙 크기) · 4 패스 (표시 + 주소 계산 + 갱신 + 이동), 두 손가락은 표시 뒤 O(셀 수) 한 번 | O(1) 추가 (forwarding 주소는 객체 헤더에 저장) + 표시 스택 최악 O(살아 있는 객체 수) (푸시할 때 표시하므로 한 객체는 한 번만 들어간다) |
+| `CopyingGC` | 7 | O(살아있는 객체) (쓰레기는 방문하지 않는다; 디버그용 poison 채우기만 O(힙)), 할당 O(1) | O(힙) · 2 (두 공간), 큐/스택 없이 scan 포인터 하나로 BFS |
 | `GenerationalGC` | 7 | minor GC 는 살아있는 young + 기억 집합(또는 더러운 카드)에 비례, major GC 는 살아있는 전체 | O(기억 집합) 또는 O(카드 수) |
 | `ReferenceCountingGC` | 7 | decref 연쇄 해제 O(해제되는 객체), 순환 수집 O(객체 + 참조) | 객체당 카운터 하나 |
 | `IncrementalGC` | 7 | 조각당 O(예산), 한 사이클 O(힙), 장벽 O(1) | O(회색 작업 목록) |
@@ -670,7 +670,7 @@
 | `PopFront` | 4 | 분할상환 O(1) | O(N), 용량은 크기의 4 배 이하 |
 | `PopBack` | 4 | O(1) | O(1) |
 | `PriorityQueue` | 5 | push·pop O(log N), top O(1) | O(N) |
-| `PushHeap` | 5 | O(log N) 최악, 평균 O(1) 비교 | O(1) 추가 |
+| `PushHeap` | 5 | O(log N) 최악, 무작위 입력에서만 평균 O(1) 비교 (오름차순 입력은 매번 O(log N)) | O(1) 추가 |
 | `PopHeap` | 5 | O(log N) (클래식 최대 2 log N 비교, bottom-up 평균 ≈ log N) | O(1) 추가 |
 | `Heapify` | 5 | O(log N) (노드의 높이에 비례) | O(1) |
 | `BuildHeap` | 5 | Floyd O(N), 반복 push O(N log N) | O(1) 추가 |

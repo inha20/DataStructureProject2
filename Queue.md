@@ -44,19 +44,19 @@ public:
     bool dequeue(int& out) { if (!front_) return false; Node* t = front_; out = t->v; front_ = t->next; if (!front_) rear_ = nullptr; delete t; n_--; return true; }
     bool front(int& out) const { if (!front_) return false; out = front_->v; return true; }
 };
-template <class Q> void checkFresh(Q& q) { int v = 123; assert(q.empty() && q.size() == 0 && !q.front(v) && !q.dequeue(v) && v == 123); }           // ① 초기 불변식 (실패한 호출은 출력 인자를 건드리지 않는다)
+template <class Q> void checkFresh(Q& q) { int v = 123; bool hasFront = q.front(v), hasDeq = q.dequeue(v); assert(q.empty() && q.size() == 0 && !hasFront && !hasDeq && v == 123); }           // ① 초기 불변식 (실패한 호출은 출력 인자를 건드리지 않는다)
 int main() {
     long baseLive = liveBlocks;
     { ArrayQueue a(16); LinkedQueue l; checkFresh(a); checkFresh(l); }
     long b0 = newCalls; { ArrayQueue a(16); assert(newCalls - b0 == 1); } long b1 = newCalls; { LinkedQueue l; assert(newCalls == b1); l.enqueue(1); assert(newCalls - b1 == 1); }          // ② 할당 횟수
     for (int i = 0; i < 3000; i++) { ArrayQueue a(i % 40); LinkedQueue l; for (int k = 0; k < i % 7; k++) { a.enqueue(k); l.enqueue(k); } } assert(liveBlocks == baseLive);                    // ③ 누수 0
-    { ArrayQueue zero(0); int v; assert(zero.empty() && !zero.enqueue(1) && !zero.dequeue(v) && !zero.front(v)); }                                                                      // ④ 용량 0
-    { ArrayQueue a(4); a.enqueue(7); a.enqueue(8); ArrayQueue b(std::move(a)); int v; assert(a.empty() && !a.enqueue(1) && b.size() == 2 && b.dequeue(v) && v == 7 && b.dequeue(v) && v == 8); }  // ⑤ 이동
+    { ArrayQueue zero(0); int v = 0; bool enq = zero.enqueue(1), deq = zero.dequeue(v), fr = zero.front(v); assert(zero.empty() && !enq && !deq && !fr); }                                                                      // ④ 용량 0
+    { ArrayQueue a(4); a.enqueue(7); a.enqueue(8); ArrayQueue b(std::move(a)); int v = 0, w = 0; std::size_t moved = b.size(); bool aEnq = a.enqueue(1), d1 = b.dequeue(v), d2 = b.dequeue(w); assert(a.empty() && !aEnq && moved == 2 && d1 && v == 7 && d2 && w == 8); }  // ⑤ 이동
     {   std::mt19937 rng(5); for (int cap : {1, 2, 3, 7, 64}) { ArrayQueue a(cap); LinkedQueue l; std::queue<int> ma, ml; long refused = 0;                                           // ⑦ 무작위 대조
             for (int step = 0; step < 100000; ++step) { int v = (int)rng();
                 if (rng() % 3 != 0) { bool okA = a.enqueue(v), okL = l.enqueue(v); assert(okA == (ma.size() < (std::size_t)cap) && okL); if (okA) ma.push(v); else ++refused; ml.push(v); }
                 else { int x = -1, y = -1; bool gotA = a.dequeue(x), gotL = l.dequeue(y); assert(gotA == !ma.empty() && gotL == !ml.empty()); if (gotA) { assert(x == ma.front()); ma.pop(); } if (gotL) { assert(y == ml.front()); ml.pop(); } }
-                assert(a.size() == ma.size() && l.size() == ml.size() && a.size() <= (std::size_t)cap); int f = 0, g = 0; assert(a.front(f) == !ma.empty() && l.front(g) == !ml.empty()); if (!ma.empty()) assert(f == ma.front() && g == ml.front()); }
+                assert(a.size() == ma.size() && l.size() == ml.size() && a.size() <= (std::size_t)cap); int f = 0, g = 0; bool hasA = a.front(f), hasL = l.front(g); assert(hasA == !ma.empty() && hasL == !ml.empty()); if (!ma.empty()) assert(f == ma.front() && g == ml.front()); }
             assert(refused > 0 && a.empty() == ma.empty()); } }
     { std::queue<int> q; assert(q.empty() && q.size() == 0); }                                                                                                                          // ⑥ 실무의 std::queue
     std::cout << "CreateQueue: fresh array and linked queues satisfy the empty-state invariants; array queue costs 1 allocation, linked queue 0 until the first enqueue; 3000 create/destroy cycles left no live blocks" << std::endl; return 0;
@@ -102,12 +102,12 @@ public:
     std::size_t size() const { return n_; } std::size_t capacity() const { return cap_; } long copies() const { return copies_; } void failAbove(std::size_t n) { failAbove_ = n; }
 };
 int main() {
-    { int raw[10]; for (int& x : raw) x = -999; FixedQueue q(raw + 1, 8); int v; for (int i = 0; i < 8; i++) assert(q.enqueue(i)); assert(!q.enqueue(8) && q.size() == 8 && raw[0] == -999 && raw[9] == -999);       // ① 용량 초과 거절, 경계 밖 불변
-      for (int round = 0; round < 50; round++) { assert(q.dequeue(v) && v == (round < 8 ? round : 100 + round - 8)); assert(q.enqueue(100 + round)); } assert(raw[0] == -999 && raw[9] == -999); }                                 // 감아 돌며 계속 써도 경계를 넘지 않는다
-    { DynamicQueue q; const int N = 5000; int v; for (int i = 0; i < N; i++) { q.enqueue(i); assert((q.capacity() & (q.capacity() - 1)) == 0); if (i % 3 == 2) { assert(q.dequeue(v)); } } assert(q.copies() < 2L * N); }          // ② 성장 복사 < 2N
+    { int raw[10]; for (int& x : raw) x = -999; FixedQueue q(raw + 1, 8); int v; for (int i = 0; i < 8; i++) { bool ok = q.enqueue(i); assert(ok); } bool over = q.enqueue(8); assert(!over && q.size() == 8 && raw[0] == -999 && raw[9] == -999);       // ① 용량 초과 거절, 경계 밖 불변
+      for (int round = 0; round < 50; round++) { bool ok = q.dequeue(v); assert(ok && v == (round < 8 ? round : 100 + round - 8)); ok = q.enqueue(100 + round); assert(ok); } assert(raw[0] == -999 && raw[9] == -999); }                                 // 감아 돌며 계속 써도 경계를 넘지 않는다
+    { DynamicQueue q; const int N = 5000; int v; for (int i = 0; i < N; i++) { q.enqueue(i); assert((q.capacity() & (q.capacity() - 1)) == 0); if (i % 3 == 2) { bool ok = q.dequeue(v); assert(ok); } } assert(q.copies() < 2L * N); }          // ② 성장 복사 < 2N
     { DynamicQueue good, bad(true); int v, w; for (int i = 0; i < 4; i++) { good.enqueue(i); bad.enqueue(i); } for (int i = 0; i < 3; i++) { good.dequeue(v); bad.dequeue(w); } for (int i = 4; i < 8; i++) { good.enqueue(i); bad.enqueue(i); }   // 가득 찬(감아 돈) 상태에서 성장
       good.enqueue(99); bad.enqueue(99); bool same = true; while (good.size()) { good.dequeue(v); same &= bad.dequeue(w) && v == w; } assert(!same); }                                                          // ③ 순진한 복사는 순서가 뒤틀린다
-    { DynamicQueue q; std::queue<int> ref; std::mt19937 rng(5); int v; for (int step = 0; step < 30000; step++) { if (rng() % 3) { int x = rng() % 1000; q.enqueue(x); ref.push(x); } else { bool had = !ref.empty(); assert(q.dequeue(v) == had); if (had) { assert(v == ref.front()); ref.pop(); } } assert(q.size() == ref.size()); } }       // ④
+    { DynamicQueue q; std::queue<int> ref; std::mt19937 rng(5); int v; for (int step = 0; step < 30000; step++) { if (rng() % 3) { int x = rng() % 1000; q.enqueue(x); ref.push(x); } else { bool had = !ref.empty(); bool got = q.dequeue(v); assert(got == had); if (had) { assert(v == ref.front()); ref.pop(); } } assert(q.size() == ref.size()); } }       // ④
     { DynamicQueue q; int v; for (int i = 0; i < 4; i++) q.enqueue(i); q.dequeue(v); q.dequeue(v); q.enqueue(4); std::size_t cap = q.capacity(), n = q.size(); q.failAbove(cap); bool threw = false; try { for (int i = 0; i < 10; i++) q.enqueue(100 + i); } catch (const std::bad_alloc&) { threw = true; }
       q.failAbove((std::size_t)-1); assert(threw && q.capacity() == cap && q.size() >= n); int expect = 2; q.dequeue(v); assert(v == expect); }                                                              // ⑤ 실패해도 지금까지 들어간 것이 그대로
     std::cout << "Enqueue: fixed-capacity queue rejected overflow without touching guard cells even after wrapping; growth was linearized correctly (a whole-array copy scrambled the order) and cost < 2N copies; allocation failure left the queue usable" << std::endl; return 0;
@@ -236,10 +236,10 @@ struct LinkedQueue {
     bool rearAlive() const { return rear == nullptr || liveNodes.count(reinterpret_cast<std::uintptr_t>(rear)) > 0; }        // 숫자 비교만: 해제된 메모리를 읽지 않는다
 };
 int main() {
-    { CircularQueue q(7); std::queue<int> ref; std::mt19937 rng(4); int v; for (int step = 0; step < 40000; step++) { if (rng() % 2) { int x = rng() % 1000; bool ok = q.enqueue(x); assert(ok == (ref.size() < 7)); if (ok) ref.push(x); } else { bool had = !ref.empty(); assert(q.dequeue(v) == had); if (had) ref.pop(); } if (!ref.empty()) { assert(q.rear(v) && v == ref.back() && q.front(v) && v == ref.front()); } else assert(!q.rear(v)); } }       // ① ⑤ 용량 7 로 계속 감아 돈다
+    { CircularQueue q(7); std::queue<int> ref; std::mt19937 rng(4); int v; for (int step = 0; step < 40000; step++) { if (rng() % 2) { int x = rng() % 1000; bool ok = q.enqueue(x); assert(ok == (ref.size() < 7)); if (ok) ref.push(x); } else { bool had = !ref.empty(); bool got = q.dequeue(v); assert(got == had); if (had) ref.pop(); } if (!ref.empty()) { int r = 0, f = 0; bool okRear = q.rear(r), okFront = q.front(f); assert(okRear && r == ref.back() && okFront && f == ref.front()); } else { bool okRear = q.rear(v); assert(!okRear); } } }       // ① ⑤ 용량 7 로 계속 감아 돈다
     { LinkedQueue q(true); int v; assert(q.rear == nullptr); q.enqueue(1); assert(q.front == q.rear && q.rear->v == 1); q.enqueue(2); assert(q.rear->v == 2 && q.front != q.rear); q.dequeue(v); assert(q.front == q.rear && q.rear->v == 2); q.dequeue(v); assert(q.front == nullptr && q.rear == nullptr && q.rearAlive()); q.enqueue(3); assert(q.front == q.rear && q.front->v == 3); }       // ② ④
     { LinkedQueue bad(false); int v; bad.enqueue(1); bad.dequeue(v); assert(bad.front == nullptr && bad.rear != nullptr && !bad.rearAlive()); /* 틀린 구현: 다음 enqueue 가 해제된 노드의 next 에 쓰게 된다 */ }                    // ③ 매달린 rear
-    { LinkedQueue q(true); std::queue<int> ref; std::mt19937 rng(9); int v; for (int step = 0; step < 30000; step++) { if (rng() % 2) { int x = rng() % 100; q.enqueue(x); ref.push(x); } else { bool had = !ref.empty(); assert(q.dequeue(v) == had); if (had) ref.pop(); } assert(q.rearAlive() && (ref.empty() ? q.rear == nullptr : q.rear->v == ref.back())); } }       // ⑤
+    { LinkedQueue q(true); std::queue<int> ref; std::mt19937 rng(9); int v; for (int step = 0; step < 30000; step++) { if (rng() % 2) { int x = rng() % 100; q.enqueue(x); ref.push(x); } else { bool had = !ref.empty(); bool got = q.dequeue(v); assert(got == had); if (had) ref.pop(); } assert(q.rearAlive() && (ref.empty() ? q.rear == nullptr : q.rear->v == ref.back())); } }       // ⑤
     assert(liveNodes.empty());
     std::cout << "Rear: the circular back index matched std::queue::back while wrapping, the linked queue kept front/rear consistent through 30000 operations, and the variant that forgot to clear rear was caught holding a freed node's address" << std::endl; return 0;
 }
@@ -328,8 +328,11 @@ int main() {
 ## IsFull()
 ### 대표코드
 ```cpp
+#include <algorithm>
 #include <cstddef>
+#include <deque>
 #include <iostream>
+#include <random>
 #include <stdexcept>
 #include <vector>
 #include <cassert>
@@ -337,7 +340,7 @@ int main() {
 // 가득 찼는지 검사(IsFull): 고정 용량 큐에서 원소 수 == 용량 인가. enqueue 가 거절될 조건과 정확히 같아야 한다. 용량 0 인 큐는 비어 있으면서 동시에 가득 차 있다. 원형 큐가 "한 칸 비우기" 방식이면 가득 참은 (rear + 1) % N == front 이고 실제 최대 원소 수는 N−1 이다.
 // 상한이 있는 동적 큐(서버의 요청 대기열)는 최대 길이를 넘으면 거절하거나(admission control) 가장 오래된 것을 버린다(drop-oldest) 또는 예외를 던진다. 어떤 정책이든 "가득 참" 이 의미를 가지는 것은 큐가 유한한 경우뿐이다. 이 항목은 세 정책(거절, 예외, 가장 오래된 것 버리기)을 구현해 관찰 가능한 결과를 비교한다.
 // 경계가 중요하다: 크기가 용량−1 → 용량으로 넘어가는 순간(off-by-one)과 용량 0, 1 이 단골 버그 지점이다.
-// 검증: ① 용량 0..16 에서 정확히 용량 개를 받고 그때 IsFull 이 참이며 그 다음 enqueue 는 false, 상태 불변 ② dequeue 하면 다시 거짓, 다시 enqueue 하면 참 ③ IsFull && IsEmpty 는 용량 0 일 때만 ④ 한 칸 비우기 방식은 용량 N 에서 N−1 개 ⑤ 정책 비교: 거절은 가장 오래된 것을 보존, 가장 오래된 것 버리기는 최신 용량 개를 보존, 예외는 std::length_error
+// 검증: ① 용량 0..16 에서 정확히 용량 개를 받고 그때 IsFull 이 참이며 그 다음 enqueue 는 false, 상태 불변 ② dequeue 하면 다시 거짓, 다시 enqueue 하면 참 ③ IsFull && IsEmpty 는 용량 0 일 때만 ④ 한 칸 비우기 방식은 용량 N 에서 N−1 개 ⑤ 정책 비교: 거절은 가장 오래된 것을 보존, 가장 오래된 것 버리기는 최신 용량 개를 보존, 예외는 std::length_error ⑥ 한 칸 비우기 방식을 용량 0..16 에서 enqueue/dequeue 를 섞어 4000 번씩(인덱스가 여러 바퀴 감아 돈다) std::deque 모형과 대조: 반환값·꺼낸 값·full()·empty() 가 매번 같고, 최대 N−1 개까지 차며 용량 0 과 1 은 아무것도 못 받는다
 class BoundedQueue {
     std::vector<int> a_; std::size_t front_ = 0, n_ = 0;
 public:
@@ -353,17 +356,22 @@ class OneSlotEmpty {                                                            
 public:
     explicit OneSlotEmpty(std::size_t n) : a_(n) {} bool empty() const { return f_ == r_; } bool full() const { return a_.empty() || (r_ + 1) % a_.size() == f_; }
     bool enqueue(int x) { if (full()) return false; a_[r_] = x; r_ = (r_ + 1) % a_.size(); return true; }
+    bool dequeue(int& out) { if (empty()) return false; out = a_[f_]; f_ = (f_ + 1) % a_.size(); return true; }
 };
 int main() {
     for (std::size_t cap = 0; cap <= 16; cap++) {
         BoundedQueue q(cap); assert(q.empty() && (q.full() == (cap == 0)) && ((q.full() && q.empty()) == (cap == 0)));                                                                   // ③ 용량 0 만 둘 다 참
-        for (std::size_t i = 0; i < cap; i++) { assert(!q.full() && q.enqueue((int)i)); } assert(q.full() && q.size() == cap);                                                           // ① 정확히 cap 개
-        assert(!q.enqueue(-1) && q.size() == cap && q.full()); int v; if (cap) { assert(q.dequeue(v) && v == 0 && !q.full()); assert(q.enqueue(7) && q.full()); }                         // ② dequeue 하면 거짓, 다시 enqueue 하면 참
+        for (std::size_t i = 0; i < cap; i++) { bool wasFull = q.full(), ok = q.enqueue((int)i); assert(!wasFull && ok); } assert(q.full() && q.size() == cap);                                                           // ① 정확히 cap 개
+        bool refused = q.enqueue(-1); assert(!refused && q.size() == cap && q.full()); int v = 0; if (cap) { bool ok = q.dequeue(v); assert(ok && v == 0 && !q.full()); ok = q.enqueue(7); assert(ok && q.full()); }                         // ② dequeue 하면 거짓, 다시 enqueue 하면 참
     }
     { OneSlotEmpty o(8); int n = 0; while (o.enqueue(n)) n++; assert(n == 7); OneSlotEmpty z(0); assert(z.full()); }                                                                   // ④
     { BoundedQueue reject(4), thrower(4), dropper(4); for (int i = 0; i < 10; i++) { reject.enqueue(i); dropper.enqueueDropOldest(i); } bool threw = false; try { for (int i = 0; i < 10; i++) thrower.enqueueOrThrow(i); } catch (const std::length_error&) { threw = true; }
       std::vector<int> r, d; int v; while (reject.dequeue(v)) r.push_back(v); while (dropper.dequeue(v)) d.push_back(v); assert(r == (std::vector<int>{0, 1, 2, 3}) && d == (std::vector<int>{6, 7, 8, 9}) && threw && thrower.size() == 4); }                       // ⑤
-    std::cout << "IsFull: for capacities 0..16 full() became true exactly when the next enqueue was refused; only capacity 0 is both empty and full; reject, throw and drop-oldest policies behaved as specified" << std::endl; return 0;
+    for (std::size_t n = 0; n <= 16; n++) { OneSlotEmpty o(n); std::deque<int> model; std::mt19937 rng(100 + (unsigned)n); const std::size_t usable = n ? n - 1 : 0; std::size_t most = 0; long enq = 0;                    // ⑥ 한 칸 비우기 방식 vs deque 모형
+        for (int step = 0; step < 4000; step++) { if (rng() % 2) { int x = (int)(rng() % 1000); bool ok = o.enqueue(x); assert(ok == (model.size() < usable)); if (ok) { model.push_back(x); enq++; } } else { int out = -1; bool ok = o.dequeue(out); assert(ok == !model.empty()); if (ok) { assert(out == model.front()); model.pop_front(); } }
+            assert(o.empty() == model.empty() && o.full() == (model.size() == usable) && model.size() <= usable); most = std::max(most, model.size()); }
+        assert(most == usable && enq >= 3 * (long)usable); }
+    std::cout << "IsFull: for capacities 0..16 full() became true exactly when the next enqueue was refused; only capacity 0 is both empty and full; reject, throw and drop-oldest policies behaved as specified, and the one-slot-empty ring agreed with a deque model through 17 x 4000 mixed operations" << std::endl; return 0;
 }
 // Time Complexity: O(1)
 // Space Complexity: O(1)
@@ -404,17 +412,21 @@ int main() {
 ### 대표코드
 ```cpp
 #include <cstddef>
+#include <deque>
 #include <iostream>
+#include <map>
 #include <new>
 #include <random>
 #include <set>
+#include <vector>
 #include <cassert>
 
 // 비우기(Clear): 모든 원소를 제거해 빈 큐로 되돌린다. 해야 할 일은 ① 각 원소의 소멸자를 앞에서부터 부르고 ② 메모리를 돌려주거나 재사용을 위해 남기고 ③ front 와 크기를 0 으로 만드는 것이다. 원형 배열 큐는 원소가 배열 끝을 감아 돌아 있을 수 있으므로 front 에서 크기만큼 (front + i) % 용량 으로 순회해 소멸시켜야 한다 — 배열 0..크기−1 만 소멸시키면 감아 돈 원소를 놓친다.
 // 배열 큐는 버퍼(용량)를 남겨 두면 다시 채울 때 재할당이 없다. 연결 큐는 노드를 하나씩 반복문으로 해제한다(재귀 해제는 길이가 크면 호출 스택이 넘친다).
-// 검증: ① 비운 뒤 크기 0, 모든 원소의 소멸자가 정확히 한 번(생성 수 == 소멸 수), 감아 돈 상태에서도 ② 순진한 "배열 앞쪽 0..n−1 만 소멸" 구현은 감아 돈 원소의 칸을 놓치고 이미 빈 칸을 소멸시킨다(소멸 대상 칸 집합 비교; 실제로 호출하면 정의되지 않은 동작이므로 실행하지 않는다) ③ 비운 뒤 용량 유지, 재할당 0 ④ 연결 큐 100 만 노드 반복 해제 ⑤ 멱등과 재사용
-struct Tracked { static long ctor, dtor; int id; explicit Tracked(int i) : id(i) { ctor++; } Tracked(const Tracked& o) : id(o.id) { ctor++; } ~Tracked() { dtor++; } };
-long Tracked::ctor = 0, Tracked::dtor = 0;
+// 검증: 소멸자가 부르는 id 를 순서대로 기록(Tracked::log)하고 id 마다 살아 있는 개수(alive)를 센다. ① 원소가 칸 4..7, 0..3 에 감아 돈 가득 찬 큐(front=4)를 clear() 하면 소멸자가 FIFO 순서(4..11)로 정확히 한 번씩 불리고 크기 0, front 0 ② 가득 차지 않고 감아 돈 큐(원소 5 개가 칸 6, 7, 0, 1, 2)를 clear() 하면 id 6..10 이 이 순서로 소멸한다 — 순진한 "배열 앞쪽 0..n−1 만 소멸" 구현은 감아 돈 칸 6, 7 을 놓치고 이미 비어 있는 칸 3, 4 를 소멸시키는데(소멸 대상 칸 집합 비교; 그 구현은 정의되지 않은 동작이라 실행하지 않는다) 이 id 기록과 alive 검사가 그 차이를 잡는다 ③ 무작위 200 라운드(채우기·빼기·다시 채우기로 감아 돌게 만든 뒤 clear)에서 소멸 순서 == std::deque 모델의 순서, 비운 뒤 크기 0·용량 유지·front 0·생성 수 == 소멸 수이고, 두 번째 clear() 는 소멸자를 더 부르지 않으며(멱등) 감아 돈 라운드가 실제로 여럿 있었다 ④ 연결 큐 clear() 가 100 만 노드를 반복문으로 해제(생성 수 == 해제 수), 두 번 불러도 같고, 비운 뒤 다시 쓸 수 있다(tail 도 초기화)
+struct Tracked { static long ctor, dtor; static std::map<int, int> alive; static std::vector<int> log; int id; explicit Tracked(int i) : id(i) { ctor++; alive[id]++; } Tracked(const Tracked& o) : id(o.id) { ctor++; alive[id]++; } ~Tracked() { dtor++; alive[id]--; log.push_back(id); } };
+long Tracked::ctor = 0, Tracked::dtor = 0; std::map<int, int> Tracked::alive; std::vector<int> Tracked::log;
+bool noneAlive() { for (const auto& kv : Tracked::alive) if (kv.second != 0) return false; return true; }                               // 모든 id 의 (생성 − 소멸) == 0
 class RingQueue {
     Tracked* a_; std::size_t cap_, front_ = 0, n_ = 0;
 public:
@@ -425,18 +437,40 @@ public:
     void clear() { for (std::size_t i = 0; i < n_; i++) a_[(front_ + i) % cap_].~Tracked(); n_ = 0; front_ = 0; }                  // 감아 돈 원소까지 앞에서부터 소멸
     std::set<std::size_t> occupiedSlots() const { std::set<std::size_t> s; for (std::size_t i = 0; i < n_; i++) s.insert((front_ + i) % cap_); return s; }       // 실제 원소가 있는 칸
     std::set<std::size_t> naiveSlots() const { std::set<std::size_t> s; for (std::size_t i = 0; i < n_; i++) s.insert(i); return s; }                           // 틀린 구현이 소멸시킬 칸: 0..n-1
-    std::size_t size() const { return n_; } std::size_t capacity() const { return cap_; }
+    std::size_t size() const { return n_; } std::size_t capacity() const { return cap_; } std::size_t front() const { return front_; }
 };
-struct Node { int v; Node* next; };
+struct Node { int v; Node* next; static long made, freed; explicit Node(int x) : v(x), next(nullptr) { made++; } ~Node() { freed++; } };
+long Node::made = 0, Node::freed = 0;
+class LinkedQueue {
+    Node* head_ = nullptr; Node* tail_ = nullptr; std::size_t n_ = 0;
+public:
+    LinkedQueue() = default; ~LinkedQueue() { clear(); } LinkedQueue(const LinkedQueue&) = delete; LinkedQueue& operator=(const LinkedQueue&) = delete;
+    void enqueue(int x) { Node* n = new Node(x); if (tail_) tail_->next = n; else head_ = n; tail_ = n; n_++; }
+    bool dequeue(int& out) { if (!head_) return false; Node* t = head_; out = t->v; head_ = t->next; if (!head_) tail_ = nullptr; delete t; n_--; return true; }
+    void clear() { while (head_) { Node* t = head_; head_ = t->next; delete t; } tail_ = nullptr; n_ = 0; }                                  // 반복문으로 하나씩 해제(재귀 해제는 길이가 크면 스택이 넘친다), tail 도 비운다
+    std::size_t size() const { return n_; } bool empty() const { return head_ == nullptr; }
+};
 int main() {
-    { Tracked::ctor = Tracked::dtor = 0; RingQueue q(8); for (int i = 0; i < 6; i++) q.enqueue(i); for (int i = 0; i < 4; i++) q.dequeue(); for (int i = 6; i < 12; i++) q.enqueue(i); assert(q.size() == 8);        // front=4, 원소가 칸 4..7 과 0..3 에 감아 돌아 있다
-      long live = Tracked::ctor - Tracked::dtor; assert(live == 8); q.clear(); assert(q.size() == 0 && Tracked::ctor - Tracked::dtor == 0); }                                                          // ① 감아 돈 상태에서도 모두 소멸
-    { RingQueue r(8); for (int i = 0; i < 8; i++) r.enqueue(i); for (int i = 0; i < 6; i++) r.dequeue(); for (int i = 8; i < 11; i++) r.enqueue(i);          // 크기 5: 칸 6, 7, 0, 1, 2 에 있다
-      std::set<std::size_t> real = r.occupiedSlots(), naive = r.naiveSlots(); assert(real == (std::set<std::size_t>{0, 1, 2, 6, 7}) && naive == (std::set<std::size_t>{0, 1, 2, 3, 4}) && real != naive);          // ② 순진한 구현은 칸 6, 7 의 원소를 놓치고 이미 비어 있는 칸 3, 4 를 소멸시킨다
-      std::set<std::size_t> missed, wrong; for (auto x : real) if (!naive.count(x)) missed.insert(x); for (auto x : naive) if (!real.count(x)) wrong.insert(x); assert(missed == (std::set<std::size_t>{6, 7}) && wrong == (std::set<std::size_t>{3, 4})); }
-    { RingQueue q(8); std::mt19937 rng(5); for (int round = 0; round < 50; round++) { int n = rng() % 9; for (int i = 0; i < n; i++) q.enqueue(i); q.clear(); assert(q.size() == 0 && q.capacity() == 8); q.clear(); } }                       // ③ ⑤ 용량 유지·멱등·재사용
-    { Node* head = nullptr; Node* tail = nullptr; for (int i = 0; i < 1000000; i++) { Node* n = new Node{i, nullptr}; if (tail) tail->next = n; else head = n; tail = n; } while (head) { Node* t = head; head = t->next; delete t; } assert(head == nullptr); }          // ④ 100 만 노드 반복 해제
-    std::cout << "Clear: destructors ran exactly once per element even when the queue wrapped around the array end, the capacity survived clearing, and a 1,000,000-node linked queue was freed iteratively" << std::endl; return 0;
+    int wrapped = 0;
+    { RingQueue q(8); std::vector<int> want; for (int i = 0; i < 6; i++) { bool ok = q.enqueue(i); assert(ok); } for (int i = 0; i < 4; i++) { bool ok = q.dequeue(); assert(ok); } for (int i = 6; i < 12; i++) { bool ok = q.enqueue(i); assert(ok); } assert(q.size() == 8 && q.front() == 4);        // front=4, 원소 4..11 이 칸 4..7 과 0..3 에 감아 돌아 있다
+      for (int i = 4; i < 12; i++) { want.push_back(i); } assert(Tracked::ctor - Tracked::dtor == 8); Tracked::log.clear(); q.clear();
+      assert(q.size() == 0 && q.front() == 0 && Tracked::log == want && Tracked::ctor == Tracked::dtor && noneAlive()); }                                                   // ① 감아 돈 상태에서도 FIFO 순서로 정확히 한 번씩
+    { Tracked::log.clear(); RingQueue r(8); for (int i = 0; i < 8; i++) { bool ok = r.enqueue(i); assert(ok); } for (int i = 0; i < 6; i++) { bool ok = r.dequeue(); assert(ok); } for (int i = 8; i < 11; i++) { bool ok = r.enqueue(i); assert(ok); }          // 크기 5: id 6, 7, 8, 9, 10 이 칸 6, 7, 0, 1, 2 에 있다
+      std::set<std::size_t> real = r.occupiedSlots(), naive = r.naiveSlots(); assert(real == (std::set<std::size_t>{0, 1, 2, 6, 7}) && naive == (std::set<std::size_t>{0, 1, 2, 3, 4}) && real != naive && r.size() == 5 && r.size() < r.capacity());
+      std::set<std::size_t> missed, wrong; for (auto x : real) if (!naive.count(x)) missed.insert(x); for (auto x : naive) if (!real.count(x)) wrong.insert(x); assert(missed == (std::set<std::size_t>{6, 7}) && wrong == (std::set<std::size_t>{3, 4}));        // 순진한 구현은 칸 6, 7 을 놓치고 빈 칸 3, 4 를 소멸시킨다
+      Tracked::log.clear(); r.clear(); assert(Tracked::log == (std::vector<int>{6, 7, 8, 9, 10}) && r.size() == 0 && r.front() == 0 && noneAlive()); }                         // ② 진짜 clear() 는 id 6..10 을 이 순서로 소멸
+    { RingQueue q(8); std::mt19937 rng(5); std::deque<int> model; int next = 0, nonEmpty = 0;
+      for (int round = 0; round < 200; round++) { int a = rng() % 9; for (int i = 0; i < a; i++) { bool ok = q.enqueue(next); assert(ok); model.push_back(next++); } int d = rng() % (a + 1); for (int i = 0; i < d; i++) { bool ok = q.dequeue(); assert(ok); model.pop_front(); }
+        int e = rng() % (8 - (a - d) + 1); for (int i = 0; i < e; i++) { bool ok = q.enqueue(next); assert(ok); model.push_back(next++); } assert(q.size() == model.size());                     // 채우고, 빼고, 다시 채워 감아 돌게 만든다
+        if (q.front() + q.size() > q.capacity()) { wrapped++; } if (!model.empty()) { nonEmpty++; }
+        Tracked::log.clear(); q.clear(); assert(Tracked::log == std::vector<int>(model.begin(), model.end()) && q.size() == 0 && q.capacity() == 8 && q.front() == 0 && Tracked::ctor == Tracked::dtor && noneAlive());     // ③ 소멸 순서 == 모델, 용량 유지
+        model.clear(); long before = Tracked::dtor; q.clear(); assert(Tracked::dtor == before && q.size() == 0); }                                                                 // 멱등: 두 번째 clear 는 소멸자를 부르지 않는다
+      assert(wrapped > 20 && nonEmpty > 100); }
+    { LinkedQueue q; const int N = 1000000; for (int i = 0; i < N; i++) q.enqueue(i); assert(q.size() == N && Node::made == N); q.clear(); assert(q.size() == 0 && q.empty() && Node::freed == N);             // ④ 100 만 노드를 반복문으로 해제
+      q.clear(); assert(Node::freed == N && Node::made == N);                                                                                                                         // 멱등
+      q.enqueue(7); q.enqueue(8); int v = 0; bool ok = q.dequeue(v); assert(ok && v == 7); ok = q.dequeue(v); assert(ok && v == 8); ok = q.dequeue(v); assert(!ok && q.empty() && q.size() == 0); }  // 비운 뒤 재사용(tail 이 남아 있으면 해제된 노드에 쓰게 된다)
+    assert(Node::made == Node::freed && Node::made == 1000002 && Tracked::ctor == Tracked::dtor && noneAlive());
+    std::cout << "Clear: destructors ran exactly once per element and in FIFO order even when the queue wrapped around the array end (" << wrapped << " of 200 random rounds wrapped), the capacity survived clearing, clear() was idempotent, and a 1,000,000-node linked queue was freed iteratively by its own clear() and then reused" << std::endl; return 0;
 }
 // Time Complexity: 원소 소멸자 호출 O(N) (trivially destructible 이면 O(1))
 // Space Complexity: O(1)
@@ -1053,22 +1087,24 @@ int main() {
 // 힙에 넣기(PushHeap, sift-up): 새 원소를 배열 맨 끝(완전 이진 트리의 다음 빈 자리)에 두고, 부모보다 크면 부모와 자리를 바꿔 가며 위로 올린다. 올라가다 부모 이상이 되거나 루트에 닿으면 멈춘다. 트리 높이가 ⌊log₂ N⌋ 이므로 비교는 많아야 그만큼이다 → O(log N).
 // 최선·최악·평균: 이미 부모보다 작으면 비교 1 번에 끝난다(내림차순 삽입은 매번 1). 새 값이 최댓값이면 루트까지 올라가 높이만큼 비교한다(오름차순 삽입은 매번 최악). 무작위 삽입의 평균 비교 횟수는 상수(≈ 1.6~2.6)로 알려져 있어 N 번 삽입의 평균 비용이 O(N) 에 가깝다.
 // 불변식: 삽입 전 힙이면 삽입 후에도 힙이고(재귀적으로 증명), 위로 올라가는 경로의 다른 원소들은 한 칸씩 내려올 뿐 상대 관계가 유지된다.
-// 검증: ① 무작위 삽입 열 뒤 매번 힙 불변식 성립 ② 한 번의 push 에서 비교 횟수 ≤ ⌊log₂ N⌋ (N 은 삽입 후 크기) ③ 내림차순 삽입은 비교 총 N−1 번(원소당 1), 오름차순 삽입은 Σ⌊log₂ k⌋ ④ 무작위 삽입의 평균 비교 횟수 < 3 ⑤ std::push_heap 으로 만든 힙과 같은 원소 집합이고 루트가 같다 ⑥ N 번 삽입 후 pop 순서가 정렬 순서
-long comparisons = 0;
-void pushHeap(std::vector<int>& h, int v) { h.push_back(v); std::size_t i = h.size() - 1; while (i > 0) { std::size_t p = (i - 1) / 2; comparisons++; if (h[p] >= h[i]) break; std::swap(h[p], h[i]); i = p; } }
+// 검증: ① 무작위 삽입 열 뒤 매번 힙 불변식 성립 ② 한 번의 push 에서 비교 횟수 ≤ ⌊log₂ N⌋ (N 은 삽입 후 크기) ③ 내림차순 삽입은 비교 총 N−1 번(원소당 1), 오름차순 삽입은 Σ⌊log₂ k⌋ ④ 무작위 삽입의 평균 비교 횟수 < 3 ⑤ std::push_heap 으로 만든 힙과 같은 원소 집합이고 루트가 같다 ⑥ N 번 삽입 후 pop 순서가 정렬 순서 ⑦ 동률에서 멈춘다: 같은 키만 N 번 넣으면 교환 0 번·비교 N−1 번이고, 값 범위가 좁은(중복 많은) 무작위 삽입에서 한 번의 교환 횟수 == 새 값보다 작은 조상이 연속된 길이(독립 계산) — `>=` 가 `>` 로 바뀌면 같은 키끼리 쓸데없이 자리를 바꾼다
+long comparisons = 0, swaps = 0;
+void pushHeap(std::vector<int>& h, int v) { h.push_back(v); std::size_t i = h.size() - 1; while (i > 0) { std::size_t p = (i - 1) / 2; comparisons++; if (h[p] >= h[i]) break; std::swap(h[p], h[i]); swaps++; i = p; } }
 bool isMaxHeap(const std::vector<int>& h) { for (std::size_t i = 1; i < h.size(); i++) if (h[(i - 1) / 2] < h[i]) return false; return true; }
 int floorLog2(std::size_t n) { int k = 0; while (n > 1) { n >>= 1; k++; } return k; }
 int main() {
     std::mt19937 rng(4);
     for (int t = 0; t < 300; t++) { std::vector<int> h; int n = rng() % 200; for (int i = 0; i < n; i++) { long before = comparisons; pushHeap(h, rng() % 50); assert(isMaxHeap(h) && comparisons - before <= floorLog2(h.size())); } }                            // ① ②
-    { std::vector<int> h; comparisons = 0; const int N = 5000; for (int i = N; i >= 1; i--) pushHeap(h, i); assert(comparisons == N - 1);                                                                                             // ③ 내림차순: 첫 원소는 비교 0, 이후 1 번씩
-      std::vector<int> g; comparisons = 0; long expect = 0; for (int i = 1; i <= N; i++) { pushHeap(g, i); expect += floorLog2(i); } assert(comparisons == expect && isMaxHeap(g)); }                                                                  // 오름차순: 항상 루트까지
+    { std::vector<int> h; comparisons = swaps = 0; const int N = 5000; for (int i = N; i >= 1; i--) pushHeap(h, i); assert(comparisons == N - 1 && swaps == 0);                                                                                             // ③ 내림차순: 첫 원소는 비교 0, 이후 1 번씩
+      std::vector<int> g; comparisons = swaps = 0; long expect = 0; for (int i = 1; i <= N; i++) { pushHeap(g, i); expect += floorLog2(i); } assert(comparisons == expect && swaps == expect && isMaxHeap(g)); }                                                                  // 오름차순: 항상 루트까지
     { double total = 0; const int RUNS = 50, N = 2000; for (int r = 0; r < RUNS; r++) { std::vector<int> h; comparisons = 0; for (int i = 0; i < N; i++) pushHeap(h, (int)rng()); total += (double)comparisons / N; } double avg = total / RUNS; assert(avg < 3.0); std::cout << "average comparisons per random push: " << avg << "; "; }   // ④
     { std::vector<int> mine, stl; for (int i = 0; i < 3000; i++) { int v = rng() % 100000; pushHeap(mine, v); stl.push_back(v); std::push_heap(stl.begin(), stl.end()); assert(mine.front() == stl.front()); } std::vector<int> a = mine, b = stl; std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end()); assert(a == b && std::is_heap(mine.begin(), mine.end())); }          // ⑤
     { std::vector<int> h, sorted; for (int i = 0; i < 1000; i++) pushHeap(h, (int)(rng() % 5000)); std::vector<int> expected = h; std::sort(expected.rbegin(), expected.rend()); std::vector<int> copy = h; while (!copy.empty()) { std::pop_heap(copy.begin(), copy.end()); sorted.push_back(copy.back()); copy.pop_back(); } assert(sorted == expected); }       // ⑥
-    std::cout << "PushHeap: heap invariant and the log2(N) comparison bound held on 300 random insertion runs; descending input cost exactly N-1 comparisons and ascending input exactly the sum of floor(log2 k); results matched std::push_heap" << std::endl; return 0;
+    { std::vector<int> h; comparisons = swaps = 0; for (int i = 0; i < 1000; i++) pushHeap(h, 7); assert(comparisons == 999 && swaps == 0 && isMaxHeap(h));                                                       // ⑦ 같은 키는 올라가지 않는다
+      std::vector<int> g; swaps = 0; for (int i = 0; i < 3000; i++) { int x = (int)(rng() % 8); long before = swaps, want = 0; for (std::size_t j = g.size(); j > 0 && g[(j - 1) / 2] < x; j = (j - 1) / 2) want++; pushHeap(g, x); assert(swaps - before == want); } assert(isMaxHeap(g)); }
+    std::cout << "PushHeap: heap invariant and the log2(N) comparison bound held on 300 random insertion runs; descending input cost exactly N-1 comparisons and ascending input exactly the sum of floor(log2 k); results matched std::push_heap, and equal keys never swapped" << std::endl; return 0;
 }
-// Time Complexity: O(log N) 최악, 평균 O(1) 비교
+// Time Complexity: O(log N) 최악, 무작위 입력에서만 평균 O(1) 비교 (오름차순 입력은 매번 O(log N))
 // Space Complexity: O(1) 추가
 ```
 ## PopHeap()
@@ -1122,7 +1158,7 @@ int main() {
 // 힙 정리(Heapify, sift-down 한 번): 노드 i 의 두 자식 부분 트리는 이미 힙이지만 i 의 값이 자식보다 작아 불변식이 깨져 있을 때, i 를 더 큰 자식과 바꿔 가며 아래로 내려 전체 부분 트리를 힙으로 만든다. 힙 알고리즘 전체(꺼내기, 힙 만들기, 힙 정렬)가 이 한 동작의 반복이다.
 // 정확성의 핵심은 사전 조건이다: "i 의 양쪽 부분 트리가 힙" 이어야 한다. 이 조건이 없으면 한 번의 sift-down 으로 힙이 되지 않는다. 사후 조건: i 아래 전체가 힙이고 원소 집합은 그대로(교환만 하므로). 한 번의 비용은 i 의 높이에 비례하는 O(log N).
 // 이 항목은 이 보조 정리를 증명하는 대신 전수 검사한다: 크기 1..8 의 모든 순열 중 "루트의 두 자식 부분 트리가 힙" 인 배열 전부에 heapify(0)을 적용하면 항상 힙이 된다. 사전 조건이 없는 배열에서는 실패할 수 있음도 보인다.
-// 검증: ① n ≤ 8 의 모든 순열(약 5 만 개) 중 사전 조건을 만족하는 것 전부에서 heapify(0) 후 전체가 힙이고 순열 ② 교환 횟수 ≤ 트리 높이 ③ 사전 조건이 없으면 heapify 후에도 힙이 아닌 배열이 존재 ④ 큰 무작위 힙에서 임의의 노드 값을 줄인(감소 키) 뒤 heapify(i) 로 복구 ⑤ 최소 힙(비교 반전)도 같은 구조
+// 검증: ① n ≤ 8 의 모든 순열(약 5 만 개) 중 사전 조건을 만족하는 것 전부에서 heapify(0) 후 전체가 힙이고 순열 ② 교환 횟수 ≤ 트리 높이 ③ 사전 조건이 없으면 heapify 후에도 힙이 아닌 배열이 존재 ④ 큰 무작위 힙에서 임의의 노드 값을 줄인(감소 키) 뒤 heapify(i) 로 복구 ⑤ 알려진 예제 하나(루트를 0 으로 바꾼 힙에서 8 이 루트로 올라온다). 최소 힙은 비교만 뒤집은 대칭이라 따로 검사하지 않는다
 int swaps = 0;
 void heapify(std::vector<int>& a, std::size_t i, std::size_t n) { for (;;) { std::size_t l = 2 * i + 1, r = l + 1, big = i; if (l < n && a[l] > a[big]) big = l; if (r < n && a[r] > a[big]) big = r; if (big == i) return; std::swap(a[i], a[big]); swaps++; i = big; } }
 bool subtreeIsHeap(const std::vector<int>& a, std::size_t root, std::size_t n) { if (root >= n) return true; std::size_t l = 2 * root + 1, r = l + 1; if (l < n && a[l] > a[root]) return false; if (r < n && a[r] > a[root]) return false; return subtreeIsHeap(a, l, n) && subtreeIsHeap(a, r, n); }
@@ -1138,7 +1174,7 @@ int main() {
     for (int t = 0; t < 500; t++) { std::vector<int> a(1 + rng() % 300); for (int& x : a) x = rng() % 1000; std::make_heap(a.begin(), a.end()); std::size_t i = rng() % a.size(); a[i] = (int)(rng() % 5);                  // 감소 키: 값을 작게 바꾼다 (i 의 부분 트리 밖은 힙을 유지)
         // i 의 위쪽 조상과의 관계는 값이 줄었으니 그대로 성립한다. 아래만 고치면 된다
         heapify(a, i, a.size()); assert(std::is_heap(a.begin(), a.end())); }                                                                                                                         // ④
-    { std::vector<int> a = {9, 4, 8, 1, 2, 7, 6}; a[0] = 0; heapify(a, 0, a.size()); assert(std::is_heap(a.begin(), a.end()) && a[0] == 8); }
+    { std::vector<int> a = {9, 4, 8, 1, 2, 7, 6}; a[0] = 0; heapify(a, 0, a.size()); assert(std::is_heap(a.begin(), a.end()) && a == (std::vector<int>{8, 4, 7, 1, 2, 0, 6})); }      // ⑤
     std::cout << "Heapify: " << checked << " permutations satisfying the precondition were all repaired by one sift-down with at most height(N) swaps; " << failedWithoutPre << " of " << withoutPre << " arrays lacking the precondition stayed broken; decrease-key repair worked on 500 random heaps" << std::endl; return 0;
 }
 // Time Complexity: O(log N) (노드의 높이에 비례)
@@ -1182,7 +1218,9 @@ int main() {
 ### 대표코드
 ```cpp
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <functional>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -1464,7 +1502,7 @@ int main() {
 
 // 최단 경로(ShortestPath): 가중치 없는 그래프의 최단 경로는 BFS 로 구한다. 도달할 때 바로 앞 정점(parent)을 기록해 두면 목적지에서 parent 를 거슬러 올라가 경로를 복원할 수 있다. 그래프에 가중치가 있다면 BFS 가 아니라 다익스트라가 필요하지만 가중치가 0 과 1 뿐이라면 덱을 쓰는 0-1 BFS 가 O(V + E) 로 풀린다.
 // 0-1 BFS: 가중치 0 간선으로 얻은 거리는 지금 정점과 같으므로 덱의 앞에, 가중치 1 간선은 뒤에 넣는다. 덱의 거리가 비내림차순이라는 BFS 불변식이 그대로 유지되어(앞 쪽 d, 뒤 쪽 d+1) 다익스트라의 우선순위 큐 없이 최단 거리를 얻는다.
-// 검증: ① 무작위 그래프에서 BFS 최단 거리 == 플로이드–워셜 ② 복원한 경로가 실제 간선으로 이어지고 길이 == 거리 ③ 경로가 없으면 빈 경로 ④ 0-1 BFS 거리 == 다익스트라(우선순위 큐) ⑤ 0-1 BFS 에서 각 정점이 덱에 들어가는 횟수가 간선 수로 한정(정점은 거리가 줄 때만 다시 들어감)
+// 검증: ① 무작위 그래프에서 BFS 최단 거리 == 플로이드–워셜 ② 복원한 경로가 실제 간선으로 이어지고 길이 == 거리 ③ 경로가 없으면 빈 경로 ④ 0-1 BFS 거리 == 다익스트라(우선순위 큐) ⑤ 0-1 BFS 의 덱 불변식: 꺼낸 거리의 열이 비내림차순이고 한 번에 0 또는 1 만 늘어난다(앞에 넣기·뒤에 넣기를 잘못 고르면 깨진다 — 가중치 0 간선도 뒤에 넣는 단순 큐 완화는 거리는 맞아도 이 열이 깨진다), 도달 가능한 정점마다 정확히 한 번 확정(settle)되고, 덱에 넣은 횟수 ≤ 간선 수 + 1
 typedef std::vector<std::vector<int>> Graph; const int INF = INT_MAX / 4;
 std::pair<std::vector<int>, std::vector<int>> bfs(const Graph& g, int s) {
     int n = g.size(); std::vector<int> dist(n, -1), parent(n, -1); std::queue<int> q; dist[s] = 0; q.push(s);
@@ -1473,10 +1511,12 @@ std::pair<std::vector<int>, std::vector<int>> bfs(const Graph& g, int s) {
 }
 std::vector<int> pathTo(const std::vector<int>& parent, const std::vector<int>& dist, int s, int t) { if (dist[t] < 0) return {}; std::vector<int> p; for (int v = t; v != -1; v = parent[v]) p.push_back(v); std::reverse(p.begin(), p.end()); (void)s; return p; }
 struct WEdge { int to, w; };
-std::vector<int> zeroOneBfs(const std::vector<std::vector<WEdge>>& g, int s, long* pushes = nullptr) {
-    int n = g.size(); std::vector<int> dist(n, INF); std::deque<int> dq; dist[s] = 0; dq.push_back(s); long p = 1;
-    while (!dq.empty()) { int v = dq.front(); dq.pop_front(); for (auto& e : g[v]) if (dist[v] + e.w < dist[e.to]) { dist[e.to] = dist[v] + e.w; if (e.w == 0) dq.push_front(e.to); else dq.push_back(e.to); p++; } }
-    if (pushes) *pushes = p; return dist;
+struct ZeroOneStats { long pushes = 0, settled = 0; bool monotone = true; };                                            // 덱에 넣은 횟수, 확정한 정점 수, 꺼낸 거리 열이 0/+1 씩만 느는지
+std::vector<int> zeroOneBfs(const std::vector<std::vector<WEdge>>& g, int s, ZeroOneStats* st = nullptr) {
+    int n = g.size(); std::vector<int> dist(n, INF); std::deque<std::pair<int, int>> dq; dist[s] = 0; dq.push_back({s, 0}); ZeroOneStats z; z.pushes = 1; int last = 0;          // 덱 원소: (정점, 넣을 때의 거리)
+    while (!dq.empty()) { auto [v, d] = dq.front(); dq.pop_front(); if (d != last && d != last + 1) z.monotone = false; last = d; if (d > dist[v]) continue; z.settled++;       // 오래된 항목(더 짧은 거리로 다시 들어간 정점)은 건너뛴다
+        for (auto& e : g[v]) if (d + e.w < dist[e.to]) { dist[e.to] = d + e.w; if (e.w == 0) dq.push_front({e.to, dist[e.to]}); else dq.push_back({e.to, dist[e.to]}); z.pushes++; } }
+    if (st) { *st = z; } return dist;
 }
 std::vector<int> dijkstra(const std::vector<std::vector<WEdge>>& g, int s) {
     std::vector<int> dist(g.size(), INF); std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq; dist[s] = 0; pq.push({0, s});
@@ -1490,8 +1530,8 @@ int main() {
         for (int v = 0; v < n; v++) { assert(dist[v] == (D[s][v] >= INF ? -1 : D[s][v])); std::vector<int> p = pathTo(parent, dist, s, v);                                                          // ① ③
             if (dist[v] < 0) assert(p.empty()); else { assert(p.front() == s && p.back() == v && (int)p.size() == dist[v] + 1); for (std::size_t i = 1; i < p.size(); i++) assert(std::find(g[p[i - 1]].begin(), g[p[i - 1]].end(), p[i]) != g[p[i - 1]].end()); pathsChecked++; } } }   // ②
     for (int t = 0; t < 1500; t++) { int n = 1 + rng() % 25; std::vector<std::vector<WEdge>> g(n); long edges = 0; int m = rng() % (3 * n); for (int k = 0; k < m; k++) { g[rng() % n].push_back({(int)(rng() % n), (int)(rng() % 2)}); edges++; }
-        int s = rng() % n; long pushes; auto a = zeroOneBfs(g, s, &pushes), b = dijkstra(g, s); assert(a == b && pushes <= edges + 1); }                                                                // ④ ⑤
-    std::cout << "ShortestPath: BFS distances matched Floyd-Warshall on 1500 random graphs and " << pathsChecked << " reconstructed paths were valid edge by edge; 0-1 BFS with a deque equalled Dijkstra on 1500 weighted graphs" << std::endl; return 0;
+        int s = rng() % n; ZeroOneStats st; auto a = zeroOneBfs(g, s, &st), b = dijkstra(g, s); long reach = std::count_if(b.begin(), b.end(), [](int x) { return x < INF; }); assert(a == b && st.pushes <= edges + 1 && st.monotone && st.settled == reach); }                                                                // ④ ⑤
+    std::cout << "ShortestPath: BFS distances matched Floyd-Warshall on 1500 random graphs and " << pathsChecked << " reconstructed paths were valid edge by edge; 0-1 BFS with a deque equalled Dijkstra on 1500 weighted graphs while its popped distances rose by 0 or 1 at a time and every reachable vertex was settled exactly once" << std::endl; return 0;
 }
 // Time Complexity: BFS O(V + E), 0-1 BFS O(V + E)
 // Space Complexity: O(V)
@@ -1511,12 +1551,13 @@ int main() {
 // 플러드 필(FloodFill): 격자에서 시작 칸과 같은 색으로 이어진 영역(연결 요소)을 새 색으로 칠한다. 그림판의 페인트 통 도구다. 큐에 시작 칸을 넣고, 꺼낸 칸의 상하좌우(4 방향) 또는 8 방향 이웃 중 옛 색인 칸을 새 색으로 칠하며 큐에 넣는다. 칠하는 순간 방문 표시가 되므로 따로 visited 배열이 필요 없다.
 // 함정: 새 색이 옛 색과 같으면 칠해도 "옛 색" 조건이 사라지지 않아 무한 루프가 된다 — 먼저 같은 색이면 바로 반환해야 한다. 또 큐에 넣을 때 칠하지 않고 꺼낼 때 칠하면 같은 칸이 여러 번 큐에 들어가 비효율적이다(넣을 때 표시).
 // 응용: 영역 개수 세기(섬의 수) — 아직 칠하지 않은 칸을 만날 때마다 플러드 필을 시작하고 횟수를 센다. 같은 값을 합집합-찾기(Union-Find)로도 구할 수 있어 서로 대조한다.
-// 검증: 무작위 격자 1500 개에서 ① 칠한 칸 집합 == 시작 칸과 같은 색으로 연결된 영역(DFS 기준 구현) ② 새 색 == 옛 색이면 아무것도 바꾸지 않음 ③ 영역 개수가 합집합-찾기 결과와 같다 ④ 4 방향과 8 방향의 영역 개수 관계(8방향 ≤ 4방향) ⑤ 영역 밖 칸은 변하지 않음 ⑥ 한 칸이 큐에 최대 한 번 들어감
+// 검증: 무작위 격자 1500 개에서 ① 칠한 칸 집합 == 시작 칸과 같은 색으로 연결된 영역(DFS 기준 구현) ② 새 색 == 옛 색이면 아무것도 바꾸지 않음 ③ 영역 개수가 합집합-찾기 결과와 같다 ④ 4 방향과 8 방향의 영역 개수 관계(8방향 ≤ 4방향) ⑤ 영역 밖 칸은 변하지 않음 ⑥ 실제 q.push 횟수 == q.pop 횟수 == 칠한 칸 수(한 칸이 큐에 정확히 한 번 들어갔다 나옴; push/pop 을 세는 큐로 센다), 그리고 푸시 수 ≤ R·C 불변식을 반복마다 단언해 같은 색 가드가 없으면 무한 루프 대신 단언이 실패한다
 typedef std::vector<std::vector<int>> Grid;
-long fillBfs(Grid& g, int sr, int sc, int newColor, bool eight, long* enqueued = nullptr) {
-    int R = g.size(), C = g[0].size(), old = g[sr][sc]; if (old == newColor) return 0; std::queue<std::pair<int, int>> q; q.push({sr, sc}); g[sr][sc] = newColor; long painted = 1, enq = 1;
-    while (!q.empty()) { auto [r, c] = q.front(); q.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if (!dr && !dc) continue; if (!eight && dr && dc) continue; int nr = r + dr, nc = c + dc; if (nr >= 0 && nr < R && nc >= 0 && nc < C && g[nr][nc] == old) { g[nr][nc] = newColor; painted++; enq++; q.push({nr, nc}); } } }      // 넣을 때 칠한다
-    if (enqueued) *enqueued = enq; return painted;
+struct CountingQueue : std::queue<std::pair<int, int>> { long pushes = 0, pops = 0; void push(const value_type& v) { pushes++; std::queue<std::pair<int, int>>::push(v); } void pop() { pops++; std::queue<std::pair<int, int>>::pop(); } };       // 실제 push/pop 호출을 센다
+long fillBfs(Grid& g, int sr, int sc, int newColor, bool eight, long* enqueued = nullptr, long* dequeued = nullptr) {
+    int R = g.size(), C = g[0].size(), old = g[sr][sc]; if (old == newColor) return 0; CountingQueue q; q.push({sr, sc}); g[sr][sc] = newColor; long painted = 1;
+    while (!q.empty()) { assert(q.pushes <= (long)R * C); auto [r, c] = q.front(); q.pop(); for (int dr = -1; dr <= 1; dr++) for (int dc = -1; dc <= 1; dc++) { if (!dr && !dc) continue; if (!eight && dr && dc) continue; int nr = r + dr, nc = c + dc; if (nr >= 0 && nr < R && nc >= 0 && nc < C && g[nr][nc] == old) { g[nr][nc] = newColor; painted++; q.push({nr, nc}); } } }      // 넣을 때 칠한다
+    if (enqueued) { *enqueued = q.pushes; } if (dequeued) { *dequeued = q.pops; } return painted;
 }
 std::vector<std::pair<int, int>> region(const Grid& g, int sr, int sc, bool eight) {                                  // 기준 구현: 스택 DFS 로 같은 색 연결 영역
     int R = g.size(), C = g[0].size(), color = g[sr][sc]; std::vector<std::vector<char>> seen(R, std::vector<char>(C, 0)); std::vector<std::pair<int, int>> st = {{sr, sc}}, out; seen[sr][sc] = 1;
@@ -1529,14 +1570,14 @@ int countRegionsDsu(const Grid& g, bool eight, int target) { int R = g.size(), C
 int main() {
     std::mt19937 rng(7); long fills = 0;
     for (int t = 0; t < 1500; t++) { int R = 1 + rng() % 12, C = 1 + rng() % 12; Grid g(R, std::vector<int>(C)); for (auto& row : g) for (int& x : row) x = rng() % 3; int sr = rng() % R, sc = rng() % C; bool eight = rng() % 2; int newColor = 5;
-        auto reg = region(g, sr, sc, eight); Grid h = g; long enq = 0; long painted = fillBfs(h, sr, sc, newColor, eight, &enq);
-        assert(painted == (long)reg.size() && enq == painted);                                                                                                                                       // ① ⑥
+        auto reg = region(g, sr, sc, eight); Grid h = g; long enq = 0, deq = 0; long painted = fillBfs(h, sr, sc, newColor, eight, &enq, &deq);
+        assert(painted == (long)reg.size() && enq == painted && deq == painted);                                                                                                                     // ① ⑥ 큐에 정확히 한 번 들어갔다 나온다
         std::vector<std::pair<int, int>> changed; for (int r = 0; r < R; r++) for (int c = 0; c < C; c++) if (h[r][c] != g[r][c]) changed.push_back({r, c}); assert(changed == reg);                       // ⑤ 영역 밖은 그대로
-        Grid same = g; assert(fillBfs(same, sr, sc, g[sr][sc], eight) == 0 && same == g);                                                                                                           // ② 같은 색이면 무변화 (무한 루프 방지)
+        Grid same = g; long zero = fillBfs(same, sr, sc, g[sr][sc], eight); assert(zero == 0 && same == g);                                                                                                           // ② 같은 색이면 무변화 (무한 루프 방지)
         for (int color = 0; color < 3; color++) { assert(countRegionsBfs(g, eight, color) == countRegionsDsu(g, eight, color)); assert(countRegionsBfs(g, true, color) <= countRegionsBfs(g, false, color)); } fills++; }        // ③ ④
     { Grid g = {{1, 1, 0, 0}, {1, 0, 0, 1}, {0, 0, 1, 1}}; assert(countRegionsBfs(g, false, 1) == 2 && countRegionsBfs(g, true, 1) == 2 && countRegionsBfs(g, false, 0) == 1 && countRegionsBfs(g, true, 0) == 1);
       Grid d = {{1, 0}, {0, 1}}; assert(countRegionsBfs(d, false, 1) == 2 && countRegionsBfs(d, true, 1) == 1 && countRegionsBfs(d, false, 0) == 2 && countRegionsBfs(d, true, 0) == 1); }       // 대각선으로만 이어진 칸은 4 방향에서는 따로, 8 방향에서는 하나
-    std::cout << "FloodFill: " << fills << " random grids - the BFS paint equalled the DFS region exactly, enqueued each cell once, left cells outside the region untouched, ignored same-color fills, and counted regions identically to union-find in 4- and 8-connectivity" << std::endl; return 0;
+    std::cout << "FloodFill: " << fills << " random grids - the BFS paint equalled the DFS region exactly, pushed and popped each region cell exactly once, left cells outside the region untouched, ignored same-color fills, and counted regions identically to union-find in 4- and 8-connectivity" << std::endl; return 0;
 }
 // Time Complexity: O(R·C)
 // Space Complexity: O(R·C) (큐 최대 크기는 영역의 둘레)
@@ -1694,11 +1735,11 @@ public:
 };
 int main() {
     for (int range : {3, 50, 1000000}) { std::mt19937 rng(range); MonotonicQueue a; TwoStackQueue b; std::vector<int> ref; std::size_t head = 0;
-        for (int step = 0; step < 20000; step++) { if (rng() % 5 < 3) { int x = rng() % range; a.push(x); b.push(x); ref.push_back(x); } else { int v1, v2; bool had = head < ref.size(); assert(a.pop(v1) == had && b.pop(v2) == had); if (had) { assert(v1 == ref[head] && v2 == ref[head]); head++; } }
-            int m1, m2; bool nonEmpty = head < ref.size(); assert(a.max(m1) == nonEmpty && b.max(m2) == nonEmpty); if (nonEmpty) { int want = *std::max_element(ref.begin() + head, ref.end()); assert(m1 == want && m2 == want); } assert(a.size() == ref.size() - head); }        // ① ② ③
+        for (int step = 0; step < 20000; step++) { if (rng() % 5 < 3) { int x = rng() % range; a.push(x); b.push(x); ref.push_back(x); } else { int v1 = 0, v2 = 0; bool had = head < ref.size(); bool popA = a.pop(v1), popB = b.pop(v2); assert(popA == had && popB == had); if (had) { assert(v1 == ref[head] && v2 == ref[head]); head++; } }
+            int m1 = 0, m2 = 0; bool nonEmpty = head < ref.size(), maxA = a.max(m1), maxB = b.max(m2); assert(maxA == nonEmpty && maxB == nonEmpty); if (nonEmpty) { int want = *std::max_element(ref.begin() + head, ref.end()); assert(m1 == want && m2 == want); } assert(a.size() == ref.size() - head); }        // ① ② ③
         assert(a.dequePops() <= a.pushes()); }                                                                                                                                                         // ④
-    { MonotonicQueueWrong w; MonotonicQueue good; for (int x : {5, 5, 3}) { w.push(x); good.push(x); } int v; w.pop(v); good.pop(v); int mw, mg; assert(w.max(mw) && good.max(mg) && mg == 5 && mw != 5); }                  // 같은 최댓값 5 두 개: 앞의 5 를 꺼낸 뒤에도 최댓값은 5 여야 한다 — '<=' 구현은 놓친다
-    { MonotonicQueue e; int v; assert(!e.pop(v) && !e.max(v)); }                                                                                                                                         // ⑤
+    { MonotonicQueueWrong w; MonotonicQueue good; for (int x : {5, 5, 3}) { w.push(x); good.push(x); } int v; w.pop(v); good.pop(v); int mw = 0, mg = 0; bool hasW = w.max(mw), hasG = good.max(mg); assert(hasW && hasG && mg == 5 && mw != 5); }                  // 같은 최댓값 5 두 개: 앞의 5 를 꺼낸 뒤에도 최댓값은 5 여야 한다 — '<=' 구현은 놓친다
+    { MonotonicQueue e; int v = 0; bool popped = e.pop(v), hasMax = e.max(v); assert(!popped && !hasMax); }                                                                                                                                         // ⑤
     std::cout << "MonotonicQueue: queue-with-O(1)-max matched a brute-force maximum and a two-stack implementation over 60000 operations at three value ranges (including heavy duplication); the variant that discarded equal values lost the maximum" << std::endl; return 0;
 }
 // Time Complexity: push·pop·max 분할상환 O(1)
@@ -1717,14 +1758,16 @@ int main() {
 
 // 윈도우 최솟값(WindowMinimum): SlidingWindowMaximum 의 거울이다. 덱에 후보 인덱스를 값이 오름차순이 되도록 유지하고(새 값 x 를 넣을 때 뒤에서 x 이상인 후보 제거) 맨 앞이 창의 최솟값이다. 최댓값과 최솟값 덱을 함께 쓰면 "창 안의 최대 − 최소" 가 필요한 문제를 풀 수 있다.
 // 응용(LeetCode 1438): 절댓값 차이가 limit 이하인 가장 긴 연속 부분배열. 오른쪽 끝을 늘리며 두 덱(최댓값, 최솟값)을 갱신하고, 최대 − 최소 > limit 이면 왼쪽 끝을 올려 덱 앞의 만료된 인덱스를 제거한다 — 각 인덱스가 덱에 한 번씩만 들어가므로 O(N). 두 포인터와 단조 덱의 결합이다.
-// 검증: ① 고정 크기 창의 최솟값이 O(N·k) 브루트포스와 같다 ② 최솟값 덱과 최댓값 덱을 함께 쓰는 "범위 ≤ limit 최장 부분배열" 길이가 O(N²) 브루트포스와 같다 ③ limit = 0 이면 같은 값만 이어진 최장 구간 ④ 큰 입력(20 만)의 선형 시간 완료 ⑤ 경계
+// 검증: ① 고정 크기 창의 최솟값이 O(N·k) 브루트포스와 같다 ② 최솟값 덱과 최댓값 덱을 함께 쓰는 "범위 ≤ limit 최장 부분배열" 길이가 O(N²) 브루트포스와 같다 ③ limit = 0 이면 같은 값만 이어진 최장 구간 ④ 큰 입력(20 만)에서 덱 연산(push/pop)을 실제로 세어 선형 한계 안임을 확인(창 최솟값 덱 하나: N ≤ 연산 ≤ 2N, 범위 덱 둘: 2N ≤ 연산 ≤ 4N — 각 인덱스가 덱에 한 번 들어가고 많아야 한 번 나온다)하고 결과를 브루트포스와 대조(범위 부분배열은 전체, 창 최솟값은 무작위 2000 곳) ⑤ 경계
+struct CountingDeque : std::deque<int> { static long ops; void push_back(int v) { ops++; std::deque<int>::push_back(v); } void pop_back() { ops++; std::deque<int>::pop_back(); } void pop_front() { ops++; std::deque<int>::pop_front(); } };       // 실제 push/pop 호출을 센다
+long CountingDeque::ops = 0;
 std::vector<int> windowMin(const std::vector<int>& a, int k) {
-    std::vector<int> res; if (k < 1 || (std::size_t)k > a.size()) return res; std::deque<int> dq;
+    std::vector<int> res; if (k < 1 || (std::size_t)k > a.size()) return res; CountingDeque dq;
     for (int i = 0; i < (int)a.size(); ++i) { if (!dq.empty() && dq.front() <= i - k) dq.pop_front(); while (!dq.empty() && a[dq.back()] >= a[i]) dq.pop_back(); dq.push_back(i); if (i >= k - 1) res.push_back(a[dq.front()]); }
     return res;
 }
 int longestWithinLimit(const std::vector<int>& a, int limit) {
-    std::deque<int> mx, mn; int left = 0, best = 0;
+    CountingDeque mx, mn; int left = 0, best = 0;
     for (int right = 0; right < (int)a.size(); right++) {
         while (!mx.empty() && a[mx.back()] <= a[right]) mx.pop_back(); mx.push_back(right); while (!mn.empty() && a[mn.back()] >= a[right]) mn.pop_back(); mn.push_back(right);
         while (a[mx.front()] - a[mn.front()] > limit) { left++; if (mx.front() < left) mx.pop_front(); if (mn.front() < left) mn.pop_front(); }          // 범위를 넘으면 왼쪽을 줄인다
@@ -1738,9 +1781,12 @@ int main() {
     for (int t = 0; t < 3000; t++) { int n = rng() % 40; std::vector<int> a(n); for (int& x : a) x = (int)(rng() % 21) - 10; int k = (int)(rng() % (n + 3)) - 1; std::vector<int> want; if (k >= 1 && k <= n) for (int i = 0; i + k <= n; i++) want.push_back(*std::min_element(a.begin() + i, a.begin() + i + k)); assert(windowMin(a, k) == want);          // ①
         int limit = (int)(rng() % 12); assert(longestWithinLimit(a, limit) == bruteLongest(a, limit));                                                                                                                                                  // ②
         if (n) { int run = 1, best = 1; for (int i = 1; i < n; i++) { run = a[i] == a[i - 1] ? run + 1 : 1; best = std::max(best, run); } assert(longestWithinLimit(a, 0) == best); } }                                                                                // ③
-    { std::vector<int> big(200000); for (int& x : big) x = (int)(rng() % 1000); int r = longestWithinLimit(big, 50); assert(r >= 1 && r <= 200000); std::vector<int> w = windowMin(big, 1000); assert(w.size() == 199001); }               // ④
+    { const long N = 200000; std::vector<int> big(N); for (int& x : big) x = (int)(rng() % 1000);
+      CountingDeque::ops = 0; int r = longestWithinLimit(big, 50); long ops1 = CountingDeque::ops; assert(r >= 1 && r == bruteLongest(big, 50) && ops1 >= 2 * N && ops1 <= 4 * N);                                 // 덱 둘: 넣기 2N + 빼기 ≤ 2N
+      CountingDeque::ops = 0; std::vector<int> w = windowMin(big, 1000); long ops2 = CountingDeque::ops; assert(w.size() == 199001 && ops2 >= N && ops2 <= 2 * N);
+      for (int t = 0; t < 2000; t++) { std::size_t i = rng() % w.size(); assert(w[i] == *std::min_element(big.begin() + i, big.begin() + i + 1000)); } }               // ④
     { assert((longestWithinLimit({8, 2, 4, 7}, 4) == 2) && (longestWithinLimit({10, 1, 2, 4, 7, 2}, 5) == 4) && (longestWithinLimit({4, 2, 2, 2, 4, 4, 2, 2}, 0) == 3) && longestWithinLimit({}, 3) == 0 && windowMin({}, 1).empty()); }           // ⑤ 알려진 예제
-    std::cout << "WindowMinimum: monotonic deques matched brute force for fixed-size window minima and for the longest subarray whose max-min stays within a limit (3000 random arrays each), and a 200000-element input finished in linear time" << std::endl; return 0;
+    std::cout << "WindowMinimum: monotonic deques matched brute force for fixed-size window minima and for the longest subarray whose max-min stays within a limit (3000 random arrays each), and on a 200000-element input the deques made at most 2N (4N for the two-deque scan) push/pop operations, i.e. linear work with the same answers as brute force" << std::endl; return 0;
 }
 // Time Complexity: O(N)
 // Space Complexity: O(k) 또는 O(N)
