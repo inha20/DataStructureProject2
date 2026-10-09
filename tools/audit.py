@@ -110,6 +110,14 @@ def unguarded_posix(code):
     return False
 
 
+NONDETERMINISTIC = re.compile(r"random_device|\bsrand\s*\(\s*time|\btime\s*\(\s*(?:nullptr|NULL|0)\s*\)|\bgetpid\s*\(")
+
+
+def nondeterministic(code):
+    """True if the code seeds anything from the clock, the OS entropy pool or the process id (every random draw must use a fixed seed)."""
+    return bool(NONDETERMINISTIC.search(re.sub(r"//.*", "", code)))
+
+
 def structure(book, text, nbom, startbom):
     probs = []
     entries, lines = parse(text)
@@ -131,6 +139,9 @@ def structure(book, text, nbom, startbom):
     nocode = [e["name"] for e in entries if e["code"] is None]
     if nocode:
         probs.append(f"{len(nocode)} entries without a cpp block: {nocode[:6]}")
+    nondet = [e["name"] for e in entries if e["code"] and nondeterministic(e["code"])]
+    if nondet:
+        probs.append(f"{len(nondet)} entries use a non-fixed random seed (random_device / time / getpid): {nondet[:6]}")
     posix = [e["name"] for e in entries if e["code"] and unguarded_posix(e["code"])]
     if posix:
         probs.append(f"{len(posix)} entries include POSIX headers outside an #if guard: {posix[:6]}")

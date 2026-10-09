@@ -99,6 +99,12 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(audit.unguarded_posix('#ifdef __unix__\n#include <sys/mman.h>\n#else\n#endif\n#include <vector>\nint main() {}'))
         self.assertTrue(audit.unguarded_posix('#if 0\n#endif\n#include <fcntl.h>\nint main() {}'))
         self.assertFalse(audit.unguarded_posix('#include <csignal>\n#include <thread>\nint main() {}'))
+    def test_nondeterminism_detection(self):
+        self.assertTrue(audit.nondeterministic('std::random_device rd; std::mt19937 g(rd());'))
+        self.assertTrue(audit.nondeterministic('srand(time(nullptr));'))
+        self.assertTrue(audit.nondeterministic('std::mt19937 g((unsigned)time(NULL));'))
+        self.assertFalse(audit.nondeterministic('std::mt19937 g(12345); // not random_device'))
+        self.assertFalse(audit.nondeterministic('auto t0 = std::chrono::steady_clock::now();'))
     def test_placeholder_detection(self):
         self.assertTrue(audit.is_placeholder('#include <cassert>\nint main() {\n assert(true);\n return 0;\n}'))
         self.assertFalse(audit.is_placeholder('int main() { assert(1 + 1 == 2); }'))
