@@ -101,6 +101,8 @@ int main() {
 ### 대표코드
 ```cpp
 #include <iostream>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
 #include <cassert>
@@ -108,6 +110,7 @@ int main() {
 // 격자 위의 이동 규칙이 곧 그래프의 간선이다. 4방향은 비용 1, 8방향은 대각선 비용 √2 인데 부동소수점 대신 정수 10 과 14(≈10√2)로 스케일해 비교·해시 오차를 없앤다.
 // 대각선 이동에는 "모서리 자르기(corner cutting)" 규칙이 필요하다 — 대각선으로 지나가는 두 칸 중 하나라도 벽이면 벽 모서리를 스치며 통과하므로 보통 금지한다 (게임에 따라 허용하기도).
 // 이웃 생성 함수를 한 곳에 모아 두면 BFS / Dijkstra / A* 가 모두 같은 규칙을 공유한다
+//  ⑥ 무작위 지도 3 000 개(1×1..9×9, 벽 30%) × 규칙 4 가지(4/8방향 × 모서리 자르기 허용/금지)의 *모든 빈 칸* 에서 neighbors 가 규칙을 정의 그대로 짠 독립 열거(주변 8 칸을 직접 훑으며 경계·벽·대각선의 두 직교 칸을 검사)와 같은 집합·비용이고 모든 간선이 같은 비용의 역방향 간선을 가짐  ⑦ 벽 없는 R×C 격자의 방향 간선 수 닫힌 식: 4방향 2·(R(C−1) + C(R−1)), 8방향은 거기에 4(R−1)(C−1) 을 더한 값 (R, C ≤ 8 전수)
 struct Grid {
     int R, C; std::vector<std::string> w; bool diag, cut;                  // w: '#' 벽. diag: 8방향 허용, cut: 모서리 자르기 허용
     bool ok(int r, int c) const { return r >= 0 && r < R && c >= 0 && c < C && w[r][c] != '#'; }
@@ -132,6 +135,20 @@ int main() {
     Grid g4 = g; g4.diag = false; assert(g4.neighbors(1, 1).size() == 4);
     long edges = 0; for (int r = 0; r < 5; r++) for (int c = 0; c < 5; c++) if (g.ok(r, c)) edges += g.neighbors(r, c).size();
     for (int r = 0; r < 5; r++) for (int c = 0; c < 5; c++) if (g.ok(r, c)) for (auto& e : g.neighbors(r, c)) { bool back = false; for (auto& f : g.neighbors(e.first.first, e.first.second)) back |= f.first == std::make_pair(r, c) && f.second == e.second; assert(back); }       // 이웃 관계는 대칭
+    {   std::mt19937 rng(3); long cases = 0;                                                                                               // ⑥ 무작위 지도 대 정의 그대로의 오라클
+        for (int trial = 0; trial < 3000; ++trial) { int R = 1 + (int)(rng() % 9), C = 1 + (int)(rng() % 9); std::vector<std::string> w(R, std::string(C, '.')); for (auto& row : w) for (auto& ch : row) if (rng() % 100 < 30) ch = '#';
+            for (int mode = 0; mode < 4; ++mode) { Grid grid{R, C, w, (mode & 1) != 0, (mode & 2) != 0};
+                for (int r = 0; r < R; ++r) for (int c = 0; c < C; ++c) { if (w[r][c] == '#') continue; std::set<std::pair<std::pair<int, int>, int>> want;
+                    for (int dr = -1; dr <= 1; ++dr) for (int dc = -1; dc <= 1; ++dc) { if (!dr && !dc) continue; bool diagMove = dr != 0 && dc != 0; if (diagMove && !grid.diag) continue;
+                        int nr = r + dr, nc = c + dc; if (nr < 0 || nr >= R || nc < 0 || nc >= C || w[nr][nc] == '#') continue;
+                        if (diagMove && !grid.cut && (w[r + dr][c] == '#' || w[r][c + dc] == '#')) continue;                                 // 대각선이 벽 모서리를 스침
+                        want.insert({{nr, nc}, diagMove ? 14 : 10}); }
+                    auto got = grid.neighbors(r, c); std::set<std::pair<std::pair<int, int>, int>> gotSet(got.begin(), got.end()); assert(gotSet == want && got.size() == want.size()); ++cases;
+                    for (auto& e : got) { bool back = false; for (auto& f : grid.neighbors(e.first.first, e.first.second)) back |= f.first == std::make_pair(r, c) && f.second == e.second; assert(back); } } } }       // 간선은 양방향·같은 비용
+        assert(cases > 10000);
+        for (int R = 1; R <= 8; ++R) for (int C = 1; C <= 8; ++C) { std::vector<std::string> open(R, std::string(C, '.')); Grid g4{R, C, open, false, false}, g8{R, C, open, true, false}; long e4 = 0, e8 = 0;      // ⑦ 닫힌 식
+            for (int r = 0; r < R; ++r) for (int c = 0; c < C; ++c) { e4 += (long)g4.neighbors(r, c).size(); e8 += (long)g8.neighbors(r, c).size(); }
+            assert(e4 == 2L * (R * (C - 1) + C * (R - 1)) && e8 == e4 + 4L * (R - 1) * (C - 1)); } }
     std::cout << "CreateGrid: 5x5 map with one wall has " << edges << " directed edges (8-neighbour, no corner cutting)" << std::endl; return 0;
 }
 // Time Complexity: 이웃 생성 O(1)
@@ -217,12 +234,15 @@ int main() {
 ```cpp
 #include <algorithm>
 #include <iostream>
+#include <map>
+#include <random>
 #include <vector>
 #include <cassert>
 
 // 간선은 (출발, 도착, 가중치)이다. 같은 그래프를 간선 목록(edge list, 정렬·크루스칼에 편함), 인접 리스트(탐색에 가장 흔함), CSR(Compressed Sparse Row: 연속 메모리라 캐시 친화적, 정적 그래프에 최적)로 표현할 수 있고
 // 서로 변환할 수 있어야 한다.  길찾기 알고리즘은 가중치가 음수가 아니라는 전제(Dijkstra, A*)가 많으므로 간선을 만들 때 검증하고, 같은 (출발, 도착)이 여러 번 들어오면 가장 싼 것만 남긴다.
 // 무방향 간선은 양방향 간선 두 개로 저장한다
+//  ⑤ 무작위 간선 열 2 000 개(정점 1~8, 시도 0~29 번, 무방향 여부 무작위, 음수 가중치 포함)에서 addEdge 의 거절 판정, dedupe 결과(= (u, v) 별 최솟값을 std::map 으로 모은 오라클), CSR 로 바꿨다 되읽은 간선 집합, 행 시작 배열의 단조성과 총량이 모두 일치
 struct Edge { int u, v, w; };
 struct CSR { std::vector<int> start, to, w; };
 bool addEdge(std::vector<Edge>& es, int u, int v, int w, bool undirected) { if (w < 0) return false; es.push_back({u, v, w}); if (undirected) es.push_back({v, u, w}); return true; }
@@ -237,6 +257,13 @@ int main() {
     CSR g = toCSR(d, 3); int w01 = -1; for (int k = g.start[0]; k < g.start[1]; k++) if (g.to[k] == 1) w01 = g.w[k]; assert(w01 == 3);
     assert(g.start[3] == (int)d.size() && g.start[1] - g.start[0] == 2);  // 정점 0 의 차수 2
     std::vector<int> deg(3, 0); for (auto& e : d) deg[e.u]++; for (int i = 0; i < 3; i++) assert(g.start[i + 1] - g.start[i] == deg[i]);       // CSR 구간 길이 == 차수
+    {   std::mt19937 rng(4);                                                                                                             // ⑤ 무작위 간선 열
+        for (int trial = 0; trial < 2000; ++trial) { int n = 1 + (int)(rng() % 8); std::vector<Edge> list; std::map<std::pair<int, int>, int> best; int attempts = (int)(rng() % 30); bool undirected = rng() % 2 == 0;
+            for (int k = 0; k < attempts; ++k) { int u = (int)(rng() % n), v = (int)(rng() % n), w = (int)(rng() % 20) - 3; bool ok = addEdge(list, u, v, w, undirected); assert(ok == (w >= 0));
+                if (ok) { auto upd = [&](int a, int b) { auto it = best.find({a, b}); if (it == best.end() || w < it->second) best[{a, b}] = w; }; upd(u, v); if (undirected) upd(v, u); } }
+            auto dd = dedupe(list); assert(dd.size() == best.size()); for (auto& e : dd) { auto it = best.find({e.u, e.v}); assert(it != best.end() && it->second == e.w); }
+            CSR csr = toCSR(dd, n); assert((int)csr.start.size() == n + 1 && csr.start[0] == 0 && csr.start[n] == (int)dd.size()); std::map<std::pair<int, int>, int> back;
+            for (int u = 0; u < n; ++u) { assert(csr.start[u] <= csr.start[u + 1]); for (int k = csr.start[u]; k < csr.start[u + 1]; ++k) back[{u, csr.to[k]}] = csr.w[k]; } assert(back == best); } }       // 목록 → 중복 제거 → CSR → 되읽기
     std::cout << "CreateEdge: " << d.size() << " directed edges after dedupe, CSR row starts: " << g.start[0] << " " << g.start[1] << " " << g.start[2] << " " << g.start[3] << std::endl; return 0;
 }
 // Time Complexity: 간선 추가 O(1), 중복 제거 O(E log E), CSR 변환 O(V + E)
@@ -334,12 +361,14 @@ int main() {
 ```cpp
 #include <iostream>
 #include <queue>
+#include <random>
 #include <vector>
 #include <cassert>
 
 // 길찾기를 여러 번(질의마다, 매 프레임마다) 부를 때 거리표·부모표·방문표를 매번 0 으로 다시 채우면 정점 수 V 만큼의 비용이 든다. 지도가 100만 칸이고 질의가 가까운 두 점이면 탐색은 수백 칸만 보는데 초기화에 100만 번을 쓴다.
 // 해결: 칸마다 "마지막으로 쓴 질의 번호(stamp)"를 두고 현재 번호와 다르면 아직 초기화 안 된 칸으로 보고 그 자리에서 기본값을 쓴다 — 질의 시작은 번호를 하나 올리는 O(1).
 // 이 항목은 이런 "세대 번호 초기화"가 정확함(이전 질의의 값이 새 질의에 새지 않음)과 일 양(쓴 칸 수만 초기화)을 보인다
+//  ⑥ 무작위 그래프 50 개(정점 2~61, 간선 0~3n 개, 비연결 포함)에서 *재사용하는 하나의 Search 객체* 로 질의 200 번씩: 세대 번호 방식의 거리가 매번 새로 0 으로 채운 일반 BFS 와 같고(도달 불가는 −1), 질의 한 번이 건드린 칸 수가 일반 BFS 가 그 시점까지 발견한 정점 수와 *정확히* 같다
 struct Search {
     std::vector<int> dist, parent, stamp; int epoch = 0; long touched = 0; explicit Search(int n) : dist(n), parent(n), stamp(n, 0) {}
     void reset() { epoch++; }                                              // O(1)
@@ -356,6 +385,12 @@ int main() {
     assert(!s.seen(0) && s.seen(100));                                     // 이전 질의가 칠한 칸(0)은 새 질의에서 "보지 않은 칸"이다
     for (int t = 0; t < 1000; t++) { int a = (t * 7919) % (N - 10), b = a + t % 8; assert(bfs(s, adj, a, b) == b - a); }
     assert(s.touched < 1000 * 40);                                         // 1000 질의 총 수만 칸 (매번 전체를 지웠다면 2억)
+    {   std::mt19937 rng(6); long queries = 0;                                                                                              // ⑥ 무작위 그래프와 재사용
+        for (int trial = 0; trial < 50; ++trial) { int n = 2 + (int)(rng() % 60); std::vector<std::vector<int>> g(n); int m = (int)(rng() % (3 * n)); for (int i = 0; i < m; ++i) { int a = (int)(rng() % n), b = (int)(rng() % n); g[a].push_back(b); g[b].push_back(a); }
+            Search reused(n); for (int q = 0; q < 200; ++q) { int a = (int)(rng() % n), b = (int)(rng() % n);
+                std::vector<int> dist(n, -1); std::queue<int> qq; dist[a] = 0; qq.push(a); int want = -1; while (!qq.empty()) { int u = qq.front(); qq.pop(); if (u == b) { want = dist[u]; break; } for (int v : g[u]) if (dist[v] < 0) { dist[v] = dist[u] + 1; qq.push(v); } }
+                long discovered = 0; for (int x : dist) discovered += x >= 0; long before = reused.touched; int got = bfs(reused, g, a, b); assert(got == want && reused.touched - before == discovered); ++queries; } }
+        assert(queries == 10000); }
     std::cout << "InitializeSearch: 1000 queries on " << N << " nodes touched only " << s.touched << " cells (full clear would write " << 1000L * N << ")" << std::endl; return 0;
 }
 // Time Complexity: 초기화 O(1), 질의는 방문한 칸 수 비례
@@ -2216,6 +2251,7 @@ int main() {
 // 균일 비용 탐색(UCS): 비용이 낮은 순서로 상태를 확장하는 Dijkstra 이지만, 그래프를 미리 만들어 두지 않고 "후속 상태 함수" 로 상태를 그때그때 만들며 목표 상태를 만나면 멈춘다는 점이 쓰임새를 가른다(퍼즐·계획 문제).
 // 두 가지를 반드시 지켜야 최적이다. ① 목표 판정은 상태를 "생성할 때" 가 아니라 큐에서 "꺼낼 때" 한다 — 생성 시점에는 더 싼 길이 아직 큐에 있을 수 있다. ② 이미 더 싼 비용으로 닫힌 상태는 건너뛴다(지연 삭제). 꺼내는 비용은 단조 비감소여야 한다.
 // 물통 문제(8·5·3 리터, 한 통에 4 리터 만들기; 비용 = 옮긴 물의 양)로 검증한다. 상태 공간 전체를 따로 열거해 Bellman-Ford 로 구한 최적값과 같고, 모든 비용을 1 로 하면 BFS 단계 수와 같으며, 생성 시점 목표 판정은 최적이 아닌 예(S→G 10, S→A→G 1+1)가 있음을 확인한다
+// audit: differential (상태 공간 전체를 열거한 Bellman-Ford 가 독립 기준)
 typedef std::vector<int> St;
 long ucs(const St& start, std::function<bool(const St&)> goal, std::function<std::vector<std::pair<St, int>>(const St&)> succ, bool earlyTest, long* expanded) {
     typedef std::pair<long, St> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq; std::map<St, long> best; best[start] = 0; pq.push({0, start}); long lastPopped = -1; *expanded = 0;
@@ -5194,6 +5230,7 @@ int main() {
 // 경로 계획 vs 궤적 계획 — 경로(path)는 "어디를 지나는가" 라는 기하학적 곡선 q(s) 이고 시간은 없다. 궤적(trajectory)은 그 경로 위에서 "언제 얼마의 속도로 지나는가" 까지 정한 시간 함수 q(t) 이며 속도·가속도·곡률·구심 가속도 같은 동역학 제약을 지켜야 한다.
 // 그래서 "가장 짧은 경로" 와 "가장 빠른 궤적" 은 다르다. 경로를 일정 간격(ds)으로 표본해 점마다 곡률 κ 를 (좌우 6 표본 = 0.3 길이 단위 떨어진 세 점의 외접원 반지름으로) 구하면 구심 가속도 제한 a_lat 에서 속도 상한은 v ≤ √(a_lat/κ) 이다. 여기에 직선 가속·감속 제한(a_max)을 순방향·역방향 두 번의 훑기로 적용한다
 // (v_{i+1}² ≤ v_i² + 2·a·ds, 역방향도 같은 식) — 이것이 경로 위 시간 최적 속도 프로파일이다. 통과 시간 T = Σ 2ds/(v_i + v_{i+1}). 증거: ① 계산된 프로파일이 속도·구심·직선 가속도 제약을 모두 지킴 ② 제한을 늦추면 통과 시간이 줄어듦(단조) ③ 같은 두 지점 사이에서 직각 모서리 경로 A(길이 20)와 모서리 바깥을 크게 도는 호 경로 B(더 긺): 높은 속도 한계에서는 더 긴 B 가 더 빠르고 낮은 속도 한계에서는 A 가 더 빠름 ④ 일정 속도로 가정한 통과 시간(길이/속도)은 실제보다 항상 작거나 같음(낙관적)
+// audit: closed-form (속도 한계·가속 한계 불변식, 가속도·속도 상한에 대한 시간의 단조성, 길이/최고속도 ≤ 통과 시간)
 struct Pt { double x, y; };
 std::vector<Pt> resample(const std::vector<Pt>& poly, double ds) { std::vector<Pt> out = {poly[0]}; double carry = 0; for (size_t i = 1; i < poly.size(); i++) { double len = std::hypot(poly[i].x - poly[i - 1].x, poly[i].y - poly[i - 1].y); double pos = ds - carry; while (pos <= len + 1e-12) { double f = pos / len; out.push_back({poly[i - 1].x + f * (poly[i].x - poly[i - 1].x), poly[i - 1].y + f * (poly[i].y - poly[i - 1].y)}); pos += ds; } carry = len - (pos - ds); } if (std::hypot(out.back().x - poly.back().x, out.back().y - poly.back().y) > 1e-6) out.push_back(poly.back()); return out; }
 double curvature(const Pt& a, const Pt& b, const Pt& c) { double ab = std::hypot(b.x - a.x, b.y - a.y), bc = std::hypot(c.x - b.x, c.y - b.y), ca = std::hypot(c.x - a.x, c.y - a.y); double cross = std::fabs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)); return ab * bc * ca < 1e-12 ? 0 : 2 * cross / (ab * bc * ca); }

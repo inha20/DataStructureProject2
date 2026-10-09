@@ -105,7 +105,7 @@ class AuditTests(unittest.TestCase):
     def test_weak(self):
         thin = '#include <cassert>\nint main() { assert(1); assert(2); }'
         self.assertIsNotNone(audit.weak_reason(thin))
-        for mark in ('exhaustive', 'known-answer', 'stress', 'stl-demo'): self.assertIsNone(audit.weak_reason('// audit: ' + mark + '\n' + thin))
+        for mark in ('exhaustive', 'known-answer', 'stress', 'closed-form', 'differential', 'stl-demo'): self.assertIsNone(audit.weak_reason('// audit: ' + mark + '\n' + thin))
         self.assertIsNone(audit.weak_reason('#include <random>\nint main() { std::mt19937 r(1); assert(r() >= 0); }'))
         self.assertIsNone(audit.weak_reason('int naiveSum(){return 0;} int main() { assert(naiveSum() == 0); }'))
         many = 'int main() {' + ' assert(1);' * 9 + ' }'

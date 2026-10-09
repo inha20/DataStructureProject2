@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <random>
 #include <stack>
 #include <utility>
 #include <cassert>
@@ -14,6 +15,7 @@
 // 표현 방식에 따라 만드는 비용이 다르다. 배열 스택은 용량을 정해 메모리를 한 번에 확보하고(할당 1 번), 연결 스택은 top = nullptr 하나로 시작해 아무것도 할당하지 않는다(할당 0 번; 메모리는 push 마다 노드 하나씩).
 // 자원을 쥐는 클래스는 RAII 를 지킨다: 생성자가 얻고 소멸자가 돌려주며, 얕은 복사로 이중 해제가 나지 않도록 복사는 금지하고 이동(소유권 이전)만 허용한다.
 // 검증(전역 operator new/delete 를 교체해 할당 횟수와 생존 블록을 센다): ① 새 스택은 비어 있고 크기 0이며 peek/pop 이 실패한다 ② 배열 스택 생성은 할당 1 번, 연결 스택은 0 번이고 첫 push 에서 1 번 ③ 3000 개를 만들고 부숴도 생존 블록이 늘지 않는다(누수 0) ④ 용량 0 도 정상 ⑤ 이동 후 원본은 빈 스택이고 내용은 새 스택으로 넘어간다 ⑥ 실무의 std::stack 도 같은 초기 상태를 가진다
+//  ⑦ 만든 직후부터 무작위 연산(푸시 2 : 팝 1) 10 만 번을 용량 1·2·3·7·64 의 배열 스택(가득 차면 거부)과 연결 스택(거부 없음)에 흘려 보내 각각 std::stack 모형과 대조 — 반환값·top·크기가 매번 같고, 배열 스택은 한 번도 용량을 넘지 않는다
 static long newCalls = 0, liveBlocks = 0;
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
 void* operator new(std::size_t n) { void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); newCalls++; liveBlocks++; return p; }
@@ -51,6 +53,12 @@ int main() {
     for (int i = 0; i < 3000; i++) { ArrayStack a(i % 40); LinkedStack l; for (int k = 0; k < i % 7; k++) { a.push(k); l.push(k); } } assert(liveBlocks == baseLive);                    // ③ 누수 0
     { ArrayStack zero(0); int v; assert(zero.empty() && !zero.push(1) && !zero.pop(v) && !zero.peek(v)); }                                                                            // ④ 용량 0
     { ArrayStack a(4); a.push(7); a.push(8); ArrayStack b(std::move(a)); int v; assert(a.empty() && a.size() == 0 && !a.push(1) && b.size() == 2 && b.pop(v) && v == 8 && b.pop(v) && v == 7); }        // ⑤ 이동
+    {   std::mt19937 rng(5); for (int cap : {1, 2, 3, 7, 64}) { ArrayStack a(cap); LinkedStack l; std::stack<int> ma, ml; long refused = 0;                                         // ⑦ 무작위 대조
+            for (int step = 0; step < 100000; ++step) { int v = (int)rng();
+                if (rng() % 3 != 0) { bool okA = a.push(v), okL = l.push(v); assert(okA == (ma.size() < (std::size_t)cap) && okL); if (okA) ma.push(v); else ++refused; ml.push(v); }
+                else { int x = -1, y = -1; bool gotA = a.pop(x), gotL = l.pop(y); assert(gotA == !ma.empty() && gotL == !ml.empty()); if (gotA) { assert(x == ma.top()); ma.pop(); } if (gotL) { assert(y == ml.top()); ml.pop(); } }
+                assert(a.size() == ma.size() && l.size() == ml.size() && a.size() <= (std::size_t)cap); int f = 0, g = 0; assert(a.peek(f) == !ma.empty() && l.peek(g) == !ml.empty()); if (!ma.empty()) assert(f == ma.top() && g == ml.top()); }
+            assert(refused > 0 && a.empty() == ma.empty()); } }
     { std::stack<int> s; assert(s.empty() && s.size() == 0); }                                                                                                                         // ⑥ 실무의 std::stack
     std::cout << "CreateStack: fresh array and linked stacks satisfy the empty-state invariants; array stack costs 1 allocation, linked stack 0 until the first push; 3000 create/destroy cycles left no live blocks" << std::endl; return 0;
 }
@@ -382,6 +390,7 @@ int main() {
 // 비우기(Clear): 모든 원소를 제거해 빈 스택으로 되돌린다. 구현이 해야 할 일은 ① 각 원소의 소멸자를 부르고(자원 반환) ② 메모리를 돌려주거나 재사용을 위해 남기고 ③ 크기를 0 으로 만드는 것이다.
 // 배열 스택은 원소 소멸자만 부르고 버퍼(용량)는 남겨 두는 편이 빠르다 — 다시 채울 때 재할당이 없다(원소가 int 같은 trivially destructible 이면 크기를 0 으로 만드는 O(1)). 연결 스택은 노드를 하나씩 해제하므로 O(N)이다. 단, 노드 소멸자에서 next 를 재귀적으로 delete 하는 순진한 방식은 길이가 수십만만 되어도 호출 스택이 넘친다 — 반복문으로 해제해야 한다(아래에서 재귀 깊이 N 을 직접 센다).
 // 검증: ① 비운 뒤 크기 0, 빈 스택, 모든 원소의 소멸자가 정확히 한 번 호출됨(생성 수 == 소멸 수) ② 배열 스택은 비운 뒤에도 용량을 유지해 다시 채울 때 재할당 0 번 ③ 연결 스택을 100 만 노드까지 키워도 반복 해제는 안전 ④ 재귀 해제는 깊이가 정확히 N 이라 호출 스택을 N 프레임 쓴다 ⑤ 비운 뒤 재사용과 반복 clear(멱등)
+//  ⑥ 무작위 연산 2 만 번(푸시 95% / 비우기 5%)에서 매 단계 크기가 모형과 같고 *살아 있는 객체 수 = 크기 + 원본 하나* 가 늘 성립(생성 − 소멸), 마지막에 모두 소멸
 struct Tracked { static long ctor, dtor; Tracked() { ctor++; } Tracked(const Tracked&) { ctor++; } ~Tracked() { dtor++; } };
 long Tracked::ctor = 0, Tracked::dtor = 0;
 template <class T> class ArrayStack {
@@ -403,6 +412,11 @@ int main() {
     { Node* top = nullptr; for (int i = 0; i < 1000000; i++) top = new Node{i, top}; clearIterative(top); assert(top == nullptr); }                                                                           // ③ 100 만 노드 반복 해제
     { Node* top = nullptr; const int N = 20000; for (int i = 0; i < N; i++) top = new Node{i, top}; long depth = clearRecursive(top); assert(depth == N); }                                                    // ④ 재귀 해제의 호출 깊이 = N (10^6 이면 기본 8 MB 스택을 넘길 수 있다)
     { ArrayStack<int> s; for (int r = 0; r < 3; r++) { for (int i = 0; i < 50; i++) s.push(i); assert(s.size() == 50); s.clear(); assert(s.size() == 0); } }                                               // ⑤ 재사용
+    {   std::mt19937 rng(9); Tracked::ctor = Tracked::dtor = 0;                                                                                                                         // ⑥ 무작위 대조
+        { ArrayStack<Tracked> s; Tracked proto; std::size_t model = 0; long clears = 0;
+            for (int step = 0; step < 20000; ++step) { if (rng() % 20 == 0) { s.clear(); model = 0; ++clears; } else { s.push(proto); ++model; } assert(s.size() == model && Tracked::ctor - Tracked::dtor == (long)model + 1); }
+            assert(clears > 500); }
+        assert(Tracked::ctor == Tracked::dtor); }
     std::cout << "Clear: destructors ran exactly once per element, the array stack kept its capacity (no reallocation on refill), a 1,000,000-node linked stack was freed iteratively, and recursive freeing needed a call depth equal to N" << std::endl; return 0;
 }
 // Time Complexity: 배열 O(N) (trivially destructible 이면 O(1)), 연결 O(N)
@@ -605,12 +619,14 @@ int main() {
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <random>
 #include <vector>
 #include <cassert>
 
 // 노드 단위 푸시(PushNode): 연결 스택의 push 를 포인터 조작 수준에서 본다. 머리 포인터가 가리키는 리스트의 맨 앞에 새 노드를 달려면 ① 새 노드를 만들고 ② 새 노드의 next 를 옛 머리로 ③ 머리를 새 노드로 — 이 순서가 중요하다. ③ 을 먼저 하면 옛 머리를 잃어 리스트 전체를 누수한다.
 // 예외 안전: 할당(① )이 실패하면 아직 아무것도 바꾸지 않았으므로 머리는 그대로다 — 강한 보장. 그래서 new 를 가장 먼저 하고 포인터 대입은 마지막에 한다. 노드를 만든 뒤에는 실패할 수 있는 연산이 없다.
 // 검증: ① 무작위로 푸시한 뒤 머리부터 순회한 값이 푸시의 역순이고 길이가 맞다 ② 순환(cycle)이 없음 — 토끼와 거북이(Floyd)로 확인 ③ 할당 실패를 k 번째 new 에서 주입하면 머리와 리스트 내용이 그대로이고 누수 노드 0 ④ 올바른 순서와 틀린 순서의 차이: 틀린 순서(③ 먼저)는 옛 리스트를 잃는다는 것을 도달 가능 노드 수로 보임
+//  ⑥ 무작위 푸시 2 만 번 중 1/40 은 새 노드 할당이 실패하도록 주입: 실패한 호출은 머리를 바꾸지 않았고 성공한 호출만 std::vector 모형에 쌓였는지(머리부터 걸으면 모형의 역순) 500 번마다 대조, 끝에 노드가 모두 반환됨
 static long allocCount = 0, failAt = -1, liveNodes = 0;
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
 void* operator new(std::size_t n) { if (++allocCount == failAt) throw std::bad_alloc(); void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
@@ -631,6 +647,12 @@ int main() {
       Node* keep = head; try { pushNodeWrong(head, 99); } catch (const std::bad_alloc&) { threw = true; } failAt = -1;
       assert(threw && head == nullptr && length(head) == 0 && length(keep) == 5);                                                                                                                    // ④ 틀린 순서: 머리를 잃었다 (keep 이 없었다면 5 개 노드를 영영 누수)
       head = keep; freeAll(head); assert(liveNodes == 0); }
+    {   std::mt19937 rng(12); Node* head = nullptr; std::vector<int> model; long failures = 0;                                                                                          // ⑥ 무작위 대조와 실패 주입
+        for (int step = 0; step < 20000; ++step) { bool inject = rng() % 40 == 0; int v = (int)(rng() % 1000); allocCount = 0; failAt = inject ? 1 : -1; bool threw = false;
+            try { pushNode(head, v); } catch (const std::bad_alloc&) { threw = true; } failAt = -1; assert(threw == inject);
+            if (threw) ++failures; else model.push_back(v);
+            if (step % 500 == 0) { std::vector<int> walk; for (Node* p = head; p; p = p->next) walk.push_back(p->data); assert(std::vector<int>(walk.rbegin(), walk.rend()) == model); } }
+        std::vector<int> walk; for (Node* p = head; p; p = p->next) walk.push_back(p->data); assert(std::vector<int>(walk.rbegin(), walk.rend()) == model && failures > 100 && !hasCycle(head)); freeAll(head); assert(liveNodes == 0); }
     std::cout << "PushNode: pushes produced reverse order with no cycles; an injected allocation failure left the list untouched with the allocate-first order but orphaned it with the wrong order" << std::endl; return 0;
 }
 // Time Complexity: O(1)
@@ -641,12 +663,14 @@ int main() {
 ```cpp
 #include <cstddef>
 #include <iostream>
+#include <random>
 #include <vector>
 #include <cassert>
 
 // 노드 단위 팝(PopNode): 연결 스택의 pop 을 포인터 조작 수준에서 본다. 순서: ① 떼어 낼 노드를 임시 포인터에 기억 ② 머리를 다음 노드로 이동 ③ 값을 꺼내고 ④ 노드를 해제. ④ 를 ② 보다 먼저 하면 해제된 노드의 next 를 읽게 되어(use-after-free) 정의되지 않은 동작이다 — 해제 직전에 필요한 값(next, data)을 모두 꺼내 두는 것이 규칙이다.
 // 빈 리스트(head == nullptr)는 거절해야 한다. 또 하나의 기법은 "떼어 내되 해제하지 않고 돌려주기"(detach): 노드를 자유 리스트에 모아 두었다가 다음 push 에서 재사용하면 new/delete 를 줄인다(메모리 풀의 시작). 자유 리스트도 같은 연결 스택이다.
 // 검증: ① 모든 노드를 팝하면 정확히 푸시의 역순이고 마지막에 head == nullptr ② 빈 리스트 팝은 false 이며 출력 인자를 건드리지 않음 ③ 팝마다 노드 하나만 해제(살아 있는 노드 수 −1) ④ detach/reuse: 떼어 낸 노드를 자유 리스트에 넣고 다시 쓰면 같은 주소가 LIFO 로 재사용되고 새 할당이 없음 ⑤ 해제 전에 next 를 읽는 올바른 순서
+//  ⑥ 무작위 푸시(60%)/팝(40%) 5 만 번을 std::vector 모형과 대조: 팝은 모형의 마지막 값을 돌려주고 빈 스택의 팝은 출력 인자를 건드리지 않으며, 생존 노드 수는 늘 모형의 크기와 같다
 struct Node { int data; Node* next; };
 static long liveNodes = 0, newCalls = 0;
 Node* makeNode(int x, Node* next) { newCalls++; liveNodes++; return new Node{x, next}; }
@@ -663,6 +687,12 @@ int main() {
       long newBefore = newCalls; for (int i = 0; i < 3; i++) { Node* n = detachTop(freeList); n->data = 100 + i; attach(used, n); }                                                                                                                              // 재사용: 새 할당 없음
       assert(newCalls == newBefore && used == addrs[0] /* 스택을 두 번 거꾸로 옮기면(used -> free -> used) 원래 주소 순서가 복원된다 */ ); int v; while (popNode(used, v)) {} assert(liveNodes == 0); }                                                                    // ④
     { Node* head = makeNode(1, makeNode(2, nullptr)); Node* t = head; Node* nextBeforeFree = t->next; int dataBeforeFree = t->data; head = nextBeforeFree; delete t; liveNodes--; assert(head->data == 2 && dataBeforeFree == 1); int v; popNode(head, v); assert(liveNodes == 0); }          // ⑤ 해제 전에 next/data 를 먼저 읽어 둔다
+    {   std::mt19937 rng(14); Node* head = nullptr; std::vector<int> model; long base = liveNodes, empties = 0;                                                                         // ⑥ 무작위 대조
+        for (int step = 0; step < 50000; ++step) {
+            if (rng() % 5 < 3) { int v = (int)(rng() % 1000); head = makeNode(v, head); model.push_back(v); }
+            else { int out = -7; bool got = popNode(head, out); assert(got == !model.empty()); if (got) { assert(out == model.back()); model.pop_back(); } else { assert(out == -7); ++empties; } }
+            assert(liveNodes - base == (long)model.size() && (head == nullptr) == model.empty()); }
+        int v; while (popNode(head, v)) model.pop_back(); assert(model.empty() && liveNodes == base && empties > 0); }
     std::cout << "PopNode: pops returned the exact reverse order and released one node each; empty pops were refused; detached nodes were recycled through a free list with zero new allocations" << std::endl; return 0;
 }
 // Time Complexity: O(1)
@@ -1829,6 +1859,8 @@ int main() {
 // 주의: 컴파일러가 인라인·꼬리 호출 제거를 하면 프레임이 사라질 수 있어 noinline 과 volatile 로 막았고, 주소 비교는 구현 정의 동작이므로 부등식(범위)으로만 단언한다. 새니타이저는 프레임에 감시 영역(redzone)을 넣어 크기를 바꾸므로 이 항목은 새니타이저에서 제외한다.
 // audit: no-sanitize
 // audit: gcc-only
+// audit: closed-form (프레임 간격 차이 = 지역 배열 크기 차이)
+//  ⑥ 지역 배열을 32·64·128·256·512·1024 바이트로 바꿔 가며 잰 프레임 간격이 (40 번 재귀 내내 일정하고) 단조 증가하며, 이웃한 두 크기의 간격 차이가 배열 크기 차이와 ±64 바이트 안에서 같다 — 컴파일러가 배열을 줄이지 못하도록 주소를 asm 으로 내보낸다
 // 검증: ① 깊은 호출일수록 주소가 작다(스택이 아래로 자람) ② 작은 프레임: 16..512 바이트 ③ 큰 지역 배열(512 B)을 가진 함수의 프레임이 작은 함수보다 최소 400 바이트 크다 ④ 프레임 크기가 호출마다 일정(재귀의 모든 단계 동일) ⑤ 예측 최대 깊이 = 8 MB / 프레임 크기 가 수만 이상
 #if defined(__GNUC__)
 #define NOINLINE __attribute__((noinline))
@@ -1839,12 +1871,18 @@ static std::vector<std::uintptr_t> addrs;
 NOINLINE long smallFrame(int depth) { volatile int local = depth; addrs.push_back((std::uintptr_t)&local); if (depth == 0) return local; long r = smallFrame(depth - 1); return r + local; }
 NOINLINE long bigFrame(int depth) { volatile char buf[512]; buf[0] = (char)depth; addrs.push_back((std::uintptr_t)&buf[0]); if (depth == 0) return buf[0]; long r = bigFrame(depth - 1); return r + buf[0]; }
 std::vector<std::uintptr_t> gaps() { std::vector<std::uintptr_t> g; for (std::size_t i = 1; i < addrs.size(); i++) g.push_back(addrs[i - 1] - addrs[i]); return g; }
+template <int N> NOINLINE long sizedFrame(int depth) { volatile char buf[N]; asm volatile("" : : "r"(buf) : "memory"); buf[0] = (char)depth; addrs.push_back((std::uintptr_t)&buf[0]); if (depth == 0) return buf[0]; long r = sizedFrame<N>(depth - 1); return r + buf[0]; }
+template <int N> std::uintptr_t strideFor() { addrs.clear(); sizedFrame<N>(40); auto g = gaps(); for (std::size_t i = 1; i < g.size(); i++) assert(g[i] == g[0]); return g[0]; }     // 40 번 재귀의 프레임 간격은 모두 같다
 int main() {
     addrs.clear(); smallFrame(50); auto gs = gaps(); bool descending = true; for (std::size_t i = 1; i < addrs.size(); i++) descending &= addrs[i] < addrs[i - 1]; assert(descending);                                              // ① 스택이 아래로 자란다
     std::uintptr_t smallBytes = gs[10]; assert(smallBytes >= 16 && smallBytes <= 512);                                                                                                                           // ②
     addrs.clear(); bigFrame(50); auto gb = gaps(); std::uintptr_t bigBytes = gb[10]; assert(bigBytes >= smallBytes + 400);                                                                                      // ③ 지역 배열 512 B 만큼 프레임이 커진다
     bool uniform = true; for (std::size_t i = 1; i < gs.size(); i++) uniform &= gs[i] == gs[0]; for (std::size_t i = 1; i < gb.size(); i++) uniform &= gb[i] == gb[0]; assert(uniform);                           // ④ 모든 재귀 단계의 프레임이 같은 크기
     std::size_t predictedSmall = 8u * 1024 * 1024 / smallBytes, predictedBig = 8u * 1024 * 1024 / bigBytes; assert(predictedSmall > 10000 && predictedBig > 1000 && predictedSmall > predictedBig);                  // ⑤ 예측 최대 깊이
+    {   std::uintptr_t s32 = strideFor<32>(), s64 = strideFor<64>(), s128 = strideFor<128>(), s256 = strideFor<256>(), s512 = strideFor<512>(), s1024 = strideFor<1024>();            // ⑥ 지역 배열 크기를 바꿔 가며
+        auto near = [](std::uintptr_t d, int expect) { return (long)d >= expect - 64 && (long)d <= expect + 64; };
+        assert(s32 < s64 && s64 < s128 && s128 < s256 && s256 < s512 && s512 < s1024);
+        assert(near(s64 - s32, 32) && near(s128 - s64, 64) && near(s256 - s128, 128) && near(s512 - s256, 256) && near(s1024 - s512, 512)); }                                       // 프레임 크기 차이 = 지역 배열 크기 차이 (±64: 정렬)
     std::cout << "StackFrame: measured frame sizes - small function " << smallBytes << " bytes, function with a 512-byte local array " << bigBytes << " bytes; an 8 MB stack therefore allows roughly " << predictedSmall << " vs " << predictedBig << " nested calls" << std::endl; return 0;
 }
 // Time Complexity: O(깊이)
@@ -1892,6 +1930,7 @@ int main() {
 ```cpp
 #include <algorithm>
 #include <cstddef>
+#include <numeric>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -1901,7 +1940,9 @@ int main() {
 // 재귀의 시뮬레이션: 모든 재귀 함수는 "명시적 스택 + 반복문" 으로 바꿀 수 있다. 방법: 호출 하나를 프레임 구조체(매개변수 + 지금 어디까지 했는지 나타내는 상태 번호)로 만들어 스택에 쌓고, 반복문이 맨 위 프레임을 꺼내 상태에 따라 한 단계 진행한다. 재귀 호출 = 새 프레임 push, 반환 = pop 하고 반환값을 호출한 프레임에 전달.
 // 이 기법의 이유: ① 호출 스택 깊이 제한(수십만 단계 재귀)에서 벗어난다 ② 실행을 중간에 멈추고 재개하거나 상태를 저장·검사할 수 있다 ③ 컴파일러가 하는 일을 이해하게 된다.
 // 이 항목은 세 가지 재귀 함수를 시뮬레이션해 재귀 구현과 정확히 같은 결과·이동 순서를 내는지 확인한다. 하노이 탑(이동 순서가 같아야 한다), 아커만 함수(A(2,3)=9, A(3,3)=61: 극단적으로 깊은 재귀), 이진 트리의 중위 순회(왼쪽 → 자신 → 오른쪽).
+//  ④ N-Queens(n = 1..10) 해의 수가 재귀·명시적 스택·알려진 값(1, 0, 0, 2, 10, 4, 40, 92, 352, 724)과 같다  ⑤ 교환식 순열 생성의 *출력 순서*가 n ≤ 7 의 모든 경우에 재귀와 명시적 스택에서 같고 개수가 n!
 // 검증: ① 하노이 n=1..12 의 이동 목록이 재귀와 같고 이동 횟수 = 2ⁿ−1 ② 아커만 (m, n) 작은 값들이 재귀와 같고 최대 스택 크기 기록 ③ 무작위 이진 트리의 중위 순회 결과가 재귀와 같다 ④ 하노이 n=20 의 시뮬레이션이 재귀 없이 완주 (이동 2^20−1 번)
+// audit: differential (재귀 구현이 독립 기준: 하노이 이동 목록, 아커만 값, 중위 순서, N-Queens 수와 순열 생성 순서)
 typedef std::vector<std::pair<int, int>> Moves;
 void hanoiRec(int n, int from, int to, int via, Moves& out) { if (n == 0) return; hanoiRec(n - 1, from, via, to, out); out.push_back({from, to}); hanoiRec(n - 1, via, to, from, out); }
 struct HFrame { int n, from, to, via, state; };
@@ -1922,11 +1963,25 @@ struct T { int v; T *l, *r; };
 void inorderRec(T* t, std::vector<int>& out) { if (!t) return; inorderRec(t->l, out); out.push_back(t->v); inorderRec(t->r, out); }
 std::vector<int> inorderSim(T* root) { std::vector<int> out; std::vector<T*> st; T* cur = root; while (cur || !st.empty()) { while (cur) { st.push_back(cur); cur = cur->l; } cur = st.back(); st.pop_back(); out.push_back(cur->v); cur = cur->r; } return out; }
 T* build(int lo, int hi, std::vector<T*>& pool, unsigned& seed) { if (lo > hi) return nullptr; seed = seed * 1103515245u + 12345u; int mid = lo + (int)((seed >> 8) % (unsigned)(hi - lo + 1)); pool.push_back(new T{mid, nullptr, nullptr}); T* t = pool.back(); t->l = build(lo, mid - 1, pool, seed); t->r = build(mid + 1, hi, pool, seed); return t; }
+long queensRec(int n, int row, unsigned cols, unsigned d1, unsigned d2) { if (row == n) return 1; long c = 0; for (int col = 0; col < n; ++col) { unsigned a = 1u << col, b = 1u << (row + col), d = 1u << (row - col + n - 1); if ((cols & a) || (d1 & b) || (d2 & d)) continue; c += queensRec(n, row + 1, cols | a, d1 | b, d2 | d); } return c; }
+struct QFrame { int row, col; unsigned cols, d1, d2; };
+long queensSim(int n) { long count = 0; std::vector<QFrame> st = {{0, 0, 0, 0, 0}};                                                       // 프레임 = (행, 다음에 시도할 열, 점유 비트들)
+    while (!st.empty()) { QFrame f = st.back(); if (f.row == n) { ++count; st.pop_back(); continue; } if (f.col == n) { st.pop_back(); continue; }
+        st.back().col++; unsigned a = 1u << f.col, b = 1u << (f.row + f.col), d = 1u << (f.row - f.col + n - 1); if ((f.cols & a) || (f.d1 & b) || (f.d2 & d)) continue; st.push_back({f.row + 1, 0, f.cols | a, f.d1 | b, f.d2 | d}); }
+    return count; }
+void permRec(std::vector<int>& a, int k, std::vector<std::vector<int>>& out) { if (k == (int)a.size()) { out.push_back(a); return; } for (int i = k; i < (int)a.size(); ++i) { std::swap(a[k], a[i]); permRec(a, k + 1, out); std::swap(a[k], a[i]); } }
+struct PFrame { int k, i; bool swapped; };
+std::vector<std::vector<int>> permSim(int n) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); std::vector<std::vector<int>> out; std::vector<PFrame> st = {{0, 0, false}};     // 자식에서 돌아오면 교환을 되돌리고 다음 i
+    while (!st.empty()) { PFrame& f = st.back(); if (f.k == n) { out.push_back(a); st.pop_back(); continue; } if (f.swapped) { std::swap(a[f.k], a[f.i]); f.swapped = false; ++f.i; } if (f.i >= n) { st.pop_back(); continue; }
+        std::swap(a[f.k], a[f.i]); f.swapped = true; int k = f.k; st.push_back({k + 1, k + 1, false}); }
+    return out; }
 int main() {
     for (int n = 1; n <= 12; n++) { Moves a, b = hanoiSim(n); hanoiRec(n, 1, 3, 2, a); assert(a == b && a.size() == (std::size_t)((1 << n) - 1)); }                              // ①
     for (long m = 0; m <= 3; m++) for (long n = 0; n <= 3; n++) { std::size_t peak; assert(ackRec(m, n) == ackSim(m, n, &peak)); } std::size_t pk = 0; assert(ackSim(2, 3, nullptr) == 9 && ackSim(3, 3, &pk) == 61 && pk > 3);          // ②
     for (int t = 0; t < 100; t++) { std::vector<T*> pool; unsigned seed = 17u * t + 3u; T* root = build(1, 1 + t * 3, pool, seed); std::vector<int> a, b = inorderSim(root); inorderRec(root, a); assert(a == b); for (T* p : pool) delete p; }          // ③
     { Moves big = hanoiSim(20); assert(big.size() == (1u << 20) - 1); }                                                                                                                                   // ④
+    {   const long known[] = {1, 0, 0, 2, 10, 4, 40, 92, 352, 724}; for (int n = 1; n <= 10; ++n) { long rec = queensRec(n, 0, 0, 0, 0), sim = queensSim(n); assert(rec == sim && sim == known[n - 1]); }          // ④ N-Queens: 재귀 == 시뮬레이션 == 알려진 값
+        for (int n = 1; n <= 7; ++n) { std::vector<int> a(n); std::iota(a.begin(), a.end(), 0); std::vector<std::vector<int>> rec, sim = permSim(n); permRec(a, 0, rec); assert(rec == sim); long fact = 1; for (int i = 2; i <= n; ++i) fact *= i; assert((long)sim.size() == fact); } }   // ⑤ 순열 생성 순서까지 같다
     std::cout << "RecursionSimulation: explicit-stack versions of Hanoi (n<=12 plus n=20), Ackermann and in-order traversal produced exactly the recursive results; A(3,3)=61 needed a stack of " << pk << " pending frames" << std::endl; return 0;
 }
 // Time Complexity: 재귀와 같다 (하노이 O(2ⁿ), 중위 순회 O(N))
@@ -2000,6 +2055,7 @@ int main() {
 // 포인터 기반 구현의 위험은 ABA 와 메모리 회수다. pop 한 노드를 곧바로 delete 하면 ① 다른 스레드가 아직 t->next 를 읽는 중일 수 있고(해제된 메모리 접근) ② 같은 주소가 재할당되면 낡은 CAS 가 성공할 수 있다(ABA). 가장 단순한 안전 전략은 "스택이 살아 있는 동안 주소를 재사용하지 않는 것": 꺼낸 노드를 해제하지 않고 폐기 목록(retired, 이것도 락프리 스택)에 모았다가 스택이 파괴될 때 한꺼번에 해제한다. 주소가 재사용되지 않으니 ABA 가 일어날 수 없다. 대가는 pop 한 만큼 메모리가 늘어나는 것 — 오래 도는 서버에는 HazardPointer(AdvancedDataStructures.md)나 에포크 기반 회수가 필요하다.
 // 값 복사: pop 은 노드를 CAS 로 독점한 뒤에 값을 이동해 꺼낸다(독점했으므로 경쟁 없음).
 // 검증: ① 단일 스레드 LIFO·빈 스택 ② 문자열 값을 4 스레드가 push/pop 하며 모든 값이 정확히 한 번씩 나옴(중복·유실 없음) ③ 폐기 목록 크기 == 성공한 pop 수 ④ 소멸자가 남은 노드와 폐기 노드를 모두 해제(ASan/LSan 으로 누수 0 확인)
+// audit: stress (보존 법칙이 오라클: 모든 값이 정확히 한 번 나오고, 폐기 노드 수 == 성공한 pop 수)
 template <class T> class TreiberStack {
     struct Node { T value; std::atomic<Node*> next; explicit Node(T v) : value(std::move(v)), next(nullptr) {} };          // next 는 낡은 포인터를 쥔 스레드가 읽을 수 있으므로 atomic
     std::atomic<Node*> top_{nullptr}, retired_{nullptr}; std::atomic<long> retiredCount_{0};
@@ -2154,6 +2210,7 @@ int main() {
 #include <cstddef>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <thread>
 #include <vector>
 #include <cassert>
@@ -2161,6 +2218,7 @@ int main() {
 // 불변 스택(Immutable Stack): 객체의 모든 메서드가 const 이고 "변경" 은 새 객체를 돌려주는 값 의미의 스택이다. 영속 스택(PersistentStack)이 "이전 버전을 쓸 수 있다" 는 자료구조의 성질을 강조한다면, 불변 스택은 "객체가 만들어진 뒤 절대 바뀌지 않는다" 는 API 의 약속을 강조한다. 이 약속 덕분에 ① 여러 스레드가 잠금 없이 같은 스택을 읽을 수 있고(데이터 레이스 불가) ② 호출한 쪽이 인자가 몰래 바뀔 걱정을 하지 않으며 ③ 해시·동등 비교가 안정적이다.
 // 구현 장치: 노드는 크기를 함께 저장해 size() 가 O(1) 이고, 동등 비교는 같은 노드를 가리키면(꼬리를 공유하면) 나머지를 볼 필요 없이 즉시 같다고 답해 공유 접미사를 O(1) 에 건너뛴다. 빈 스택은 하나의 공유 객체다.
 // 검증: ① 모든 메서드가 const (const 객체로 호출 가능, 컴파일이 증명) ② 한 스택을 4 스레드가 동시에 읽으며 각자 자신의 파생 스택을 만들어도 원본이 그대로이고 결과가 맞음(TSan 으로 레이스 없음 확인) ③ size() 는 노드를 따라가지 않아도 정확 ④ 동등 비교: 내용이 같으면 참, 공유 접미사에서 비교한 노드 수가 접두사 길이로 한정 ⑤ 파생 스택들이 원본 접미사를 공유
+//  ⑥ 무작위 버전 그래프: 임의의 옛 버전에서 push/pop 으로 새 버전을 계속 만든다(2 만 개, 크기는 200 이하로 유지). 모든 버전은 자기만의 std::vector 모형을 가지고, 나중에 7 개마다 내용·크기·top 이 모형과 같음 — 파생이 옛 버전을 바꾸지 않았다는 증거
 class ImmutableStack {
     struct Node { int value; std::shared_ptr<const Node> next; std::size_t size; };
     std::shared_ptr<const Node> head_;
@@ -2188,6 +2246,11 @@ int main() {
     assert(shared.size() == 1000 && shared.top() == 999 && shared.toVector().size() == 1000);                                                                              // 원본은 그대로
     for (int t = 0; t < 4; t++) { ImmutableStack s = derived[t]; for (int i = 0; i < 150; i++) s = s.pop(); assert(s.identity() == shared.identity()); }                      // ⑤ 파생 스택은 원본 노드를 공유
     { ImmutableStack a = shared.push(1).push(2), b = shared.push(1).push(2); long c = 0; assert(ImmutableStack::equal(a, b, &c) && c <= 2); ImmutableStack x = shared.push(3); assert(!ImmutableStack::equal(a, x) && ImmutableStack::equal(shared, shared, &c) && c == 0); }     // ④ 공유 접미사에서 즉시 같다고 판단
+    {   std::mt19937 rng(30); std::vector<ImmutableStack> versions = {ImmutableStack()}; std::vector<std::vector<int>> models = {{}};                                                  // ⑥ 무작위 버전 그래프
+        for (int step = 0; step < 20000; ++step) { std::size_t from = rng() % versions.size(); std::vector<int> m = models[from]; ImmutableStack next;
+            if (m.size() >= 200 || (!m.empty() && rng() % 3 == 0)) { next = versions[from].pop(); m.pop_back(); } else { int v = (int)(rng() % 1000); next = versions[from].push(v); m.push_back(v); }
+            versions.push_back(next); models.push_back(m); }
+        for (std::size_t i = 0; i < versions.size(); i += 7) { std::vector<int> got = versions[i].toVector(), want(models[i].rbegin(), models[i].rend()); assert(got == want && versions[i].size() == models[i].size() && versions[i].empty() == models[i].empty()); if (!models[i].empty()) assert(versions[i].top() == models[i].back()); } }
     std::cout << "ImmutableStack: 4 threads derived private stacks from one shared 1000-element stack with no synchronization; the original never changed, size() is O(1), and equality stopped at the shared suffix" << std::endl; return 0;
 }
 // Time Complexity: push·pop·top·size O(1), 동등 비교 O(서로 다른 접두사 길이)
@@ -2257,6 +2320,7 @@ int main() {
 // 이 항목은 안전하게 실험한다: 스택 크기를 256 KB 로 줄인 스레드에서, 매 호출이 지역 변수의 주소를 현재 스택 사용량 추정치로 쓰고 허용치(128 KB)를 넘으면 재귀를 멈춘다(③). 그러면 충돌 없이 "한도에 닿았다" 는 사실과 도달 깊이를 얻는다. 깊이 10^7 의 같은 계산을 명시적 스택으로 하면 문제없이 끝난다(①). 실제 오버플로 크래시는 일으키지 않는다.
 // audit: no-sanitize
 // audit: gcc-only
+//  ⑥ 허용 사용량을 32·64·128 KB 로 바꿔 가며 도달 깊이가 두 배씩 늘어남(비례 관계 ±15%)을 확인
 // 검증: ① 가드가 있는 재귀가 한도에서 멈추고(hitLimit) 도달 깊이가 [허용 바이트 / 프레임 크기] 근처 ② 충돌 없이 반환 ③ 도달 깊이로 예측한 "256 KB 에서의 실제 오버플로 깊이" 가 가드 깊이의 약 2 배 ④ 같은 합 계산이 명시적 스택으로 1000만 단계 완료 ⑤ 기본 스택 크기(RLIMIT_STACK)를 읽어 예측 깊이를 계산
 #if defined(__GNUC__)
 #define NOINLINE __attribute__((noinline))
@@ -2282,6 +2346,9 @@ int main() {
     assert(probe.hitLimit && probe.frameBytes >= 16 && probe.frameBytes <= 512);                                                                                 // ① ②
     long expected = (long)probe.allowed / probe.frameBytes; assert(probe.depthReached > expected * 8 / 10 && probe.depthReached < expected * 12 / 10 + 10);            // 도달 깊이 ≈ 허용 바이트 / 프레임 크기
     long crashDepth = (long)(256 * 1024) / probe.frameBytes; assert(crashDepth > probe.depthReached && crashDepth < 3 * probe.depthReached);                          // ③ 실제 오버플로 예측 깊이
+    {   long depths[3]; const std::size_t limits[3] = {32u * 1024, 64u * 1024, 128u * 1024};                                                                                          // ⑥ 허용 사용량을 바꿔 가며
+        for (int k = 0; k < 3; ++k) { Probe q; q.allowed = limits[k]; q.frameBytes = 0; q.at3 = 0; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 256 * 1024); pthread_t t2; int rc2 = pthread_create(&t2, &at, runProbe, &q); assert(rc2 == 0); pthread_join(t2, nullptr); pthread_attr_destroy(&at); assert(q.hitLimit); depths[k] = q.depthReached; }
+        assert(depths[0] < depths[1] && depths[1] < depths[2] && depths[1] > depths[0] * 17 / 10 && depths[1] < depths[0] * 23 / 10 && depths[2] > depths[1] * 17 / 10 && depths[2] < depths[1] * 23 / 10); }    // 도달 깊이는 허용 사용량에 비례(두 배 → 약 두 배)
     long predictedDefault = (long)(defaultStack / probe.frameBytes);                                                                                                    // ⑤ 기본 스택에서의 예측 최대 깊이
     assert(sumExplicit(10000000) == 10000000L * 10000001L / 2);                                                                                                         // ④ 명시적 스택은 1000만 단계도 문제없다
     std::cout << "StackOverflow: with a 256 KB thread stack and a 128 KB guard, recursion stopped cleanly at depth " << probe.depthReached << " (frame " << probe.frameBytes << " bytes); an unguarded run would crash near depth " << crashDepth << "; the default " << defaultStack / 1024 << " KB stack predicts about " << predictedDefault << " frames; the explicit-stack version summed 10,000,000 terms" << std::endl;
@@ -2298,12 +2365,15 @@ int main() {
 ```cpp
 #include <exception>
 #include <iostream>
+#include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <cassert>
 
 // 스택 되감기(Stack Unwinding): 예외가 던져지면 C++ 런타임은 호출 스택을 맨 위에서부터 한 프레임씩 풀어 가며 일치하는 catch 를 찾고, 풀리는 프레임마다 그 프레임의 지역 객체들을 "생성의 역순" 으로 소멸시킨다. 이것이 RAII(자원 획득 = 초기화)가 예외 안전의 토대인 이유다 — 잠금·파일·메모리를 객체 소멸자가 돌려주므로 중간에 예외로 빠져나가도 누수가 없다.
 // 되감기 동안에는 소멸자에서 새 예외를 밖으로 던지면 안 된다(std::terminate). 소멸자 안에서 std::uncaught_exceptions() 로 "지금 되감기 중인가" 를 알 수 있다(스코프 가드가 커밋/롤백을 정할 때 쓴다). catch 에 닿지 못한 프레임은 풀리지 않을 수도 있어(구현 정의) 반드시 잡는 최상위 try 가 필요하다.
+//  ⑥ 무작위 호출 계획 5 000 개(깊이 1~8, 프레임마다 추적자 0~3, 예외를 던질 프레임과 잡을 프레임을 무작위로): 실제 소멸 기록이 장부만으로 계산한 기대 기록(생성은 앞에서, 되감기 중 소멸 `~!` 은 던진 프레임에서 잡는 프레임 바로 아래까지 뒤에서부터, 잡은 뒤 정상 소멸 `~` 은 잡은 프레임부터 뒤에서부터)과 같다
 // 이 항목은 소멸 순서를 기록하는 객체를 여러 프레임에 두고 가장 깊은 곳에서 예외를 던져 확인한다: ① 소멸 순서가 정확히 생성의 역순 ② 소멸자가 되감기 중임을 감지 ③ catch 한 프레임보다 위(호출한 쪽)의 객체는 소멸되지 않음 ④ 정상 반환과 예외 반환 모두 같은 소멸 규칙 ⑤ 스코프 가드가 예외 시 롤백
 std::vector<std::string> events;
 struct Tracer { std::string name; int unwindingAtCtor; explicit Tracer(std::string n) : name(std::move(n)), unwindingAtCtor(std::uncaught_exceptions()) { events.push_back("+" + name); }
@@ -2313,6 +2383,17 @@ void level3(bool fail) { Tracer c("c"); if (fail) throw std::runtime_error("boom
 void level2(bool fail) { Tracer b("b"); Tracer b2("b2"); level3(fail); events.push_back("level2 after call"); }
 void level1(bool fail) { Tracer a("a"); try { level2(fail); events.push_back("level1 after call"); } catch (const std::exception& e) { events.push_back(std::string("caught ") + e.what()); } events.push_back("level1 end"); }
 void appendAll(std::vector<int>& data, int n, int failAt) { bool committed = false; Rollback rb(data, committed); for (int i = 0; i < n; i++) { if (i == failAt) throw std::runtime_error("append failed"); data.push_back(i); } committed = true; }
+struct Plan { std::vector<int> tracers; int throwFrame, catchFrame; };       // 프레임마다 추적자 개수, 예외를 던지는 프레임(-1 = 안 던짐), 잡는 프레임(-1 = 맨 바깥)
+void runFrame(const Plan& p, int i, int j) {                                // 프레임 i 에서 추적자 j 번째부터 만든다
+    if (j < p.tracers[i]) { Tracer t("f" + std::to_string(i) + "t" + std::to_string(j)); runFrame(p, i, j + 1); return; }
+    if (i == p.throwFrame) throw std::runtime_error("planned");
+    if (i + 1 < (int)p.tracers.size()) { if (i == p.catchFrame) { try { runFrame(p, i + 1, 0); } catch (const std::runtime_error&) { events.push_back("caught@" + std::to_string(i)); } } else runFrame(p, i + 1, 0); } }
+std::vector<std::string> expectedEvents(const Plan& p) {                    // 독립 오라클: 생성은 앞에서부터, 되감기는 뒤에서부터, 장부만 가지고 계산
+    std::vector<std::string> ev; int last = p.throwFrame >= 0 ? p.throwFrame : (int)p.tracers.size() - 1; auto name = [](int i, int j) { return "f" + std::to_string(i) + "t" + std::to_string(j); };
+    for (int i = 0; i <= last; ++i) for (int j = 0; j < p.tracers[i]; ++j) ev.push_back("+" + name(i, j));
+    if (p.throwFrame >= 0) { for (int i = p.throwFrame; i > p.catchFrame; --i) for (int j = p.tracers[i] - 1; j >= 0; --j) ev.push_back("~!" + name(i, j)); ev.push_back("caught@" + std::to_string(p.catchFrame)); for (int i = p.catchFrame; i >= 0; --i) for (int j = p.tracers[i] - 1; j >= 0; --j) ev.push_back("~" + name(i, j)); }
+    else for (int i = last; i >= 0; --i) for (int j = p.tracers[i] - 1; j >= 0; --j) ev.push_back("~" + name(i, j));
+    return ev; }
 int main() {
     events.clear(); level1(true);
     std::vector<std::string> want = {"+a", "+b", "+b2", "+c", "~!c", "~!b2", "~!b", "caught boom", "level1 end", "~a"};
@@ -2324,6 +2405,12 @@ int main() {
       appendAll(data, 3, -1); assert(data == (std::vector<int>{100, 200, 0, 1, 2})); }
     { events.clear(); try { Tracer outer("outer"); try { Tracer inner("inner"); throw 42; } catch (int) { events.push_back("inner catch"); throw; } } catch (int v) { events.push_back("outer catch " + std::to_string(v)); }
       assert(events == (std::vector<std::string>{"+outer", "+inner", "~!inner", "inner catch", "~!outer", "outer catch 42"})); }                                                           // 다시 던지기: 두 프레임이 차례로 풀림
+    {   std::mt19937 rng(8); long thrown = 0, quiet = 0;                                                                                                                            // ⑥ 무작위 호출 계획 5 000 개
+        for (int trial = 0; trial < 5000; ++trial) { Plan p; int depth = 1 + (int)(rng() % 8); for (int i = 0; i < depth; ++i) p.tracers.push_back((int)(rng() % 4));
+            p.throwFrame = rng() % 4 == 0 ? -1 : (int)(rng() % depth); p.catchFrame = p.throwFrame <= 0 ? -1 : (int)(rng() % (p.throwFrame + 1)) - 1;
+            events.clear(); try { runFrame(p, 0, 0); } catch (const std::runtime_error&) { events.push_back("caught@-1"); }
+            assert(events == expectedEvents(p)); p.throwFrame >= 0 ? ++thrown : ++quiet; }
+        assert(thrown > 3000 && quiet > 500); }
     std::cout << "StackUnwinding: objects were destroyed in reverse order of construction while the exception propagated, destructors detected the unwinding, and a scope guard rolled back on failure" << std::endl; return 0;
 }
 // Time Complexity: 되감기 O(풀리는 프레임 수 + 소멸시킬 객체 수) — 예외가 던져질 때만 비용 발생
