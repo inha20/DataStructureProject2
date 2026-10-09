@@ -127,6 +127,32 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(audit.marks('// audit: no-sanitize (why)\n// audit: gcc-only'), {'no-sanitize', 'gcc-only'})
         self.assertFalse(audit.applicable('san', '// audit: no-sanitize\nint main(){}'))
         self.assertTrue(audit.applicable('strict', '// audit: no-sanitize\nint main(){}'))
+    def test_host_dependent_mark(self):
+        host, plain = '// audit: host-dependent (THP)\nint main(){}', 'int main(){}'
+        saved = audit.SKIP_HOST, audit.HOST_ONLY
+        try:
+            audit.SKIP_HOST, audit.HOST_ONLY = False, False
+            self.assertTrue(audit.applicable('strict', host) and audit.applicable('strict', plain))
+            audit.SKIP_HOST = True          # the blocking CI job: machine-probing entries are left out
+            self.assertFalse(audit.applicable('strict', host)); self.assertTrue(audit.applicable('strict', plain))
+            audit.SKIP_HOST, audit.HOST_ONLY = False, True       # `--host`: only those entries
+            self.assertTrue(audit.applicable('strict', host)); self.assertFalse(audit.applicable('strict', plain))
+        finally: audit.SKIP_HOST, audit.HOST_ONLY = saved
+    def test_settle_reruns_only_timeouts_alone(self):
+        calls = []
+        def run(job): calls.append(job); return 'k2', ('ok', '', 1.5) if job == 'slow' else ('timeout', '>10s', 10.0)
+        res = audit.settle(['slow', 'hang', 'fine', 'broken'], [('k1', ('timeout', '>10s', 10.0)), ('k3', ('timeout', '>10s', 10.0)),
+                                                                ('k5', ('ok', '', 0.1)), ('k6', ('run', 'Assertion', 0.1))], run)
+        self.assertEqual(calls, ['slow', 'hang'])                                       # ok and failed-by-assertion results are not retried
+        self.assertEqual(res[0], ('k2', ('ok', '', 1.5, 'alone'))); self.assertEqual(res[1][1][0], 'timeout')
+        self.assertEqual(res[2], ('k5', ('ok', '', 0.1))); self.assertEqual(res[3], ('k6', ('run', 'Assertion', 0.1)))
+    def test_time_scale_is_part_of_the_cache_key(self):
+        saved = audit.TIME_SCALE
+        try:
+            audit.TIME_SCALE = 1.0; a = audit.job_key('strict', 'int main(){}', 1)
+            audit.TIME_SCALE = 3.0; b = audit.job_key('strict', 'int main(){}', 1)
+        finally: audit.TIME_SCALE = saved
+        self.assertNotEqual(a, b)
 
 def miniature(canon, books):
     d = tempfile.mkdtemp()

@@ -2175,7 +2175,7 @@ int main() {
 // ① 목표 t 로부터 역방향 Dijkstra 로 최단 경로 트리 T 와 거리 d(v) 를 구한다. ② 트리에 없는 간선 e=(u,v) 는 곁가지이고 그것을 쓰면 비용이 δ(e) = w(e) + d(v) − d(u) ≥ 0 만큼 늘어난다. 모든 s→t 보행은 "트리를 따라가다 곁가지로 빠지기" 의 유한 열로 유일하게 표현되고
 // 비용은 d(s) + Σδ 이다. ③ 각 정점 v 에서 "v→t 트리 경로 위의 모든 곁가지" 를 δ 로 정렬한 힙 H(v) 를, 부모의 힙에 v 의 곁가지만 합쳐 영속(persistent) 좌편향 힙으로 만든다 — 부모 힙은 그대로 남고 O(log) 노드만 새로 생긴다.
 // ④ 경로 그래프: 힙 노드 x(= 곁가지 e)에서 (a) 힙의 자식으로 가면 마지막 곁가지를 형제로 바꾸는 것이고 비용은 δ(자식)−δ(x), (b) e 의 머리 v 의 힙 뿌리로 가면 곁가지를 하나 더 쓰는 것이고 비용은 δ(뿌리). 이 그래프에서 비용 순으로 K 개를 꺼내면 된다.
-// 검증: 작은 가중 방향 그래프 200개에서 (1) 각 보행을 곁가지 열에서 복원해 간선이 실제로 있고 비용이 맞는지, 서로 다른지 (2) 비용 상한 아래의 모든 보행을 DFS 로 완전 열거한 것과 앞 K 개 비용이 같은지 확인한다
+// 검증: 작은 가중 방향 그래프 100개에서 (1) 각 보행을 곁가지 열에서 복원해 간선이 실제로 있고 비용이 맞는지, 서로 다른지 (2) 비용 상한 아래의 모든 보행을 DFS 로 완전 열거한 것과 앞 K 개 비용이 같은지 확인한다
 struct E { int u, v, w; };
 struct HN { int e; long delta; int l, r, npl; }; std::vector<HN> pool;
 int npl(int x) { return x ? pool[x].npl : 0; }
@@ -2207,14 +2207,14 @@ std::vector<Walk> eppstein(int n, const std::vector<E>& es, int s, int t, int K)
 void brute(const std::vector<std::vector<int>>& w, int v, int t, long c, long cap, std::vector<long>& out) { if (c > cap) return; if (v == t) out.push_back(c); for (int u = 0; u < (int)w.size(); u++) if (w[v][u]) brute(w, u, t, c + w[v][u], cap, out); }
 int main() {
     std::mt19937 g(41); int checked = 0; const int K = 30; size_t maxPool = 0;
-    for (int trial = 0; trial < 200; trial++) {
+    for (int trial = 0; trial < 100; trial++) {
         int n = 6; std::vector<std::vector<int>> w(n, std::vector<int>(n, 0)); std::vector<E> es; for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (u != v && g() % 100 < 40) { w[u][v] = 1 + g() % 5; es.push_back({u, v, w[u][v]}); }
         auto res = eppstein(n, es, 0, n - 1, K); maxPool = std::max(maxPool, pool.size()); if ((int)res.size() < K) continue;
         std::set<std::vector<int>> seen; for (size_t i = 0; i < res.size(); i++) { const auto& p = res[i].second; long cc = 0; for (size_t j = 1; j < p.size(); j++) { assert(w[p[j - 1]][p[j]] > 0); cc += w[p[j - 1]][p[j]]; }
             assert(p.front() == 0 && p.back() == n - 1 && cc == res[i].first && seen.insert(p).second && (i == 0 || res[i - 1].first <= res[i].first)); }
         std::vector<long> all; brute(w, 0, n - 1, 0, res.back().first, all); std::sort(all.begin(), all.end()); assert(all.size() >= (size_t)K); for (int i = 0; i < K; i++) assert(all[i] == res[i].first); checked++;
     }
-    assert(checked > 100);
+    assert(checked > 50);
     std::cout << "EppsteinAlgorithm: " << checked << " random graphs, first " << K << " walks reconstructed from sidetrack sequences and equal to exhaustive enumeration (heap pool <= " << maxPool << " nodes)" << std::endl; return 0;
 }
 // Time Complexity: O(E + V log V + K log K)

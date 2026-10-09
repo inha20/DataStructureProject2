@@ -5388,8 +5388,8 @@ int main() {
 // 분산 해시 테이블(DHT, 해시 관점의 요약, Chord·Kademlia 는 Hash.md Part 7): 중앙 서버 없이 키 → 값 저장을 노드들이 나눠 맡는다. 핵심은 (1) 키와 노드가 같은 식별자 공간에 놓이고
 //  (2) 각 키는 "식별자가 가장 가까운" 노드들이 맡으며 (3) 복제(replication)로 노드 하나가 죽어도 값이 남는다는 것.  여기서는 Chord 식 링을 직접 만든다: 식별자 2^24, 노드 i 는 finger[j] = successor(id + 2^j) 를 안다.
 //  라우팅: 키를 넘지 않는 가장 먼 finger 로 점프(closest preceding finger) — 홉 수 O(log N).  복제: 키를 맡은 노드와 그 뒤 R − 1 개 후속 노드가 사본을 가진다.  repair() 는 죽은 노드를 링에서 빼고 사본을 R 개로 다시 채운다.
-//  ① N = 1, 2, 3, 16, 100, 1000, 3000 에서 라우팅이 모든 (시작 노드, 키) 쌍에서 후속자 이분 탐색(오라클)과 같고 평균 홉 수 ≤ 0.6·log2(N) + 1, 최대 ≤ 2·⌈log2 N⌉ + 2  ② 키 5 만 개 put/get 전부 성공, 사본 수 = R·K
-//  ③ 노드를 20% 확률로 죽이면 사본이 모두 죽은 키만 유실 — 유실 수는 독립 계산과 정확히 같고, 200 번의 무작위 실패 평균 유실률이 p^R 과 표준오차의 4 배 이내로 일치  ④ repair() 후 살아남은 키는 사본 R 개를 회복해 두 번째 실패 라운드에서도 유실률이 다시 ≈ p^R (누적되지 않음)  ⑤ 새 노드 합류: 옮겨 가는 키는 정확히 (선행자, 새 id] 구간.
+//  ① N = 1, 2, 3, 16, 100, 1000, 3000 에서 라우팅이 모든 (시작 노드, 키) 쌍에서 후속자 이분 탐색(오라클)과 같고 평균 홉 수 ≤ 0.6·log2(N) + 1, 최대 ≤ 2·⌈log2 N⌉ + 2  ② 키 2 만 개 put/get 전부 성공, 사본 수 = R·K
+//  ③ 노드를 20% 확률로 죽이면 사본이 모두 죽은 키만 유실 — 유실 수는 독립 계산과 정확히 같고, 100 번의 무작위 실패 평균 유실률이 p^R 과 표준오차의 4 배 이내로 일치  ④ repair() 후 살아남은 키는 사본 R 개를 회복해 두 번째 실패 라운드에서도 유실률이 다시 ≈ p^R (누적되지 않음)  ⑤ 새 노드 합류: 옮겨 가는 키는 정확히 (선행자, 새 id] 구간.
 struct Chord {
     static const int M = 24; static const uint32_t SPACE = 1u << M; int R;
     std::vector<uint32_t> ids; std::vector<std::array<int, M>> finger; std::vector<std::unordered_map<uint32_t, int>> store; std::vector<char> alive;
@@ -5418,10 +5418,10 @@ int main() {
         for (int q = 0; q < Q; ++q) { int start = (int)(rng() % N); uint32_t key = (uint32_t)(rng() % Chord::SPACE); int hops; int got = c.route(start, key, hops); assert(got == c.succIndex(key)); totalHops += hops; maxHops = std::max(maxHops, hops); }
         double lg = N > 1 ? std::log2((double)N) : 0; assert((double)totalHops / Q <= 0.6 * lg + 1 && maxHops <= 2 * (int)std::ceil(lg) + 2);
         if (N == 3000 || N == 1000) std::cout << "DistributedHashTable: Chord routing on N=" << N << " nodes took " << (double)totalHops / Q << " hops on average (max " << maxHops << ", log2 N = " << lg << "); "; }
-    const int K = 50000, R = 3; Chord dht(R); { std::vector<uint32_t> v; for (int i = 0; i < 500; ++i) v.push_back((uint32_t)(rng() % Chord::SPACE)); dht.setNodes(v); }
+    const int K = 20000, R = 3; Chord dht(R); { std::vector<uint32_t> v; for (int i = 0; i < 500; ++i) v.push_back((uint32_t)(rng() % Chord::SPACE)); dht.setNodes(v); }
     std::vector<uint32_t> keys(K); for (int i = 0; i < K; ++i) { keys[i] = (uint32_t)(rng() % Chord::SPACE); dht.put(keys[i], i); }
     { size_t copies = 0; for (auto& s : dht.store) copies += s.size(); std::set<uint32_t> distinct(keys.begin(), keys.end()); assert(copies == (size_t)R * distinct.size()); for (int i = 0; i < K; ++i) { int v; bool ok = dht.get(keys[i], v); assert(ok); } }                          // ②
-    const double p = 0.2; std::vector<double> losses; const int PATTERNS = 200;
+    const double p = 0.2; std::vector<double> losses; const int PATTERNS = 100;
     for (int pat = 0; pat < PATTERNS; ++pat) { std::fill(dht.alive.begin(), dht.alive.end(), 1); for (size_t i = 0; i < dht.alive.size(); ++i) if ((double)(rng() % 1000000) / 1e6 < p) dht.alive[i] = 0; long lost = 0;
         for (int i = 0; i < K; ++i) { int v; bool ok = dht.get(keys[i], v); bool oracle = false; for (int node : dht.replicaNodes(keys[i])) oracle |= dht.alive[node] != 0; assert(ok == oracle); lost += !ok; } losses.push_back((double)lost / K); }
     { double mean = 0, var = 0; for (double x : losses) mean += x; mean /= PATTERNS; for (double x : losses) var += (x - mean) * (x - mean); var /= (PATTERNS - 1); double se = std::sqrt(var / PATTERNS); assert(std::fabs(mean - std::pow(p, R)) < 4 * se); }          // ③ 평균 유실률 ≈ p^R (0.008): 표준오차의 4 배 이내

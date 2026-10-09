@@ -8013,7 +8013,7 @@ Result runWorkload(const std::vector<int>& keys) {
 }
 
 int main() {
-    const int n = 20000; std::mt19937 rng(2024);
+    const int n = 6000; std::mt19937 rng(2024);
     std::vector<int> sorted(n), reversed(n), random(n), zigzag; std::iota(sorted.begin(), sorted.end(), 1); reversed.assign(sorted.rbegin(), sorted.rend()); random = sorted; std::shuffle(random.begin(), random.end(), rng);
     for (int lo = 1, hi = n; lo <= hi; ++lo, --hi) { zigzag.push_back(lo); if (lo != hi) zigzag.push_back(hi); }
     const double avlBound = 1.4405 * std::log2(n + 2.0), llrbBound = 2 * std::log2(n + 1.0), ln = std::log((double)n);

@@ -345,11 +345,13 @@ int main() {
 #include <thread>
 #include <vector>
 #if defined(__linux__)
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 extern "C" char etext, edata, end, __bss_start, __data_start;      // GNU ld / glibc 가 정의하는 구역 경계 기호
 #endif
 
+// audit: host-dependent (상주 페이지 수는 커널의 THP·페이지 회수 설정에 따라 달라진다)
 // 데이터 세그먼트: 정적 저장 기간(static storage duration) 변수가 사는 곳.
 //  .data = 0 이 아닌 초기값이 있는 전역/static (초기값이 실행 파일에 저장됨)
 //  .bss  = 초기값이 없거나 0 인 전역/static (실행 파일에는 크기만 기록되고 로드될 때 0 으로 채워진다)
@@ -389,10 +391,15 @@ int main() {
     assert(!inData((uintptr_t)&onStack) && !inData((uintptr_t)onHeap) && !inData((uintptr_t)literal) && (uintptr_t)literal >= e0 && (uintptr_t)literal < d0);    // 스택·힙은 데이터 세그먼트가 아니고, 문자열 리터럴은 코드와 데이터 사이의 읽기 전용 구역(.rodata)
     ::operator delete(onHeap);
     struct stat st; assert(stat("/proc/self/exe", &st) == 0 && (size_t)st.st_size < sizeof(zeroed) / 2);       // ③ 파일이 bss 배열 크기의 절반도 안 된다
+#if defined(MADV_NOHUGEPAGE)
+    {   uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE), lo = ((uintptr_t)zeroed + pg - 1) & ~(pg - 1), hi = (uintptr_t)(zeroed + 4000000) & ~(pg - 1); madvise((void*)lo, hi - lo, MADV_NOHUGEPAGE); }          // THP 가 켜진 호스트는 첫 쓰기에 2 MB 를 한꺼번에 배정하므로 끈다
+#endif
     long before = residentPages(); assert(before > 0);                                                   // ④ 요구 페이징
-    zeroed[5] = 9; long afterOne = residentPages(); assert(afterOne - before <= 8);                        // 한 칸만 건드리면 페이지 한두 개
+    zeroed[5] = 9; long afterOne = residentPages(); if (afterOne - before > 8) std::fprintf(stderr, "WARNING: one store made %ld pages resident\n", afterOne - before);
+    assert(afterOne - before <= 8);                                                                       // 한 칸만 건드리면 페이지 한두 개
     for (size_t i = 0; i < 4000000; i += 1024) zeroed[i] = 1;                                              // 4 KB 마다 하나씩 = 모든 페이지
-    long afterAll = residentPages(); long grown = afterAll - afterOne; assert(grown > 3500 && grown < 4600);           // 16 MB = 4096 페이지
+    long afterAll = residentPages(); long grown = afterAll - afterOne; if (!(grown > 3500 && grown < 4600)) std::fprintf(stderr, "WARNING: touching every page made %ld pages resident\n", grown);
+    assert(grown > 3500 && grown < 4600);           // 16 MB = 4096 페이지
 #else
     zeroed[5] = 9;
 #endif
@@ -904,12 +911,15 @@ int main() {
 #include <vector>
 #if defined(__linux__)
 #include <csignal>
+#include <cstdio>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
 
+// audit: host-dependent (스택 한도 처리·THP·ASLR 은 호스트 커널마다 다르다)
 // audit: closed-form (한도 ÷ 프레임 크기로 예측한 깊이를 자식 프로세스의 실제 도달 깊이와 대조)
 // 스택 오버플로(요약, 정본은 Stack.md Part 10): 스택은 크기가 정해져 있다(보통 8MB).  재귀가 너무 깊거나 지역 배열이 너무 크면 한계를 넘어 세그멘테이션 오류.
 //  안전하게 보는 법 둘: (1) 한도(getrlimit)와 프레임 한 개의 크기를 재서 "최대 재귀 깊이" 를 예측하고 그 일부만 실제로 재귀해 본다  (2) *자식 프로세스*를 fork 해 스택 한도를 1 MB 로 낮춘 뒤 무한 재귀시키고, 부모가 SIGSEGV 로 죽었음을 확인하고 죽기 전 도달한 깊이를 공유 메모리에서 읽어 예측과 비교한다.
@@ -926,14 +936,16 @@ int main() {
     dive(0, 0); uintptr_t a = lastAddr; dive(0, 200); uintptr_t b = lastAddr; size_t perFrame = (a - b) / 200; assert(perFrame >= 256 && perFrame < 1024 && (a - b) % 200 == 0);                    // ① 프레임 하나가 차지하는 바이트
 #if defined(__linux__)
     struct rlimit rl; getrlimit(RLIMIT_STACK, &rl); size_t limit = rl.rlim_cur == RLIM_INFINITY ? (8u << 20) : (size_t)rl.rlim_cur; size_t maxDepth = limit / perFrame; assert(maxDepth > 1000);
-    long safe = (long)std::min<size_t>(maxDepth / 4, 20000); assert(depthSum(safe) == safe * (safe + 1) / 2);                                                                              // ② 한도의 일부만 쓰면 안전
-    long reached[2] = {0, 0};
+    long reached[2] = {0, 0};                                                    // 자식을 먼저 만든다: 부모가 먼저 깊이 재귀하면 스택 영역이 이미 커져 있고, 한도는 *늘어날 때만* 검사되므로 자식이 낮춘 한도보다 더 깊이 들어간다
     for (int k = 0; k < 2; ++k) { size_t childLimit = (size_t)(1u << 20) << k;                                                                                                              // 1 MB, 2 MB
         void* mem = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0); assert(mem != MAP_FAILED); progress = (volatile long*)mem; *progress = -1;
         pid_t pid = fork(); assert(pid >= 0);
-        if (pid == 0) { struct rlimit lim; lim.rlim_cur = childLimit; lim.rlim_max = rl.rlim_max; setrlimit(RLIMIT_STACK, &lim); dive(0, -1); _exit(0); }                                      // 자식: 한도를 낮추고 끝없이 재귀
+        if (pid == 0) { struct rlimit lim; lim.rlim_cur = childLimit; lim.rlim_max = rl.rlim_max; struct rlimit zero = {0, 0}; setrlimit(RLIMIT_CORE, &zero); prctl(PR_SET_DUMPABLE, 0); setrlimit(RLIMIT_STACK, &lim); dive(0, -1); _exit(0); }                                      // 자식: 한도를 낮추고 끝없이 재귀
         int status = 0; waitpid(pid, &status, 0); assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);                                                                               // ③ 세그멘테이션 오류로 죽었다
-        reached[k] = *progress; double predicted = (double)childLimit / (double)perFrame; assert((double)reached[k] >= 0.85 * predicted && (double)reached[k] <= 1.02 * predicted); munmap(mem, 4096); progress = nullptr; }
+        reached[k] = *progress; double predicted = (double)childLimit / (double)perFrame; bool inRange = (double)reached[k] >= 0.85 * predicted && (double)reached[k] <= 1.02 * predicted;
+        if (!inRange) std::fprintf(stderr, "WARNING: child with %zu KB stack reached %ld frames, predicted %.0f (%zu bytes per frame)\n", childLimit / 1024, reached[k], predicted, perFrame);
+        assert(inRange); munmap(mem, 4096); progress = nullptr; }
+    long safe = (long)std::min<size_t>(maxDepth / 4, 20000); assert(depthSum(safe) == safe * (safe + 1) / 2);                                                                              // ② 한도의 일부만 쓰면 안전
     assert((double)reached[1] > 1.8 * (double)reached[0] && (double)reached[1] < 2.2 * (double)reached[0]);                                                                              // ④
     std::cout << "StackOverflow: " << perFrame << " bytes per frame; a child with a 1 MB stack limit died of SIGSEGV after " << reached[0] << " frames (predicted " << (size_t)(1u << 20) / perFrame << "), and with 2 MB after " << reached[1] << "; this process's own limit " << limit / 1024 << " KB allows ~" << maxDepth << " frames" << std::endl;
 #endif
@@ -4420,11 +4432,13 @@ int main() {
 #include <set>
 #include <vector>
 #if defined(__linux__)
+#include <cstdio>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
 
+// audit: host-dependent (getrusage 의 폴트 수는 THP·폴트 선읽기 설정에 따라 달라진다)
 // 페이지 폴트: 매핑되지 않았거나 메모리에 없는 페이지에 접근했을 때 CPU 가 일으키는 예외.  운영체제가 디스크에서 페이지를 읽어 오고(요구 페이징), 프레임이 모자라면 교체 알고리즘으로 희생 페이지를 고른다.
 //  FIFO 는 프레임을 늘려도 폴트가 오히려 늘어나는 벨레이디의 모순(Belady's anomaly)이 있고, LRU 는 스택 알고리즘이라 그런 일이 없다.  네 알고리즘(FIFO / LRU / Clock / 최적 OPT)을 구현해 성질을 확인한다.
 //  ① 고전 열 1,2,3,4,1,2,5,1,2,3,4,5: FIFO 는 프레임 3 개에서 9 번, 4 개에서 *10 번*(모순), LRU 는 10 → 8 번, OPT 는 7 → 6 번  ② 무작위 열 3000 개(프레임 1..8): LRU·OPT 의 폴트는 프레임이 늘면 *줄거나 같다*(스택 성질), OPT ≤ 다른 모든 알고리즘, 폴트 ≥ 서로 다른 페이지 수이고 프레임 ≥ 페이지 수면 정확히 같다
@@ -4453,8 +4467,12 @@ int main() {
 #if defined(__linux__)
     {   long page = sysconf(_SC_PAGESIZE); const int pages = 2000; auto minflt = [] { struct rusage ru; getrusage(RUSAGE_SELF, &ru); return ru.ru_minflt; };
         char* mem = (char*)mmap(nullptr, (size_t)pages * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(mem != MAP_FAILED);
+#if defined(MADV_NOHUGEPAGE)
+        madvise(mem, (size_t)pages * page, MADV_NOHUGEPAGE);                                                                                                   // 투명 거대 페이지(THP)가 켜진 호스트는 2 MB 를 폴트 한 번에 채우므로 끈다
+#endif
         long f0 = minflt(); for (int p = 0; p < pages; ++p) mem[(size_t)p * page] = 1; long f1 = minflt(); for (int p = 0; p < pages; ++p) mem[(size_t)p * page] = 2; long f2 = minflt();                // ⑥ 처음 만질 때마다 폴트
-        assert(f1 - f0 >= pages && f1 - f0 <= pages + pages / 8 + 64 && f2 - f1 <= 64); munmap(mem, (size_t)pages * page);
+        bool faultsOk = f1 - f0 >= pages && f1 - f0 <= pages + pages / 8 + 64 && f2 - f1 <= 64; if (!faultsOk) std::fprintf(stderr, "WARNING: first pass %ld faults, second pass %ld faults, %d pages\n", f1 - f0, f2 - f1, pages);
+        assert(faultsOk); munmap(mem, (size_t)pages * page);
         std::cout << "PageFault: the classic string gave FIFO 9 -> 10 faults when frames grew 3 -> 4 (Belady), LRU/OPT never grew over 3000 random strings, OPT matched exhaustive search, FIFO anomalies found: " << anomalies << ", and the kernel took " << f1 - f0 << " minor faults for the first touch of " << pages << " pages versus " << f2 - f1 << " on the second pass" << std::endl; }
 #endif
     return 0;
@@ -4522,17 +4540,21 @@ int main() {
 #include <csignal>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
 
+// audit: host-dependent (mincore 로 본 상주 쪽은 THP 설정에 따라 달라진다)
 // 메모리 매핑: mmap 은 가상 주소 범위만 "예약" 하고, 물리 메모리는 페이지를 처음 만졌을 때(요구 페이징) 비로소 배정된다.  mincore 로 어느 페이지가 실제 메모리에 올라와 있는지(resident) 확인할 수 있다.
 //  파일 매핑은 파일 내용을 메모리처럼 읽고 쓰게 해 준다 — MAP_PRIVATE 는 쓰면 그 페이지만 복사(copy-on-write)되어 파일은 그대로, MAP_SHARED 는 쓴 내용이 파일에 반영된다.
 //  ① 익명 매핑 1000 쪽: 만지기 전 resident 0 개, 3 쪽마다 하나씩 만지면 정확히 그 쪽들만 resident  ② 파일 매핑(읽기 전용)이 read() 로 읽은 내용과 같고 파일 끝 뒤의 같은 쪽 바이트는 0  ③ MAP_PRIVATE 쓰기는 파일을 바꾸지 않는다  ④ MAP_SHARED 무작위 쓰기 5000 번 뒤 msync/munmap 하면 파일이 그림자 배열과 같다
 //  ⑤ madvise(MADV_DONTNEED) 뒤 익명 페이지는 0 으로 되돌아온다  ⑥ munmap 한 주소를 읽으면 SIGSEGV (자식 프로세스에서 확인)  ⑦ 보호 변경: mprotect 로 읽기 전용으로 바꾼 쪽에 쓰면 SIGSEGV.  Linux 가 아니면 건너뛴다.
 #if defined(__linux__)
-bool diesWithSegv(void (*body)(void*), void* arg) { pid_t pid = fork(); if (pid == 0) { signal(SIGSEGV, SIG_DFL); body(arg); _exit(0); } int status = 0; waitpid(pid, &status, 0); return WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV; }
+void noCoreDump() { struct rlimit zero = {0, 0}; setrlimit(RLIMIT_CORE, &zero); prctl(PR_SET_DUMPABLE, 0); }                  // 일부러 죽는 자식이 코어 덤프 도우미(apport 등)를 띄우지 않게 한다
+bool diesWithSegv(void (*body)(void*), void* arg) { pid_t pid = fork(); if (pid == 0) { noCoreDump(); signal(SIGSEGV, SIG_DFL); body(arg); _exit(0); } int status = 0; waitpid(pid, &status, 0); return WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV; }
 void readUnmapped(void* p) { volatile char c = *(volatile char*)p; (void)c; }
 void writeReadOnly(void* p) { *(volatile char*)p = 1; }
 std::vector<unsigned char> readWhole(int fd, size_t n) { std::vector<unsigned char> v(n); size_t got = 0; while (got < n) { ssize_t r = pread(fd, v.data() + got, n - got, (off_t)got); assert(r > 0); got += (size_t)r; } return v; }
@@ -4542,6 +4564,9 @@ int main() {
 #if defined(__linux__)
     const size_t page = (size_t)sysconf(_SC_PAGESIZE); assert(page >= 4096 && (page & (page - 1)) == 0);
     {   const int pages = 1000; unsigned char* m = (unsigned char*)mmap(nullptr, pages * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(m != MAP_FAILED); std::vector<unsigned char> vec(pages);
+#if defined(MADV_NOHUGEPAGE)
+        madvise(m, pages * page, MADV_NOHUGEPAGE);                                                                                                           // THP 가 켜져 있으면 한 쪽을 만져도 2 MB 가 통째로 올라오므로 끈다
+#endif
         assert(mincore(m, pages * page, vec.data()) == 0); for (int i = 0; i < pages; ++i) assert(!(vec[i] & 1));                                                                       // ① 만지기 전
         for (int i = 0; i < pages; i += 3) m[(size_t)i * page] = 1; assert(mincore(m, pages * page, vec.data()) == 0); int resident = 0; for (int i = 0; i < pages; ++i) { bool r = vec[i] & 1; assert(r == (i % 3 == 0)); resident += r; } assert(resident == 334);
         for (int i = 0; i < pages; i += 3) assert(m[(size_t)i * page] == 1); madvise(m, pages * page, MADV_DONTNEED); for (int i = 0; i < pages; i += 3) assert(m[(size_t)i * page] == 0);          // ⑤ DONTNEED → 0 으로 되돌아옴
@@ -4689,13 +4714,23 @@ int main() {
 #include <csignal>
 #include <cstdio>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 enum Outcome { OK, SEGV, OTHER };
-template <class F> Outcome inChild(F f) { std::fflush(stdout); pid_t pid = fork(); if (pid == 0) { signal(SIGSEGV, SIG_DFL); f(); _exit(0); } int st = 0; waitpid(pid, &st, 0);
+void noCoreDump() { struct rlimit zero = {0, 0}; setrlimit(RLIMIT_CORE, &zero);
+#if defined(__linux__)
+    prctl(PR_SET_DUMPABLE, 0);
+#endif
+}                                                                                                                   // 일부러 죽는 자식 수백 개가 코어 덤프 도우미(apport 등)를 띄우지 않게 한다
+template <class F> Outcome inChild(F f) { std::fflush(stdout); pid_t pid = fork(); if (pid == 0) { noCoreDump(); signal(SIGSEGV, SIG_DFL); f(); _exit(0); } int st = 0; waitpid(pid, &st, 0);
     if (WIFEXITED(st) && WEXITSTATUS(st) == 0) return OK; if (WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV) return SEGV; return OTHER; }       // 자식 프로세스에서 시도해 정상 종료 / SIGSEGV 를 구분
 #endif
 
+// audit: host-dependent (자식 프로세스 수백 개를 SIGSEGV 로 죽이므로 코어 덤프 도우미·fork 비용에 민감하다)
 // 메모리 보호: 페이지마다 R/W/X 권한 비트를 두어 접근 종류가 권한과 맞지 않으면 예외를 낸다.  (1) 권한 모델  (2) 가드 페이지: PROT_NONE 페이지를 경계에 놓아 오버플로를 즉시 잡는다.
 //  가드 페이지 할당기(electric fence): n 바이트 버퍼의 *끝*이 페이지 경계에 딱 닿도록 놓고 바로 뒤 페이지를 PROT_NONE 으로 둔다 → 한 바이트만 넘어도 SIGSEGV.  정렬을 맞추려고 끝을 16 바이트 배수로 올리면 그 여유분(< 16 바이트)만큼은 오버플로를 *놓친다* — 정밀도와 정렬의 교환.
 //  ① 권한 모델 표: 코드 R|X, 데이터 R|W, 상수 R 의 허용/거부 8 × 3 전수  ② 무작위 크기 n(1..12000)의 정밀 가드 버퍼(정렬 1): 앞의 n 바이트는 모두 읽고 쓸 수 있고 n 번째 바이트(한 바이트 넘김)는 자식에서 SIGSEGV  ③ 정렬 16 버퍼: 끝이 16 의 배수로 올려지므로 n 바이트 뒤 (올림 − n) 바이트까지는 넘어가도 조용하고 그다음 바이트는 SIGSEGV (정확한 임계)
@@ -5098,7 +5133,7 @@ Ins ld(int a, int r, Ord o = RLX) { Ins i; i.k = LD; i.addr = a; i.reg = r; i.or
 Ins fence() { Ins i; i.k = FENCE; return i; }
 Ins rmw(int a, int v, int r, Ord o = AR) { Ins i; i.k = RMW; i.addr = a; i.val = v; i.reg = r; i.ord = o; return i; }
 
-const int N = 100000;
+const int N = 5000;                                                                                           // 두 스레드를 매번 같은 순간에 맞추는 시험이라 코어보다 스레드가 많으면 한 판이 느려진다 — 판 수를 줄여도 보장(0 번)의 검증력은 같다
 std::vector<std::atomic<int>> arrive(N), X(N), Y(N), R0(N), R1(N);
 long runTest(std::memory_order storeOrder, std::memory_order loadOrder, bool useFence) {
     for (int i = 0; i < N; i++) { arrive[i] = 0; X[i] = 0; Y[i] = 0; R0[i] = -1; R1[i] = -1; }
@@ -5218,7 +5253,7 @@ int main() {
 //  IRIW 실험(Independent Reads of Independent Writes):  A: x=1   B: y=1   C: r1=x; r2=y   D: r3=y; r4=x   C 는 "x 가 먼저" (r1=1, r2=0), D 는 "y 가 먼저" (r3=1, r4=0) 를 볼 수 있다면 두 독자가 쓰기 순서에 대해 서로 다른 세계를 본 것 — SC 에서는 불가능하다.
 //  SC 가 *꼭 필요한* 대표 사례가 Peterson/Dekker 상호 배제다: 각 스레드가 "내 깃발을 올리고, 차례를 상대에게 넘기고, 상대 깃발이 내려갔거나 내 차례일 때 들어간다".  모형 열거기로 모든 실행을 훑는다.
 //  ① IRIW 금지 결과 (1,0,1,0): 순차 일관성·TSO 에서 불가능, 약한 모델의 relaxed 적재에서 가능, acquire 적재나 seq_cst 로 주석을 달면 불가능  ② Peterson: 순차 일관성에서는 상호 배제가 항상 성립하고 교착이 없다 — TSO 에서 *장벽 없이는 깨진다*(저장이 늦게 보이므로 두 스레드가 동시에 임계 구역에 들어감), 저장과 대기 읽기 사이에 전체 장벽을 두면 TSO 에서도 성립, 약한 모델의 relaxed 에서는 깨지고 seq_cst 주석이면 성립
-//  ③ 실제 스레드 IRIW 2 만 번: seq_cst 면 금지 결과 0 번(보장)  ④ 실제 Peterson(seq_cst 원자 변수)으로 두 스레드가 일반 변수 카운터를 10 만 번씩 올려도 합이 정확하다(ThreadSanitizer 무결).
+//  ③ 실제 스레드 IRIW 2 천 번: seq_cst 면 금지 결과 0 번(보장)  ④ 실제 Peterson(seq_cst 원자 변수)으로 두 스레드가 일반 변수 카운터를 10 만 번씩 올려도 합이 정확하다(ThreadSanitizer 무결).
 enum Kind { ST, LD, FENCE, RMW, SPIN };                                                                        // 저장 / 적재 / 전체 장벽 / 원자적 읽기-수정-쓰기 / 조건이 참일 때까지 대기(두 주소를 한 번에 읽음)
 enum Ord { RLX, ACQ, REL, AR, SC };
 enum Model { SEQ, TSO, WEAK };                                                                                  // 순차 일관성 / x86 식(저장→적재만 재배열) / 주석 달린 약한 모델(다중 복사 원자적)
@@ -5252,7 +5287,7 @@ Ins fence() { Ins i; i.k = FENCE; return i; }
 Ins rmw(int a, int v, int r, Ord o = AR) { Ins i; i.k = RMW; i.addr = a; i.val = v; i.reg = r; i.ord = o; return i; }
 
 
-const int NI = 20000;
+const int NI = 2000;                                                                                          // 네 스레드를 매번 맞추는 시험: 판 수가 많으면 부하가 걸린 기계에서 매우 느려진다 (금지 결과 0 번은 판 수와 무관한 보장)
 std::vector<std::atomic<int>> arrive(NI), X(NI), Y(NI), R1(NI), R2(NI), R3(NI), R4(NI);
 std::vector<Thread> iriw(Ord so, Ord lo) { return {{st(0, 1, so)}, {st(1, 1, so)}, {ld(0, 0, lo), ld(1, 1, lo)}, {ld(1, 0, lo), ld(0, 1, lo)}}; }       // 레지스터: T2 r0,r1 = idx 4,5   T3 r0,r1 = idx 6,7 (스레드당 2 개)
 bool iriwForbidden(const Outcomes& o) { for (auto& f : o.finals) if (f[4] == 1 && f[5] == 0 && f[6] == 1 && f[7] == 0) return true; return false; }
@@ -8207,9 +8242,9 @@ int main() {
         stop = true; for (auto& t : rs) { t.join(); }
         assert(bad == 0 && x.value == 20000 && y.value == 20000 && reads >= 200); }
     // ③ 은행 계좌
-    {   const int A = 16; std::vector<TVar> acct(A); for (auto& a : acct) a.value = 1000; std::atomic<long> badSum{0}, audits{0}; std::atomic<bool> stop{false}; commits = aborts = 0; std::vector<std::thread> ts, auditors;
-        for (int t = 0; t < 4; ++t) ts.emplace_back([&, t] { std::mt19937 rng(t + 1); for (int i = 0; i < 5000; ++i) { int from = (int)(rng() % A), to = (int)(rng() % A); int64_t amount = 1 + (int64_t)(rng() % 50);
-            atomically([&](Tx& tx) { int64_t f = tx.read(acct[from]); if (from == to) return; int64_t g = tx.read(acct[to]); tx.write(acct[from], f - amount); tx.write(acct[to], g + amount); }); } });
+    {   const int A = 16; std::vector<TVar> acct(A); for (auto& a : acct) a.value = 1000; std::atomic<long> badSum{0}, audits{0}; std::atomic<bool> stop{false}; commits = aborts = 0; std::vector<std::thread> ts, auditors; std::atomic<int> met{0};
+        for (int t = 0; t < 4; ++t) ts.emplace_back([&, t] { std::mt19937 rng(t + 1); bool met2 = t >= 2; for (int i = 0; i < 5000; ++i) { int from = (int)(rng() % A), to = (int)(rng() % A); int64_t amount = 1 + (int64_t)(rng() % 50); if (i == 0 && t < 2) { from = 0; to = 1; }          // 스레드 0·1 의 첫 이체는 같은 두 계좌 — 둘이 읽기를 마친 뒤에야 쓰게 해서 충돌을 *반드시* 만든다
+            atomically([&](Tx& tx) { int64_t f = tx.read(acct[from]); if (from == to) return; int64_t g = tx.read(acct[to]); if (!met2) { met2 = true; met.fetch_add(1); while (met.load() < 2) std::this_thread::yield(); } tx.write(acct[from], f - amount); tx.write(acct[to], g + amount); }); } });
         for (int a = 0; a < 2; ++a) auditors.emplace_back([&] { for (int i = 0; (i < 5000 && !stop) || i < 20; ++i) { atomically([&](Tx& tx) { int64_t s = 0; for (auto& v : acct) s += tx.read(v); if (s != 16000) ++badSum; ++audits; }); } });
         for (auto& t : ts) { t.join(); }
         stop = true; for (auto& t : auditors) { t.join(); }

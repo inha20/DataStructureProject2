@@ -26,6 +26,17 @@ python3 -I tools/check_all.py                  # 빠른 관문
 
 릴리스 전에는 `python3 -I tools/audit.py --strict --san --tsan --portable --stamp` 를 돌립니다. 모든 책이 통과하면 `tools/last_audit.json` 에 날짜가 기록되고 `gen_index.py` 가 README 현황에 반영합니다.
 
+## CI (`.github/workflows/audit.yml`)
+
+| 작업 | 내용 | 실패하면 |
+|------|------|----------|
+| `fast` | `check_all.py` (몇 초) | 실행 실패 |
+| `compile` | `audit.py --strict`, `AUDIT_SKIP_HOST=1`, `AUDIT_TIME_SCALE=3` | 실행 실패 |
+| `host` | `audit.py --strict --host` — `host-dependent` 항목만, 러너 환경 보고 포함 | **실행을 실패시키지 않음**(`continue-on-error`) |
+| `deep` | 매주 월요일/수동: `--san --tsan --portable --repeat 3` | 실행 실패 |
+
+푸시 한 번에 실행이 **한 번**만 돌도록 `push` 는 모든 브랜치에서, `pull_request` 는 포크에서 온 PR 에서만 검사합니다(열린 PR 이 있는 브랜치에 푸시하면 둘이 동시에 돌아 실패 메일이 두 통씩 왔습니다). 같은 브랜치의 이전 실행은 새 푸시가 취소합니다.
+
 ## 코드 블록 표지
 
 코드 주석에 `// audit: <표지>` 를 두면 해당 검사를 건너뜁니다.
@@ -34,6 +45,7 @@ python3 -I tools/check_all.py                  # 빠른 관문
 |------|------|
 | `no-sanitize` | 일부러 메모리 위반·프로세스 분기·한도 초과를 일으키는 항목이라 새니타이저/TSan 에서 제외 |
 | `allow-warn` | 설명용으로 경고가 나는 코드를 일부러 보여 주는 항목 |
+| `host-dependent` | 커널 설정(THP·페이지 회수·코어 덤프 도우미·스택 한도 처리)을 직접 재는 항목. 환경 변수 `AUDIT_SKIP_HOST=1` 이면 건너뛰고(막는 CI 작업), `--host` 는 이 항목들만 돌린다(막지 않는 CI 작업) |
 | `gcc-only` | `-pedantic` C++20 검사에서 제외(GCC 확장 사용) |
 | `stl-demo` | STL 사용법을 보이는 것이 목적인 항목(얇은 항목 목록에서 제외) |
 | `exhaustive` | 입력 공간 전체를 열거하므로 무작위 검사가 없어도 얕은 항목이 아님 |

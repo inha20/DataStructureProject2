@@ -13,7 +13,10 @@ Usage: python3 -I tools/audit.py [modes] [--only REGEX] [--jobs N] [--repeat N] 
   --repeat N     run thread-using blocks N times (flaky-test hunting)
   --time         list blocks slower than 3 s
   --only         restrict checks to headings matching REGEX
+  --host         run only the `// audit: host-dependent` entries (they probe THP, page faults, stack limits, ... of the machine they run on)
   --stamp        after a clean run over every book, record date and modes in tools/last_audit.json (used by gen_index.py)
+  environment    AUDIT_CACHE=path (result cache), AUDIT_TIME_SCALE=3 (multiply every run timeout; shared CI runners are slow),
+                 AUDIT_SKIP_HOST=1 (leave out `// audit: host-dependent` entries; such a run is never stamped)
   --list         print the names of placeholder-only entries
   --list-thin    print STL-wrapper / concept-only / trivial-assert entries (`// audit: stl-demo` exempts)
   --list-shallow print entries with <= 4 asserts, <= 40 lines and no randomized check
@@ -41,6 +44,9 @@ ROOT = Path(__file__).resolve().parent.parent
 BOOKS = ["AdvancedDataStructures", "Graph", "Hash", "List", "Memory", "PathFinding",
          "Queue", "Set", "Stack", "String", "Tree"]
 CACHE = Path(os.environ.get("AUDIT_CACHE", Path.home() / ".cache" / "ds-audit.json"))
+TIME_SCALE = float(os.environ.get("AUDIT_TIME_SCALE", "1"))   # slow shared CI runners: multiply every run timeout
+SKIP_HOST = os.environ.get("AUDIT_SKIP_HOST") == "1"           # CI gate: leave out entries that probe the machine itself (`// audit: host-dependent`)
+HOST_ONLY = "--host" in sys.argv                               # ... and a separate, non-blocking job runs exactly those
 
 
 def read(path):
@@ -178,17 +184,22 @@ def applicable(mode, code):
         return False
     if mode == "cxx20" and "gcc-only" in m:
         return False
+    if "host-dependent" in m and SKIP_HOST:
+        return False
+    if HOST_ONLY and "host-dependent" not in m:
+        return False
     return True
 
 
 def job_key(mode, code, repeat):
-    return hashlib.sha1(f"{mode}|{MODES[mode]}|{repeat}|{code}".encode()).hexdigest()
+    return hashlib.sha1(f"{mode}|{MODES[mode]}|{repeat}|{TIME_SCALE}|{code}".encode()).hexdigest()
 
 
 def compile_one(job):
     mode, book, name, code, repeat = job
     key = job_key(mode, code, repeat)
     cc, flags, tmo = MODES[mode]
+    tmo = tmo * TIME_SCALE
     with tempfile.TemporaryDirectory() as d:
         src = Path(d) / "a.cpp"
         exe = Path(d) / "a.out"
@@ -218,6 +229,19 @@ def compile_one(job):
                 head = next(x for x in r.stderr.splitlines() if "WARNING" in x or "runtime error" in x)
                 return key, ("run", head[-200:], max(times))
     return key, ("ok", "", max(times))
+
+
+def settle(pending, results, run=compile_one):
+    """A timeout while several blocks run in parallel on a small machine is not a verdict on the code (a lock-step thread
+    test needs every thread scheduled at once): run just those blocks once more, alone, and say so in the result."""
+    out = []
+    for job, (key, res) in zip(pending, results):
+        if res[0] == "timeout":
+            key, res = run(job)
+            if res[0] == "ok":
+                res = ("ok", "", res[2], "alone")
+        out.append((key, res))
+    return out
 
 
 THIN_WORDS = re.compile(r"concept|Placeholder|개념적|conceptually", re.I)
@@ -336,7 +360,7 @@ def main():
             sel = [(b, n, c) for b, n, c in todo if applicable(mode, c)]
             pending = [(mode, b, n, c, repeat) for b, n, c in sel if job_key(mode, c, repeat) not in cache]
             with cf.ThreadPoolExecutor(jobs if mode not in ("san", "tsan") else max(1, jobs // 2)) as ex:
-                for job, (key, res) in zip(pending, ex.map(compile_one, pending)):
+                for key, res in settle(pending, list(ex.map(compile_one, pending))):
                     cache[key] = list(res)
             CACHE.parent.mkdir(parents=True, exist_ok=True)
             CACHE.write_text(json.dumps(cache))
@@ -350,13 +374,16 @@ def main():
                 elif len(res) > 2 and res[2] > 3.0:
                     slow.append((res[2], b, name))
             print(f"[{mode}] checked {len(sel)} of {len(todo)} blocks ({len(pending)} new), failures: {len(fails)}")
+            for b, name, code in sel:
+                if len(cache[job_key(mode, code, repeat)]) > 3:
+                    print(f"  NOTE {b}.md :: {name} timed out while other blocks were running and passed when run alone")
             for b, name, st, msg in fails:
                 print(f"  FAIL {b}.md :: {name} [{st}] {msg}")
             if show_time and slow:
                 for t, b, name in sorted(slow, reverse=True)[:15]:
                     print(f"  SLOW {t:5.1f}s {b}.md :: {name}")
             bad |= bool(fails)
-        if "--stamp" in args and not bad and not files and not only:
+        if "--stamp" in args and not bad and not files and not only and not SKIP_HOST and not HOST_ONLY:
             import datetime
             (ROOT / "tools" / "last_audit.json").write_text(json.dumps(
                 {"date": datetime.date.today().isoformat(), "modes": modes, "blocks": total["blocks"], "failures": 0},
