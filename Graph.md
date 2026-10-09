@@ -7819,7 +7819,7 @@ int main() {
 // 무방향 그래프: 간선 {u, v} 는 순서가 없다. 인접 리스트에는 양쪽 모두 기록한다.
 // 악수 보조정리(handshake lemma): 모든 정점의 차수의 합 = 2·|E|  (그러므로 홀수 차수 정점의 수는 항상 짝수).  자기 고리는 차수에 2 를 더한다.
 //  ① 무작위 연산(정점 1~8, 간선 0~20 개, 자기 고리·평행 간선 포함) 3 000 개를 (u, v) 쌍 개수 *행렬* 로 따로 센 오라클과 대조: 차수·간선 수·연결 성분 수·홀수 차수 정점 수가 같고 악수 보조정리·홀수 정점 짝수 개가 성립
-//  ② 차수열의 실현 가능성: 정점 n ≤ 6 의 *모든* 단순 그래프(2^15 개)에서 나오는 차수열 집합을 모은 뒤, 길이 n·값 0..n−1 의 *모든* 수열(최대 46 656 개)에서 "실현 가능 ⇔ 에르되시–갈라이 판정 ⇔ 하벨–하키미 판정"  ③ 하벨–하키미 판정이 참이면 그 수열을 정확히 실현하는 단순 그래프를 *실제로 만들어* 차수를 다시 센다(큰 수열 200 개)
+//  ② 차수열의 실현 가능성: 정점 n ≤ 6 의 *모든* 단순 그래프(2^15 개)에서 나오는 차수열 집합을 모은 뒤, 길이 n·값 0..n+1 의 *모든* 수열(최대 8^6 = 262 144 개, 값 ≥ n 이라 하벨–하키미의 `x > d.size()` 가드를 타는 수열 포함)에서 "실현 가능 ⇔ 에르되시–갈라이 판정 ⇔ 하벨–하키미 판정"  ③ 하벨–하키미 판정이 참이면 그 수열을 정확히 실현하는 단순 그래프를 *실제로 만들어* 차수를 다시 센다(큰 수열 200 개)
 class UndirectedGraph {
     std::vector<std::vector<int>> adj; size_t edges = 0;
 public:
@@ -7864,14 +7864,14 @@ int main() {
     for (int n = 1; n <= 6; ++n) {                                                                                                                          // ② 차수열 전수
         std::vector<std::pair<int, int>> pairs; for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b) pairs.push_back({a, b}); std::set<std::vector<int>> realizable;
         for (unsigned mask = 0; mask < (1u << pairs.size()); ++mask) { std::vector<int> d(n, 0); for (size_t k = 0; k < pairs.size(); ++k) if (mask >> k & 1) { ++d[pairs[k].first]; ++d[pairs[k].second]; } std::sort(d.rbegin(), d.rend()); realizable.insert(d); }
-        long total = 1; for (int i = 0; i < n; ++i) total *= n; long yes = 0;
-        for (long code = 0; code < total; ++code) { std::vector<int> d(n); long c = code; for (int i = 0; i < n; ++i) { d[i] = (int)(c % n); c /= n; } std::vector<int> sorted = d; std::sort(sorted.rbegin(), sorted.rend()); bool real = realizable.count(sorted) > 0;
+        const int base = n + 2; long total = 1; for (int i = 0; i < n; ++i) total *= base; long yes = 0;
+        for (long code = 0; code < total; ++code) { std::vector<int> d(n); long c = code; for (int i = 0; i < n; ++i) { d[i] = (int)(c % base); c /= base; } std::vector<int> sorted = d; std::sort(sorted.rbegin(), sorted.rend()); bool real = realizable.count(sorted) > 0;
             assert(erdosGallai(d) == real && havelHakimi(d) == real); yes += real; }
         assert(yes > 0 && (n == 1 ? yes == 1 : yes < total)); }
     for (int trial = 0; trial < 200; ++trial) { int n = 5 + (int)(rng() % 40); UndirectedGraph g(n); std::vector<std::vector<char>> adj(n, std::vector<char>(n, 0)); for (int u = 0; u < n; ++u) for (int v = u + 1; v < n; ++v) if (rng() % 4 == 0) { adj[u][v] = adj[v][u] = 1; g.addEdge(u, v); }       // ③
         std::vector<int> deg(n); for (int u = 0; u < n; ++u) deg[u] = (int)g.degree(u); assert(erdosGallai(deg) && havelHakimi(deg));
         auto built = buildFromSequence(deg); std::vector<int> got(n, 0); std::set<std::pair<int, int>> seen; for (auto e : built) { assert(e.first != e.second && seen.insert({std::min(e.first, e.second), std::max(e.first, e.second)}).second); ++got[e.first]; ++got[e.second]; } assert(got == deg); }
-    std::cout << "UndirectedGraph: degree, edge-count, component and odd-vertex queries matched a count-matrix oracle on 3000 random multigraphs, and the Erdos-Gallai and Havel-Hakimi tests agreed with 'some simple graph realizes it' for every degree sequence up to 6 vertices" << std::endl;
+    std::cout << "UndirectedGraph: degree, edge-count, component and odd-vertex queries matched a count-matrix oracle on 3000 random multigraphs, and the Erdos-Gallai and Havel-Hakimi tests agreed with 'some simple graph realizes it' for every degree sequence with up to 6 vertices and entries up to n+1 (including entries too large for any simple graph)" << std::endl;
     return 0;
 }
 // Time Complexity: 간선 추가 O(1), 연결 요소 O(V + E)
@@ -8501,6 +8501,7 @@ int main() {
 
 // 트리 그래프: 연결되어 있고 사이클이 없는 그래프 (간선 n-1 개).  레이블된 트리는 n^(n-2) 개(케일리)이고,
 // 각각은 길이 n-2 인 수열(프뤼퍼 수열)과 일대일로 대응한다 -> 프뤼퍼 수열을 복호화하면 균등 무작위 트리를 얻는다
+// 검증: 무작위 수열 200 개의 복호 결과가 트리이고 부호화로 되돌아옴, n = 5 의 125 개 수열이 모두 트리이며 서로 다름, isTree 자체는 정점 ≤ 5 의 *모든* 단순 그래프(간선 부분집합)에서 트리 개수가 n^(n-2) = 1, 1, 3, 16, 125 이고 손으로 만든 비트리(사이클 + 고립 정점, 간선 수 부족·초과, 평행 간선)를 거부한다. '균등' 은 일대일 대응(전수 확인)과 균등한 수열에서 따라 나오므로 따로 표본 검정하지 않는다
 std::vector<std::pair<int, int>> pruferDecode(const std::vector<int>& seq, int n) {
     std::vector<int> degree(n, 1); for (int x : seq) degree[x]++;
     std::set<int> leaves; for (int i = 0; i < n; i++) if (degree[i] == 1) leaves.insert(i);
@@ -8544,10 +8545,21 @@ int main() {
     // 서로 다른 프뤼퍼 수열의 수 = n^(n-2) = 트리 개수 (n = 5 -> 125)
     std::set<std::vector<std::pair<int, int>>> trees;
     for (int a = 0; a < 5; a++) for (int b = 0; b < 5; b++) for (int c = 0; c < 5; c++) {
-        auto e = pruferDecode({a, b, c}, 5); for (auto& x : e) if (x.first > x.second) std::swap(x.first, x.second); std::sort(e.begin(), e.end()); trees.insert(e);
+        auto e = pruferDecode({a, b, c}, 5); assert(isTree(5, e)); for (auto& x : e) if (x.first > x.second) std::swap(x.first, x.second); std::sort(e.begin(), e.end()); trees.insert(e);
     }
     assert(trees.size() == 125);
-    std::cout << "TreeGraph: 125 labeled trees on 5 vertices via Prufer sequences." << std::endl;
+    typedef std::vector<std::pair<int, int>> Edges;                                                       // isTree 자체의 음성 사례 (cnt == n 검사와 간선 수 검사를 각각 시험한다)
+    assert(isTree(1, Edges{}) && isTree(2, Edges{{0, 1}}) && isTree(4, Edges{{0, 1}, {0, 2}, {0, 3}}) && isTree(4, Edges{{0, 1}, {1, 2}, {2, 3}}));
+    assert(!isTree(4, Edges{{0, 1}, {1, 2}, {2, 0}}));                                                    // 삼각형 + 고립 정점: 간선 3 = n − 1 이지만 연결이 아니다
+    assert(!isTree(3, Edges{{0, 1}, {0, 1}}));                                                            // 평행 간선 + 고립 정점
+    assert(!isTree(4, Edges{{0, 1}, {1, 2}}) && !isTree(3, Edges{{0, 1}, {1, 2}, {0, 2}}));               // 간선 부족 / 초과
+    for (int n = 1; n <= 5; n++) {                                                                        // 정점 n 개 단순 그래프 전부: 트리 개수 = n^(n-2)
+        Edges all; for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) all.push_back({a, b});
+        long long count = 0, want = 1; for (int i = 0; i < n - 2; i++) want *= n;
+        for (unsigned mask = 0; mask < (1u << all.size()); mask++) { Edges e; for (std::size_t i = 0; i < all.size(); i++) if (mask >> i & 1) e.push_back(all[i]); count += isTree(n, e); }
+        assert(count == want);
+    }
+    std::cout << "TreeGraph: 125 labeled trees on 5 vertices via Prufer sequences, each accepted by isTree, which also counted exactly n^(n-2) trees among all simple graphs on 1..5 vertices and rejected hand-made non-trees." << std::endl;
     return 0;
 }
 // Time Complexity: 프뤼퍼 복호화 O(n log n)
@@ -8991,7 +9003,7 @@ int main() {
 // 소셜 네트워크: 정점 = 사람, 간선 = 친구 관계(무방향).  기본 질의: 친구의 친구 추천, 연결 중심성(차수), 최단 소개 경로(몇 단계), 군집 계수(내 친구들끼리 얼마나 친구인가).
 // 인접 행렬 A 로 보면 모든 질의가 행렬 연산이다: 추천 후보 = (A²)[u][w] > 0 이고 w ≠ u 이고 A[u][w] = 0, 삼각형 수 = (A³)[u][u] / 2, 거리 = 플로이드–워셜.
 //  ① 손으로 만든 예  ② 무작위 사회망 500 개(사람 2~12 명, 우정 0~30 개, 중복 우정 포함)에서 suggest/hops/degree/triangles 가 *행렬 오라클* 과 같다 (모든 쌍·모든 사람)
-//  ③ 지역 군집 계수 = 삼각형 / C(차수, 2), 전체 전이성 = 3 × 삼각형 수 / 연결된 세 점 쌍의 수 — 완전 그래프에서 1, 트리에서 0  ④ 작은 세상(Watts–Strogatz): 사람 200 명 링 격자(양쪽 2 명씩)에서 간선의 10% 를 무작위로 다시 이으면 평균 최단 거리가 40% 미만으로 줄지만 군집 계수는 원래의 절반 이상 유지
+//  ③ 지역 군집 계수 = 삼각형 / C(차수, 2), 전체 전이성 = 3 × 삼각형 수 / 연결된 세 점 쌍의 수 (transitivity()) — 완전 그래프에서 1, 트리에서 0, '삼각형 + 꼬리' 에서 3/5(평균 군집 계수와 다름), 링 격자에서 1/2  ④ 작은 세상(Watts–Strogatz): 사람 200 명 링 격자(양쪽 2 명씩)에서 간선의 10% 를 무작위로 다시 이으면 평균 최단 거리가 40% 미만으로 줄지만 군집 계수는 원래의 절반 이상 유지하고, 재배선은 옛 간선을 지우므로 간선 수·대칭·중복 없음이 그대로
 class Social {
     std::map<std::string, std::set<std::string>> friends;
 public:
@@ -9018,12 +9030,15 @@ public:
 typedef std::vector<std::vector<int>> AdjList;
 double averagePath(const AdjList& g) { long long sum = 0, pairs = 0; int n = (int)g.size(); for (int s = 0; s < n; ++s) { std::vector<int> d(n, -1); std::queue<int> q; q.push(s); d[s] = 0; while (!q.empty()) { int u = q.front(); q.pop(); for (int v : g[u]) if (d[v] < 0) { d[v] = d[u] + 1; q.push(v); } } for (int v = 0; v < n; ++v) if (v != s && d[v] > 0) { sum += d[v]; ++pairs; } } return (double)sum / (double)pairs; }
 double averageClustering(const AdjList& g) { double total = 0; for (size_t u = 0; u < g.size(); ++u) { std::set<int> nb(g[u].begin(), g[u].end()); nb.erase((int)u); if (nb.size() < 2) continue; int t = 0; for (int a : nb) for (int b : nb) if (a < b && std::find(g[a].begin(), g[a].end(), b) != g[a].end()) ++t; total += t / (nb.size() * (nb.size() - 1) / 2.0); } return total / (double)g.size(); }
+double transitivity(const AdjList& g) { long long closed = 0, triples = 0; int n = (int)g.size(); std::vector<std::set<int>> s(n); for (int u = 0; u < n; ++u) { s[u] = std::set<int>(g[u].begin(), g[u].end()); s[u].erase(u); } for (int u = 0; u < n; ++u) { long long d = (long long)s[u].size(); triples += d * (d - 1) / 2; for (int a : s[u]) for (int b : s[u]) if (a < b && s[a].count(b)) ++closed; } return triples == 0 ? 0.0 : (double)closed / (double)triples; }   // 전체 전이성 = 3 × 삼각형 / 연결된 세 점 쌍 (꼭짓점마다 닫힌 쌍을 세면 삼각형이 3 번 잡힌다)
+long long edgeTotal(const AdjList& g) { long long s = 0; for (auto& a : g) s += (long long)a.size(); return s / 2; }
+bool simpleSym(const AdjList& g) { for (int u = 0; u < (int)g.size(); ++u) { std::set<int> nb(g[u].begin(), g[u].end()); if (nb.size() != g[u].size() || nb.count(u)) return false; for (int v : g[u]) if (std::find(g[v].begin(), g[v].end(), u) == g[v].end()) return false; } return true; }   // 중복·자기 루프 없음 + 대칭
 
 int main() {
     {   Social s; s.befriend("ann", "bob"); s.befriend("bob", "cat"); s.befriend("ann", "cat"); s.befriend("cat", "dan"); s.befriend("dan", "eve");
         assert((s.suggest("ann") == std::set<std::string>{"dan"}) && s.hops("ann", "eve") == 3 && s.hops("ann", "ann") == 0 && s.degree("cat") == 3 && s.triangles("ann") == 1 && s.triangles("dan") == 0); }
     std::mt19937 rng(61);
-    for (int trial = 0; trial < 500; ++trial) { int n = 2 + (int)(rng() % 11), m = (int)(rng() % 31); Social s; std::vector<std::vector<int>> A(n, std::vector<int>(n, 0)); for (int i = 0; i < n; ++i) s.befriend("p" + std::to_string(i), "p" + std::to_string(i));   // 자기 자신과의 우정 방지용 더미
+    for (int trial = 0; trial < 500; ++trial) { int n = 2 + (int)(rng() % 11), m = (int)(rng() % 31); std::vector<std::vector<int>> A(n, std::vector<int>(n, 0));
         Social net; std::set<int> present; for (int i = 0; i < m; ++i) { int a = (int)(rng() % n), b = (int)(rng() % n); if (a == b) continue; net.befriend("p" + std::to_string(a), "p" + std::to_string(b)); A[a][b] = A[b][a] = 1; present.insert(a); present.insert(b); }
         const int INF = 1 << 20; std::vector<std::vector<int>> fw(n, std::vector<int>(n, INF)); for (int i = 0; i < n; ++i) { fw[i][i] = 0; for (int j = 0; j < n; ++j) if (A[i][j]) fw[i][j] = 1; } for (int k = 0; k < n; ++k) for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) fw[i][j] = std::min(fw[i][j], fw[i][k] + fw[k][j]);
         for (int u : present) { std::string un = "p" + std::to_string(u); int deg = 0, tri = 0; std::set<std::string> want; for (int w = 0; w < n; ++w) { deg += A[u][w]; if (w != u && !A[u][w]) { int common = 0; for (int x = 0; x < n; ++x) common += A[u][x] * A[x][w]; if (common > 0) want.insert("p" + std::to_string(w)); } }
@@ -9031,15 +9046,18 @@ int main() {
             double c = deg < 2 ? 0.0 : tri / (deg * (deg - 1) / 2.0); assert(std::abs(net.localClustering(un) - c) < 1e-12);
             for (int w : present) assert(net.hops(un, "p" + std::to_string(w)) == (fw[u][w] >= INF ? -1 : fw[u][w])); } }
     {   int n = 12; AdjList complete(n), tree(n); for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) if (i != j) complete[i].push_back(j); for (int i = 1; i < n; ++i) { tree[i].push_back((i - 1) / 2); tree[(i - 1) / 2].push_back(i); }          // ③
-        assert(std::abs(averageClustering(complete) - 1.0) < 1e-12 && averageClustering(tree) == 0.0); }
+        assert(std::abs(averageClustering(complete) - 1.0) < 1e-12 && averageClustering(tree) == 0.0 && std::abs(transitivity(complete) - 1.0) < 1e-12 && transitivity(tree) == 0.0);
+        AdjList paw(4); auto link = [&](int a, int b) { paw[a].push_back(b); paw[b].push_back(a); }; link(0, 1); link(1, 2); link(0, 2); link(2, 3);                                   // 삼각형 + 꼬리: 삼각형 1 개, 연결된 세 점 쌍 1 + 1 + 3 + 0 = 5 → 전이성 3/5, 평균 군집 계수 (1 + 1 + 1/3 + 0)/4 ≠ 전이성
+        assert(std::abs(transitivity(paw) - 0.6) < 1e-12 && std::abs(averageClustering(paw) - (2.0 + 1.0 / 3.0) / 4.0) < 1e-12); }
     {   const int n = 200, k = 2; AdjList ring(n); for (int i = 0; i < n; ++i) for (int j = 1; j <= k; ++j) { ring[i].push_back((i + j) % n); ring[(i + j) % n].push_back(i); }                                       // ④ 작은 세상
         AdjList rewired = ring; std::mt19937 rr(5); int rewiredEdges = 0; for (int i = 0; i < n; ++i) for (int j = 1; j <= k; ++j) if (rr() % 100 < 10) { int old = (i + j) % n, to = (int)(rr() % n); if (to == i || std::find(rewired[i].begin(), rewired[i].end(), to) != rewired[i].end()) continue;
                 rewired[i].erase(std::find(rewired[i].begin(), rewired[i].end(), old)); rewired[old].erase(std::find(rewired[old].begin(), rewired[old].end(), i)); rewired[i].push_back(to); rewired[to].push_back(i); ++rewiredEdges; }
-        double L0 = averagePath(ring), L1 = averagePath(rewired), C0 = averageClustering(ring), C1 = averageClustering(rewired); assert(rewiredEdges > 20 && L1 < 0.6 * L0 && C1 > 0.5 * C0 && std::abs(C0 - 0.5) < 1e-9);
-        std::cout << "SocialNetworkGraph: matrix-oracle queries agreed on 500 random networks; rewiring " << rewiredEdges << " ring edges cut the average path from " << L0 << " to " << L1 << " while clustering went " << C0 << " -> " << C1 << std::endl; }
+        double L0 = averagePath(ring), L1 = averagePath(rewired), C0 = averageClustering(ring), C1 = averageClustering(rewired); assert(rewiredEdges > 20 && L1 < 0.4 * L0 && C1 > 0.5 * C0 && std::abs(C0 - 0.5) < 1e-9 && std::abs(transitivity(ring) - 0.5) < 1e-9);
+        assert(simpleSym(ring) && simpleSym(rewired) && edgeTotal(ring) == (long long)n * k && edgeTotal(rewired) == edgeTotal(ring));      // 재배선은 옛 간선을 지우므로 간선 수가 그대로
+        std::cout << "SocialNetworkGraph: matrix-oracle queries agreed on 500 random networks; rewiring " << rewiredEdges << " ring edges cut the average path from " << L0 << " to " << L1 << " while clustering went " << C0 << " -> " << C1 << " (transitivity " << transitivity(ring) << " -> " << transitivity(rewired) << "), edge count " << edgeTotal(rewired) << " preserved" << std::endl; }
     return 0;
 }
-// Time Complexity: 추천 O(Σ 친구의 차수), 경로 O(V + E), 삼각형 O(d²)
+// Time Complexity: 추천 O(Σ 친구의 차수 · log V), 경로 O((V + E) log V), 삼각형 O(d² · log V) — 이름이 길이 L 인 문자열이면 비교마다 O(L) 이 더 붙는다 (map/set<string>)
 // Space Complexity: O(V + E)
 ```
 ## CallGraph()

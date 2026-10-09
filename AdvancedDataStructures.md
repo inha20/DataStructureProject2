@@ -1867,7 +1867,7 @@ int main() {
 // 피스 테이블(문자열 관점의 요약, 정본은 String.md Part 4): 원본 파일은 수정하지 않고 "추가 전용" 버퍼에 새 글자를 덧붙이며, 문서 = (버퍼, 시작, 길이) 조각들의 목록.
 //  삽입은 조각을 둘로 쪼개고 새 조각 하나를 끼우는 일이고, 조각 목록의 복사본이 곧 실행 취소(undo) 기록이다 (VS Code 의 텍스트 버퍼가 이 계열).  연속해서 타자를 치면 *마지막 추가 조각을 늘려* 조각 수가 늘지 않는다(coalescing).
 //  ① std::string 과 8000 번의 무작위 편집(삽입·삭제·undo·redo)을 대조하고 undo/redo 가 *직전 문서 문자열*을 정확히 복원  ② 원본 버퍼는 한 번도 바뀌지 않고 추가 버퍼는 접두사가 유지되는 append-only
-//  ③ 조각 수 ≤ 2·삽입 + 삭제 + 1  ④ 100 만 글자 원본에서 10^5 글자를 한 글자씩 타자 → 조각은 3 개(앞·새 글·뒤)에 머문다  ⑤ 끝까지 undo 하면 원본이 그대로.
+//  ③ 조각 수 ≤ 2·삽입 + 삭제 + 1  ④ 100 만 글자 원본에서 10^5 글자를 한 글자씩 타자 → 조각은 3 개(앞·새 글·뒤)에 머문다  ⑤ 끝까지 undo 하면 원본이 그대로.  ⑥ undo/redo 는 조각 목록을 복사하지 않고 버퍼를 맞바꾼다 (조각 목록 버퍼의 주소로 확인).
 struct PieceTable {
     struct Piece { bool added; size_t start, len; };
     std::string original, added; std::vector<Piece> pieces; std::vector<std::vector<Piece>> undoStack, redoStack; long inserts = 0, erases = 0;
@@ -1886,8 +1886,8 @@ struct PieceTable {
     void erase(size_t pos, size_t len) {
         len = std::min(len, size() - pos); if (len == 0) return; undoStack.push_back(pieces); redoStack.clear(); ++erases;
         size_t a = splitAt(pos), b = splitAt(pos + len); pieces.erase(pieces.begin() + a, pieces.begin() + b); }
-    bool undo() { if (undoStack.empty()) return false; redoStack.push_back(pieces); pieces = undoStack.back(); undoStack.pop_back(); return true; }
-    bool redo() { if (redoStack.empty()) return false; undoStack.push_back(pieces); pieces = redoStack.back(); redoStack.pop_back(); return true; }
+    bool undo() { if (undoStack.empty()) return false; std::swap(pieces, undoStack.back()); redoStack.push_back(std::move(undoStack.back())); undoStack.pop_back(); return true; }     // 스냅샷을 복사 없이 교체(swap/move)
+    bool redo() { if (redoStack.empty()) return false; std::swap(pieces, redoStack.back()); undoStack.push_back(std::move(redoStack.back())); redoStack.pop_back(); return true; }
 };
 
 int main() {
@@ -1908,13 +1908,15 @@ int main() {
     }
     assert(pt.text() == cur);
     while (pt.undo()) {} assert(pt.text() == base && pt.pieces.size() == 1);                                      // ⑤ 끝까지 undo
+    {   PieceTable t("abcdefgh"); t.insert(3, "XY"); t.erase(1, 2); const PieceTable::Piece* snap = t.undoStack.back().data(); const PieceTable::Piece* now = t.pieces.data();       // ⑥ 스냅샷 교체는 O(1): 같은 버퍼가 오간다
+        bool u = t.undo(); assert(u && t.pieces.data() == snap && t.redoStack.back().data() == now); bool r = t.redo(); assert(r && t.pieces.data() == now && t.undoStack.back().data() == snap); }
     { std::string big(1000000, 'x'); for (size_t i = 0; i < big.size(); ++i) big[i] = (char)('a' + i % 26); PieceTable doc(big); std::string typed = randStr(100000); size_t pos = 500000;
       for (size_t i = 0; i < typed.size(); ++i) doc.insert(pos + i, std::string(1, typed[i]));                    // ④ 한 글자씩 타자
       assert(doc.pieces.size() == 3 && doc.size() == 1100000 && doc.text() == big.substr(0, pos) + typed + big.substr(pos));
       std::cout << "PieceTable: 8000 random insert/erase/undo/redo steps matched std::string (" << edits << " edits, undo restored the original exactly), the original buffer never changed, and 10^5 single-character keystrokes in a 10^6-character file stayed in " << doc.pieces.size() << " pieces" << std::endl; }
     return 0;
 }
-// Time Complexity: 삽입·삭제 O(조각 수), 텍스트 조립 O(길이), undo O(1) (스냅샷 교체)
+// Time Complexity: 삽입·삭제 O(조각 수), 텍스트 조립 O(길이), undo·redo O(1) (스냅샷 버퍼 교체, 복사 없음; 삽입·삭제가 조각 목록을 스냅샷으로 복사하므로 O(조각 수))
 // Space Complexity: 원본 + 추가 버퍼 + 조각 목록 (+ undo 스냅샷마다 조각 목록 한 벌)
 ```
 ## GapBuffer()
@@ -3555,16 +3557,16 @@ int main() {
 //  최근에 쓴 키가 다시 빨리 나오는 접근 패턴에 강하다 (정적 최적성, 순차 접근 O(N) 등).  여기서는 재귀 없이 *위에서 아래로* 한 번에 끝내는 top-down 스플레이(Sleator–Tarjan)를 보인다 —
 //  내려가면서 경로를 "왼쪽 트리(작은 키)"와 "오른쪽 트리(큰 키)"에 떼어 붙이고 마지막에 조립한다.  깊이가 10^5 인 사슬에도 안전하다.
 //  ① 전수: 키 7 개의 모든 삽입 순서(5040) 뒤 각 키를 접근하면 그 키가 루트가 되고 BST 가 유지됨, 모든 삭제 순서 일부  ② 무작위 삽입·삭제·조회 100 만 번을 std::set 과 대조
-//  ③ *순차 접근 정리*: 무작위 순서로 만든 n = 10^5 트리(와 정렬 입력으로 생긴 사슬)를 키 순서대로 한 번 훑는 총 비용(내려간 링크 수) ≤ 4n  ④ *작업 집합 성질*: 64 개 핫키를 반복 접근하면 접근당 비용이 O(log 64) 로 작아진다 — 10^5 개 트리 안인데도 평균 < 10 링크 (균형 트리는 17 근처).
+//  ③ *순차 접근 정리*: 무작위 순서로 만든 n = 10^5 트리(와 정렬 입력으로 생긴 사슬)를 키 순서대로 한 번 훑는 총 비용 ≤ 4n 스플레이 단계(zig-zig·zig-zag 한 쌍이 한 단계)이고 실제로 내려간 링크 수로 세면 ≤ 8n — 왼쪽으로 기운 사슬과 오른쪽으로 기운 사슬(내림차순 삽입 + 내림차순 훑기) 모두에서  ④ *작업 집합 성질*: 64 개 핫키를 반복 접근하면 접근당 비용이 O(log 64) 로 작아진다 — 10^5 개 트리 안인데도 평균 < 12 링크 (균형 트리는 17 근처; 링크는 단계 수와 달리 zig-zig 를 둘로 센 실제 내려간 간선 수).
 struct Splay {
-    std::vector<int> key, L, R; std::vector<int> freeList; int root = -1; size_t cnt = 0; long steps = 0;                    // 인덱스 0 은 조립용 머리 노드
+    std::vector<int> key, L, R; std::vector<int> freeList; int root = -1; size_t cnt = 0; long steps = 0, links = 0;     // 인덱스 0 은 조립용 머리 노드.  steps = 스플레이 단계 수(반복 한 번; zig-zig·zig-zag 는 링크 2 개를 내려가도 한 단계), links = 실제로 내려간 링크 수
     Splay() { key.push_back(0); L.push_back(-1); R.push_back(-1); }
     int node(int k) { int u; if (!freeList.empty()) { u = freeList.back(); freeList.pop_back(); key[u] = k; L[u] = R[u] = -1; } else { key.push_back(k); L.push_back(-1); R.push_back(-1); u = (int)key.size() - 1; } return u; }
     void splay(int k) {                                                                                           // k 가 있으면 루트로, 없으면 탐색 경로의 마지막 노드를 루트로
         if (root < 0) return; int H = 0, lt = H, rt = H, t = root; L[H] = R[H] = -1;
         for (;;) { ++steps;
-            if (k < key[t]) { if (L[t] < 0) break; if (k < key[L[t]]) { int y = L[t]; L[t] = R[y]; R[y] = t; t = y; if (L[t] < 0) break; } L[rt] = t; rt = t; t = L[t]; }              // zig-zig 후 오른쪽 트리에 붙임
-            else if (k > key[t]) { if (R[t] < 0) break; if (k > key[R[t]]) { int y = R[t]; R[t] = L[y]; L[y] = t; t = y; if (R[t] < 0) break; } R[lt] = t; lt = t; t = R[t]; }            // 왼쪽 트리에 붙임
+            if (k < key[t]) { if (L[t] < 0) break; if (k < key[L[t]]) { int y = L[t]; L[t] = R[y]; R[y] = t; t = y; ++links; if (L[t] < 0) break; } L[rt] = t; rt = t; t = L[t]; ++links; }              // zig-zig 후 오른쪽 트리에 붙임
+            else if (k > key[t]) { if (R[t] < 0) break; if (k > key[R[t]]) { int y = R[t]; R[t] = L[y]; L[y] = t; t = y; ++links; if (R[t] < 0) break; } R[lt] = t; lt = t; t = R[t]; ++links; }            // 왼쪽 트리에 붙임
             else break; }
         R[lt] = L[t]; L[rt] = R[t]; L[t] = R[H]; R[t] = L[H]; root = t; }                                          // 조립
     bool contains(int k) { if (root < 0) return false; splay(k); return key[root] == k; }
@@ -3588,12 +3590,14 @@ int main() {
         if (op == 0) { bool a = t.insert(k); bool r = ref.insert(k).second; assert(a == r); } else if (op == 1) { bool a = t.erase(k); bool r = ref.erase(k) > 0; assert(a == r); } else { bool a = t.contains(k); assert(a == (ref.count(k) > 0)); }
         assert(t.cnt == ref.size()); if (step % 9973 == 0) assert(t.valid()); } assert(t.valid()); }                    // ②
     { const int n = 100000; std::vector<int> keys(n); std::iota(keys.begin(), keys.end(), 0); std::shuffle(keys.begin(), keys.end(), rng); Splay t; for (int k : keys) t.insert(k);
-      t.steps = 0; for (int k = 0; k < n; ++k) assert(t.contains(k)); long scanSteps = t.steps; assert(scanSteps <= 4L * n);                         // ③ 순차 접근 정리
+      t.steps = t.links = 0; for (int k = 0; k < n; ++k) assert(t.contains(k)); long scanSteps = t.steps, scanLinks = t.links; assert(scanSteps <= 4L * n && scanLinks <= 8L * n);                         // ③ 순차 접근 정리
       Splay chain; for (int k = 0; k < n; ++k) chain.insert(k); assert(chain.valid() && chain.depthOf(0) >= n / 2);       // 정렬 입력이면 사슬(깊이 ~ n) — top-down 이라 재귀 없이 안전
-      chain.steps = 0; for (int k = 0; k < n; ++k) assert(chain.contains(k)); long chainSteps = chain.steps; assert(chainSteps <= 4L * n);
+      chain.steps = chain.links = 0; for (int k = 0; k < n; ++k) assert(chain.contains(k)); long chainSteps = chain.steps, chainLinks = chain.links; assert(chainSteps <= 4L * n && chainLinks <= 8L * n);      // 왼쪽으로 기운 사슬 (왼쪽 zig-zig)
+      Splay mirror; for (int k = n - 1; k >= 0; --k) mirror.insert(k); assert(mirror.valid() && mirror.depthOf(n - 1) >= n / 2);                    // 내림차순 삽입 -> 오른쪽으로 기운 사슬
+      mirror.steps = mirror.links = 0; for (int k = n - 1; k >= 0; --k) assert(mirror.contains(k)); long mirrorSteps = mirror.steps, mirrorLinks = mirror.links; assert(mirrorSteps <= 4L * n && mirrorLinks <= 8L * n);   // 거울 대칭 (오른쪽 zig-zig)
       int hot[64]; for (int& h : hot) h = keys[rng() % n]; for (int rep = 0; rep < 100; ++rep) for (int h : hot) t.contains(h);                                      // 워밍업
-      t.steps = 0; const int reps = 2000; for (int rep = 0; rep < reps; ++rep) for (int h : hot) assert(t.contains(h)); double avg = (double)t.steps / (reps * 64.0); assert(avg < 10.0);   // ④ 작업 집합
-      std::cout << "SplayTree: top-down splaying matched std::set over 10^6 operations and every 7-key insertion order; scanning all 10^5 keys in ascending order cost " << (double)scanSteps / n << " links per key on a random tree and " << (double)chainSteps / n << " on a degenerate chain (sequential access theorem: O(1) each), and 64 hot keys cost " << avg << " links per access" << std::endl; }
+      t.links = 0; const int reps = 2000; for (int rep = 0; rep < reps; ++rep) for (int h : hot) assert(t.contains(h)); double avg = (double)t.links / (reps * 64.0); assert(avg < 12.0);   // ④ 작업 집합
+      std::cout << "SplayTree: top-down splaying matched std::set over 10^6 operations and every 7-key insertion order; scanning all 10^5 keys in ascending order cost " << (double)scanSteps / n << " splay steps (" << (double)scanLinks / n << " links) per key on a random tree, " << (double)chainSteps / n << " (" << (double)chainLinks / n << ") on a left-leaning chain and " << (double)mirrorSteps / n << " (" << (double)mirrorLinks / n << ") on its mirror image (sequential access theorem: O(1) each), and 64 hot keys cost " << avg << " links per access" << std::endl; }
     return 0;
 }
 // Time Complexity: 분할상환 O(log N), 작업 집합 크기 w 에서 O(log w)
@@ -8368,7 +8372,9 @@ int main() {
 
 // 내부 메모리 모델(RAM)은 모든 접근이 같은 비용이라고 보고 연산 횟수를 센다. 외부 메모리(I/O) 모델은 데이터가 디스크에 있고 한 번에 블록 B 개 원소를 옮기며 메모리에는 M 개만 들어간다고 보고 "블록 전송 횟수" 를 센다 —
 // 디스크 한 번 접근이 CPU 연산 수십만 번의 시간이기 때문이다.  정렬의 I/O 하한은 Θ((N/B) log_{M/B}(N/B)) 이고, 외부 병합 정렬(M 크기 런을 만든 뒤 (M/B-1)-way 병합)이 그것을 달성한다.
-// 반면 RAM 에서 최적인 힙 정렬은 접근이 배열 전체를 뛰어다녀 거의 모든 접근이 블록 미스이다.  같은 O(N log N) 알고리즘이 외부 메모리에서는 수백 배 느릴 수 있다는 것을 I/O 횟수로 확인한다
+// 반면 RAM 에서 최적인 힙 정렬은 접근이 배열 전체를 뛰어다녀 거의 모든 접근이 블록 미스이다.  같은 O(N log N) 알고리즘이 외부 메모리에서는 수십 배 느릴 수 있다는 것(여기서 N=2^18 일 때 약 68 배, 단언은 20 배 초과)을 I/O 횟수로 확인한다.
+// 측정 방식: 힙 정렬의 I/O 는 M/B 블록짜리 LRU 캐시(Cache)를 거친 접근마다 세는 *측정*이고, 외부 병합 정렬의 I/O 는 런 형성·병합 때마다 읽고 쓴 블록 수를 더하는 *계산*(blocks())이다 — 순차 접근이라 블록 수가 곧 I/O 이다.
+// 검증: 병합 정렬 I/O 가 공식 2·(N/B)·(1+패스 수) 와 *정확히* 같고(런 형성 읽기+쓰기, 패스마다 읽기+쓰기), 패스 수가 ceil(log_F(N/M)) 이며, 병합 팬인 F+1 개 블록 버퍼가 메모리 M 안에 들어간다
 const int B = 64, M = 4096, N = 1 << 18;
 long blocks(long n) { return (n + B - 1) / B; }
 struct Cache { size_t cap; std::list<long> lru; std::unordered_map<long, std::list<long>::iterator> where; long miss = 0; explicit Cache(size_t c) : cap(c) {}
@@ -8381,10 +8387,10 @@ long heapSortIO(std::vector<int> a) {                                      // �
     for (long e = n - 1; e > 0; e--) { int t = rd(0); wr(0, rd(e)); wr(e, t); sift(0, e); }
     assert(std::is_sorted(a.begin(), a.end())); return c.miss;
 }
-long externalMergeSortIO(const std::vector<int>& in) {
+long externalMergeSortIO(const std::vector<int>& in, int& passes) {
     long io = 0; std::vector<std::vector<int>> runs;
     for (size_t i = 0; i < in.size(); i += M) { std::vector<int> r(in.begin() + i, in.begin() + std::min(in.size(), i + M)); io += blocks(r.size()); std::sort(r.begin(), r.end()); io += blocks(r.size()); runs.push_back(r); }      // 1 단계: 메모리 크기 런 (읽기+쓰기)
-    const size_t F = M / B - 1; int passes = 0;
+    const size_t F = M / B - 1; passes = 0; assert((F + 1) * B <= M);      // 입력 버퍼 F 개 + 출력 버퍼 1 개가 메모리에 들어간다
     while (runs.size() > 1) { std::vector<std::vector<int>> next; passes++;
         for (size_t g = 0; g < runs.size(); g += F) { size_t e = std::min(runs.size(), g + F); using E = std::pair<int, std::pair<size_t, size_t>>; std::priority_queue<E, std::vector<E>, std::greater<E>> pq; std::vector<int> out;
             for (size_t r = g; r < e; r++) { io += blocks(runs[r].size()); pq.push({runs[r][0], {r, 0}}); }          // 입력 런 읽기
@@ -8395,8 +8401,9 @@ long externalMergeSortIO(const std::vector<int>& in) {
 }
 int main() {
     std::mt19937 g(1); std::vector<int> data(N); for (auto& x : data) x = g();
-    long ext = externalMergeSortIO(data), heap = heapSortIO(data); double bound = (double)N / B * (1 + std::max(1.0, std::ceil(std::log((double)N / M) / std::log((double)M / B - 1))));
-    assert(ext <= 2 * bound * 2 && heap > ext * 20);
+    int passes = 0; long ext = externalMergeSortIO(data, passes), heap = heapSortIO(data); double bound = (double)N / B * (1 + std::max(1.0, std::ceil(std::log((double)N / M) / std::log((double)M / B - 1))));
+    assert(passes == (int)std::ceil(std::log((double)(N / M)) / std::log(M / B - 1.0)) && ext == 2L * (N / B) * (1 + passes) && ext <= 2 * bound);      // 정확한 I/O 공식 (N/B=4096, 2 패스: 24576)
+    assert(heap > ext * 20);                                                // 같은 캐시 규칙에서 힙 정렬은 20 배 넘게 더 많은 블록 전송
     std::cout << "sorting " << N << " ints (B=" << B << ", M=" << M << "): external merge sort " << ext << " block I/Os vs in-place heapsort through the same cache " << heap << " (" << heap / ext << "x more)" << std::endl; return 0;
 }
 // Time Complexity: 외부 병합 정렬 I/O O((N/B) log_{M/B}(N/B)), 힙 정렬 I/O O(N log (N/M))

@@ -34,7 +34,7 @@
 | `CountSketch` | 3 | update·estimate O(d), 표 합치기 O(d·w) | O(d·w) |
 | `ReservoirSampling` | 3 | 알고리즘 R O(n), 알고리즘 L 기대 O(k (1 + log(n/k)))  (건너뛴 항목은 읽지 않아도 된다) | O(k) |
 | `Rope` | 4 | 색인·분할·삽입·삭제·구간 뒤집기·이동 기대 O(log N) | O(N) (글자당 노드 하나) |
-| `PieceTable` | 4 | 삽입·삭제 O(조각 수), 텍스트 조립 O(길이), undo O(1) (스냅샷 교체) | 원본 + 추가 버퍼 + 조각 목록 (+ undo 스냅샷마다 조각 목록 한 벌) |
+| `PieceTable` | 4 | 삽입·삭제 O(조각 수), 텍스트 조립 O(길이), undo·redo O(1) (스냅샷 버퍼 교체, 복사 없음; 삽입·삭제가 조각 목록을 스냅샷으로 복사하므로 O(조각 수)) | 원본 + 추가 버퍼 + 조각 목록 (+ undo 스냅샷마다 조각 목록 한 벌) |
 | `GapBuffer` | 4 | 커서 위치 삽입·삭제 분할상환 O(1), 커서 이동 O(거리) | O(N + 틈) |
 | `FingerTree` | 4 | 양 끝 push/pop 분할상환 O(1), concat O(log N), split/index O(log N) | O(N), 버전 사이에 구조 공유 |
 | `SuffixAutomaton` | 4 | 구성 O(n·σ) (복제 시 전이 배열 복사), 출현 횟수 집계 countEndpos 는 std::sort 때문에 O(n log n) (계수 정렬이면 O(n)), 부분 문자열 판정 O(m) | O(n·σ) |
@@ -98,7 +98,7 @@
 | `ParallelHashTable` | 11 | 삽입·조회 기대 O(1) (부하율이 낮을 때) | 고정 용량 (키 8 B + 값 4 B) × 슬롯 |
 | `WarpQueue` | 11 | 워프당 원자 연산 1회 (푸시당 O(1/레인 수)) | 큐 용량 |
 | `VectorIndex` | 12 | 질의 O(N·D + N log k) | O(N·D) |
-| `HNSW` | 12 | 삽입·질의 평균 O(log N) 거리 계산 (경험적) | O(N·(D + M)) |
+| `HNSW` | 12 | 질의·삽입 평균 거리 계산이 N 에 대해 부선형 (저차원에서는 대략 O(log N) 으로 보고, 이 16 차원 군집 데이터는 N 이 5 배일 때 약 2.3 배로 관측 — 경험적, 보장 아님) | O(N·(D + M)) |
 | `IVFIndex` | 12 | 질의 O(nlist·D + (N/nlist)·nprobe·D) | O(N·D + nlist·D) |
 | `ProductQuantization` | 12 | 학습 O(m·ksub·N·dsub·반복), 질의 표 만들기 O(ksub·D) + 벡터당 O(m) | 벡터당 m 바이트 + 코드북 m·ksub·dsub |
 | `KDTreeKNN` | 12 | 질의 평균 O(log N + k) (저차원) | O(N) |
@@ -241,7 +241,7 @@
 | `SmallWorldGraph` | 15 | 평균 경로 O(n·(n + E)) | O(n·k) |
 | `DependencyGraph` | 16 | 순서·단계·증분 O(V + E), 축약 O(E · V / 64) | O(V + E) (축약은 O(V²/64) 비트) |
 | `KnowledgeGraph` | 16 | 색인 질의 O(결과), 닫힘 O(V·\|facts\|), 규칙 고정점 O(반복 횟수 · \|facts\|) | O(\|facts\|) (색인 두 벌) |
-| `SocialNetworkGraph` | 16 | 추천 O(Σ 친구의 차수), 경로 O(V + E), 삼각형 O(d²) | O(V + E) |
+| `SocialNetworkGraph` | 16 | 추천 O(Σ 친구의 차수 · log V), 경로 O((V + E) log V), 삼각형 O(d² · log V) — 이름이 길이 L 인 문자열이면 비교마다 O(L) 이 더 붙는다 (map/set<s | O(V + E) |
 | `CallGraph` | 16 | O(V + E) | O(V + E) |
 | `StateTransitionGraph` | 16 | 도달성·교착 O(S + T), Moore 최소화 O(k · n² )(최악), Hopcroft 는 O(k · n log n) | O(S + T) |
 | `ControlFlowGraph` | 16 | 블록 구성 O(명령 수), 반복 지배자 O(블록 수² · 반복) — Lengauer-Tarjan 은 O(E α) | O(블록 수) |
@@ -265,7 +265,7 @@
 | `Delete` | 1 | 평균 O(1 + α), 최악 O(n) | O(1) |
 | `Resize` | 1 | 삽입 분할상환 O(1), 확장 1회는 O(n) | O(n) |
 | `Rehash` | 1 | 한꺼번에 O(n), 점진적이면 연산당 O(최대 사슬 길이) | O(n) (점진적일 때 재해시 중에는 두 테이블) |
-| `LoadFactor` | 1 | O(1) | O(1) |
+| `LoadFactor` | 1 | 평균 탐색 O(1) 은 α 가 상수일 때만 — 선형 탐사의 실패 탐색은 ½(1 + 1/(1−α)²) 라 α → 1 이면 폭발하고 최악은 O(n); 이 시뮬레이션은 α 마다 O(m + 시도 수 · 평 | O(m) (시뮬레이션 표; 이론식 자체는 O(1)) |
 | `DivisionMethod` | 2 | O(1) | O(1) |
 | `MultiplicationMethod` | 2 | O(1) | O(1) |
 | `UniversalHashing` | 2 | O(1) | O(1) |
@@ -275,7 +275,7 @@
 | `SipHash` | 2 | O(len) | O(1) |
 | `Chaining` | 3 | 평균 O(1 + α), 최악 O(n) | O(n + m) |
 | `OpenAddressing` | 3 | 평균 O(1/(1-α)), 최악 O(m) | O(m) |
-| `LinearProbing` | 3 | 성공 탐색 ≈ ½(1 + 1/(1−α)), 실패 탐색 ≈ ½(1 + 1/(1−α)²) | O(m) |
+| `LinearProbing` | 3 | 성공 탐색 ≈ ½(1 + 1/(1−α)), 실패 탐색 ≈ ½(1 + 1/(1−α)²), 최악 O(n) (키가 한 클러스터에 몰릴 때) | O(m) |
 | `QuadraticProbing` | 3 | 평균 O(1/(1−α)), 군집은 선형 탐사보다 완화 | O(m) |
 | `DoubleHashing` | 3 | 평균 O(1/(1−α)) (1차·2차 군집 없음) | O(m) |
 | `RobinHoodHashing` | 3 | 평균 O(1), 탐색 실패 시 조기 종료 | O(m) |

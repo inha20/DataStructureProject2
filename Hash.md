@@ -477,7 +477,8 @@ int main() {
 #include <vector>
 
 // 적재율 α = n / m 이 해시 테이블의 성능을 거의 전부 결정한다. 키가 균등하게 흩어진다는 가정에서 평균 탐사(probe) 횟수의 이론값 — 체이닝: 성공 1 + α/2, 실패 α(+1 버킷 확인). 선형 탐사: 성공 ½(1 + 1/(1−α)), 실패 ½(1 + 1/(1−α)²) — α → 1 에서 제곱으로 폭발. 균등 해싱(이중 해싱의 이상형): 성공 (1/α)·ln(1/(1−α)), 실패 1/(1−α).
-// 그래서 개방 주소법은 α 를 0.5~0.75 로 묶고 체이닝도 1 안팎에서 확장한다. 아래 시뮬레이션은 소수 크기 m = 100,003 에서 α 를 0.3, 0.5, 0.7, 0.9 로 채워 *실제 평균 탐사 수를 세어* 이론값과 비교한다(결정적 시드). 선형 탐사의 이론값은 m → ∞ 에서의 근사식이라 α = 0.9 에서는 표가 한 번 만들어질 때의 변동이 커서 ±15%, 나머지는 ±4% 이내여야 통과(실측: 0.9 에서 실패 43.95 대 이론 50.5, 성공 5.18 대 5.5).
+// 그래서 개방 주소법은 α 를 0.5~0.75 로 묶고 체이닝도 1 안팎에서 확장한다. 아래 시뮬레이션은 소수 크기 m = 100,003 에서 α 를 0.3, 0.5, 0.7, 0.9 로 채워 *실제 평균 탐사 수를 세어* 이론값과 비교한다(결정적 시드). 선형 탐사의 이론값은 m → ∞ 에서의 근사식이라 α = 0.9 에서는 표가 한 번 만들어질 때의 변동이 커서 ±15%, 나머지는 ±4% 이내여야 통과(실측: 0.9 에서 실패 52.2 대 이론 50.5, 성공 5.49 대 5.5).
+// 이중 해싱(h1 + j·h2 mod m, m 소수) 표도 같은 방식으로 채워 균등 해싱의 이론값(성공 (1/α)·ln(1/(1−α)), 실패 1/(1−α))과 비교하고(실측 오차는 1.2% 이내라 허용 오차 4% 로 조인다), 체이닝의 실패 탐색 비교 수는 평균 체인 길이 α 와 같은지 무작위 키로 잰다.
 // 추가로 이론식의 성질도 확인한다: 단조 증가, 선형 탐사의 실패 비용 > 성공 비용, 균등 해싱 < 선형 탐사(군집 때문), α = 0.5 에서 선형 탐사 실패 비용 2.5 번, α = 0.9 에서 50.5 번.
 struct Theory {
     static double chainSuccess(double a) { return 1 + a / 2; }
@@ -508,12 +509,23 @@ int main() {
         // 체이닝: 평균 체인 길이 = α, 성공 검색 평균 비교 수 ≈ 1 + α/2
         std::vector<int> len(m, 0); for (std::uint64_t k : stored) ++len[mix(k) % m]; double totalLen = 0, sumPairs = 0; for (int l : len) { totalLen += l; sumPairs += (double)l * (l + 1) / 2.0; }
         assert(std::abs(totalLen / (double)m - alpha) < 1e-3 && std::abs(sumPairs / (double)n - Theory::chainSuccess(alpha)) < 0.03 * Theory::chainSuccess(alpha));
-        std::cout << "LoadFactor alpha=" << alpha << ": linear probing successful " << succ << " (theory " << Theory::linearSuccess(alpha) << "), unsuccessful " << fail << " (theory " << Theory::linearFail(alpha) << ")" << std::endl;
+        // 체이닝 실패 탐색: 저장된 적 없는 키(짝수)가 떨어진 버킷의 체인 길이 = 비교 수 → 평균 α
+        double chainFailSim = 0; for (int t = 0; t < trials; ++t) chainFailSim += len[mix(rng() & ~1ULL) % m]; chainFailSim /= trials;
+        assert(std::abs(chainFailSim - Theory::chainFail(alpha)) < 0.04 * Theory::chainFail(alpha));
+        // 이중 해싱(균등 해싱의 근사): 탐사열 (h1 + j·h2) mod m, h2 ∈ [1, m−1], m 이 소수라 모든 칸을 돈다
+        auto h2 = [&](std::uint64_t k) { return (std::size_t)(1 + mix(k ^ 0xd6e8feb86659fd93ULL) % (m - 1)); };
+        std::vector<std::uint64_t> dslot(m, 0);
+        for (std::uint64_t k : stored) { std::size_t i = mix(k) % m, d = h2(k); while (dslot[i]) i = (i + d) % m; dslot[i] = k; }
+        long dSucc = 0; for (std::uint64_t k : stored) { std::size_t i = mix(k) % m, d = h2(k); long p = 1; while (dslot[i] != k) { i = (i + d) % m; ++p; } dSucc += p; }
+        long dFail = 0; for (int t = 0; t < trials; ++t) { std::uint64_t k = rng() & ~1ULL; std::size_t i = mix(k) % m, d = h2(k); long p = 1; while (dslot[i]) { i = (i + d) % m; ++p; } dFail += p; }
+        double uSucc = (double)dSucc / (double)n, uFail = (double)dFail / trials;
+        assert(std::abs(uSucc - Theory::uniformSuccess(alpha)) < 0.04 * Theory::uniformSuccess(alpha) && std::abs(uFail - Theory::uniformFail(alpha)) < 0.04 * Theory::uniformFail(alpha));
+        std::cout << "LoadFactor alpha=" << alpha << ": linear probing successful " << succ << " (theory " << Theory::linearSuccess(alpha) << "), unsuccessful " << fail << " (theory " << Theory::linearFail(alpha) << "); double hashing successful " << uSucc << " (uniform " << Theory::uniformSuccess(alpha) << "), unsuccessful " << uFail << " (uniform " << Theory::uniformFail(alpha) << "); chaining unsuccessful " << chainFailSim << " (theory " << Theory::chainFail(alpha) << ")" << std::endl;
     }
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: O(1)
+// Time Complexity: 평균 탐색 O(1) 은 α 가 상수일 때만 — 선형 탐사의 실패 탐색은 ½(1 + 1/(1−α)²) 라 α → 1 이면 폭발하고 최악은 O(n); 이 시뮬레이션은 α 마다 O(m + 시도 수 · 평균 탐사)
+// Space Complexity: O(m) (시뮬레이션 표; 이론식 자체는 O(1))
 ```
 # Part 2. 해시 함수
 ## DivisionMethod()
@@ -568,11 +580,12 @@ int main() {
 #include <set>
 #include <vector>
 
-// 곱셈법: h(k) = ⌊m · frac(k · A)⌋, A ≈ (√5 − 1)/2 = 0.6180339887… (Knuth 의 황금비 상수). m 이 2의 거듭제곱 2^p 이면 32비트 고정소수점 곱 한 번과 시프트로 끝난다: h(k) = (k · 2654435769) >> (32 − p) — 2654435769 = ⌊A·2^32⌋ (Fibonacci hashing). 나눗셈법과 달리 m 은 아무 값이나 되고 키의 규칙적인 패턴(8의 배수)도 높은 비트로 고르게 섞인다.
+// 곱셈법: h(k) = ⌊m · frac(k · A)⌋, A ≈ (√5 − 1)/2 = 0.6180339887… (Knuth 의 황금비 상수). m 이 2의 거듭제곱 2^p 이면 32비트 고정소수점 곱 한 번과 시프트로 끝난다: h(k) = (k · 2654435769) >> (32 − p) — 2654435769 = ⌊A·2^32⌋ (Fibonacci hashing). 나눗셈법과 달리 m 은 소수일 필요가 없고(2^p 가 아니어도 h(k) = (frac32(k·A32) · m) >> 32 한 번의 64비트 곱으로 정의된다 — 아래 mulAny), 키의 규칙적인 패턴(8의 배수)도 높은 비트로 고르게 섞인다.
 // 왜 황금비인가 — 세 간격 정리(three-distance theorem): 점 {k·A}, k = 1..N 을 원 위에 놓으면 이웃 점 사이 간격은 *최대 세 가지 값* 뿐이고, A 가 황금비일 때 그 값들의 비가 가장 고르게 유지된다(연분수 전개가 모두 1). 그래서 연속한 키가 버킷 전체에 거의 균등하게 흩어진다.
-// 검증: ① 정수 구현이 *정확한 유리수 계산* ⌊2^p · frac(k · 2654435769 / 2^32)⌋ 와 모든 k (무작위 100 만 개)·p 에서 같고, 실수 A 로 계산한 값과는 k < 4096, p ≤ 8 에서 99.9% 이상 같음(A32 가 A 를 2^-32 만큼 자른 값이라 k 가 커지면 오차 k·2^-32 가 쌓여 달라지지만, 정수 구현이 *정의* 이므로 문제 없고 부동소수 `k * 0.618…` 보다 정확) ② 세 간격 정리: k = 1..N (N ≤ 3000) 의 고정소수점 점들의 간격 종류 ≤ 3 ③ 연속한 키 N 개를 2^p 버킷에 넣으면 부하 차이가 2 + log₂(N)/4 이하(불일치도는 O(log N), 실측 최대 4) ④ 키가 모두 64 의 배수일 때 나눗셈법(m = 1024) 은 16 개 버킷만 쓰지만 곱셈법은 1024 개를 모두 쓰고 최대 부하가 이상값 97.7 에 가깝다(99) ⑤ 균등성(카이제곱).
+// 검증: ① 시프트 구현이 정의 ⌊2^p · frac(k · 2654435769 / 2^32)⌋ 를 64비트 곱·나머지·나눗셈으로 쓴 값, 그리고 일반 m = 2^p 의 mulAny 와 무작위 100 만 개 (k, p) 에서 같다 (같은 mod 2^32 산술의 다른 표기라 시프트 폭·비트 마스크 실수를 잡는 용도이고, 독립 검증은 실수 A 와의 비교) 또 실수 A 로 계산한 값과는 k < 4096, p ≤ 8 에서 99.9% 이상 같음(A32 가 A 를 2^-32 만큼 자른 값이라 k 가 커지면 오차 k·2^-32 가 쌓여 달라지지만, 정수 구현이 *정의* 이므로 문제 없고 부동소수 `k * 0.618…` 보다 정확) ② 세 간격 정리: k = 1..N (N ≤ 3000) 의 고정소수점 점들의 간격 종류 ≤ 3 ③ 연속한 키 N 개를 2^p 버킷에 넣으면 부하 차이가 2 + log₂(N)/4 이하(불일치도는 O(log N), 실측 최대 4) ④ 키가 모두 64 의 배수일 때 나눗셈법(m = 1024) 은 16 개 버킷만 쓰지만 곱셈법은 1024 개를 모두 쓰고 최대 부하가 이상값 97.7 에 가깝다(99) ⑤ 균등성(카이제곱) ⑥ 2^p 가 아닌 m (1000, 997, 12345) 의 mulAny 가 [0, m) 안이고, 실수 A 의 ⌊m·frac(kA)⌋ 와 거의 같고, 연속한 키가 모든 버킷에 고르게(최대−최소 ≤ 2 + log₂N/4, 실측 최대 4) 들어간다.
 const std::uint32_t A32 = 2654435769u;
 std::uint32_t fib(std::uint32_t k, int p) { return (std::uint32_t)(k * A32) >> (32 - p); }
+std::uint32_t mulAny(std::uint32_t k, std::uint32_t m) { return (std::uint32_t)(((std::uint64_t)(std::uint32_t)(k * A32) * m) >> 32); }      // 일반 m: ⌊m · frac(k·A32/2^32)⌋
 
 int main() {
     std::mt19937 rng(2);
@@ -580,8 +593,8 @@ int main() {
     long mismatchReal = 0, smallTrials = 0; const int trials = 1000000;
     for (int t = 0; t < trials; ++t) {
         std::uint32_t k = rng(); int p = 1 + (int)(rng() % 31);
-        std::uint64_t num = (std::uint64_t)k * A32; std::uint64_t frac32 = num & 0xffffffffu;                                // k·A32 의 소수부 × 2^32 를 64비트 정수 곱으로 (오버플로 없음)
-        std::uint32_t exact = (std::uint32_t)(frac32 >> (32 - p)); assert(fib(k, p) == exact);
+        std::uint64_t num = (std::uint64_t)k * A32; std::uint64_t frac32 = num % 4294967296ULL;                                // k·A32 의 소수부 × 2^32 를 64비트 정수 곱과 나머지로 (오버플로 없음)
+        std::uint32_t exact = (std::uint32_t)((frac32 << p) / 4294967296ULL); assert(fib(k, p) == exact && mulAny(k, 1u << p) == exact);
     }
     for (int t = 0; t < 200000; ++t) {                                                  // 작은 키 · 작은 p 에서는 실수 황금비 A 로 계산한 값과 거의 같다
         std::uint32_t k = rng() % 4096; int p = 1 + (int)(rng() % 8); long double A = (std::sqrt(5.0L) - 1) / 2; long double fr = k * A - std::floor(k * A);
@@ -596,13 +609,21 @@ int main() {
     }
     // ③ 연속한 키 → 2^p 버킷 부하 차이
     for (int p : {4, 8, 10}) for (int N : {100, 1000, 12345, 100000}) { std::vector<int> load(1 << p, 0); for (int k = 0; k < N; ++k) ++load[fib(k, p)]; assert(*std::max_element(load.begin(), load.end()) - *std::min_element(load.begin(), load.end()) <= 2 + (int)std::log2((double)N) / 4); }      // 불일치도(discrepancy) 는 O(log N): 실측 최대 4
+    // ⑥ 2^p 가 아닌 m: mulAny 는 [0, m) 안이고 실수 황금비 A 의 ⌊m·frac(kA)⌋ 와 (작은 k 에서) 거의 같으며, 연속한 키가 m 개 버킷에 고르게 퍼진다
+    int mulAnySpread = 0; long anyMismatch = 0, anyTrials = 0;
+    for (std::uint32_t m : {1000u, 997u, 12345u}) {
+        for (std::uint32_t k = 0; k < 4096; ++k) { long double A = (std::sqrt(5.0L) - 1) / 2, fr = k * A - std::floor(k * A); anyMismatch += (std::uint32_t)std::floor((long double)m * fr) != mulAny(k, m); ++anyTrials; }
+        for (int N : {100, 1000, 12345, 100000}) { std::vector<int> load(m, 0); for (int k = 0; k < N; ++k) { std::uint32_t h = mulAny(k, m); assert(h < m); ++load[h]; }
+            int spread = *std::max_element(load.begin(), load.end()) - *std::min_element(load.begin(), load.end()); assert(spread <= 2 + (int)std::log2((double)N) / 4); mulAnySpread = std::max(mulAnySpread, spread); }
+    }
+    assert(anyMismatch * 100 < anyTrials);                                                // 실측 17 / 12288
     // ④ 규칙적인 키: 64 의 배수 100,000 개를 1024 버킷에
     {   std::vector<int> div(1024, 0), mul(1024, 0); for (std::uint32_t i = 0; i < 100000; ++i) { ++div[(i * 64) % 1024]; ++mul[fib(i * 64, 10)]; }
         int divUsed = 0, mulUsed = 0; for (int c : div) divUsed += c > 0; for (int c : mul) mulUsed += c > 0; int mulMax = *std::max_element(mul.begin(), mul.end());
         assert(divUsed == 16 && mulUsed == 1024 && mulMax <= 100000 / 1024 + 6);     // 이상적인 부하는 97.7, 실측 최대 99
         // ⑤ 균등성: 무작위 키 40 만 개, 카이제곱
         std::vector<int> load(1024, 0); for (int i = 0; i < 400000; ++i) ++load[fib(rng(), 10)]; double chi = 0, e = 400000.0 / 1024; for (int c : load) chi += (c - e) * (c - e) / e; assert(std::abs(chi - 1023) < 5 * std::sqrt(2.0 * 1023));
-        std::cout << "MultiplicationMethod: the integer Fibonacci hash equalled the exact rational computation for 1,000,000 random (k, p) pairs and differed from a long-double golden-ratio version for small keys in only " << mismatchReal << " of " << smallTrials << " cases, point gaps took at most three values (three-distance theorem), and for 100,000 multiples of 64 the division method used " << divUsed << " of 1024 buckets while the multiplication method used " << mulUsed << " (largest bucket " << mulMax << ")" << std::endl; }
+        std::cout << "MultiplicationMethod: the shift-based Fibonacci hash equalled its 64-bit multiply/mod/divide definition and the general-m multiply for 1,000,000 random (k, p) pairs and differed from a long-double golden-ratio version for small keys in only " << mismatchReal << " of " << smallTrials << " cases, point gaps took at most three values (three-distance theorem), mulAny for m = 1000, 997, 12345 (not powers of two) stayed inside [0, m) with load spread at most " << mulAnySpread << " for consecutive keys; and for 100,000 multiples of 64 the division method used " << divUsed << " of 1024 buckets while the multiplication method used " << mulUsed << " (largest bucket " << mulMax << ")" << std::endl; }
     return 0;
 }
 // Time Complexity: O(1)
@@ -1248,16 +1269,16 @@ int main() {
 #include <vector>
 
 // 선형 탐사: h(k, i) = (h(k) + i) mod m. 충돌하면 바로 다음 칸을 본다. 캐시 친화적(이웃한 칸) 이고 구현이 가장 단순하지만, 점유된 연속 구간(클러스터)이 스스로 커지는 *1차 군집(primary clustering)* 이 생긴다 — 클러스터 위로 떨어진 키는 클러스터 끝까지 밀려나 그 길이를 늘리기 때문. 삭제는 묘비 없이 *뒤로 당기기(backward shift)* 로 한다.
-// 정리 세 가지를 검증한다. (1) 탐사열 (h + i) mod m, i = 0..m−1 은 *모든 칸을 정확히 한 번씩* 방문한다(모든 m ≤ 40, h). (2) 같은 home 에 n 개 키를 넣으면 총 탐사 수가 정확히 n(n+1)/2 — 1차 군집의 이차 비용. (3) *순서 무관성*: 같은 키 집합을 어떤 순서로 넣어도 점유되는 칸의 집합과 변위(home 에서 떨어진 거리) 의 합이 같다(Knuth) — 그래서 삭제 후 다시 넣어도, 병렬로 넣어도 최종 배치의 "총 비용" 이 변하지 않는다.
-// 검증: ④ 무작위 삽입·삭제·검색 20 만 번을 std::unordered_map 과 비교하며 200 번마다 불변식(모든 키가 home 에서 자기 칸까지 빈 칸 없이 닿음) 확인 ⑤ 가장 긴 클러스터가 α = 0.7, m = 100,003 에서 O(log m) 안쪽(≤ 18·ln m, 이론상 상수는 1/(α − 1 − ln α) ≈ 17.6; 실측 97) ⑥ 감김(wrap-around): home 이 m − 1 인 키들이 0 번 칸으로 이어진다.
+// 정리 세 가지를 검증한다. (1) 탐사열 (h + i) mod m, i = 0..m−1 은 *모든 칸을 정확히 한 번씩* 방문한다 — home 이 같은 키 m 개를 실제 Linear 에 넣으면 j 번째 키가 칸 (h + j − 1) mod m 에 들어가 표가 정확히 찬다(모든 m ≤ 40, h); 꽉 찬 표에서는 없는 키를 넣든 찾든 지우든 m 칸을 훑고 무한 루프 없이 false. (2) 같은 home 에 n 개 키를 넣으면 총 탐사 수가 정확히 n(n+1)/2 — 1차 군집의 이차 비용. (3) *순서 무관성*: 같은 키 집합을 어떤 순서로 넣어도 점유되는 칸의 집합과 변위(home 에서 떨어진 거리) 의 합이 같다(Knuth) — 그래서 삭제 후 다시 넣어도, 병렬로 넣어도 최종 배치의 "총 비용" 이 변하지 않는다.
+// 검증: ④ 무작위 삽입·삭제·검색 20 만 번을 std::unordered_map 과 비교하며 200 번마다 불변식(모든 키가 home 에서 자기 칸까지 빈 칸 없이 닿음) 확인 ⑤ α = 0.7, m = 100,003 에서 가장 긴 클러스터가 O(log m) 안쪽(≤ 18·ln m, 이론상 상수는 1/(α − 1 − ln α) ≈ 17.6) 이고, 삽입당 평균 탐사 수가 ½(1 + 1/(1−α)) ≈ 2.17 의 ±6% — 가장 긴 클러스터만으로는 군집된 해시를 못 거르지만 평균 탐사 수는 2.9 로 튀어 걸린다 (독립 고정 시드 사용) ⑥ 감김(wrap-around): home 이 m − 1 인 키들이 0 번 칸으로 이어진다.
 struct Linear {
     std::vector<std::uint64_t> slot; std::size_t n = 0; long probes = 0; bool ident;           // 빈 칸 = 0, 키 0 은 쓰지 않는다. ident: 항등 해시(시연용)
     explicit Linear(std::size_t m, bool identity = false) : slot(m, 0), ident(identity) {}
     std::size_t home(std::uint64_t k) const { if (ident) return (std::size_t)(k % slot.size()); k += 0x9e3779b97f4a7c15ULL; k = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL; k = (k ^ (k >> 27)) * 0x94d049bb133111ebULL; return (std::size_t)((k ^ (k >> 31)) % slot.size()); }
-    bool insert(std::uint64_t k) { std::size_t i = home(k); while (true) { ++probes; if (!slot[i]) { slot[i] = k; ++n; return true; } if (slot[i] == k) return false; i = (i + 1) % slot.size(); } }
-    bool contains(std::uint64_t k) const { std::size_t i = home(k); while (slot[i]) { if (slot[i] == k) return true; i = (i + 1) % slot.size(); } return false; }
+    bool insert(std::uint64_t k) { std::size_t i = home(k); for (std::size_t c = 0; c < slot.size(); ++c) { ++probes; if (!slot[i]) { slot[i] = k; ++n; return true; } if (slot[i] == k) return false; i = (i + 1) % slot.size(); } return false; }      // 꽉 찬 표에 없는 키: m 칸을 다 보고 false
+    bool contains(std::uint64_t k) const { std::size_t i = home(k); for (std::size_t c = 0; c < slot.size() && slot[i]; ++c) { if (slot[i] == k) return true; i = (i + 1) % slot.size(); } return false; }
     bool erase(std::uint64_t k) {                                                            // 뒤로 당기기
-        std::size_t m = slot.size(), i = home(k); while (slot[i] && slot[i] != k) i = (i + 1) % m; if (!slot[i]) return false;
+        std::size_t m = slot.size(), i = home(k), c = 0; while (c < m && slot[i] && slot[i] != k) { i = (i + 1) % m; ++c; } if (c == m || !slot[i]) return false;
         slot[i] = 0; --n; std::size_t j = i;
         while (true) { j = (j + 1) % m; if (!slot[j]) break; std::size_t h = home(slot[j]); bool stays = i <= j ? (i < h && h <= j) : (i < h || h <= j); if (!stays) { slot[i] = slot[j]; slot[j] = 0; i = j; } }
         return true;
@@ -1267,8 +1288,16 @@ struct Linear {
 };
 
 int main() {
-    // (1) 탐사열은 모든 칸을 정확히 한 번씩
-    for (int m = 1; m <= 40; ++m) for (int h = 0; h < m; ++h) { std::set<int> seen; for (int i = 0; i < m; ++i) seen.insert((h + i) % m); assert((int)seen.size() == m); }
+    // (1) 탐사열은 모든 칸을 정확히 한 번씩: home 이 h 인 키(m 의 배수 + h, 항등 해시) m 개를 Linear 에 넣으면 j 번째가 칸 (h + j − 1) mod m 에 들어가고 표가 꽉 찬다
+    for (int m = 1; m <= 40; ++m) for (int h = 0; h < m; ++h) {
+        Linear t(m, true); std::set<int> seen; long before = 0;
+        for (int j = 1; j <= m; ++j) { std::uint64_t k = (std::uint64_t)j * m + h; assert(t.insert(k)); int s = (h + j - 1) % m; assert(t.slot[s] == k); seen.insert(s); }
+        assert((int)seen.size() == m && t.n == (std::size_t)m && t.probes == (long)m * (m + 1) / 2 && t.invariant());
+        std::uint64_t absent = (std::uint64_t)(m + 1) * m + h, present = (std::uint64_t)m * m + h;   // 꽉 찬 표: 없는 키는 m 칸을 훑고 모두 false (무한 루프 없음)
+        before = t.probes; assert(!t.insert(absent) && t.probes - before == m && !t.contains(absent) && !t.erase(absent) && t.n == (std::size_t)m);
+        before = t.probes; assert(!t.insert(present) && t.probes - before >= 1 && t.contains(present));
+        assert(t.erase(present) && t.n == (std::size_t)m - 1 && !t.contains(present) && t.invariant() && t.insert(present) && t.n == (std::size_t)m && t.invariant());
+    }
     // (2) 같은 home: n 개를 넣으면 총 탐사 n(n+1)/2 (home = 0 이 되도록 m 의 배수 키, 항등 해시)
     for (int n : {1, 2, 10, 100, 500}) { Linear t(1009, true); for (int i = 1; i <= n; ++i) assert(t.insert((std::uint64_t)i * 1009)); assert(t.probes == (long)n * (n + 1) / 2 && t.displacement() == (long)n * (n - 1) / 2); }
     // (3) 순서 무관성: 같은 키 집합을 200 가지 무작위 순서로 → 점유 칸 집합과 변위 합이 같다
@@ -1285,13 +1314,14 @@ int main() {
         }
         for (auto& kv : ref) assert(t.contains(kv.first)); assert(erased > 20000); }
     // ⑤ 가장 긴 클러스터: α = 0.7, m = 100,003 에서 O(log m)
-    {   const std::size_t m = 100003; Linear t(m); while (t.n < (std::size_t)(0.7 * m)) t.insert(rng() | 1); std::size_t best = 0, run = 0; for (int pass = 0; pass < 2; ++pass) for (std::size_t i = 0; i < m; ++i) { run = t.slot[i] ? run + 1 : 0; best = std::max(best, run); }
-        assert(best >= 40 && (double)best <= 18 * std::log((double)m)); std::cout << "LinearProbing: longest cluster at alpha 0.7, m = 100003 was " << best << " slots (18 ln m = " << 18 * std::log((double)m) << ")" << std::endl; }
+    {   std::mt19937_64 r5(5); const std::size_t m = 100003; Linear t(m); while (t.n < (std::size_t)(0.7 * m)) t.insert(r5() | 1); std::size_t best = 0, run = 0; for (int pass = 0; pass < 2; ++pass) for (std::size_t i = 0; i < m; ++i) { run = t.slot[i] ? run + 1 : 0; best = std::max(best, run); }
+        assert(best >= 40 && (double)best <= 18 * std::log((double)m)); double theory = 0.5 * (1 + 1 / (1 - (double)t.n / m)), avgProbes = (double)t.probes / (double)t.n; assert(std::abs(avgProbes / theory - 1) < 0.06);
+        std::cout << "LinearProbing: longest cluster at alpha 0.7, m = 100003 was " << best << " slots (18 ln m = " << 18 * std::log((double)m) << "), avg probes/insert " << avgProbes << " (theory " << theory << ")" << std::endl; }
     // ⑥ 감김: home 이 m − 1 인 키 5 개가 m − 1, 0, 1, 2, 3 번 칸에
     {   Linear t(11, true); for (int i = 1; i <= 5; ++i) t.insert((std::uint64_t)(i - 1) * 11 + 10); for (int s : {10, 0, 1, 2, 3}) assert(t.slot[s] != 0); assert(t.invariant() && t.contains(21) && t.erase(10 + 11 * 3) && t.invariant() && !t.contains(43)); }                // 키 10, 21, 32, 43, 54 가 모두 home = 10
-    std::cout << "LinearProbing: the probe sequence visited every slot exactly once for all m <= 40, n keys with one home cost exactly n(n+1)/2 probes, 200 random insertion orders of the same keys produced the same occupied slots and the same total displacement, and 200,000 random insert/erase/find operations with backward-shift deletion matched std::unordered_map while the cluster invariant held" << std::endl; return 0;
+    std::cout << "LinearProbing: filling a table with m same-home keys put key j in slot (h+j-1) mod m for all m <= 40 and h (and a full table answered absent keys with false instead of looping), n keys with one home cost exactly n(n+1)/2 probes, 200 random insertion orders of the same keys produced the same occupied slots and the same total displacement, and 200,000 random insert/erase/find operations with backward-shift deletion matched std::unordered_map while the cluster invariant held" << std::endl; return 0;
 }
-// Time Complexity: 성공 탐색 ≈ ½(1 + 1/(1−α)), 실패 탐색 ≈ ½(1 + 1/(1−α)²)
+// Time Complexity: 성공 탐색 ≈ ½(1 + 1/(1−α)), 실패 탐색 ≈ ½(1 + 1/(1−α)²), 최악 O(n) (키가 한 클러스터에 몰릴 때)
 // Space Complexity: O(m)
 ```
 ## QuadraticProbing()
