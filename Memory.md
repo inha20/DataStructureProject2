@@ -1110,24 +1110,25 @@ int main() {
 // 검증: ① 원래 확인(호출 수·생성/소멸 수·실패 시 예외/nullptr)  ② 쿠키: 소멸자가 사소한 타입은 쿠키 없음, 아니면 원소 수를 담는 8 바이트(정렬 16 타입은 16 바이트) — Itanium ABI
 //        ③ 배열 원소 3 번째 생성자가 예외 → 앞의 2 개가 소멸되고 메모리가 반환됨, 단일 new 의 생성자 예외도 누수 없음  ④ placement new + 대응 placement delete (생성자 예외 시 호출됨), 명시적 소멸자 호출
 //        ⑤ 클래스별 operator new/delete 와 가상 소멸자(파생 클래스 크기가 sized delete 로 전달됨)  ⑥ new_handler: 예산을 푸는 핸들러는 한 번 불린 뒤 재시도로 성공하고, 계속 실패하면 핸들러가 던질 때까지 반복  ⑦ 정렬 요구가 큰 타입은 정렬된 operator new
-static int allocs = 0, frees = 0, handlerCalls = 0; static size_t budget = (size_t)-1, lastSingle = 0, lastArray = 0, lastAlign = 0, lastFreedSize = 0;
+// 주의: 표준은 new 식이 전역 상태를 건드리지 않는다고 가정한 최적화(쓰이지 않는 할당 제거, 값 전달)를 허용하고 clang 은 실제로 그렇게 한다 — 할당 함수·핸들러가 바꾸는 계측 변수는 volatile 로 둔다
+static volatile int allocs = 0, frees = 0, handlerCalls = 0; static volatile size_t budget = (size_t)-1, lastSingle = 0, lastArray = 0, lastAlign = 0, lastFreedSize = 0;
 void* rawAlloc(size_t n) {
     for (;;) {                                                      // 표준이 정한 루프: 실패하면 new_handler 를 부르고 다시 시도, 핸들러가 없으면 bad_alloc
-        if (n <= budget) { void* raw = std::malloc(n + 16); if (raw) { std::memcpy(raw, &n, sizeof n); budget -= n; ++allocs; return (char*)raw + 16; } }
+        if (n <= budget) { void* raw = std::malloc(n + 16); if (raw) { std::memcpy(raw, &n, sizeof n); budget = budget - n; allocs = allocs + 1; return (char*)raw + 16; } }
         std::new_handler h = std::get_new_handler(); if (!h) throw std::bad_alloc(); h();
     }
 }
 void* operator new(size_t n) { lastSingle = n; return rawAlloc(n); }
 void* operator new[](size_t n) { lastArray = n; return rawAlloc(n); }
-void rawFree(void* p) noexcept { if (!p) return; char* raw = (char*)p - 16; size_t n; std::memcpy(&n, raw, sizeof n); budget += n; lastFreedSize = n; ++frees; std::free(raw); }
+void rawFree(void* p) noexcept { if (!p) return; char* raw = (char*)p - 16; size_t n; std::memcpy(&n, raw, sizeof n); budget = budget + n; lastFreedSize = n; frees = frees + 1; std::free(raw); }
 void operator delete(void* p) noexcept { rawFree(p); }
 void operator delete(void* p, size_t) noexcept { rawFree(p); }
 void operator delete[](void* p) noexcept { rawFree(p); }
 void operator delete[](void* p, size_t) noexcept { rawFree(p); }
 struct alignas(64) Big { char data[64]; };
-void* operator new(size_t n, std::align_val_t al) { lastAlign = (size_t)al; void* p = nullptr; if (posix_memalign(&p, (size_t)al, n) != 0) throw std::bad_alloc(); ++allocs; return p; }
-void operator delete(void* p, std::align_val_t) noexcept { ++frees; std::free(p); }
-void operator delete(void* p, size_t, std::align_val_t) noexcept { ++frees; std::free(p); }
+void* operator new(size_t n, std::align_val_t al) { lastAlign = (size_t)al; void* p = nullptr; if (posix_memalign(&p, (size_t)al, n) != 0) throw std::bad_alloc(); allocs = allocs + 1; return p; }
+void operator delete(void* p, std::align_val_t) noexcept { frees = frees + 1; std::free(p); }
+void operator delete(void* p, size_t, std::align_val_t) noexcept { frees = frees + 1; std::free(p); }
 
 struct Obj { static int alive; Obj() { alive++; } ~Obj() { alive--; } };
 int Obj::alive = 0;
@@ -1147,8 +1148,8 @@ struct Pooled { static int newCalls, deleteCalls; static size_t lastDeleteSize; 
     virtual ~Pooled() {} };
 struct Derived : Pooled { char more[100]; };
 int Pooled::newCalls = 0, Pooled::deleteCalls = 0; size_t Pooled::lastDeleteSize = 0;
-std::size_t reserveBytes = 0;
-void releaseReserve() { ++handlerCalls; if (reserveBytes) { budget += reserveBytes; reserveBytes = 0; } else throw std::bad_alloc(); }            // 예비 메모리를 풀어 주고, 더 줄 것이 없으면 포기
+volatile std::size_t reserveBytes = 0;
+void releaseReserve() { handlerCalls = handlerCalls + 1; if (reserveBytes) { budget = budget + reserveBytes; reserveBytes = 0; } else throw std::bad_alloc(); }            // 예비 메모리를 풀어 주고, 더 줄 것이 없으면 포기
 
 int main() {
     int baseAllocs = allocs, baseFrees = frees;
@@ -1167,15 +1168,15 @@ int main() {
     budget = (size_t)-1;
     // ② 쿠키 (Itanium ABI: GCC·Clang)
 #if defined(__GNUC__) || defined(__clang__)
-    { Plain* p = new Plain[5]; assert(lastArray == 5 * sizeof(Plain)); delete[] p;                                 // 쿠키 없음
-      NonTrivial* q = new NonTrivial[5]; assert(lastArray == 5 * sizeof(NonTrivial) + sizeof(size_t)); delete[] q;  // 원소 수를 담는 쿠키
-      Wide* w = new Wide[3]; assert(sizeof(Wide) == 16 && lastArray == 3 * 16 + 16); delete[] w; }                  // 쿠키 크기 = max(size_t 크기, 정렬)
+    { Plain* volatile p = new Plain[5]; assert(lastArray == 5 * sizeof(Plain)); delete[] p;                                 // 쿠키 없음
+      NonTrivial* volatile q = new NonTrivial[5]; assert(lastArray == 5 * sizeof(NonTrivial) + sizeof(size_t)); delete[] q;  // 원소 수를 담는 쿠키
+      Wide* volatile w = new Wide[3]; assert(sizeof(Wide) == 16 && lastArray == 3 * 16 + 16); delete[] w; }                  // 쿠키 크기 = max(size_t 크기, 정렬)
 #endif
     // ③ 생성자 예외
     {   int a0 = allocs, f0 = frees; Thrower::constructed = Thrower::destroyed = 0; Thrower::throwAt = 2; bool caught = false;
-        try { Thrower* t = new Thrower[5]; (void)t; } catch (const Boom&) { caught = true; }
+        try { Thrower* volatile t = new Thrower[5]; (void)t; } catch (const Boom&) { caught = true; }
         assert(caught && Thrower::constructed == 2 && Thrower::destroyed == 2 && allocs - a0 == 1 && frees - f0 == 1);            // 만든 2 개는 소멸, 메모리는 반환
-        Thrower::constructed = 0; Thrower::throwAt = 0; caught = false; a0 = allocs; f0 = frees; try { Thrower* t = new Thrower; (void)t; } catch (const Boom&) { caught = true; }
+        Thrower::constructed = 0; Thrower::throwAt = 0; caught = false; a0 = allocs; f0 = frees; try { Thrower* volatile t = new Thrower; (void)t; } catch (const Boom&) { caught = true; }
         assert(caught && allocs - a0 == 1 && frees - f0 == 1 && Thrower::destroyed == 2); Thrower::throwAt = -1; }
     // ④ placement new
     {   Arena arena; Obj* p = new (arena) Obj; assert((char*)p == arena.buf && Obj::alive == 1); p->~Obj(); assert(Obj::alive == 0);                // 명시적 소멸자 호출 (메모리는 Arena 가 관리)
@@ -1183,16 +1184,16 @@ int main() {
         try { new (arena) Fragile(true); } catch (const Boom&) { caught = true; }
         assert(caught && placementDeletes == 1); }
     // ⑤ 클래스별 operator new/delete
-    {   Pooled* p = new Pooled; delete p; assert(Pooled::newCalls == 1 && Pooled::deleteCalls == 1 && Pooled::lastDeleteSize == sizeof(Pooled));
-        Pooled* d = new Derived; delete d; assert(Pooled::newCalls == 2 && Pooled::deleteCalls == 2 && Pooled::lastDeleteSize == sizeof(Derived) && sizeof(Derived) > sizeof(Pooled)); }       // 가상 소멸자 → 실제 크기가 전달된다
+    {   Pooled* volatile p = new Pooled; delete p; assert(Pooled::newCalls == 1 && Pooled::deleteCalls == 1 && Pooled::lastDeleteSize == sizeof(Pooled));
+        Pooled* volatile d = new Derived; delete d; assert(Pooled::newCalls == 2 && Pooled::deleteCalls == 2 && Pooled::lastDeleteSize == sizeof(Derived) && sizeof(Derived) > sizeof(Pooled)); }       // 가상 소멸자 → 실제 크기가 전달된다
     // ⑥ new_handler
     {   std::set_new_handler(releaseReserve); budget = 1000; reserveBytes = 5000; handlerCalls = 0;
-        char* big = new char[3000]; assert(handlerCalls == 1 && big != nullptr && budget == 1000 + 5000 - 3000); delete[] big;                          // 핸들러가 예산을 풀자 재시도에서 성공
-        budget = 100; reserveBytes = 0; handlerCalls = 0; bool caught = false; try { char* x = new char[5000]; (void)x; } catch (const std::bad_alloc&) { caught = true; } assert(caught && handlerCalls == 1);     // 풀어 줄 것이 없으면 핸들러가 던진다
+        char* volatile big = new char[3000]; assert(handlerCalls == 1 && big != nullptr && budget == 1000 + 5000 - 3000); delete[] big;                          // 핸들러가 예산을 풀자 재시도에서 성공
+        budget = 100; reserveBytes = 0; handlerCalls = 0; bool caught = false; try { char* volatile x = new char[5000]; (void)x; } catch (const std::bad_alloc&) { caught = true; } assert(caught && handlerCalls == 1);     // 풀어 줄 것이 없으면 핸들러가 던진다
         std::set_new_handler(nullptr); budget = (size_t)-1; }
     // ⑦ 정렬 요구가 큰 타입
-    {   int a0 = allocs, f0 = frees; Big* b = new Big; assert(lastAlign == 64 && ((uintptr_t)b % 64) == 0 && allocs == a0 + 1); delete b; assert(frees == f0 + 1);
-        Big* arr2 = new Big[3]; assert(((uintptr_t)arr2 % 64) == 0 && ((uintptr_t)&arr2[2] - (uintptr_t)arr2) == 128); delete[] arr2; }
+    {   int a0 = allocs, f0 = frees; Big* volatile b = new Big; assert(lastAlign == 64 && ((uintptr_t)b % 64) == 0 && allocs == a0 + 1); delete b; assert(frees == f0 + 1);
+        Big* volatile arr2 = new Big[3]; assert(((uintptr_t)arr2 % 64) == 0 && ((uintptr_t)&arr2[2] - (uintptr_t)arr2) == 128); delete[] arr2; }
     assert(allocs == frees);
     std::cout << "new/delete: allocs=" << allocs << " frees=" << frees << std::endl;
     return 0;
@@ -3818,6 +3819,7 @@ uint64_t signExtend(uint64_t va, int bits) {                                    
 uint64_t compose(const Split& s) { return signExtend((uint64_t)s.pml4 << 39 | (uint64_t)s.pdpt << 30 | (uint64_t)s.pd << 21 | (uint64_t)s.pt << 12 | s.offset, 48); }
 bool canonical(uint64_t va, int bits = 48) { return signExtend(va, bits) == va; }
 
+void codeMarker() {}                                                           // 코드 영역의 주소를 얻기 위한 함수 (main 의 주소를 취하는 것은 C++ 에서 금지)
 int main() {
     uint64_t va = 0x00007f1234567abcULL; Split s = split(va);
     assert(s.offset == 0xabc && s.pt == 0x167 && s.pd == 0x1a2 && s.pdpt == 0x48 && s.pml4 == 0xfe);
@@ -3860,7 +3862,7 @@ int main() {
     assert(512ULL * 512 * 512 * 512 * 4096 == (1ULL << 48) && 512ULL * 512 * 512 * 512 * 512 * 4096 == (1ULL << 57));          // 인덱스 4개(5개) × 오프셋 = 주소 공간 크기
 #if defined(__x86_64__)
     int local = 0; int* heap = new int(1);                                            // ⑤ 실제 포인터
-    uint64_t addrs[3] = {(uint64_t)&local, (uint64_t)heap, (uint64_t)(void*)&main};
+    uint64_t addrs[3] = {(uint64_t)&local, (uint64_t)heap, (uint64_t)(void*)&codeMarker};
     for (uint64_t a : addrs) assert(canonical(a) && a < (1ULL << 47));                // 사용자 포인터는 낮은 절반
     delete heap;
 #endif
@@ -6216,7 +6218,7 @@ void code() {}
 uint64_t deepestAddress = 0; uint64_t stackStartBefore = 0, stackStartDeep = 0;
 void recurse(int depth) {
     volatile char frame[64 * 1024]; frame[0] = (char)depth; frame[sizeof frame - 1] = 1;                // 페이지를 실제로 만지는 큰 스택 프레임
-    if (depth > 0) recurse(depth - 1);
+    if (depth > 0) { recurse(depth - 1); frame[1] = (char)(frame[0] + 1); }                                // 호출 뒤에도 프레임을 쓰므로 꼬리 호출 최적화로 프레임이 합쳐지지 않는다
     else { deepestAddress = (uint64_t)&frame[0]; auto maps = readMaps(); const Region* s = find(maps, (const void*)deepestAddress); assert(s && s->name == "[stack]"); stackStartDeep = s->start; }
 }
 
@@ -8160,15 +8162,15 @@ int main() {
     {   TVar x, y; std::atomic<long> bad{0}, reads{0}; std::atomic<bool> stop{false}; std::vector<std::thread> ts;
         for (int w = 0; w < 4; ++w) ts.emplace_back([&] { for (int i = 0; i < 5000; ++i) atomically([&](Tx& tx) { int64_t v = tx.read(x); tx.write(x, v + 1); tx.write(y, v + 1); }); });
         std::vector<std::thread> rs;
-        for (int r = 0; r < 4; ++r) rs.emplace_back([&] { while (!stop) { atomically([&](Tx& tx) { int64_t a = tx.read(x), b = tx.read(y); if (a != b) ++bad; ++reads; }); } });         // 중단될 시도 안에서도 검사
+        for (int r = 0; r < 4; ++r) rs.emplace_back([&] { long mine = 0; while (!stop || mine < 50) { atomically([&](Tx& tx) { int64_t a = tx.read(x), b = tx.read(y); if (a != b) ++bad; }); ++mine; ++reads; } });         // 중단될 시도 안에서도 검사
         for (auto& t : ts) { t.join(); }
         stop = true; for (auto& t : rs) { t.join(); }
-        assert(bad == 0 && x.value == 20000 && y.value == 20000 && reads > 100); }
+        assert(bad == 0 && x.value == 20000 && y.value == 20000 && reads >= 200); }
     // ③ 은행 계좌
     {   const int A = 16; std::vector<TVar> acct(A); for (auto& a : acct) a.value = 1000; std::atomic<long> badSum{0}, audits{0}; std::atomic<bool> stop{false}; commits = aborts = 0; std::vector<std::thread> ts, auditors;
         for (int t = 0; t < 4; ++t) ts.emplace_back([&, t] { std::mt19937 rng(t + 1); for (int i = 0; i < 5000; ++i) { int from = (int)(rng() % A), to = (int)(rng() % A); int64_t amount = 1 + (int64_t)(rng() % 50);
             atomically([&](Tx& tx) { int64_t f = tx.read(acct[from]); if (from == to) return; int64_t g = tx.read(acct[to]); tx.write(acct[from], f - amount); tx.write(acct[to], g + amount); }); } });
-        for (int a = 0; a < 2; ++a) auditors.emplace_back([&] { for (int i = 0; i < 5000 && !stop; ++i) { atomically([&](Tx& tx) { int64_t s = 0; for (auto& v : acct) s += tx.read(v); if (s != 16000) ++badSum; ++audits; }); } });
+        for (int a = 0; a < 2; ++a) auditors.emplace_back([&] { for (int i = 0; (i < 5000 && !stop) || i < 20; ++i) { atomically([&](Tx& tx) { int64_t s = 0; for (auto& v : acct) s += tx.read(v); if (s != 16000) ++badSum; ++audits; }); } });
         for (auto& t : ts) { t.join(); }
         stop = true; for (auto& t : auditors) { t.join(); }
         int64_t total = 0; for (auto& a : acct) total += a.value; assert(total == 16000 && badSum == 0 && audits > 10 && aborts > 0); }
@@ -8752,17 +8754,17 @@ int main() {
 //  ① 생성자: new 만 호출, 생성자가 예외를 던지면 new 가 자동으로 메모리를 되돌린다(할당 수 == 해제 수), 배열은 이미 만든 원소를 소멸  ② 실패: malloc 은 NULL, new 는 bad_alloc, new(nothrow) 는 nullptr, new_handler 가 있으면 실패할 때마다 호출한 뒤 재시도
 //  ③ 크기: new T[n] 이 실제로 요청하는 바이트 = n·sizeof(T) + (소멸자가 필요한 타입이면 원소 수를 적는 8바이트 "쿠키")  ④ 정렬: malloc 은 max_align_t 까지, 과정렬 타입(alignas 64)도 new 는 C++17 부터 맞춰 준다  ⑤ 크기 0: new char[0] 은 항상 서로 다른 널 아닌 포인터
 //  ⑥ 클래스별 operator new 를 정의할 수 있다(malloc 은 불가능): 객체 풀·계측에 쓰인다
-static long newCalls = 0, deleteCalls = 0; static size_t lastNewSize = 0; static long failCount = 0; static long handlerCalls = 0;
+static volatile long newCalls = 0, deleteCalls = 0; static volatile size_t lastNewSize = 0; static volatile long failCount = 0; static volatile long handlerCalls = 0;      // 할당 함수·핸들러가 바꾸는 값은 volatile (clang 은 new 식이 전역 상태를 건드리지 않는다고 가정하고 값을 전달한다)
 void* operator new(std::size_t n) {
-    ++newCalls; lastNewSize = n;
+    newCalls = newCalls + 1; lastNewSize = n;
     for (;;) {
-        void* p = nullptr; if (failCount > 0) --failCount; else p = std::malloc(n ? n : 1);                 // failCount 만큼은 실패한 것으로 취급 (메모리 부족 흉내)
+        void* p = nullptr; if (failCount > 0) failCount = failCount - 1; else p = std::malloc(n ? n : 1);                 // failCount 만큼은 실패한 것으로 취급 (메모리 부족 흉내)
         if (p) return p;
         std::new_handler h = std::get_new_handler(); if (!h) throw std::bad_alloc(); h();                    // 표준 규칙: 핸들러를 부르고 다시 시도
     }
 }
 void* operator new[](std::size_t n) { return operator new(n); }
-void rawFree(void* p) noexcept { if (p) ++deleteCalls; std::free(p); }
+void rawFree(void* p) noexcept { if (p) deleteCalls = deleteCalls + 1; std::free(p); }
 void operator delete(void* p) noexcept { rawFree(p); }
 void operator delete[](void* p) noexcept { rawFree(p); }
 void operator delete(void* p, std::size_t) noexcept { rawFree(p); }
@@ -8780,7 +8782,7 @@ struct Pooled {                                                                /
     static void operator delete(void* p) { ++frees; ::operator delete(p); }
 };
 long Pooled::allocs = 0, Pooled::frees = 0;
-void countingHandler() { ++handlerCalls; }
+void countingHandler() { handlerCalls = handlerCalls + 1; }
 
 int main() {
     // ① 생성자
@@ -8793,22 +8795,22 @@ int main() {
     viaMalloc->~Widget(); std::free(viaMalloc);                       // malloc 짝은 소멸자 직접 호출 + free
     delete viaNew; assert(Widget::dtors == 2);                        // new 짝은 delete
     {   long n0 = newCalls, d0 = deleteCalls; Thrower::built = Thrower::destroyed = 0;
-        try { Thrower* t = new Thrower[5]; delete[] t; assert(false); } catch (int) {}                            // 세 번째 생성자에서 예외
+        try { Thrower* volatile t = new Thrower[5]; delete[] t; assert(false); } catch (int) {}                            // 세 번째 생성자에서 예외
         assert(Thrower::built == 2 && Thrower::destroyed == 2);                                                    // 이미 만든 두 원소는 소멸되고
         assert(newCalls - n0 == 1 && deleteCalls - d0 == 1); }                                                      // 메모리도 자동으로 반환 (할당 1, 해제 1)
     // ② 실패
     {   volatile size_t hugeVolatile = std::numeric_limits<size_t>::max() / 4; const size_t HUGE_SIZE = hugeVolatile;       // 컴파일 시간 상수가 아니게 해서 컴파일러가 거부하지 못하게 한다
-        assert(std::malloc(HUGE_SIZE) == nullptr);                                                                 // malloc: NULL
-        bool threw = false; try { char* p = new char[HUGE_SIZE]; (void)p; } catch (const std::bad_alloc&) { threw = true; } assert(threw);   // new: 예외
-        char* np = new (std::nothrow) char[HUGE_SIZE]; assert(np == nullptr);                                      // nothrow new: nullptr
+        void* volatile mp = std::malloc(HUGE_SIZE); assert(mp == nullptr);                                                                 // malloc: NULL
+        bool threw = false; try { char* volatile p = new char[HUGE_SIZE]; (void)p; } catch (const std::bad_alloc&) { threw = true; } assert(threw);   // new: 예외
+        char* volatile np = new (std::nothrow) char[HUGE_SIZE]; assert(np == nullptr);                                      // nothrow new: nullptr
         std::new_handler old = std::set_new_handler(countingHandler); handlerCalls = 0; failCount = 2;           // 두 번 실패하는 상황
-        char* ok = new char[16]; assert(ok != nullptr && handlerCalls == 2 && failCount == 0); delete[] ok;       // 핸들러가 실패마다 호출되고 세 번째 시도에서 성공
+        char* volatile ok = new char[16]; assert(ok != nullptr && handlerCalls == 2 && failCount == 0); delete[] ok;       // 핸들러가 실패마다 호출되고 세 번째 시도에서 성공
         std::set_new_handler(old); }
     // ③ 배열 쿠키
     {
 #if defined(__GNUC__)
-        Widget* w = new Widget[10]; assert(lastNewSize == 10 * sizeof(Widget) + sizeof(size_t)); delete[] w;          // 소멸자가 필요: 원소 수를 적는 쿠키 8바이트가 앞에 붙는다 (Itanium ABI)
-        Plain* p = new Plain[10]; assert(lastNewSize == 10 * sizeof(Plain)); delete[] p;                              // 소멸자가 필요 없으면 쿠키도 없다
+        Widget* volatile w = new Widget[10]; assert(lastNewSize == 10 * sizeof(Widget) + sizeof(size_t)); delete[] w;          // 소멸자가 필요: 원소 수를 적는 쿠키 8바이트가 앞에 붙는다 (Itanium ABI)
+        Plain* volatile p = new Plain[10]; assert(lastNewSize == 10 * sizeof(Plain)); delete[] p;                              // 소멸자가 필요 없으면 쿠키도 없다
 #endif
         Widget::ctors = Widget::dtors = 0; Widget* w2 = new Widget[4]; assert(Widget::ctors == 4); delete[] w2; assert(Widget::dtors == 4); }   // 배열은 원소마다 생성자·소멸자
     // ④ 정렬
@@ -8817,9 +8819,9 @@ int main() {
         for (Big* b : bigs) delete b;
         void* m = std::malloc(sizeof(Big)); bool aligned64 = (uintptr_t)m % 64 == 0; (void)aligned64; std::free(m); }                                                    // malloc 은 64 정렬을 보장하지 않는다 (posix_memalign/aligned_alloc 필요)
     // ⑤ 크기 0
-    {   char* a = new char[0]; char* b = new char[0]; assert(a && b && a != b); delete[] a; delete[] b; }
+    {   char* volatile a = new char[0]; char* volatile b = new char[0]; assert(a && b && a != b); delete[] a; delete[] b; }
     // ⑥ 클래스별 operator new
-    {   Pooled* p = new Pooled; Pooled* q = new Pooled; assert(Pooled::allocs == 2); delete p; delete q; assert(Pooled::frees == 2);
+    {   Pooled* volatile p = new Pooled; Pooled* volatile q = new Pooled; assert(Pooled::allocs == 2); delete p; delete q; assert(Pooled::frees == 2);
         int* other = new int(5); assert(Pooled::allocs == 2); delete other; }                                                                                              // 다른 타입의 new 에는 영향이 없다
     int* arr = (int*)std::malloc(10 * sizeof(int));                   // 크기를 직접 계산해야 한다 (new int[10] 은 타입이 계산)
     assert(arr); std::free(arr);
@@ -8853,14 +8855,15 @@ static std::vector<std::string> logv; static size_t lastDeleteSize = 0; static l
 void* operator new(std::size_t n) { ++allocs; void* p = std::malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
 void rawFree(void* p) noexcept { if (p) ++frees; std::free(p); }
 void operator delete(void* p) noexcept { rawFree(p); }
-void operator delete(void* p, std::size_t n) noexcept { lastDeleteSize = n; rawFree(p); }
+void operator delete(void* p, std::size_t) noexcept { rawFree(p); }
 void operator delete[](void* p) noexcept { rawFree(p); }
 void operator delete[](void* p, std::size_t) noexcept { rawFree(p); }
 
 struct Resource { static int open; Resource() { open++; } ~Resource() { open--; } };
 int Resource::open = 0;
 struct Member { std::string name; explicit Member(std::string n) : name(std::move(n)) { logv.push_back("+" + name); } ~Member() { logv.push_back("-" + name); } };
-struct Base { Member m; Base() : m("base.m") { logv.push_back("+Base"); } virtual ~Base() { logv.push_back("-Base"); } virtual int tag() const { return 1; } };
+struct Base { Member m; Base() : m("base.m") { logv.push_back("+Base"); } virtual ~Base() { logv.push_back("-Base"); } virtual int tag() const { return 1; }
+    static void operator delete(void* p, std::size_t n) { lastDeleteSize = n; ::operator delete(p); } };            // 클래스별 해제 함수: 가상 소멸자가 있으면 "실제 타입"의 크기가 넘어온다 (전역 sized delete 는 clang 18 이하에서 기본 꺼짐)
 struct Derived : Base { Member a, b; char padding[100]; Derived() : a("a"), b("b") { logv.push_back("+Derived"); } ~Derived() override { logv.push_back("-Derived"); } int tag() const override { return 2; } };
 struct Leaf : Base { double d[8]; Leaf() { logv.push_back("+Leaf"); } ~Leaf() override { logv.push_back("-Leaf"); } int tag() const override { return 3; } };
 struct Counted { static int alive; int id; explicit Counted(int i = 0) : id(i) { ++alive; } ~Counted() { --alive; logv.push_back("~" + std::to_string(id)); } };
@@ -8888,10 +8891,10 @@ int main() {
         logv.clear(); Numbered::next = 0; Numbered* many = new Numbered[4]; delete[] many;
         assert((logv == std::vector<std::string>{"n+0", "n+1", "n+2", "n+3", "n-3", "n-2", "n-1", "n-0"})); }   // 배열 원소는 역순으로 소멸
     // ③ 가상 소멸자와 크기 있는 해제
-    {   logv.clear(); Base* p = new Derived; assert(p->tag() == 2); delete p;
+    {   logv.clear(); Base* volatile p = new Derived; assert(p->tag() == 2); delete p;
         assert(logv.back() == "-base.m" && logv[logv.size() - 5] == "-Derived" && lastDeleteSize == sizeof(Derived));            // 기반 포인터로 지워도 파생 소멸자가 불리고, 크기도 sizeof(Derived)
-        Base* q = new Leaf; delete q; assert(lastDeleteSize == sizeof(Leaf) && sizeof(Leaf) != sizeof(Derived));                  // 타입마다 실제 크기가 전달된다
-        Base* plain = new Base; delete plain; assert(lastDeleteSize == sizeof(Base)); }
+        Base* volatile q = new Leaf; delete q; assert(lastDeleteSize == sizeof(Leaf) && sizeof(Leaf) != sizeof(Derived));                  // 타입마다 실제 크기가 전달된다
+        Base* volatile plain = new Base; delete plain; assert(lastDeleteSize == sizeof(Base)); }
     // ④ 널
     {   long f0 = frees; logv.clear(); Base* nothing = nullptr; delete nothing; std::free(nullptr); assert(frees == f0 && logv.empty()); }
     // ⑤ 무작위 다형 객체
