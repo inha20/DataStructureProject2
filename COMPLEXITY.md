@@ -47,7 +47,7 @@
 | `BVHTree` | 5 | 구성 O(N log N), 레이 질의 평균 O(log N) | O(N) |
 | `BKTree` | 5 | 검색 평균 O(N^α) (α < 1, 반경이 작을수록 가지치기가 잘 됨) | O(N) |
 | `VPTree` | 5 | 구성 O(N log N), kNN 평균 O(log N) (차원이 낮거나 군집이 있을 때) | O(N) |
-| `CoverTree` | 5 | 삽입·NN 질의 O(c^6 log N) (c: 팽창 상수) | O(N) |
+| `CoverTree` | 5 | 삽입 O(c^6 log N), NN 질의 O(c^12 log N) (c: 팽창 상수) | O(N) |
 | `DCEL` | 5 | 만들기 O(E log E) (점마다 각도 정렬), 면·점 둘레 훑기 O(둘레 길이), splitFace O(1) (+ 면 번호 다시 매기기 O(E)) | O(V + E) |
 | `QuadEdge` | 5 | MakeEdge·Splice·Connect·DeleteEdge 모두 O(1), 점·면 훑기는 둘레 길이에 비례 | 변 하나당 4 칸 (Onext) + 시작점 — O(E) |
 | `SegmentTree` | 6 | build O(N), 구간 갱신·구간 합 O(log N) | O(N) (4N 칸) |
@@ -161,7 +161,7 @@
 | `AdjacencyList` | 2 | 이웃 훑기 O(deg), 간선 질의 O(deg) (정렬 시 O(log deg)), 전치 O(V + E) | O(V + E) |
 | `EdgeList` | 2 | 이웃 질의 O(E) (정렬 시 O(log E + deg)), 계수 정렬 변환 O(V + E), 정렬 변환 O(E log E) | O(E) |
 | `IncidenceMatrix` | 2 | 구성 O(V · E), 행렬 곱 O(V² E) | O(V · E) |
-| `CompressedSparseRow` | 2 | 구성 O(V + E) (정렬 O(E log E)), 이웃 훑기 O(deg), 행렬-벡터 곱 O(E) | O(V + E) |
+| `CompressedSparseRow` | 2 | 구성 O(V + E) (기수 정렬 — 비교 정렬 없음), 이웃 훑기 O(deg), 행렬-벡터 곱 O(E) | O(V + E) |
 | `CompressedSparseColumn` | 2 | 열 훑기 O(indeg), 전치 O(V + E), 곱셈 O(E) | O(V + E) |
 | `BreadthFirstSearch` | 3 | O(V + E) | O(V) |
 | `DepthFirstSearch` | 3 | O(V + E) | O(V) (재귀 깊이 포함) |
@@ -175,10 +175,10 @@
 | `ArticulationPoint` | 4 | O(V + E) | O(V) |
 | `Bridge` | 4 | O(V + E) | O(V + E) |
 | `DetectCycle` | 5 | O(V + E) | O(V + E) |
-| `DetectCycleDFS` | 5 | O(V + E) | O(V) |
+| `DetectCycleDFS` | 5 | O(V + E) | O(V + E) (간선 목록에서 만든 인접 리스트) |
 | `DetectCycleBFS` | 5 | O(V + E)  (girth 는 모든 루트에서 BFS 하므로 O(V · (V + E))) | O(V + E) |
 | `DetectCycleUnionFind` | 5 | O(E α(V)) | O(V) |
-| `IsTree` | 5 | O(V + E) | O(V + E) |
+| `IsTree` | 5 | 판정 (a)~(c) 는 O(V + E), (d) 는 O(E·(V + E)), (e) 는 최악 지수 시간 — (d)·(e) 는 교차 검증용 오라클일 뿐이다 | O(V + E) |
 | `IsForest` | 5 | O(V + E α(V)) | O(V) |
 | `IsBiconnected` | 5 | O(V + E) | O(V) |
 | `KahnAlgorithm` | 6 | O(V + E)  (최소 힙 변형은 O((V + E) log V)) | O(V + E) |
@@ -237,7 +237,7 @@
 | `GridGraph` | 15 | BFS O(R·C) | O(R·C) |
 | `TreeGraph` | 15 | 프뤼퍼 복호화 O(n log n) | O(n) |
 | `HypercubeGraph` | 15 | BFS O(d·2^d) | O(2^d) |
-| `ScaleFreeGraph` | 15 | O(n·m) | O(n·m) |
+| `ScaleFreeGraph` | 15 | 기대 O(n·m²) (뽑을 때마다 중복 대상 검사 O(m), 기대 O(m) 번 뽑음) | O(n·m) |
 | `SmallWorldGraph` | 15 | 평균 경로 O(n·(n + E)) | O(n·k) |
 | `DependencyGraph` | 16 | 순서·단계·증분 O(V + E), 축약 O(E · V / 64) | O(V + E) (축약은 O(V²/64) 비트) |
 | `KnowledgeGraph` | 16 | 색인 질의 O(결과), 닫힘 O(V·\|facts\|), 규칙 고정점 O(반복 횟수 · \|facts\|) | O(\|facts\|) (색인 두 벌) |
@@ -260,7 +260,7 @@
 | 항목 | Part | 시간 | 공간 |
 |------|-----:|------|------|
 | `CreateHashTable` | 1 | O(m)  (버킷 m개 초기화, 소수 찾기 O(√m) 반복) | O(m) |
-| `Insert` | 1 | 평균 O(1 + α), 최악 O(n) | O(n) |
+| `Insert` | 1 | 평균 O(1 + α), 최악 O(n) | O(n + m)  (항목 n 개 + 미리 잡아 둔 버킷 m 개) |
 | `Search` | 1 | 평균 O(1 + α), 최악 O(n) | O(1) |
 | `Delete` | 1 | 평균 O(1 + α), 최악 O(n) | O(1) |
 | `Resize` | 1 | 삽입 분할상환 O(1), 확장 1회는 O(n) | O(n) |
@@ -413,7 +413,7 @@
 | `Cache Locality` | 0 | 시뮬레이션은 접근당 O(ways); 실제 순회의 점근 복잡도는 같아도 미스 수가 수십 배 차이 | O(캐시 크기) |
 | `Amortized Analysis` | 0 | push_back 분할상환 O(1) (최악 한 번은 O(N)), 이진 카운터 증가 분할상환 O(1) | O(N) (용량은 크기의 최대 2 배) |
 | `Iterator Invalidation` | 0 | 검사 반복자 역참조 O(1) (버전 비교 한 번) | 반복자당 추가 정수 하나 |
-| `Memory Fragmentation` | 0 | 첫 적합 할당 O(빈 조각 수), 해제 O(log N), 압축 O(살아 있는 블록 수) | O(블록 수) 메타데이터 |
+| `Memory Fragmentation` | 0 | 첫 적합 할당 O(빈 조각 수), 해제 O(log N), 압축 O(살아 있는 블록 수) (빈 조각은 살아 있는 블록 사이에만 있어 L+1 개 이하) | O(블록 수) 메타데이터 |
 | `False Sharing` | 0 | 해당 없음 (캐시 일관성 비용 모델) | 변수당 캐시 라인 하나 (64 B) — 메모리를 써서 시간을 산다 |
 | `Lock-Free Linked List` | 0 | 검색·삽입·삭제 O(N) (CAS 재시도는 경쟁에 비례) | O(고정 풀 크기) |
 | `Concurrent List` | 0 | 조대 O(N) 직렬, 손잡이 교대 O(N) (노드마다 잠금), 게으른 O(N) 탐색 + 잠금 2 개 | O(N) (+ 폐기 목록) |

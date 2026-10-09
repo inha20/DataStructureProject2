@@ -1930,8 +1930,9 @@ int main() {
 
 // 갭 버퍼(문자열 관점의 요약, 정본은 String.md Part 4): 글자 배열 가운데에 "빈 틈(gap)"을 두고 커서가 있는 곳에 틈을 놓는다. 커서 위치에서의 삽입·삭제는 O(1),
 //  커서를 옮기면 틈을 따라 옮기는 데 이동 거리만큼의 복사가 든다. 편집은 지역적이라는 관찰에 기대는 Emacs 의 버퍼 구조.  틈이 바닥나면 용량을 두 배로 늘린다(분할상환 O(1)).
-//  ① std::string(+ 커서 정수) 과 6 만 번의 무작위 연산(삽입·앞/뒤 삭제·커서 이동·색인) 대조, 매 단계 불변식(틈 경계, 내용 = 앞 + 뒤)  ② 복사량 계산: moveTo 가 옮긴 글자 수 = 커서 이동 거리의 합 (정확히)
-//  ③ 성장 비용: 확장 때 복사한 글자 수 총합 ≤ 2·최대 크기 + 용량  ④ 지역성: 100 만 글자를 이어서 타자 → 이동 0, ±5 칸 걷는 커서 → 이동 ≤ 5·연산 수, 문서 곳곳으로 튀는 커서는 이동량이 *수백 배*.
+//  ① std::string(+ 커서 정수) 과 6 만 번의 무작위 연산(삽입·앞/뒤 삭제·커서 이동·색인) 대조, 매 단계 불변식(틈 경계·크기·커서)과 100 단계마다 내용 전체(= 앞 + 뒤) 비교,
+//  그리고 용량(16)보다 훨씬 긴 문자열(100 자, 5000 자)을 한 번에 넣어 reserve 의 "필요량" 가지(need > 2·용량)를 확인  ② 복사량 계산: moveTo 가 옮긴 글자 수 = 커서 이동 거리의 합 (정확히)
+//  ③ 성장 비용: 확장 때 복사한 글자 수 총합 ≤ 2·최대 크기 + 용량  ④ 지역성: 100 만 글자를 이어서 타자 → 이동 0, ±5 칸 걷는 커서 → 이동 ≤ 5·연산 수, 문서 곳곳으로 튀는 커서는 이동량이 훨씬 크다 (연산 수가 10 배 적어도 10 배 이상).
 struct GapBuffer {
     std::vector<char> buf; size_t gs, ge; long moved = 0, grown = 0;                                              // 틈은 [gs, ge)
     explicit GapBuffer(size_t cap = 16) : buf(cap), gs(0), ge(cap) {}
@@ -1965,12 +1966,15 @@ int main() {
         else { long step = (long)(rng() % 11) - 5; long pos = std::max<long>(0, std::min<long>((long)ref.size(), (long)cur + step)); distSum += std::labs(pos - (long)cur); gb.moveTo((size_t)pos); cur = (size_t)pos; }
         assert(gb.valid() && gb.size() == ref.size() && gb.cursor() == cur); maxSize = std::max(maxSize, ref.size()); if (op % 100 == 0) assert(gb.text() == ref); }
     assert(gb.text() == ref && gb.moved == distSum && gb.grown <= 2 * (long)maxSize + (long)gb.buf.size());       // ② ③
+    {   GapBuffer lg; std::string r2; lg.insert(std::string(100, 'x')); r2 = std::string(100, 'x'); assert(lg.valid() && lg.size() == 100 && lg.text() == r2);               // 용량 16 에 100 자를 한 번에: 두 배(32)로는 모자라 need 가지
+        lg.moveTo(40); std::string mid(5000, 'm'); lg.insert(mid); r2.insert(40, mid); assert(lg.valid() && lg.size() == 5100 && lg.cursor() == 5040 && lg.text() == r2);          // 용량의 두 배보다 훨씬 긴 삽입이 틈 가운데에서도 정확
+        lg.moveTo(0); lg.insert(std::string(300, 'h')); r2.insert(0, std::string(300, 'h')); assert(lg.valid() && lg.text() == r2); for (size_t i = 0; i < r2.size(); i += 97) assert(lg.at(i) == r2[i]); }
     { GapBuffer typing; std::string out; for (int i = 0; i < 1000000; ++i) typing.insert((char)('a' + i % 26)); assert(typing.moved == 0 && typing.size() == 1000000 && typing.grown <= 2 * 1000000);                           // ④ 이어서 타자
       GapBuffer local, jumpy; for (int i = 0; i < 100000; ++i) { local.insert('x'); jumpy.insert('x'); } local.moveTo(50000); jumpy.moveTo(50000); long l0 = local.moved, j0 = jumpy.moved;
       for (int i = 0; i < 20000; ++i) { long p = (long)local.cursor() + (long)(rng() % 11) - 5; if (rng() % 2) p = (long)local.cursor(); p = std::min<long>((long)local.size(), std::max<long>(0, p)); local.moveTo((size_t)p); local.insert('y'); }
       for (int i = 0; i < 2000; ++i) { jumpy.moveTo(rng() % (jumpy.size() + 1)); jumpy.insert('y'); }
       long localMoved = local.moved - l0, jumpMoved = jumpy.moved - j0; assert(localMoved <= 5 * 20000 && jumpMoved > 100 * (localMoved + 1) / 10);                                                           // 튀는 커서는 (연산 수가 10 배 적어도) 이동량이 훨씬 크다
-      std::cout << "GapBuffer: 60000 random edits matched std::string with the copy count equal to the total cursor travel (" << gb.moved << "), 10^6 keystrokes moved nothing, and a local cursor moved " << localMoved << " characters in 20000 edits versus " << jumpMoved << " for 2000 random jumps" << std::endl; }
+      std::cout << "GapBuffer: 60000 random edits matched std::string with the copy count equal to the total cursor travel (" << gb.moved << "), inserts of 100 and 5000 characters far beyond the capacity were exact, 10^6 keystrokes moved nothing, and a local cursor moved " << localMoved << " characters in 20000 edits versus " << jumpMoved << " for 2000 random jumps" << std::endl; }
     return 0;
 }
 // Time Complexity: 커서 위치 삽입·삭제 분할상환 O(1), 커서 이동 O(거리)
@@ -2649,8 +2653,9 @@ int main() {
 #include <vector>
 #include <cassert>
 
-// 커버 트리(Beygelzimer–Kakade–Langford): 이중 차원(doubling dimension)이 작은 거리 공간에서 최근접 탐색을 O(c^12 log n) 에 보장하는 트리. 각 점은 "레벨 i" 에 속하며 세 가지를 지킨다:
+// 커버 트리(Beygelzimer–Kakade–Langford): 이중 차원(doubling dimension)이 작은 거리 공간에서 최근접 탐색을 O(c^12 log n) 에(삽입은 O(c^6 log n)) 보장하는 트리. 점들은 서로 달라야 한다 (같은 점을 또 넣으면 어느 레벨에서도 분리되지 않아 끝없이 내려간다). 각 점은 "레벨 i" 에 속하며 세 가지를 지킨다:
 //   중첩  C_i ⊂ C_(i-1)    덮기  C_(i-1) 의 모든 점 p 는 C_i 의 어떤 점 q 가 d(p,q) <= 2^i 로 덮는다 (그 q 가 p 의 부모)    분리  C_i 의 서로 다른 두 점은 거리 > 2^i
+// 검증: 모든 레벨 minL..maxL 에서 분리 불변식(전수 쌍 검사)과 덮기 불변식, 무작위 질의 300 개의 NN 이 전수 탐색과 같다 (거리 계산 횟수는 참고로 출력).
 // 레벨 i 는 "반지름 2^i 해상도"이므로 위로 갈수록 성기고 아래로 갈수록 촘촘하다. 삽입은 점이 들어갈 수 있는 가장 낮은 레벨을 위에서 아래로 찾고, NN 질의는 레벨을 내려가며
 // 후보 집합 Q 를 "d(q, Q) + 2^i 이내" 로 줄인다 (레벨 i 노드의 모든 후손은 2^i 이내이므로 그보다 먼 후보는 정답이 될 수 없다)
 typedef std::vector<double> P;
@@ -2658,6 +2663,7 @@ std::vector<P> pts; std::vector<int> lvl; std::vector<std::vector<int>> kids; in
 double d(int a, const P& q) { evals++; double s = 0; for (size_t i = 0; i < q.size(); i++) s += (pts[a][i] - q[i]) * (pts[a][i] - q[i]); return std::sqrt(s); }
 double pw(int i) { return std::ldexp(1.0, i); }
 bool insertRec(int p, const std::vector<int>& Q, int i) {                   // Q: 레벨 >= i 인 노드들 중 p 를 덮을 수 있는 후보
+    assert(i > -500);                                                      // 점이 모두 다르다는 전제: 중복 점이면 레벨이 끝없이 내려간다
     std::vector<int> C = Q; for (int q : Q) for (int c : kids[q]) if (lvl[c] == i - 1) C.push_back(c);      // Children(Q)
     double dm = 1e18; for (int c : C) dm = std::min(dm, d(c, pts[p]));
     if (dm > pw(i)) return false;
@@ -2685,10 +2691,9 @@ int nearest(const P& q) {
 int main() {
     std::mt19937 g(9); std::uniform_real_distribution<double> U(0, 100);
     int n = 1200; for (int i = 0; i < n; i++) insert({U(g), U(g), U(g)});
-    for (int i = 1; i <= minL + 40 && i <= maxL; i++) {}                  // (수준 범위 확인용 자리)
     for (int i = minL; i <= maxL; i++) {                                    // 분리 불변식: 레벨 i 에 존재하는 점들(lvl >= i)은 서로 > 2^i
         std::vector<int> Ci; for (int p = 0; p < n; p++) if (lvl[p] >= i) Ci.push_back(p);
-        for (size_t a = 0; a < Ci.size() && Ci.size() < 400; a++) for (size_t b = a + 1; b < Ci.size(); b++) { double s = 0; for (int k = 0; k < 3; k++) s += (pts[Ci[a]][k] - pts[Ci[b]][k]) * (pts[Ci[a]][k] - pts[Ci[b]][k]); assert(std::sqrt(s) > pw(i) - 1e-12); }
+        for (size_t a = 0; a < Ci.size(); a++) for (size_t b = a + 1; b < Ci.size(); b++) { double s = 0; for (int k = 0; k < 3; k++) s += (pts[Ci[a]][k] - pts[Ci[b]][k]) * (pts[Ci[a]][k] - pts[Ci[b]][k]); assert(std::sqrt(s) > pw(i) - 1e-12); }
     }
     for (int c = 0; c < n; c++) for (int ch : kids[c]) { double s = 0; for (int k = 0; k < 3; k++) s += (pts[c][k] - pts[ch][k]) * (pts[c][k] - pts[ch][k]); assert(std::sqrt(s) <= pw(lvl[ch] + 1) + 1e-12); }   // 덮기 불변식
     long total = 0; int Q = 300;
@@ -2700,7 +2705,7 @@ int main() {
     double avg = (double)total / Q;
     std::cout << "CoverTree: levels " << minL << ".." << maxL << ", nearest neighbour exact; avg distance evaluations " << avg << " vs brute force " << n << std::endl; return 0;
 }
-// Time Complexity: 삽입·NN 질의 O(c^6 log N) (c: 팽창 상수)
+// Time Complexity: 삽입 O(c^6 log N), NN 질의 O(c^12 log N) (c: 팽창 상수)
 // Space Complexity: O(N)
 ```
 ## DCEL()
@@ -4873,10 +4878,11 @@ int main() {
 
 // 비교-교환(CAS, 메모리 관점의 요약, 정본은 Memory.md Part 11): "값이 기대한 것과 같을 때만 새 값으로 바꾸고 성공 여부를 돌려준다" 를 한 번의 원자적 명령으로 수행한다. 모든 락프리 구조의 기본 블록이다.
 //  실패하면 현재 값이 expected 에 되돌려 담기므로 "읽기 → 계산 → CAS, 실패 시 반복" 루프를 만든다.  이 틀로 fetch_add 가 제공하지 않는 연산 — 최댓값 갱신, 곱셈, 포화(상한) 카운터, 스핀락 — 을 락 없이 만든다.
-//  ① 의미: 성공하면 값이 바뀌고, 실패하면 expected 가 현재 값으로 갱신된다 (단일 스레드에서 결정적으로 확인)  ② "읽고-쓰기" 를 비원자적으로 하면 갱신을 잃는다 — 일정을 손으로 짜 재현하고 CAS 는 그 일정에서 실패해 재시도함을 확인
-//  ③ 8 스레드 × 10 만 번: CAS 최댓값 = 전체 최댓값, CAS 곱셈 = 3^(총 횟수) mod 2^64, 포화 카운터 = min(총 횟수, 상한), CAS 스핀락으로 지킨 비원자 카운터 = 총 횟수 (TSan 무결)  ④ 성공한 CAS 횟수는 연산 수와 정확히 같고 실패 횟수는 재시도일 뿐이다.
+//  ① 의미: 성공하면 값이 바뀌고, 실패하면 expected 가 현재 값으로 갱신된다 (단일 스레드에서 결정적으로 확인)  ② "읽고-쓰기" 를 비원자적으로 하면 갱신을 잃는다 — 일정을 손으로 짜 재현하고 CAS 는 그 일정에서 실패해 재시도함을 확인 (최댓값 갱신도 같다: 읽은 뒤 끼어든 다른 갱신이 더 큰 값을 넣어도 덮어쓰지 않는다 — 읽기와 CAS 사이에 훅을 끼워 일정을 고정)
+//  ③ 8 스레드 × 10 만 번: CAS 최댓값 = 전체 최댓값, CAS 곱셈 = 3^(총 횟수) mod 2^64, 포화 카운터 = min(총 횟수, 상한), CAS 스핀락으로 지킨 비원자 카운터 = 총 횟수 (TSan 무결)  ④ 포화 카운터의 성공 횟수는 정확히 상한(500000)이고 총 연산 800000 중 나머지는 상한에서 거절되며, 실패한 CAS 는 재시도일 뿐 성공 횟수에 들어가지 않는다.
 // audit: stress (보존 법칙이 오라클: 최댓값 = 전체 최댓값, 곱 = 3^(총 횟수) mod 2^64, 포화 카운터 = min(총 횟수, 상한), 스핀락 보호 카운터 = 총 횟수)
-template <class T> T atomicMax(std::atomic<T>& a, T v, long& retries) { T cur = a.load(); while (cur < v && !a.compare_exchange_weak(cur, v)) ++retries; return cur; }                      // 실패하면 cur 가 현재 값으로 바뀌어 다시 비교
+template <class T, class H> T atomicMaxHook(std::atomic<T>& a, T v, long& retries, H afterRead) { T cur = a.load(); afterRead(); while (cur < v && !a.compare_exchange_weak(cur, v)) { ++retries; afterRead(); } return cur; }   // 실패하면 cur 가 현재 값으로 바뀌어 다시 비교 (afterRead: 읽기와 CAS 사이에 일정을 끼워 넣는 시험용 훅)
+template <class T> T atomicMax(std::atomic<T>& a, T v, long& retries) { return atomicMaxHook(a, v, retries, [] {}); }
 void atomicMulMod(std::atomic<uint64_t>& a, uint64_t m, long& retries) { uint64_t cur = a.load(); while (!a.compare_exchange_weak(cur, cur * m)) ++retries; }                                    // mod 2^64 곱셈
 bool saturatingInc(std::atomic<int>& a, int limit, long& retries) { int cur = a.load(); while (cur < limit) { if (a.compare_exchange_weak(cur, cur + 1)) return true; ++retries; } return false; }
 struct SpinLock { std::atomic<int> flag{0}; void lock() { int expected = 0; while (!flag.compare_exchange_weak(expected, 1, std::memory_order_acquire)) { expected = 0; std::this_thread::yield(); } } void unlock() { flag.store(0, std::memory_order_release); } };
@@ -4888,6 +4894,11 @@ int main() {
         int x = 0; int r1 = x, r2 = x; x = r1 + 1; x = r2 + 1; assert(x == 1);                                                                                          // 비원자적: 갱신 하나가 사라졌다
         std::atomic<int> y(0); int e1 = y.load(), e2 = y.load(); bool c1 = y.compare_exchange_strong(e1, e1 + 1); bool c2 = y.compare_exchange_strong(e2, e2 + 1);        // 같은 일정에서 CAS: 두 번째는 실패
         assert(c1 && !c2 && e2 == 1 && y.load() == 1); bool c3 = y.compare_exchange_strong(e2, e2 + 1); assert(c3 && y.load() == 2); }                                 // e2 가 최신 값(1)으로 갱신되어 재시도하면 성공
+    {   // ② 최댓값: A(5)가 0 을 읽은 직후 B(9)가 끼어들어 끝까지 실행된다 — 읽은 값(0)을 믿고 5 를 쓰면 최댓값 9 를 덮어쓴다 (확인-후-저장 구현은 여기서 5 가 된다)
+        std::atomic<int> m(0); long rA = 0, rB = 0; bool injected = false; atomicMaxHook(m, 5, rA, [&] { if (!injected) { injected = true; atomicMax(m, 9, rB); } });
+        assert(m.load() == 9 && rA >= 1);                                                                                                            // A 의 CAS 는 실패해(9 != 0) 현재 값 9 를 보고 그만둔다
+        std::atomic<int> n2(0); long rC = 0, rD = 0; bool inj2 = false; atomicMaxHook(n2, 9, rC, [&] { if (!inj2) { inj2 = true; atomicMax(n2, 5, rD); } });   // 반대 순서: 작은 값이 먼저 들어가면 큰 값은 재시도로 이긴다
+        assert(n2.load() == 9 && rC >= 1); }
     const int T = 8, K = 100000;
     std::atomic<int> maxV(-1); std::atomic<uint64_t> prod(1); std::atomic<int> sat(0); std::atomic<long> mulRetries(0), maxRetries(0), satRetries(0), satOk(0); SpinLock lock; long guarded = 0;
     std::vector<int> best(T, -1); std::vector<std::thread> th;
@@ -4897,7 +4908,7 @@ int main() {
     for (auto& t : th) t.join();
     uint64_t pw = 1; for (int i = 0; i < T * K; ++i) pw *= 3;                                                                                                          // 3^(총 횟수) mod 2^64
     assert(maxV.load() == *std::max_element(best.begin(), best.end()) && prod.load() == pw && sat.load() == 500000 && satOk.load() == 500000 && guarded == (long)T * K);                 // ③ ④
-    std::cout << "CompareAndSwap: failed CASes refreshed the expected value, the lost-update schedule was reproduced and repaired by CAS, and 8 threads x 10^5 operations produced the exact atomic max, the exact product 3^" << T * K << " mod 2^64, a counter saturating at exactly 500000 (" << satOk.load() << " successes, " << satRetries.load() << " retries) and a spin-lock-protected total of " << guarded << std::endl;
+    std::cout << "CompareAndSwap: failed CASes refreshed the expected value, the lost-update schedule was reproduced and repaired by CAS (also for max with a hand-scheduled interleaving), and 8 threads x 10^5 operations produced the exact atomic max, the exact product 3^" << T * K << " mod 2^64, a counter saturating at exactly 500000 (" << satOk.load() << " successes, " << satRetries.load() << " retries) and a spin-lock-protected total of " << guarded << std::endl;
     return 0;
 }
 // Time Complexity: 경쟁 없을 때 연산당 O(1), 경쟁이 있으면 재시도 (락프리: 시스템 전체로는 진행)

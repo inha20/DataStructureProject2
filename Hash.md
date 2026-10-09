@@ -108,7 +108,7 @@ int main() {
     std::cout << "Insert: 200,000 random insert/update operations on a chaining table returned the same 'was it new' flags, size and values as std::unordered_map, 3000 operations with every key colliding into one bucket still agreed (chain length = n), the sum of chain lengths always equalled n, and the total comparison count for n distinct random keys stayed within 5% of n(n-1)/(2m) at three load factors" << std::endl; return 0;
 }
 // Time Complexity: 평균 O(1 + α), 최악 O(n)
-// Space Complexity: O(n)
+// Space Complexity: O(n + m)  (항목 n 개 + 미리 잡아 둔 버킷 m 개)
 ```
 ## Search()
 ### 대표코드
@@ -993,34 +993,74 @@ int main() {
 #include <iostream>
 #include <cstdint>
 #include <random>
+#include <unordered_map>
 #include <vector>
 #include <cassert>
 
-// 분리 연쇄법: 버킷마다 연결 리스트(헤드 삽입). 평균 성공 탐색 비교 횟수 ≈ 1 + α/2
-struct Node { uint64_t key; Node* next; };
+// 분리 연쇄법: 버킷마다 연결 리스트(헤드 삽입). 성공 탐색 비교 횟수 ≈ 1 + α/2, 실패 탐색은 사슬 전체를 훑으므로 ≈ α.
+// 확인: ① insert/find/erase(갱신·적중·미스·삭제 후 재삽입)를 std::unordered_map 과 무작위 연산 20만 번 대조 ② 모든 버킷 번호 0..m-1 에 키가 도달(마지막 버킷 포함)
+//       ③ α=2 에서 성공 탐색 평균 비교 ≈ 2.0, 실패 탐색 평균 비교 ≈ 2.0 (비교 횟수를 find 가 직접 센다)
+struct Node { uint64_t key; int val; Node* next; };
 static uint64_t mix(uint64_t x) {                       // splitmix64 마무리 단계
     x += 0x9e3779b97f4a7c15ULL;
     x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
     x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
     return x ^ (x >> 31);
 }
+struct Chained {
+    std::vector<Node*> head; size_t n = 0; long cmp = 0;   // cmp: find 가 키를 비교한 누적 횟수
+    explicit Chained(size_t m) : head(m, nullptr) {}
+    Chained(const Chained&) = delete; Chained& operator=(const Chained&) = delete;
+    ~Chained() { for (Node* h : head) while (h) { Node* t = h->next; delete h; h = t; } }
+    size_t bucket(uint64_t k) const { return mix(k) % head.size(); }
+    bool insert(uint64_t k, int v) {                     // 새 키면 true, 이미 있으면 값만 갱신하고 false
+        if (int* p = find(k)) { *p = v; return false; }
+        size_t b = bucket(k); head[b] = new Node{k, v, head[b]}; ++n; return true;
+    }
+    int* find(uint64_t k) {                              // 없으면 nullptr (미스도 사슬 끝까지 읽는다)
+        for (Node* p = head[bucket(k)]; p; p = p->next) { ++cmp; if (p->key == k) return &p->val; }
+        return nullptr;
+    }
+    bool erase(uint64_t k) {
+        for (Node** pp = &head[bucket(k)]; *pp; pp = &(*pp)->next)
+            if ((*pp)->key == k) { Node* d = *pp; *pp = d->next; delete d; --n; return true; }
+        return false;
+    }
+};
 
 int main() {
-    const size_t m = 5000, n = 10000;                   // α = 2
-    std::vector<Node*> head(m, nullptr);
-    std::mt19937_64 rng(7);
-    std::vector<uint64_t> keys(n);
-    for (auto& k : keys) { k = rng(); size_t b = mix(k) % m; head[b] = new Node{k, head[b]}; }
-    double total = 0;
-    for (uint64_t k : keys) {
-        int steps = 1;
-        for (Node* p = head[mix(k) % m]; p->key != k; p = p->next) ++steps;
-        total += steps;
+    // ① 무작위 연산 대조: 키 공간을 작게(2000) 잡아 적중·미스·갱신·삭제가 모두 자주 일어나게 한다
+    {
+        Chained t(257); std::unordered_map<uint64_t, int> ref; std::mt19937_64 rng(11);
+        for (int i = 0; i < 200000; i++) {
+            uint64_t k = rng() % 2000; int op = int(rng() % 3), v = int(rng() % 1000);
+            if (op == 0) { bool added = ref.find(k) == ref.end(); ref[k] = v; assert(t.insert(k, v) == added); }
+            else if (op == 1) { int* p = t.find(k); auto it = ref.find(k); assert((p != nullptr) == (it != ref.end())); if (p) assert(*p == it->second); }
+            else assert(t.erase(k) == (ref.erase(k) == 1));
+            assert(t.n == ref.size());
+        }
+        for (uint64_t k = 0; k < 2000; k++) { int* p = t.find(k); auto it = ref.find(k); assert((p != nullptr) == (it != ref.end())); if (p) assert(*p == it->second); }
+        assert(t.find(~0ULL) == nullptr && !t.erase(~0ULL));   // 한 번도 안 넣은 키: 미스 경로
     }
-    double avg = total / n;
-    assert(avg > 1.8 && avg < 2.2);                     // 이론값 1 + α/2 = 2.0
-    std::cout << "average comparisons (hit): " << avg << " (theory 2.0)" << std::endl;
-    for (Node* h : head) while (h) { Node* t = h->next; delete h; h = t; }
+    // ② 버킷 도달성: 키 50만 개가 m 개 버킷을 빠짐없이 덮어야 한다(마지막 버킷 m-1 포함, 범위 밖 번호 없음)
+    const size_t m = 5000, n = 10000;                   // α = 2
+    {
+        Chained t(m); std::vector<char> hit(m, 0);
+        for (uint64_t k = 0; k < 100 * m; k++) { size_t b = t.bucket(k); assert(b < m); hit[b] = 1; }
+        for (size_t b = 0; b < m; b++) assert(hit[b]);
+    }
+    // ③ 비교 횟수: 성공 ≈ 1 + α/2 = 2.0, 실패 ≈ α = 2.0
+    Chained t(m); std::mt19937_64 rng(7);
+    std::vector<uint64_t> keys(n);
+    for (auto& k : keys) { k = rng(); assert(t.insert(k, 1)); }
+    assert(t.n == n);
+    t.cmp = 0; for (uint64_t k : keys) assert(t.find(k) != nullptr);
+    double hitAvg = double(t.cmp) / n;
+    t.cmp = 0; for (int i = 0; i < 20000; i++) assert(t.find(rng()) == nullptr);       // 64비트 난수는 사실상 전부 미스
+    double missAvg = double(t.cmp) / 20000;
+    assert(hitAvg > 1.9 && hitAvg < 2.1);               // 이론값 1 + α/2 = 2.0
+    assert(missAvg > 1.9 && missAvg < 2.1);             // 이론값 α = 2.0
+    std::cout << "average comparisons: hit " << hitAvg << " (theory 2.0), miss " << missAvg << " (theory 2.0)" << std::endl;
     return 0;
 }
 // Time Complexity: 평균 O(1 + α), 최악 O(n)
@@ -3758,7 +3798,7 @@ int main() {
 
 // 해시 조인: (1) 작은 쪽으로 해시 테이블을 만들고(build) (2) 큰 쪽을 훑으며 탐색(probe). 중첩 루프 O(n·m) → O(n+m).
 // build 쪽이 메모리(M 튜플)에 안 들어가면 Grace 해시 조인: 두 테이블을 같은 해시로 F 조각에 나눠 디스크에 내려쓰고(spill) 같은 번호끼리 조인한다.
-// 한 키가 M 보다 많이 중복되면 해시로 쪼갤 수 없으므로 블록 중첩 루프로 후퇴한다. 조인 종류: 내부(INNER)·왼쪽 외부(LEFT)·세미(SEMI)·안티(ANTI).
+// 한 키가 M 보다 많이 중복되면 해시로 쪼갤 수 없으므로 블록 중첩 루프로 후퇴한다 (단계마다 시드를 바꾸지 않아도 후퇴하므로, ③ 은 무작위 키에서 blockLoops == 0 을 단언한다). 조인 종류: 내부(INNER)·왼쪽 외부(LEFT)·세미(SEMI)·안티(ANTI).
 typedef std::uint64_t u64;
 struct Tup { int key, val; };
 typedef std::tuple<int, int, int> Out;                                  // (key, 왼쪽 val, 오른쪽 val), 짝이 없으면 오른쪽 = NONE
@@ -3798,7 +3838,8 @@ void blockJoin(const std::vector<Tup>& R, const std::vector<Tup>& S, Kind k, std
     for (std::size_t i = 0; i < R.size(); ++i) if ((k == LEFT && !matched[i]) || (k == SEMI && matched[i]) || (k == ANTI && !matched[i])) out.emplace_back(R[i].key, R[i].val, NONE);
 }
 void grace(const std::vector<Tup>& R, const std::vector<Tup>& S, Kind k, std::size_t M, int depth, Stats& st, std::vector<Out>& out) {
-    st.maxDepth = std::max(st.maxDepth, depth); if (R.empty()) return;
+    if (R.empty()) return;                                              // 빈 조각은 단계(깊이)로 세지 않는다
+    st.maxDepth = std::max(st.maxDepth, depth);
     u64 seed = 0x9e3779b97f4a7c15ULL * (u64)(depth + 1);                // 단계마다 다른 해시 → 조각이 다시 쪼개진다
     if ((k == INNER ? std::min(R.size(), S.size()) : S.size()) <= M) { inMemory(R, S, k, seed, st, out); return; }
     const int F = 8; std::vector<std::vector<Tup>> pr(F), ps(F);
@@ -3851,6 +3892,7 @@ int main() {
     for (int j = 0; j < 3; ++j) {
         Stats st; std::vector<Out> out = sorted(hashJoin(R, S, INNER, Ms[j], st)); long long cnt, sum; oracle(R, S, DOM, INNER, cnt, sum);
         assert((long long)out.size() == cnt && checksum(out) == sum && st.maxTable <= Ms[j]); if (j == 0) ref = out; else assert(out == ref);
+        assert(st.blockLoops == 0);                                     // 키가 거의 서로 다르므로 단계마다 다른 해시로 쪼개지고 블록 중첩 루프 후퇴는 없다 (같은 시드를 재사용하면 후퇴한다)
         spill[j] = st.spilled; depth[j] = st.maxDepth;
     }
     assert(spill[0] == 0 && spill[1] == 2L * N && spill[2] > spill[1] && spill[2] <= 4L * 2 * N && depth[0] == 0 && depth[1] == 1 && depth[2] >= 2);
@@ -5238,6 +5280,8 @@ int main() {
 #include <vector>
 
 // 락 스트라이핑 동시성 해시맵: 테이블 전체에 락 하나를 두면 모든 스레드가 직렬화되므로 해시로 나눈 구역(shard)마다 읽기-쓰기 락을 둔다.
+//  · 이것은 Java 7 의 ConcurrentHashMap(Segment 별 락) 식 락 스트라이핑을 읽기-쓰기 락으로 단순화한 모형이다. Java 8+ 의 ConcurrentHashMap 은 구역 락이 아니라
+//    빈(bin)이 비었으면 CAS 로 첫 노드를 넣고, 아니면 그 빈의 첫 노드에 synchronized 를 걸며 읽기는 락 없이 한다 — 여기서는 그것을 구현하지 않는다.
 //  · 서로 다른 구역에 접근하는 스레드는 기다리지 않고, 같은 구역의 읽기(get)는 동시에 진행한다.  구역 안의 테이블은 구역 락 아래에서 직접 확장한다.
 //  · 한 키의 갱신은 compute(k, f) 로 락을 쥔 채 읽고-고치고-쓴다 (get 뒤에 put 을 따로 하면 갱신을 잃는다).
 //  · 두 키를 함께 바꾸는 transfer(a, b) 는 구역을 번호 순서로 잠가 교착을 피하고, snapshot 은 모든 구역을 번호 순서로 잠가 일관된 순간을 본다.
@@ -5274,6 +5318,7 @@ public:
         auto* ea = shards[ia]->find(a, ha); auto* eb = shards[ib]->find(b, hb); if (!ea || !eb || a == b || ea->second < amount) return false;
         ea->second -= amount; eb->second += amount; return true;
     }
+    std::size_t buckets() const { std::size_t n = 0; for (auto& s : shards) { std::shared_lock<std::shared_mutex> g(s->mu); n += s->b.size(); } return n; }     // 전 구역의 버킷 수 합 (확장 여부 확인용)
     std::size_t size() const { std::size_t n = 0; for (auto& s : shards) { std::shared_lock<std::shared_mutex> g(s->mu); n += s->n; } return n; }     // 동시 수정 중에는 근사값
     template <class F> void snapshot(F f) const {                          // 모든 구역을 번호 순서로 잠근 일관된 순간의 전체 항목
         std::vector<std::shared_lock<std::shared_mutex>> locks; for (auto& s : shards) locks.emplace_back(s->mu);
@@ -5282,7 +5327,7 @@ public:
 };
 
 int main() {
-    std::mt19937_64 rng(77);
+    std::mt19937_64 rng(77); std::size_t grown = 0;
     // ① 단일 스레드 차분 테스트 (확장·삭제·putIfAbsent·compute 를 모두 거친다)
     {   ConcurrentMap<int, long> m(5); std::unordered_map<int, long> ref;
         for (int op = 0; op < 100000; ++op) {
@@ -5291,20 +5336,21 @@ int main() {
             else if (t == 2) { assert(m.erase(k) == (ref.erase(k) > 0)); } else if (t == 3) { long r = m.compute(k, [&](long& x) { x += v; }); ref[k] += v; assert(r == ref[k]); }
             else { long out = -1; bool f = m.get(k, out); auto it = ref.find(k); assert(f == (it != ref.end()) && (!f || out == it->second)); }
         }
-        assert(m.size() == ref.size()); std::size_t seen = 0; m.snapshot([&](const int& k, const long& v) { assert(ref.at(k) == v); ++seen; }); assert(seen == ref.size());
+        assert(m.size() == ref.size() && m.buckets() >= m.size() && m.buckets() < 2 * m.size() + 4 * 5); std::size_t seen = 0; m.snapshot([&](const int& k, const long& v) { assert(ref.at(k) == v); ++seen; }); assert(seen == ref.size());
     }
     const int T = 8; auto run = [&](std::function<void(int)> body) { std::vector<std::thread> th; for (int t = 0; t < T; ++t) th.emplace_back(body, t); for (auto& x : th) x.join(); };
     // ② 갱신 손실 없음: 모든 스레드가 같은 64 개 키를 compute 로 증가
     {   ConcurrentMap<int, long> m(16); const int N = 20000; run([&](int t) { for (int i = 0; i < N; ++i) m.compute((i * 7 + t) % 64, [](long& x) { ++x; }); });
         long sum = 0; m.snapshot([&](const int&, const long& v) { sum += v; }); assert(sum == (long)T * N && m.size() == 64);
     }
-    // ③ 확장 중에도 안전: 미리 넣은 1000 개 키는 다른 스레드가 20 만 개를 넣어 구역이 계속 커지는 동안에도 항상 읽힌다
-    {   ConcurrentMap<int, long> m(8); for (int i = 0; i < 1000; ++i) m.put(-1 - i, i * 3L);
+    // ③ 확장 중에도 안전: 미리 넣은 1000 개 키는 다른 스레드가 20 만 개를 넣어 구역이 계속 커지는 동안에도 항상 읽힌다 (버킷 수가 실제로 늘었는지 buckets() 로 확인)
+    {   ConcurrentMap<int, long> m(8); for (int i = 0; i < 1000; ++i) m.put(-1 - i, i * 3L); const std::size_t startBuckets = m.buckets();
         std::atomic<bool> done{false}; std::atomic<long> reads{0}, misses{0};
         std::vector<std::thread> readers; for (int r = 0; r < 3; ++r) readers.emplace_back([&, r] { std::mt19937 g(r); long n = 0; while (!done) { int i = g() % 1000; long v; if (!m.get(-1 - i, v) || v != i * 3L) ++misses; ++n; } reads += n; });
         const int W = 5, per = 40000; std::vector<std::thread> writers; for (int w = 0; w < W; ++w) writers.emplace_back([&, w] { for (int i = 0; i < per; ++i) m.put(w * per + i, i); });
         for (auto& x : writers) x.join(); done = true; for (auto& x : readers) x.join();
         assert(misses == 0 && reads > 0 && m.size() == 1000 + (std::size_t)W * per);
+        grown = m.buckets(); assert(startBuckets >= 1000 && startBuckets < 2 * 1000 + 4 * 8 && grown >= m.size() && grown < 2 * m.size() + 4 * 8);       // 구역이 실제로 여러 번 두 배가 됐다 (적재율 ≤ 1 유지)
         for (int w = 0; w < W; ++w) for (int i = 0; i < per; i += 997) { long v; assert(m.get(w * per + i, v) && v == i); }
     }
     // ④ 여러 키를 함께 바꾸는 연산: 계좌 100 개에 1000 씩, 8 스레드가 무작위 이체(같은 계좌·잔액 부족 포함), 감사 스레드는 일관된 스냅샷의 합을 확인
@@ -5324,7 +5370,7 @@ int main() {
     };
     int one = maxOverlap(1), many = maxOverlap(64);
     assert(one == 1 && many >= 2);
-    std::cout << "ConcurrentMap: no lost updates, no lost keys while shards resized, bank total conserved across " << T * 20000 << " concurrent transfers; slow callbacks overlapped at most " << one << " at a time with 1 shard but " << many << " with 64 shards" << std::endl;
+    std::cout << "ConcurrentMap: no lost updates, no lost keys while shards resized (8 shards x 4 initial buckets -> " << grown << " buckets), bank total conserved across " << T * 20000 << " concurrent transfers; slow callbacks overlapped at most " << one << " at a time with 1 shard but " << many << " with 64 shards" << std::endl;
     return 0;
 }
 // Time Complexity: 평균 O(1) (서로 다른 구역은 병렬, 같은 구역의 읽기도 병렬), snapshot 은 O(n) 에 전 구역 잠금
@@ -6524,6 +6570,7 @@ int main() {
 ```cpp
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <random>
 #include <string>
@@ -6531,6 +6578,9 @@ int main() {
 #include <cassert>
 
 // 선형 탐사의 1차 군집: 적재율이 커질수록 연속 점유 구간(클러스터)이 급격히 길어지고 평균 탐사 횟수가 폭증한다
+// 확인: 알파 0.5 → 0.9 에서 최장 클러스터·평균 탐사가 몇 배로 늘 뿐 아니라, 선형 탐사에만 해당하는 값을 못박는다 —
+//       알파 0.9 의 최장 연속 점유 구간 > 150 (무작위 재탐사나 보폭 2,3,7 이면 수십 칸 이하),
+//       삽입당 평균 탐사 횟수가 Knuth 의 선형 탐사 식 ½(1+1/(1-α)) (= 1.5 / 2.17 / 5.5) 의 ±20% 안.
 uint64_t mix(uint64_t x) { x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; return x ^ (x >> 33); }
 
 int main() {
@@ -6548,12 +6598,15 @@ int main() {
         int longest = 0, cur = 0;
         for (int i = 0; i < 2 * m; i++) { cur = used[i % m] ? cur + 1 : 0; longest = std::max(longest, std::min(cur, m)); }
         longestAt[idx] = longest; probes[idx] = double(totalProbes) / n; idx++;
-        std::cout << "alpha=" << alpha << " longest cluster=" << longest << " avg probes/insert=" << double(totalProbes) / n << "\n  ";
+        double theory = 0.5 * (1 + 1 / (1 - alpha));
+        assert(std::abs(probes[idx - 1] / theory - 1) < 0.20);        // 선형 탐사의 평균 탐사 횟수 ½(1+1/(1-α)) 에 근접 (finite-m 편차 포함 ±20%)
+        std::cout << "alpha=" << alpha << " longest cluster=" << longest << " avg probes/insert=" << double(totalProbes) / n << " (Knuth " << theory << ")\n  ";
         for (int i = 0; i < 64; i++) std::cout << (used[i] ? '#' : '.');
         std::cout << "\n";
     }
     assert(longestAt[2] > 3 * longestAt[0]);                       // 0.5 -> 0.9 에서 클러스터가 몇 배로 길어진다
     assert(probes[2] > 2 * probes[0]);
+    assert(longestAt[2] > 150);                                    // 선형 탐사의 1차 군집: 0.9 에서 수백 칸짜리 연속 구간 (무작위 재탐사는 ~50)
     return 0;
 }
 // Time Complexity: O(n · 평균 탐사)

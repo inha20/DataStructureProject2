@@ -479,7 +479,7 @@ int main() {
 #include <vector>
 // 진입 차수(InDegree): 유방향 그래프에서 정점 v 로 들어오는 간선의 수 indeg(v). 나가는 리스트만 저장하면 들어오는 간선을 알려면 모든 리스트를 훑어야 해서 O(V+E) 이고, 들어오는 리스트(역방향 리스트)나 진입 차수 카운터를 함께 관리하면 O(1) 이다 — 추가·삭제 때 양쪽을 같이 고쳐야 한다. Σ indeg(v) = |E| (= Σ outdeg(v)). 진입 차수 0 인 정점을 원천(source)이라 하고, DAG(비순환 유방향 그래프)에는 반드시 원천이 하나 이상 있다(없다면 모든 정점에 들어오는 간선이 있어 거꾸로 따라가면 순환이 생김).
 // 응용: 위상 정렬(칸 알고리즘)은 진입 차수가 0 인 정점을 큐에 넣고 꺼낼 때 이웃의 진입 차수를 줄인다. 인기 있는(많이 가리켜지는) 정점 찾기, 웹 그래프의 들어오는 링크 수(PageRank 의 단순한 근사). 진입 차수 분포가 멱법칙을 따르면 척도 없는 그래프다.
-// 검증: ① 무작위 유방향 그래프(추가·삭제)에서 카운터/역방향 리스트의 진입 차수 == 나가는 리스트 전체를 훑어 센 값 == 모델 ② Σ indeg == Σ outdeg == |E| ③ DAG(무작위 위상 순서에서 앞→뒤 간선만 생성)에 원천이 반드시 있고, 순환 그래프(모든 정점이 진입 차수 ≥ 1)는 원천이 없을 수 있음 ④ 칸 알고리즘이 진입 차수로 위상 순서를 만들고 순서가 모든 간선을 존중함 ⑤ 진입 차수 훑기 방식과 역방향 리스트 방식의 비용: 질의 N 번에 훑기는 N·(V+E), 리스트는 N·O(1) ⑥ 자기 루프는 진입 차수 1 을 더함.
+// 검증: ① 무작위 유방향 그래프(추가·삭제)에서 카운터/역방향 리스트의 진입 차수 == 나가는 리스트 전체를 훑어 센 값 == 모델 ② Σ indeg == Σ outdeg == |E| ③ DAG(무작위 위상 순서에서 앞→뒤 간선만 생성)에 원천이 반드시 있고, 순환 그래프(모든 정점이 진입 차수 ≥ 1)는 원천이 없을 수 있음 ④ 칸 알고리즘이 진입 차수로 위상 순서를 만들고 순서가 모든 간선을 존중함 ⑤ 훑기 방식의 비용을 실제로 센 단계 수: 질의 Q 번이면 정확히 Q·(V+E) (역방향 리스트는 크기 읽기 한 번) ⑥ 자기 루프는 진입 차수 1 을 더함 ⑦ 정점 추가·삭제를 섞은 무작위 편집 12000 번(유방향·무방향, 자기 루프 허용 여부 포함)에서 매번 consistent() 와 간선 집합·정점 수·간선 수·진출/진입/전체 차수가 모델과 같음.
 class Graph {                                                                                                        // 인접 리스트 그래프: 정점 번호는 안정적(삭제는 alive 표시), 단순 그래프(중복 간선 없음), 자기 루프 허용 여부는 선택
     bool directed_, loops_; std::vector<std::vector<int>> out_, in_; std::vector<char> alive_; std::size_t edges_ = 0, vertices_ = 0;
     static void erase1(std::vector<int>& v, int x) { auto it = std::find(v.begin(), v.end(), x); *it = v.back(); v.pop_back(); }
@@ -510,9 +510,19 @@ int main() {
         std::vector<int> in = scanInDegree(dag); int sources = 0; for (int v = 0; v < n; v++) sources += in[v] == 0; assert(sources >= 1 && in[perm[0]] == 0);
         std::vector<int> order; assert(kahn(dag, order) && (int)order.size() == n); std::vector<int> pos(n); for (int i = 0; i < n; i++) pos[order[i]] = i; for (auto e : dag.edgeSet()) assert(pos[e.first] < pos[e.second]); }
     { Graph cyc(5, true); for (int v = 0; v < 5; v++) cyc.addEdge(v, (v + 1) % 5); std::vector<int> in = scanInDegree(cyc); for (int v = 0; v < 5; v++) assert(in[v] == 1); std::vector<int> order; assert(!kahn(cyc, order) && order.empty()); }                           // 순환 그래프: 원천 없음, 위상 정렬 불가
-    { const int V = 300; Graph g(V, true); while ((int)g.edgeCount() < 900) g.addEdge((int)(rng() % V), (int)(rng() % V)); long long scanCost = 0, listCost = 0; const int Q = 200; for (int q = 0; q < Q; q++) { int v = (int)(rng() % V); scanCost += (long long)V + (long long)g.edgeCount(); listCost += 1; int viaScan = 0; for (int u = 0; u < V; u++) for (int w : g.out(u)) viaScan += w == v; assert(viaScan == g.inDegree(v)); }   // ⑤
-      assert(scanCost > 1000 * listCost); }
-    std::cout << "InDegree: the maintained in-lists and the O(V+E) rescan agreed with a set model through 30000 random edits (a loop adds one to its own in-degree), sum of in-degrees equalled sum of out-degrees equalled |E|, every random DAG had a source and Kahn's algorithm turned in-degrees into a valid topological order, a directed cycle had none, and per-query cost of the in-list was O(1) against a full scan" << std::endl; return 0;
+    { const int V = 300; Graph g(V, true); while ((int)g.edgeCount() < 900) g.addEdge((int)(rng() % V), (int)(rng() % V)); long long scanSteps = 0; const int Q = 200; for (int q = 0; q < Q; q++) { int v = (int)(rng() % V); int viaScan = 0; for (int u = 0; u < V; u++) { scanSteps++; for (int w : g.out(u)) { scanSteps++; viaScan += w == v; } } assert(viaScan == g.inDegree(v)); }   // ⑤ 훑기가 실제로 밟은 단계 수를 센다
+      assert(scanSteps == (long long)Q * (V + (long long)g.edgeCount())); }               // 질의 Q 번 = Q·(V + E) 단계, 역방향 리스트는 크기 읽기(inDegree) 한 번
+    for (int rep = 0; rep < 200; rep++) { bool directed = rep % 2 == 0, loops = rep % 4 < 2; Graph g(1 + (int)(rng() % 5), directed, loops); std::set<std::pair<int, int>> model; std::set<int> alive; for (int v = 0; v < g.capacity(); v++) alive.insert(v);   // ⑦ 정점 추가·삭제, 무방향 모드, consistent()
+        auto norm = [&](int u, int v) { return directed ? std::make_pair(u, v) : std::make_pair(std::min(u, v), std::max(u, v)); };
+        for (int step = 0; step < 60; step++) { int c = (int)(rng() % 10), u = (int)(rng() % g.capacity()), v = (int)(rng() % g.capacity());
+            if (c == 0 && g.capacity() < 12) { int id = g.addVertex(); assert(id == g.capacity() - 1 && alive.insert(id).second); }
+            else if (c == 1) { bool ok = g.removeVertex(u); assert(ok == (alive.count(u) > 0)); if (ok) { alive.erase(u); for (auto it = model.begin(); it != model.end();) if (it->first == u || it->second == u) it = model.erase(it); else ++it; } }
+            else if (c < 7) { bool ok = g.addEdge(u, v); assert(ok == (alive.count(u) && alive.count(v) && (loops || u != v) && !model.count(norm(u, v)))); if (ok) model.insert(norm(u, v)); }
+            else { bool ok = g.removeEdge(u, v); assert(ok == (model.count(norm(u, v)) > 0)); model.erase(norm(u, v)); }
+            assert(g.consistent() && g.vertexCount() == alive.size() && g.edgeCount() == model.size() && g.edgeSet() == model);
+            for (int w : alive) { int o = 0, in = 0, deg = 0; for (auto& e : model) { if (directed) { o += e.first == w; in += e.second == w; } else { o += e.first == w || e.second == w; deg += (e.first == w) + (e.second == w); } } if (directed) deg = o + in; else in = o;                          // 무방향: 이웃 수 = 진입 = 진출, 차수는 자기 루프를 2 로
+                assert(g.outDegree(w) == o && g.inDegree(w) == in && g.degree(w) == deg); } } }
+    std::cout << "InDegree: the maintained in-lists and the O(V+E) rescan agreed with a set model through 30000 random edits (a loop adds one to its own in-degree), sum of in-degrees equalled sum of out-degrees equalled |E|, every random DAG had a source and Kahn's algorithm turned in-degrees into a valid topological order, a directed cycle had none, a full rescan took exactly Q*(V+E) counted steps for Q queries while the in-list answers each query by reading its size, and 12000 random edits including addVertex/removeVertex on directed and undirected graphs (loops allowed or not) kept consistent(), the vertex/edge counts, the edge set and every out/in/total degree equal to a model" << std::endl; return 0;
 }
 // Time Complexity: 질의 O(1) (역방향 리스트·카운터), 훑기 O(V + E)
 // Space Complexity: O(V + E)
@@ -759,10 +769,11 @@ int main() {
 #include <vector>
 
 // 압축 희소 행(CSR, Compressed Sparse Row): 인접 행렬의 0 이 아닌 칸만 행 순서대로 저장한다. 세 배열: row_ptr[V+1] (행 u 의 항목이 col_idx[row_ptr[u] .. row_ptr[u+1]) 에 있음), col_idx[E] (이웃 번호), val[E] (가중치). 메모리 (V + 1) + 2E 워드, 행 u 의 이웃 훑기는 연속 메모리를 읽어 O(deg) 이고 캐시 효율이 매우 좋다. 차수는 row_ptr[u+1] − row_ptr[u] 로 O(1). 단점: 변경이 어렵다(중간에 끼워 넣으면 뒤를 모두 밀어야 함) — 만든 뒤 읽기 위주인 그래프·희소 행렬(그래프 분석, 행렬-벡터 곱)에 쓴다.
-// 만들기: 간선을 (u, v) 로 훑어 개수 세기 → 누적합으로 row_ptr → 한 번 더 훑어 배치하는 계수 정렬로 O(V + E). 행 안의 열 번호를 정렬해 두면(정규형) 간선 질의가 이진 탐색 O(log deg) 이고 두 행의 교집합(삼각형 세기)이 병합 O(deg₁ + deg₂) 이다. 같은 (u, v) 가 여러 번 나오면 합쳐서(coalesce) 하나로 만들 수 있다. 행렬-벡터 곱 y = A·x 는 행마다 y[u] = Σ val[k]·x[col_idx[k]] 로 O(E).
+// 만들기: 간선을 열 번호 기준 → 행 번호 기준으로 두 번 안정 계수 정렬(개수 세기 → 누적합 → 훑어 배치, 기수 정렬)해 비교 정렬 없이 O(V + E) 에 (행, 열) 순으로 놓고, 행 개수의 누적합이 row_ptr 이다. 행 안의 열 번호를 정렬해 두면(정규형) 간선 질의가 이진 탐색 O(log deg) 이고 두 행의 교집합(삼각형 세기)이 병합 O(deg₁ + deg₂) 이다. 같은 (u, v) 가 여러 번 나오면 합쳐서(coalesce) 하나로 만들 수 있다. 행렬-벡터 곱 y = A·x 는 행마다 y[u] = Σ val[k]·x[col_idx[k]] 로 O(E).
 // 검증: ① 무작위 간선 목록→CSR 이 모델(인접 리스트)과 같은 이웃·차수·가중치, row_ptr 단조, 열 정렬 후 정규형 ② y = A·x 가 밀집 행렬 곱과 같음(정수 연산) ③ 중복 합치기가 (u, v) 별 가중치 합과 같음 ④ 이진 탐색 간선 질의와 삼각형 수(행 병합)가 무차별 계산과 같음 ⑤ CSR 위의 BFS 가 인접 리스트 BFS 와 같은 거리 ⑥ 메모리 워드 수 = (V + 1) + 2E 이고 빈 그래프·빈 행 처리.
 struct CSR { int n = 0; std::vector<int> rowPtr, col; std::vector<long long> val;
-    static CSR build(int n, const std::vector<std::array<long long, 3>>& triples, bool coalesce) { std::vector<std::array<long long, 3>> t = triples; std::sort(t.begin(), t.end(), [](const std::array<long long, 3>& a, const std::array<long long, 3>& b) { return a[0] != b[0] ? a[0] < b[0] : a[1] < b[1]; });
+    static CSR build(int n, const std::vector<std::array<long long, 3>>& triples, bool coalesce) { std::vector<std::array<long long, 3>> t = triples;
+        for (int key = 1; key >= 0; key--) { std::vector<int> cnt(n + 1, 0); for (auto& e : t) cnt[e[key] + 1]++; for (int i = 0; i < n; i++) cnt[i + 1] += cnt[i]; std::vector<std::array<long long, 3>> placed(t.size()); for (auto& e : t) placed[cnt[e[key]]++] = e; t.swap(placed); }   // 열 번호 → 행 번호 순의 안정 계수 정렬(기수 정렬 두 번): 행 안의 열도 정렬되고 O(V + E)
         if (coalesce) { std::vector<std::array<long long, 3>> merged; for (auto& e : t) { if (!merged.empty() && merged.back()[0] == e[0] && merged.back()[1] == e[1]) merged.back()[2] += e[2]; else merged.push_back(e); } t = merged; }
         CSR c; c.n = n; c.rowPtr.assign(n + 1, 0); for (auto& e : t) c.rowPtr[e[0] + 1]++; for (int i = 0; i < n; i++) c.rowPtr[i + 1] += c.rowPtr[i]; for (auto& e : t) { c.col.push_back((int)e[1]); c.val.push_back(e[2]); } return c; }
     int degree(int u) const { return rowPtr[u + 1] - rowPtr[u]; }
@@ -783,9 +794,9 @@ int main() {
         CSR c = CSR::build(n, triples, false); std::vector<int> d1(n, -1), d2(n, -1); std::queue<int> q; d1[0] = 0; q.push(0); while (!q.empty()) { int u = q.front(); q.pop(); for (int k = c.rowPtr[u]; k < c.rowPtr[u + 1]; k++) { int v = c.col[k]; if (d1[v] < 0) { d1[v] = d1[u] + 1; q.push(v); } } }                          // ⑤
         d2[0] = 0; q.push(0); while (!q.empty()) { int u = q.front(); q.pop(); for (int v : adj[u]) if (d2[v] < 0) { d2[v] = d2[u] + 1; q.push(v); } } assert(d1 == d2); }
     { CSR e = CSR::build(0, {}, true); assert(e.rowPtr == std::vector<int>{0} && e.words() == 1); CSR s = CSR::build(5, {{2, 3, 7}}, true); assert(s.degree(0) == 0 && s.degree(2) == 1 && s.degree(4) == 0 && s.has(2, 3) && !s.has(3, 2) && s.words() == 6 + 2); }                  // ⑥
-    std::cout << "CompressedSparseRow: counting-sort construction gave sorted row pointers and column indices matching a map model (with duplicate triples coalesced by summing), sparse matrix-vector products equalled the dense computation, binary-search edge queries and row-merge triangle counting matched brute force, BFS over CSR equalled adjacency-list BFS, and memory was exactly (V+1)+2E words" << std::endl; return 0;
+    std::cout << "CompressedSparseRow: two-pass stable counting-sort (radix) construction gave sorted row pointers and column indices matching a map model (with duplicate triples coalesced by summing), sparse matrix-vector products equalled the dense computation, binary-search edge queries and row-merge triangle counting matched brute force, BFS over CSR equalled adjacency-list BFS, and memory was exactly (V+1)+2E words" << std::endl; return 0;
 }
-// Time Complexity: 구성 O(V + E) (정렬 O(E log E)), 이웃 훑기 O(deg), 행렬-벡터 곱 O(E)
+// Time Complexity: 구성 O(V + E) (기수 정렬 — 비교 정렬 없음), 이웃 훑기 O(deg), 행렬-벡터 곱 O(E)
 // Space Complexity: O(V + E)
 ```
 ## CompressedSparseColumn()
@@ -989,7 +1000,7 @@ int main() {
 
 // 재귀형 DFS(RecursiveDFS): 함수가 자기 자신을 이웃에 대해 호출하는 가장 간결한 DFS 이다. 호출 스택이 곧 "지금까지 온 길" 이어서 되돌아오기가 공짜이고 진입/탈출 시점에 일을 끼워 넣기 쉽다 — 전위 처리(발견 시각), 후위 처리(종료 시각, 부분 트리 크기·높이 계산). 재귀 깊이 = DFS 트리의 가장 긴 루트–리프 경로이며 긴 사슬에서는 정점 수만큼 깊어진다. 호출 하나에 보통 수십~수백 바이트를 쓰므로 수십만 깊이에서 스택(기본 수 MB)이 넘친다. 대응: 반복형으로 바꾸거나, 깊이가 한계를 넘으면 그 부분 트리만 반복형으로 처리하는 혼합형(hybrid)을 쓴다 — 순서는 순수 재귀와 정확히 같다.
 // 트리 위의 재귀 DFS 의 고전적 응용: 진입/탈출 시각 tin/tout 으로 "u 가 v 의 조상인가" 를 O(1) 에 판정(tin[u] ≤ tin[v] 이고 tout[v] ≤ tout[u]), 부분 트리 크기 size[u] = 1 + Σ size[자식], 높이, 지름(가장 먼 두 정점 사이: 각 정점에서 가장 깊은 두 자식 높이의 합 최댓값). 그래프에서는 방문 표시와 함께 쓰이고, DAG 위에서는 메모이제이션으로 경로 수를 센다(재귀 + 캐시 = 하향식 동적 계획).
-// 검증: ① 재귀 깊이 최댓값 == DFS 숲의 높이(부모 포인터로 센 가장 긴 루트–리프 경로의 간선 수 + 1) ② 혼합형(깊이 한계 10)의 방문 순서·발견/종료 시각이 순수 재귀와 완전히 같고 20 만 정점 사슬도 한계 1000 으로 처리 ③ 무작위 트리(n ≤ 200)에서 tin/tout 조상 판정이 부모 체인과 같고 부분 트리 크기·높이·지름이 무차별 계산과 같음 ④ DAG 의 경로 수 메모이제이션 재귀가 무차별 경로 열거와 같음 ⑤ 완전 그래프 K_n 의 s–t 단순 경로 수가 Σ (n−2)!/(n−2−k)! 공식과 같음(재귀 백트래킹, n ≤ 8) ⑥ 빈 그래프·정점 1 개.
+// 검증: ① 재귀 깊이 최댓값 == DFS 숲의 높이(부모 포인터로 센 가장 긴 루트–리프 경로의 간선 수 + 1) ② 혼합형(깊이 한계 10)의 방문 순서·발견/종료 시각이 순수 재귀와 완전히 같고 20 만 정점 사슬도 한계 1000 으로 처리 ③ 무작위 트리(n ≤ 60)에서 tin/tout 조상 판정이 부모 체인과 같고 모든 정점의 부분 트리 크기·높이와 지름이 무차별 계산과 같음 ④ DAG 의 경로 수 메모이제이션 재귀가 무차별 경로 열거와 같고, 층 14 겹 × 폭 3 의 DAG(경로 3^14 개)에서 호출 수가 V + E 이하라 메모이제이션이 실제로 작동함 ⑤ 완전 그래프 K_n 의 s–t 단순 경로 수가 Σ (n−2)!/(n−2−k)! 공식과 같음(재귀 백트래킹, n ≤ 8) ⑥ 빈 그래프·정점 1 개.
 struct State { std::vector<int> d, f, pre, post; int timer = 0, depth = 0, maxDepth = 0; long iterativeSwitches = 0; };
 void iterativeFrom(const std::vector<std::vector<int>>& adj, int s, State& st) { std::vector<std::pair<int, std::size_t>> stack; st.d[s] = ++st.timer; st.pre.push_back(s); stack.push_back({s, 0});
     while (!stack.empty()) { auto& top = stack.back(); int u = top.first; if (top.second < adj[u].size()) { int v = adj[u][top.second++]; if (st.d[v] == 0) { st.d[v] = ++st.timer; st.pre.push_back(v); stack.push_back({v, 0}); } } else { st.f[u] = ++st.timer; st.post.push_back(u); stack.pop_back(); } } }
@@ -998,7 +1009,7 @@ void visit(const std::vector<std::vector<int>>& adj, int u, State& st, int limit
 State run(const std::vector<std::vector<int>>& adj, int limit) { int n = (int)adj.size(); State st; st.d.assign(n, 0); st.f.assign(n, 0); for (int s = 0; s < n; s++) if (st.d[s] == 0) visit(adj, s, st, limit); return st; }
 struct TreeInfo { std::vector<int> tin, tout, size, height; int diameter = 0; int timer = 0; };
 int treeDfs(const std::vector<std::vector<int>>& adj, int u, int p, TreeInfo& t) { t.tin[u] = ++t.timer; t.size[u] = 1; int best1 = 0, best2 = 0; for (int v : adj[u]) if (v != p) { int h = treeDfs(adj, v, u, t) + 1; t.size[u] += t.size[v]; if (h > best1) { best2 = best1; best1 = h; } else if (h > best2) best2 = h; } t.height[u] = best1; t.diameter = std::max(t.diameter, best1 + best2); t.tout[u] = ++t.timer; return best1; }
-long long countPaths(const std::vector<std::vector<int>>& adj, int u, int t, std::vector<long long>& memo) { if (u == t) return 1; if (memo[u] >= 0) return memo[u]; long long c = 0; for (int v : adj[u]) c += countPaths(adj, v, t, memo); return memo[u] = c; }
+long long countPaths(const std::vector<std::vector<int>>& adj, int u, int t, std::vector<long long>& memo, long long& calls) { calls++; if (u == t) return 1; if (memo[u] >= 0) return memo[u]; long long c = 0; for (int v : adj[u]) c += countPaths(adj, v, t, memo, calls); return memo[u] = c; }
 long long enumeratePaths(const std::vector<std::vector<int>>& adj, int u, int t, std::vector<char>& on) { if (u == t) return 1; on[u] = 1; long long c = 0; for (int v : adj[u]) if (!on[v]) c += enumeratePaths(adj, v, t, on); on[u] = 0; return c; }
 int main() {
     std::mt19937 rng(20);
@@ -1012,11 +1023,14 @@ int main() {
         for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) { bool anc = t.tin[u] <= t.tin[v] && t.tout[v] <= t.tout[u]; bool viaParents = false; for (int x = v; x >= 0; x = par[x]) viaParents |= x == u; assert(anc == viaParents); }
         for (int u = 0; u < n; u++) { int cnt = 0; for (int v = 0; v < n; v++) { for (int x = v; x >= 0; x = par[x]) if (x == u) { cnt++; break; } } assert(t.size[u] == cnt); }
         auto bfsFar = [&](int s, int& far) { std::vector<int> d(n, -1); std::vector<int> q{s}; d[s] = 0; for (std::size_t h = 0; h < q.size(); h++) for (int v : adj[q[h]]) if (d[v] < 0) { d[v] = d[q[h]] + 1; q.push_back(v); } far = (int)(std::max_element(d.begin(), d.end()) - d.begin()); return d[far]; }; int far1, far2; bfsFar(0, far1); int diam = bfsFar(far1, far2); assert(t.diameter == diam);
-        int h0 = 0; { std::vector<int> d(n, -1); std::vector<int> q{0}; d[0] = 0; for (std::size_t h = 0; h < q.size(); h++) for (int v : adj[q[h]]) if (d[v] < 0) { d[v] = d[q[h]] + 1; q.push_back(v); } h0 = *std::max_element(d.begin(), d.end()); } assert(t.height[0] == h0); }
-    for (int rep = 0; rep < 150; rep++) { int n = 2 + (int)(rng() % 9); std::vector<std::vector<int>> dag(n); for (int u = 0; u < n; u++) for (int v = u + 1; v < n; v++) if (rng() % 2) dag[u].push_back(v); std::vector<long long> memo(n, -1); long long viaMemo = countPaths(dag, 0, n - 1, memo); std::vector<char> on(n, 0); assert(viaMemo == enumeratePaths(dag, 0, n - 1, on)); }   // ④
+        std::vector<int> dep(n, 0); for (int v = 1; v < n; v++) dep[v] = dep[par[v]] + 1;                                   // 루트 0 기준 깊이 (par[v] < v)
+        for (int u = 0; u < n; u++) { int hu = 0; for (int v = 0; v < n; v++) for (int x = v; x >= 0; x = par[x]) if (x == u) { hu = std::max(hu, dep[v] - dep[u]); break; } assert(t.height[u] == hu); } }   // 모든 정점의 부분 트리 높이 = 후손까지의 최대 깊이 차
+    for (int rep = 0; rep < 150; rep++) { int n = 2 + (int)(rng() % 9); std::vector<std::vector<int>> dag(n); for (int u = 0; u < n; u++) for (int v = u + 1; v < n; v++) if (rng() % 2) dag[u].push_back(v); std::vector<long long> memo(n, -1); long long calls = 0, viaMemo = countPaths(dag, 0, n - 1, memo, calls); std::vector<char> on(n, 0); assert(viaMemo == enumeratePaths(dag, 0, n - 1, on)); }   // ④
+    { const int L = 14, W = 3, V = 2 + L * W; std::vector<std::vector<int>> lay(V); for (int j = 0; j < W; j++) { lay[0].push_back(1 + j); lay[1 + (L - 1) * W + j].push_back(V - 1); } for (int i = 0; i + 1 < L; i++) for (int a = 0; a < W; a++) for (int b = 0; b < W; b++) lay[1 + i * W + a].push_back(1 + (i + 1) * W + b);
+      long long E = 0, want = 1, calls = 0; for (auto& l : lay) E += (long long)l.size(); for (int i = 0; i < L; i++) want *= W; std::vector<long long> memo(V, -1); long long got = countPaths(lay, 0, V - 1, memo, calls); assert(got == want && calls <= V + E); }   // ④ 층 14 겹 × 폭 3 의 DAG: 경로 3^14 개이지만 메모이제이션 덕에 호출은 V + E 번 이하
     for (int n = 2; n <= 8; n++) { std::vector<std::vector<int>> k(n); for (int u = 0; u < n; u++) for (int v = 0; v < n; v++) if (u != v) k[u].push_back(v); std::vector<char> on(n, 0); long long got = enumeratePaths(k, 0, n - 1, on), want = 0; long long perm = 1; for (int len = 0; len <= n - 2; len++) { want += perm; perm *= (n - 2 - len); } assert(got == want); }                    // ⑤
     { std::vector<std::vector<int>> e; State st = run(e, 0); assert(st.pre.empty() && st.maxDepth == 0); std::vector<std::vector<int>> one(1); State s1 = run(one, 0); assert(s1.pre == std::vector<int>{0} && s1.d[0] == 1 && s1.f[0] == 2 && s1.maxDepth == 1); }
-    std::cout << "RecursiveDFS: maximum recursion depth equalled the height of the DFS forest on 300 random graphs, a hybrid that switches to an explicit stack beyond a depth limit reproduced the pure recursive orders and times exactly and handled a 200000-vertex chain, tin/tout ancestor tests, subtree sizes, heights and diameters of random trees matched brute force, memoised path counting in DAGs matched path enumeration, and the s-t simple path count in K_n matched its closed form up to n=8" << std::endl; return 0;
+    std::cout << "RecursiveDFS: maximum recursion depth equalled the height of the DFS forest on 300 random graphs, a hybrid that switches to an explicit stack beyond a depth limit reproduced the pure recursive orders and times exactly and handled a 200000-vertex chain, tin/tout ancestor tests, subtree sizes, every vertex's subtree height and the diameters of random trees matched brute force, memoised path counting in DAGs matched path enumeration (on a 14-layer, width-3 DAG with 3^14 paths it made at most V+E calls), and the s-t simple path count in K_n matched its closed form up to n=8" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
 // Space Complexity: O(V) (호출 스택 최대 깊이 = DFS 트리 높이)
@@ -1039,13 +1053,14 @@ int main() {
 
 // 그래프 순회(GraphTraversal): BFS, DFS, 다이크스트라, 프림은 모두 같은 골격의 다른 얼굴이다 — 출발점에서 시작해 "프런티어(frontier, 다음에 볼 후보들)" 에서 하나를 꺼내 방문하고 그 이웃을 프런티어에 넣는다. 다른 점은 프런티어가 무엇이냐뿐: 큐(FIFO) → BFS, 스택(LIFO) → DFS, 우선순위 큐(키 = 지금까지의 경로 길이) → 다이크스트라, 우선순위 큐(키 = 연결 간선의 가중치) → 프림, 무작위 → 임의의 유효한 탐색. 어떤 정책이든 방문 집합은 출발점에서 도달 가능한 정점 전체로 같고, 방문한 정점마다 그 이전에 방문한 부모와 간선이 있다(탐색 트리).
 // 두 가지 표시 시점이 있다. 큐에서 BFS 는 "넣을 때" 표시해야 정점이 한 번만 들어가고, 스택으로 DFS 를 만들 때는 "꺼낼 때" 표시해야 재귀와 같은 순서가 된다(이웃을 역순으로 밀 것). 우선순위 큐는 같은 정점이 더 좋은 키로 다시 들어올 수 있어 꺼낼 때 이미 방문했으면 건너뛴다(게으른 삭제).
-// 검증: ① 같은 골격(템플릿 정책)으로 큐 정책이 전용 BFS 와, 스택 정책(꺼낼 때 표시·역순 밀기)이 재귀 DFS 전위 순서와 정확히 같음 ② 우선순위 정책(키 = 경로 길이)이 다이크스트라와 같은 거리, 우선순위 정책(키 = 간선 가중치)이 프림의 MST 가중치로 크러스칼과 같음 ③ 무작위 프런티어 정책도 방문 집합이 도달 가능 집합과 같고 방문 순서가 유효한 탐색(각 정점이 이미 방문한 부모에서 간선으로 연결) ④ 모든 정책에서 각 정점은 정확히 한 번 방문 ⑤ 비연결 그래프에서 모든 정점을 시작점 후보로 돌리면 전체를 덮음 ⑥ 출발점 하나인 정점 1 개 그래프.
+// 검증: ① 같은 골격(템플릿 정책)으로 큐 정책이 전용 BFS 와, 스택 정책(꺼낼 때 표시·역순 밀기)이 재귀 DFS 전위 순서와 정확히 같음 ② 우선순위 정책(키 = 경로 길이)이 다이크스트라와 같은 거리, 우선순위 정책(키 = 간선 가중치)이 프림의 MST 가중치로 크러스칼과 같음 ③ 무작위 프런티어 정책도 방문 집합이 도달 가능 집합과 같고 방문 순서가 유효한 탐색(각 정점이 이미 방문한 부모에서 간선으로 연결) ④ 모든 정책(큐·스택·우선순위 둘·무작위)에서 각 정점은 정확히 한 번 방문되고 방문 집합 = 도달 집합이며, 넣을 때 표시하는 BFS 의 프런티어 크기는 V 이하(꺼낼 때 표시하는 큐는 V 를 넘기는 그래프가 실제로 있음) ⑤ 비연결 그래프에서 모든 정점을 시작점 후보로 돌리면 전체를 덮음 ⑥ 출발점 하나인 정점 1 개 그래프.
 struct Item { int v, parent; long long key; };
-template <class Frontier> std::vector<Item> traverse(const std::vector<std::vector<std::pair<int, int>>>& adj, int s, Frontier& fr, bool markOnPush, std::vector<long long>* dist) { int n = (int)adj.size(); std::vector<char> seen(n, 0); std::vector<Item> visited; if (dist) dist->assign(n, -1);
-    fr.push({s, -1, 0}); if (markOnPush) seen[s] = 1;
-    while (!fr.empty()) { Item it = fr.pop(); if (!markOnPush) { if (seen[it.v]) continue; seen[it.v] = 1; } visited.push_back(it); if (dist) (*dist)[it.v] = it.key;
-        if (fr.reverseNeighbours()) { for (std::size_t i = adj[it.v].size(); i-- > 0;) { auto [w, c] = adj[it.v][i]; if (markOnPush) { if (seen[w]) continue; seen[w] = 1; } else if (seen[w]) continue; fr.push({w, it.v, fr.nextKey(it.key, c)}); } }
-        else for (auto [w, c] : adj[it.v]) { if (markOnPush) { if (seen[w]) continue; seen[w] = 1; } else if (seen[w]) continue; fr.push({w, it.v, fr.nextKey(it.key, c)}); } } return visited; }
+template <class Frontier> std::vector<Item> traverse(const std::vector<std::vector<std::pair<int, int>>>& adj, int s, Frontier& fr, bool markOnPush, std::vector<long long>* dist, std::size_t* maxFrontier = nullptr) { int n = (int)adj.size(); std::vector<char> seen(n, 0); std::vector<Item> visited; if (dist) dist->assign(n, -1);
+    std::size_t live = 0, peak = 0; auto push = [&](Item x) { fr.push(x); peak = std::max(peak, ++live); };                                                       // 프런티어에 동시에 들어 있던 원소 수의 최댓값
+    push({s, -1, 0}); if (markOnPush) seen[s] = 1;
+    while (!fr.empty()) { Item it = fr.pop(); live--; if (!markOnPush) { if (seen[it.v]) continue; seen[it.v] = 1; } visited.push_back(it); if (dist) (*dist)[it.v] = it.key;
+        if (fr.reverseNeighbours()) { for (std::size_t i = adj[it.v].size(); i-- > 0;) { auto [w, c] = adj[it.v][i]; if (markOnPush) { if (seen[w]) continue; seen[w] = 1; } else if (seen[w]) continue; push({w, it.v, fr.nextKey(it.key, c)}); } }
+        else for (auto [w, c] : adj[it.v]) { if (markOnPush) { if (seen[w]) continue; seen[w] = 1; } else if (seen[w]) continue; push({w, it.v, fr.nextKey(it.key, c)}); } } if (maxFrontier) *maxFrontier = peak; return visited; }
 struct QueueFrontier { std::deque<Item> q; bool empty() const { return q.empty(); } void push(Item x) { q.push_back(x); } Item pop() { Item x = q.front(); q.pop_front(); return x; } bool reverseNeighbours() const { return false; } long long nextKey(long long k, int) const { return k + 1; } };
 struct StackFrontier { std::vector<Item> s; bool empty() const { return s.empty(); } void push(Item x) { s.push_back(x); } Item pop() { Item x = s.back(); s.pop_back(); return x; } bool reverseNeighbours() const { return true; } long long nextKey(long long k, int) const { return k + 1; } };
 struct PQFrontier { bool prim; std::set<std::tuple<long long, long long, int, int>> q; long long seq = 0; explicit PQFrontier(bool p) : prim(p) {} bool empty() const { return q.empty(); } void push(Item x) { q.insert({x.key, seq++, x.v, x.parent}); } Item pop() { auto t = *q.begin(); q.erase(q.begin()); return {std::get<2>(t), std::get<3>(t), std::get<0>(t)}; } bool reverseNeighbours() const { return false; }
@@ -1055,20 +1070,23 @@ void recursiveDfs(const std::vector<std::vector<std::pair<int, int>>>& adj, int 
 std::vector<long long> dijkstraRef(const std::vector<std::vector<std::pair<int, int>>>& adj, int s) { int n = (int)adj.size(); std::vector<long long> d(n, -1); std::set<std::pair<long long, int>> pq; d[s] = 0; pq.insert({0, s}); while (!pq.empty()) { auto [du, u] = *pq.begin(); pq.erase(pq.begin()); for (auto [v, w] : adj[u]) if (d[v] < 0 || du + w < d[v]) { if (d[v] >= 0) pq.erase({d[v], v}); d[v] = du + w; pq.insert({d[v], v}); } } return d; }
 long long kruskalRef(int n, std::vector<std::array<int, 3>> es, int& used) { std::sort(es.begin(), es.end()); std::vector<int> p(n); std::iota(p.begin(), p.end(), 0); auto find = [&](int x) { while (p[x] != x) x = p[x] = p[p[x]]; return x; }; long long total = 0; used = 0; for (auto& e : es) { int a = find(e[1]), b = find(e[2]); if (a != b) { p[a] = b; total += e[0]; used++; } } return total; }
 int main() {
-    std::mt19937 rng(21);
+    std::mt19937 rng(21); int popOverflow = 0;
     for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 14); bool directed = rep % 2; std::vector<std::vector<std::pair<int, int>>> adj(n); std::vector<std::array<int, 3>> edges; std::set<std::pair<int, int>> seenEdge; for (int k = 0, m = (int)(rng() % (3 * n)); k < m; k++) { int u = (int)(rng() % n), v = (int)(rng() % n), w = 1 + (int)(rng() % 9); if (u == v) continue; auto key = directed ? std::make_pair(u, v) : std::make_pair(std::min(u, v), std::max(u, v)); if (!seenEdge.insert(key).second) continue; adj[u].push_back({v, w}); if (!directed) adj[v].push_back({u, w}); edges.push_back({w, u, v}); }
-        int s = (int)(rng() % n); std::vector<char> seen(n, 0); std::vector<int> pre; recursiveDfs(adj, s, seen, pre); std::vector<char> reach = seen;
-        StackFrontier sf; auto dfsVisited = traverse(adj, s, sf, false, nullptr); std::vector<int> dfsOrder; for (auto& it : dfsVisited) dfsOrder.push_back(it.v); assert(dfsOrder == pre);                                                                     // ① 스택 = 재귀 DFS
-        QueueFrontier qf; auto bfsVisited = traverse(adj, s, qf, true, nullptr); std::vector<int> bfsOrder; std::vector<int> level(n, -1); level[s] = 0; { std::vector<int> q{s}; for (std::size_t h = 0; h < q.size(); h++) for (auto [v, c] : adj[q[h]]) if (level[v] < 0) { level[v] = level[q[h]] + 1; q.push_back(v); } bfsOrder = q; } std::vector<int> got; for (auto& it : bfsVisited) got.push_back(it.v); assert(got == bfsOrder);
-        PQFrontier dj(false); std::vector<long long> dist; traverse(adj, s, dj, false, &dist); assert(dist == dijkstraRef(adj, s));                                                                                                                         // ② 우선순위 = 다이크스트라
+        int s = (int)(rng() % n); std::vector<char> seen(n, 0); std::vector<int> pre; recursiveDfs(adj, s, seen, pre); std::vector<char> reach = seen; std::set<int> reachSet; for (int v = 0; v < n; v++) if (reach[v]) reachSet.insert(v);
+        auto onceEach = [&](const std::vector<Item>& vis) { std::set<int> u; for (auto& it : vis) u.insert(it.v); return u.size() == vis.size() && u == reachSet; };                                                                                    // ④ 각 정점 정확히 한 번 + 방문 집합 == 도달 집합
+        StackFrontier sf; auto dfsVisited = traverse(adj, s, sf, false, nullptr); std::vector<int> dfsOrder; for (auto& it : dfsVisited) dfsOrder.push_back(it.v); assert(dfsOrder == pre && onceEach(dfsVisited));                                                                     // ① 스택 = 재귀 DFS
+        QueueFrontier qf; std::size_t peakPush = 0, peakPop = 0; auto bfsVisited = traverse(adj, s, qf, true, nullptr, &peakPush); assert(onceEach(bfsVisited) && peakPush <= (std::size_t)n); QueueFrontier qp; traverse(adj, s, qp, false, nullptr, &peakPop); assert(peakPop >= peakPush); popOverflow += peakPop > (std::size_t)n;   // BFS 는 넣을 때 표시 → 프런티어 ≤ V (꺼낼 때 표시하면 V 를 넘기도 한다)
+        std::vector<int> bfsOrder; std::vector<int> level(n, -1); level[s] = 0; { std::vector<int> q{s}; for (std::size_t h = 0; h < q.size(); h++) for (auto [v, c] : adj[q[h]]) if (level[v] < 0) { level[v] = level[q[h]] + 1; q.push_back(v); } bfsOrder = q; } std::vector<int> got; for (auto& it : bfsVisited) got.push_back(it.v); assert(got == bfsOrder);
+        PQFrontier dj(false); std::vector<long long> dist; auto djVisited = traverse(adj, s, dj, false, &dist); assert(dist == dijkstraRef(adj, s) && onceEach(djVisited));                                                                                                                         // ② 우선순위 = 다이크스트라
         std::mt19937 r2(rep); RandomFrontier rf; rf.rng = &r2; auto rv = traverse(adj, s, rf, false, nullptr); std::set<int> visitedSet; std::vector<int> posOf(n, -1); for (std::size_t i = 0; i < rv.size(); i++) { assert(visitedSet.insert(rv[i].v).second); posOf[rv[i].v] = (int)i; }          // ③ ④ 무작위 정책
-        std::set<int> reachSet; for (int v = 0; v < n; v++) if (reach[v]) reachSet.insert(v); assert(visitedSet == reachSet); for (std::size_t i = 1; i < rv.size(); i++) { int p = rv[i].parent; assert(p >= 0 && posOf[p] >= 0 && posOf[p] < (int)i); bool edge = false; for (auto [v, c] : adj[p]) edge |= v == rv[i].v; assert(edge); } }
+        assert(visitedSet == reachSet); for (std::size_t i = 1; i < rv.size(); i++) { int p = rv[i].parent; assert(p >= 0 && posOf[p] >= 0 && posOf[p] < (int)i); bool edge = false; for (auto [v, c] : adj[p]) edge |= v == rv[i].v; assert(edge); } }
     for (int rep = 0; rep < 200; rep++) { int n = 2 + (int)(rng() % 12); std::vector<std::vector<std::pair<int, int>>> adj(n); std::vector<std::array<int, 3>> edges; for (int u = 0; u < n; u++) for (int v = u + 1; v < n; v++) if (rng() % 3 == 0) { int w = 1 + (int)(rng() % 20); adj[u].push_back({v, w}); adj[v].push_back({u, w}); edges.push_back({w, u, v}); }
         PQFrontier prim(true); auto vis = traverse(adj, 0, prim, false, nullptr); long long total = 0; for (auto& it : vis) if (it.parent >= 0) total += it.key; std::vector<char> comp(n, 0); { std::vector<int> q{0}; comp[0] = 1; for (std::size_t h = 0; h < q.size(); h++) for (auto [v, c] : adj[q[h]]) if (!comp[v]) { comp[v] = 1; q.push_back(v); } }
-        std::vector<std::array<int, 3>> sub; for (auto& e : edges) if (comp[e[1]]) sub.push_back(e); int used = 0; long long kr = kruskalRef(n, sub, used); assert(total == kr && (int)vis.size() == used + 1); }                                                                          // ② 프림 = 크러스칼
+        std::vector<std::array<int, 3>> sub; for (auto& e : edges) if (comp[e[1]]) sub.push_back(e); int used = 0; long long kr = kruskalRef(n, sub, used); assert(total == kr && (int)vis.size() == used + 1); std::set<int> once; for (auto& it : vis) assert(once.insert(it.v).second); }                                                                          // ② 프림 = 크러스칼
+    assert(popOverflow > 0);                                                                                                                                                   // 꺼낼 때 표시하는 큐는 실제로 V 를 넘긴 그래프가 있었다
     { std::vector<std::vector<std::pair<int, int>>> adj(7); adj[0] = {{1, 1}}; adj[2] = {{3, 1}}; adj[4] = {{5, 1}, {6, 1}}; std::vector<char> covered(7, 0); for (int s = 0; s < 7; s++) { if (covered[s]) continue; QueueFrontier q; auto v = traverse(adj, s, q, true, nullptr); for (auto& it : v) covered[it.v] = 1; } for (int v = 0; v < 7; v++) assert(covered[v]); }   // ⑤
     { std::vector<std::vector<std::pair<int, int>>> one(1); StackFrontier sf; auto v = traverse(one, 0, sf, false, nullptr); assert(v.size() == 1 && v[0].v == 0 && v[0].parent == -1); }                                                                                              // ⑥
-    std::cout << "GraphTraversal: one frontier-driven skeleton reproduced BFS order with a queue, recursive DFS preorder with a stack (mark on pop, neighbours pushed in reverse), Dijkstra distances with a priority queue keyed by path length, and Prim's MST weight (equal to Kruskal's) with a priority queue keyed by edge weight, and a random frontier visited exactly the reachable set in a valid search order" << std::endl; return 0;
+    std::cout << "GraphTraversal: one frontier-driven skeleton reproduced BFS order with a queue, recursive DFS preorder with a stack (mark on pop, neighbours pushed in reverse), Dijkstra distances with a priority queue keyed by path length, and Prim's MST weight (equal to Kruskal's) with a priority queue keyed by edge weight, and a random frontier visited exactly the reachable set in a valid search order; every policy (queue, stack, both priority queues, random) visited each reachable vertex exactly once, and the mark-on-push BFS frontier never exceeded V entries while mark-on-pop BFS exceeded V in " << popOverflow << " of 300 random graphs" << std::endl; return 0;
 }
 // Time Complexity: 큐·스택 O(V + E), 우선순위 큐 O(E log V)
 // Space Complexity: O(V + E) (프런티어 포함)
@@ -1867,7 +1885,7 @@ CycleResult undirectedCycle(int n, const Edges& e, bool byId = true) {   // byId
     for (int i = 0; i < (int)e.size(); ++i) {
         auto [a, b] = e[i];
         adj[a].push_back({b, i});
-        if (a != b) adj[b].push_back({a, i}); else adj[a].push_back({a, i});
+        if (a != b) adj[b].push_back({a, i});                                   // 자기 루프는 호 하나면 충분하다: 첫 방문에서 회색 자기 자신을 만나 곧바로 반환
     }
     std::vector<int> color(n, 0), par(n, -1), pe(n, -1), it(n, 0), st;
     for (int s = 0; s < n; ++s) {
@@ -2029,7 +2047,7 @@ int main() {
     std::cout << "DetectCycleDFS: three-colour iterative DFS matched a Warshall-closure oracle on every digraph with up to 4 vertices (loops included; acyclic counts 1,3,25,543) and on every 7th digraph on 5 vertices, matched the cyclomatic-number oracle on all 33,867 undirected graphs with up to 6 vertices (cycle-free ones are exactly the 1+2+7+38+291+2932 forests) and on 3000 random multigraphs, every recovered cycle was checked edge by edge, skipping the parent by vertex instead of by edge id missed parallel edges in over 100 random cases, a visited-only test flagged the diamond DAG, and a 1,000,000-vertex chain was cycle-free until its last arc closed a cycle of length 1,000,000" << std::endl; return 0;
 }
 // Time Complexity: O(V + E)
-// Space Complexity: O(V)
+// Space Complexity: O(V + E) (간선 목록에서 만든 인접 리스트)
 ```
 ## DetectCycleBFS()
 ### 대표코드
@@ -2397,7 +2415,7 @@ int main() {
 // 트리 판정(IsTree): 무방향 그래프가 트리 ⇔ 아래가 모두 동치.  (a) 연결이고 E = V − 1   (b) 연결이고 사이클 없음   (c) 사이클 없고 E = V − 1 (연결은 따로 안 봐도 된다)   (d) 연결이고 모든 간선이 다리   (e) 임의의 두 정점 사이에 단순 경로가 정확히 하나.  쓰기 쉬운 것은 (a) 하나만 확인해도 되는 형태 — BFS 로 연결 확인 + 간선 수 비교.
 // 약속: V = 0 은 트리가 아니다(정점 ≥ 1). 루프와 평행 간선은 곧 사이클이므로 트리가 아니다 — 인접 리스트 크기 합 / 2 로 간선 수를 세던 옛 방식은 루프(리스트에 한 번만 들어감)에서 틀려서, 여기서는 간선 목록을 그대로 센다.
 // 방향 그래프의 트리는 "뿌리 있는 트리(arborescence)": 진입 차수 0 인 정점(뿌리)이 정확히 하나, 나머지는 진입 차수 1, 뿌리에서 모든 정점에 닿음.
-// 검증: ① 다섯 판정이 정점 ≤ 6 의 모든 단순 그래프에서 같은 답이고 이름 붙은 트리의 개수가 Cayley 공식 n^(n−2) = 1, 1, 3, 16, 125, 1296. ② Prüfer 수열 ↔ 트리 일대일 대응 — n = 5 에서 125 개 수열이 125 개의 서로 다른 트리를 만든다. ③ 트리에 간선 하나를 더하면 사이클이 정확히 하나, 간선 하나를 빼면 정확히 두 성분. ④ 방향 트리 개수가 n^(n−1) = 1, 2, 9, 64, 625 (뿌리 하나를 고르는 n 가지 × 트리 n^(n−2)).
+// 검증: ① 손으로 확인한 모양(V = 0, 루프, 평행 간선, 삼각형 + 고립 정점) ② 다섯 판정이 정점 ≤ 6 의 모든 단순 그래프에서 같은 답이고 이름 붙은 트리의 개수가 Cayley 공식 n^(n−2) = 1, 1, 3, 16, 125, 1296. ③ Prüfer 수열 ↔ 트리 일대일 대응 — n = 5 에서 125 개 수열이 125 개의 서로 다른 트리를 만든다(무작위 수열 300 개도 트리, 왕복 일치). ④ 표본 검사: 무작위 트리 300 개마다 무작위 간선 쌍 최대 6 개씩 — 간선 하나를 더하면 사이클이 정확히 하나, 임의의 간선 하나를 빼면 정확히 두 성분(모든 간선을 전수 검사하지는 않음). ⑤ 방향 트리 개수가 n^(n−1) = 1, 2, 9, 64, 625 (뿌리 하나를 고르는 n 가지 × 트리 n^(n−2)). ⑥ 백만 정점 사슬·별.
 using Edges = std::vector<std::pair<int, int>>;
 struct Dsu {
     std::vector<int> p;
@@ -2569,9 +2587,9 @@ int main() {
         path.back() = {0, 2};                                                                    // 마지막 간선을 바꾸면 사이클이 생기고 N−1 번째 정점이 고립
         assert(!treeA(N, path));
     }
-    std::cout << "IsTree: five characterisations (connected with V-1 edges, connected and acyclic, acyclic with V-1 edges, connected with every edge a bridge, exactly one simple path per pair) agreed on all 33,867 graphs with up to 6 vertices and counted the labeled trees 1,1,3,16,125,1296 = n^(n-2); Pruefer decoding gave 125 distinct trees for n = 5 and round-tripped on 300 random sequences, adding any edge to a tree created exactly one cycle and removing any edge left exactly two components, the arborescence test counted 1,2,9,64,625 = n^(n-1) rooted trees over all digraphs up to 5 vertices, and a 1,000,000-vertex path and star were accepted" << std::endl; return 0;
+    std::cout << "IsTree: five characterisations (connected with V-1 edges, connected and acyclic, acyclic with V-1 edges, connected with every edge a bridge, exactly one simple path per pair) agreed on all 33,867 graphs with up to 6 vertices and counted the labeled trees 1,1,3,16,125,1296 = n^(n-2); Pruefer decoding gave 125 distinct trees for n = 5 and round-tripped on 300 random sequences, on 300 random trees, adding up to 6 sampled non-loop edges per tree created exactly one cycle and removing a sampled edge left exactly two components, the arborescence test counted 1,2,9,64,625 = n^(n-1) rooted trees over all digraphs up to 5 vertices, and a 1,000,000-vertex path and star were accepted" << std::endl; return 0;
 }
-// Time Complexity: O(V + E)
+// Time Complexity: 판정 (a)~(c) 는 O(V + E), (d) 는 O(E·(V + E)), (e) 는 최악 지수 시간 — (d)·(e) 는 교차 검증용 오라클일 뿐이다
 // Space Complexity: O(V + E)
 ```
 ## IsForest()
@@ -8152,6 +8170,7 @@ int main() {
 
 // 밀집 그래프: |E| 가 |V|² 에 가깝다.  인접 행렬이 적합하고, 한 행을 비트셋으로 두면 집합 연산을 64개씩 한 번에 처리해
 // 삼각형 세기, 전이적 폐쇄(Warshall) 같은 알고리즘이 64배 빨라진다
+// 검증: K64 의 삼각형 수 C(64,3), 무작위 무방향 그래프의 삼각형 수 == 무차별 3중 반복, 경로 0->...->63 의 폐쇄, 그리고 무작위 방향 그래프 40 개(간선 확률 1~8%)에서 폐쇄 == 모든 출발점의 DFS 도달 집합 (Warshall 반복 순서가 틀리면 걸린다)
 const int N = 64;
 typedef std::bitset<N> Row;
 
@@ -8181,7 +8200,14 @@ int main() {
     for (int i = 0; i + 1 < N; i++) path[i][i + 1] = 1;
     auto c = closure(path);
     assert(c[0][63] && c[10][20] && !c[20][10] && c[0].count() == 63);
-    std::cout << "DenseGraph: triangles in random graph = " << brute << std::endl;
+    for (int rep = 0; rep < 40; rep++) {                                // 무작위 방향 그래프(간선 확률 1~8%: 희소 ~ 거의 강연결): 폐쇄 == 각 출발점에서 DFS 로 구한 도달 집합(1 개 이상의 호)
+        std::vector<Row> d(N); for (int i = 0; i < N; i++) for (int j = 0; j < N; j++) if (i != j && (int)(rng() % 100) < 1 + rep % 8) d[i][j] = 1;
+        auto cl = closure(d);
+        for (int s = 0; s < N; s++) { Row seen; std::vector<int> st; for (int v = 0; v < N; v++) if (d[s][v]) { seen[v] = 1; st.push_back(v); }
+            while (!st.empty()) { int u = st.back(); st.pop_back(); for (int v = 0; v < N; v++) if (d[u][v] && !seen[v]) { seen[v] = 1; st.push_back(v); } }
+            assert(cl[s] == seen); }
+    }
+    std::cout << "DenseGraph: triangles in random graph = " << brute << ", Warshall closure matched DFS reachability from every vertex of 40 random digraphs" << std::endl;
     return 0;
 }
 // Time Complexity: 삼각형 O(V²·V/64), 전이적 폐쇄 O(V³/64)
@@ -8588,9 +8614,10 @@ int main() {
 // 척도 없는 네트워크(Barabási–Albert): 새 정점이 기존 정점에 연결될 확률이 그 정점의 차수에 비례한다(선호적 연결, "부자가 더 부자").
 // 결과: 차수 분포가 거듭제곱 꼬리 P(k) ~ k^-3 를 따라 소수의 허브와 대다수의 저차수 정점이 생긴다 (웹, 인용망, 항공망)
 // 구현 요령: 간선 끝점 목록에서 균등하게 뽑으면 차수에 비례하는 선택이 된다
+// 검증: 차수 꼬리가 이론값 P(K ≥ k) = m(m+1)/(k(k+1)) (밀도 k^-3 의 누적, Bollobás 등) 의 ±15% 이내 — k = 4, 8, 16 ('첫 6 개 정점에만 붙이기', '두 번 뽑아 차수 큰 쪽', 끝점 목록에 새 정점 안 넣기, 균등 선택 같은 변형은 모두 걸린다). 그 밖에 평균 차수 ≈ 2m 은 간선 수 항등식, 최대 차수 > 평균의 10배(허브), 차수 ≤ 2m 인 정점이 과반
 int main() {
     std::mt19937 rng(81);
-    const int n = 3000, m = 2;
+    const int n = 10000, m = 2;
     std::vector<int> degree(n, 0), endpoints;                          // endpoints: 각 정점이 차수만큼 들어 있는 목록
     for (int i = 0; i < m + 1; i++) for (int j = i + 1; j < m + 1; j++) { degree[i]++; degree[j]++; endpoints.push_back(i); endpoints.push_back(j); }
     for (int v = m + 1; v < n; v++) {
@@ -8600,14 +8627,16 @@ int main() {
     }
     double mean = 0; for (int d : degree) mean += d; mean /= n;
     int maxDeg = *std::max_element(degree.begin(), degree.end());
-    assert(std::abs(mean - 2 * m) < 0.1);                              // 평균 차수 ≈ 2m
+    assert(std::abs(mean - 2 * m) < 0.1);                              // 평균 차수 ≈ 2m (간선 수 항등식: Σ 차수 = 2·간선 수)
+    double tail16 = 0;
+    for (int k : {4, 8, 16}) { double frac = (double)std::count_if(degree.begin(), degree.end(), [&](int d) { return d >= k; }) / n, theory = m * (m + 1.0) / (k * (k + 1.0)); assert(std::abs(frac / theory - 1) < 0.15); if (k == 16) tail16 = frac; }   // 꼬리 P(K ≥ k) = m(m+1)/(k(k+1))
     assert(maxDeg > 10 * mean);                                        // 허브: 평균의 10배 넘는 차수
     int low = std::count_if(degree.begin(), degree.end(), [&](int d) { return d <= 2 * m; });
     assert(low > n / 2);                                               // 대다수는 차수가 낮다
-    std::cout << "ScaleFreeGraph: mean degree " << mean << ", max degree (hub) " << maxDeg << std::endl;
+    std::cout << "ScaleFreeGraph: mean degree " << mean << ", max degree (hub) " << maxDeg << ", P(K>=16) = " << tail16 << " (theory " << m * (m + 1.0) / (16 * 17.0) << "), CCDF within 15% of m(m+1)/(k(k+1)) at k = 4, 8, 16" << std::endl;
     return 0;
 }
-// Time Complexity: O(n·m)
+// Time Complexity: 기대 O(n·m²) (뽑을 때마다 중복 대상 검사 O(m), 기대 O(m) 번 뽑음)
 // Space Complexity: O(n·m)
 ```
 ## SmallWorldGraph()

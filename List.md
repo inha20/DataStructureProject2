@@ -558,7 +558,7 @@ int main() {
 
 // 크기 조절(Resize): resize(n) 은 길이를 n 으로 만든다 — 줄이면 뒤쪽 원소를 소멸시키고(용량은 그대로), 늘리면 새 원소를 값 초기화(int 는 0, 또는 지정한 값)한다. reserve(c) 는 길이를 바꾸지 않고 용량만 미리 확보해 이후 재할당을 막는다. shrink_to_fit() 은 남는 용량을 반납한다.
 // 재할당 중에는 원소를 새 블록으로 옮기는데, 이동 생성자가 예외를 던지지 않으면(noexcept) 이동하고, 던질 수 있으면 복사한다(std::move_if_noexcept). 복사 중 예외가 나면 이미 만든 새 원소를 모두 소멸시키고 원래 상태를 그대로 둔다 — 강한 예외 보장. 새 원소를 먼저 만든 뒤에 기존 원소를 옮겨야 값 복사 실패 때 기존 원소를 건드리지 않는다.
-// 검증: ① 무작위 resize/reserve/shrink 가 std::vector 의 길이·내용과 같고 reserve 는 길이 불변, 줄여도 용량 유지, shrink_to_fit 후 용량 == 길이 ② 늘릴 때 새 원소가 값 초기화(이전에 쓰레기 값이 있던 칸도 0)이고 resize(n, v) 는 v 로 채움 ③ 이동 가능한 타입은 이동(복사 0), 이동이 던질 수 있는 복사 가능 타입은 복사(이동 0) ④ 복사가 k 번째에서 던져도(모든 k) 길이·내용·생존 객체 수가 변하지 않음 ⑤ 줄이면 소멸자 정확히 한 번.
+// 검증: ① 무작위 resize/reserve/shrink 가 std::vector 의 길이·내용과 같고 reserve 는 길이 불변, 줄여도 용량 유지, shrink_to_fit 후 용량 == 길이 ② 늘릴 때 새 원소가 값 초기화(이전에 쓰레기 값이 있던 칸도 0)이고 resize(n, v) 는 v 로 채움 ③ 이동 가능한 타입은 이동(복사 0), 이동이 던질 수 있는 복사 가능 타입은 복사(이동 0) ④ 복사가 k 번째에서 던져도(모든 k, 재할당 경로와 용량이 충분한 제자리 경로 모두) 길이·내용·저장소·생존 객체 수가 변하지 않음 ⑤ 줄이면 소멸자 정확히 한 번 ⑥ 한 칸씩 늘려도 용량이 매번 정확히 두 배가 되어 재할당이 log N 번뿐(분할상환)이고 큰 점프는 요청한 크기까지 한 번에 늘어남.
 template <class T> class Vec {
     T* d_ = nullptr; std::size_t n_ = 0, cap_ = 0;
     static T* alloc(std::size_t n) { return n ? static_cast<T*>(::operator new(n * sizeof(T))) : nullptr; }
@@ -598,16 +598,17 @@ int main() {
           assert(v.size() == ref.size()); for (std::size_t i = 0; i < ref.size(); i++) assert(v[i] == ref[i]); } }
     { Vec<int> v; for (int i = 0; i < 20; i++) v.push_back(77); v.resize(0); v.resize(10); for (int i = 0; i < 10; i++) assert(v[i] == 0); int nine = 9; v.resize(15, &nine); for (int i = 0; i < 10; i++) assert(v[i] == 0); for (int i = 10; i < 15; i++) assert(v[i] == 9); }       // ② 값 초기화
     { Vec<Counting> v; Counting::copies = Counting::moves = 0; for (int i = 0; i < 100; i++) v.push_back(Counting(i)); assert(Counting::copies == 100 && Counting::moves > 0);                          // ③ push 는 복사 100 번(인자), 재할당은 이동
-      int copiesAfterPush = Counting::copies; v.reserve(1000); assert(Counting::copies == copiesAfterPush && Counting::moves > 100); Vec<ThrowMove> t; ThrowMove::copies = ThrowMove::moves = 0; for (int i = 0; i < 50; i++) t.push_back(ThrowMove(i));
+      int copiesAfterPush = Counting::copies, movesBeforeReserve = Counting::moves; v.reserve(1000); assert(Counting::copies == copiesAfterPush && Counting::moves - movesBeforeReserve == 100); Vec<ThrowMove> t; ThrowMove::copies = ThrowMove::moves = 0; for (int i = 0; i < 50; i++) t.push_back(ThrowMove(i));
       assert(ThrowMove::moves == 0 && ThrowMove::copies > 50); Vec<Counting2> c; Counting2::copies = 0; for (int i = 0; i < 50; i++) c.push_back(Counting2(i)); assert(Counting2::copies > 50); }
     assert(Counting::live == 0 && ThrowMove::live == 0 && Counting2::live == 0);
-    { for (int k = 0; k < 40; k++) { Vec<Counting2> v; for (int i = 0; i < 6; i++) v.push_back(Counting2(i)); std::size_t cap = v.capacity(), n = v.size(); int live = Counting2::live;                      // ④ 강한 예외 보장
+    { for (int mode = 0; mode < 2; mode++) for (int k = 0; k < 40; k++) { Vec<Counting2> v; for (int i = 0; i < 6; i++) v.push_back(Counting2(i)); if (mode) v.reserve(40); std::size_t cap = v.capacity(), n = v.size(); const Counting2* base = v.data(); int live = Counting2::live;   // ④ 강한 예외 보장: mode 0 은 재할당 경로, mode 1 은 용량이 충분한 제자리 경로
           Counting2::copyBudget = k; bool threw = false; try { Counting2 fill(5); v.resize(30, &fill); } catch (const std::bad_alloc&) { threw = true; }
-          if (threw) { assert(v.size() == n && v.capacity() == cap && Counting2::live == live); for (std::size_t i = 0; i < n; i++) assert(v[i].v == (int)i); } else { assert(v.size() == 30); }
+          if (threw) { assert(v.size() == n && v.capacity() == cap && v.data() == base && Counting2::live == live); for (std::size_t i = 0; i < n; i++) assert(v[i].v == (int)i); } else { assert(v.size() == 30 && (mode == 0 || (v.data() == base && v.capacity() == cap))); }
           Counting2::copyBudget = -1; assert(Counting2::live == (int)v.size()); } }
     assert(Counting2::live == 0);
     { Vec<Counting> v; for (int i = 0; i < 50; i++) v.push_back(Counting(i)); assert(Counting::live == 50); v.resize(20); assert(Counting::live == 20 && v.size() == 20 && v.capacity() >= 50); v.shrink_to_fit(); assert(v.capacity() == 20 && Counting::live == 20); v.resize(0); assert(Counting::live == 0); }   // ⑤
-    assert(Counting::live == 0); std::cout << "Resize: 4000 random reserve/resize/shrink operations matched std::vector semantics (reserve keeps size, shrinking keeps capacity); growth value-initialized new elements; noexcept-move types were moved while throwing-move types were copied; a copy failing at any position left size, contents and live-object count unchanged" << std::endl; return 0;
+    { Vec<int> v; std::size_t changes = 0, lastCap = 0; for (std::size_t n = 1; n <= 1000; n++) { v.resize(n); if (v.capacity() != lastCap) { if (lastCap) assert(v.capacity() == 2 * lastCap); lastCap = v.capacity(); changes++; } } assert(changes == 11 && v.capacity() == 1024); v.resize(5000); assert(v.capacity() == 5000 && v.size() == 5000); }   // ⑥ 한 칸씩 늘리면 용량 1, 2, 4, …, 1024 (11 번), 큰 점프는 요청 크기까지
+    assert(Counting::live == 0); std::cout << "Resize: 4000 random reserve/resize/shrink operations matched std::vector semantics (reserve keeps size, shrinking keeps capacity); growth value-initialized new elements; noexcept-move types were moved while throwing-move types were copied; a copy failing at any position (during reallocation and during in-place growth) left size, contents, storage and live-object count unchanged; growing one element at a time doubled the capacity each time (11 reallocations up to 1000 elements)" << std::endl; return 0;
 }
 // Time Complexity: resize 줄이기 O(줄인 수), 늘리기 O(N) (재할당 포함, 분할상환 O(추가 수)), reserve O(N)
 // Space Complexity: O(용량)
@@ -1771,17 +1772,20 @@ int main() {
 ```cpp
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <iostream>
 #include <random>
 #include <vector>
 
 // 더미 노드(Dummy Node): 값이 없는 가짜 노드를 리스트 맨 앞에 하나 두는 기법이다. 실제 head 는 dummy->next 가 된다. 이렇게 하면 "첫 노드를 지우거나 앞에 넣을 때만 head 포인터를 고쳐야 하는" 특수 경우가 사라져 모든 노드가 앞 노드를 가진다 — 삭제는 `prev->next = prev->next->next` 하나의 코드로 통일된다. 결과는 dummy->next 를 반환하고 dummy 자신은 반드시 정리한다(스택에 두면 자동).
 // 같은 문제를 더미 없이 풀면 head 가 바뀔 수 있는 경우를 따로 처리하는 반복문이 앞에 붙는다. 이 코드는 head 가 지워질 수 있는 대표 문제 넷을 두 방식으로 구현해 결과가 같음을 확인한다: 값이 같은 노드 모두 지우기, 정렬 유지 삽입, 정렬 리스트에서 중복된 값을 가진 노드를 전부 지우기(II: 중복된 값은 하나도 남기지 않음), x 미만/이상으로 안정 분할해 이어 붙이기.
-// 검증: ① 네 문제 모두 더미 방식 == 더미 없는 방식 == 벡터 모델(무작위 3000 입력, 빈 리스트·전부 삭제되는 리스트 포함) ② 모든 노드가 보존/해제되어 누수 없음 ③ 머리 노드가 지워지는 경우(전부 삭제·머리만 삭제)와 빈 리스트 ④ 반환된 리스트의 머리가 dummy 가 아니라 dummy->next 임을 확인.
+// 검증: ① 네 문제 모두 더미 방식 == 더미 없는 방식 == 벡터 모델(무작위 3000 입력, 빈 리스트·전부 삭제되는 리스트 포함) 정렬 삽입은 같은 값이 있으면 그 뒤에 들어간다(안정적 — 새 노드의 주소로 위치를 확인) ② 모든 노드가 보존/해제되어 누수 없음 ③ 머리 노드가 지워지는 경우(전부 삭제·머리만 삭제)와 빈 리스트 ④ 반환된 리스트의 머리가 dummy 가 아니라 dummy->next 임을 확인.
 struct Node { int val; Node* next; static int live; Node(int v, Node* n = nullptr) : val(v), next(n) { ++live; } ~Node() { --live; } }; int Node::live = 0;
 Node* build(const std::vector<int>& v) { Node dummy(0); Node* t = &dummy; for (int x : v) { t->next = new Node(x); t = t->next; } Node* h = dummy.next; dummy.next = nullptr; return h; }
 void destroy(Node* h) { while (h) { Node* n = h->next; delete h; h = n; } }
 std::vector<int> items(const Node* h) { std::vector<int> r; for (; h; h = h->next) r.push_back(h->val); return r; }
+std::vector<const Node*> ptrs(const Node* h) { std::vector<const Node*> r; for (; h; h = h->next) r.push_back(h); return r; }
+std::size_t newIndex(const Node* h, const std::vector<const Node*>& old) { std::size_t i = 0; for (; h && std::find(old.begin(), old.end(), h) != old.end(); h = h->next) i++; return i; }   // 옛 노드가 아닌 첫 노드의 위치 = 새 노드의 위치
 Node* removeAllDummy(Node* head, int key) { Node dummy(0, head); for (Node* p = &dummy; p->next;) { if (p->next->val == key) { Node* dead = p->next; p->next = dead->next; delete dead; } else p = p->next; } Node* h = dummy.next; dummy.next = nullptr; return h; }
 Node* removeAllPlain(Node* head, int key) { while (head && head->val == key) { Node* dead = head; head = head->next; delete dead; }          // 머리가 지워지는 경우를 먼저 따로 처리
     for (Node* p = head; p && p->next;) { if (p->next->val == key) { Node* dead = p->next; p->next = dead->next; delete dead; } else p = p->next; } return head; }
@@ -1796,7 +1800,9 @@ int main() {
     std::mt19937 rng(40);
     for (int rep = 0; rep < 3000; rep++) { int n = (int)(rng() % 14), range = 1 + (int)(rng() % 6); std::vector<int> v(n); for (int& x : v) x = (int)(rng() % range); int key = (int)(rng() % range);
         { std::vector<int> ref = v; ref.erase(std::remove(ref.begin(), ref.end(), key), ref.end()); Node* a = removeAllDummy(build(v), key); Node* b = removeAllPlain(build(v), key); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }   // ①
-        { std::vector<int> s = v; std::sort(s.begin(), s.end()); std::vector<int> ref = s; ref.insert(std::upper_bound(ref.begin(), ref.end(), key), key); Node* a = insertSortedDummy(build(s), key); Node* b = insertSortedPlain(build(s), key); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }
+        { std::vector<int> s = v; std::sort(s.begin(), s.end()); std::vector<int> ref = s; ref.insert(std::upper_bound(ref.begin(), ref.end(), key), key);
+          std::size_t slot = (std::size_t)(std::upper_bound(s.begin(), s.end(), key) - s.begin()); Node* a0 = build(s); std::vector<const Node*> oa = ptrs(a0); Node* a = insertSortedDummy(a0, key); Node* b0 = build(s); std::vector<const Node*> ob = ptrs(b0); Node* b = insertSortedPlain(b0, key);
+          assert(items(a) == ref && items(b) == ref && newIndex(a, oa) == slot && newIndex(b, ob) == slot); destroy(a); destroy(b); }   // 같은 값이 있으면 그 뒤(upper_bound 위치)에 들어간다
         { std::vector<int> s = v; std::sort(s.begin(), s.end()); std::vector<int> ref; for (std::size_t i = 0; i < s.size();) { std::size_t j = i; while (j < s.size() && s[j] == s[i]) j++; if (j - i == 1) ref.push_back(s[i]); i = j; }
           Node* a = deleteDuplicatesDummy(build(s)); Node* b = deleteDuplicatesPlain(build(s)); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }
         { std::vector<int> ref; for (int x : v) if (x < key) ref.push_back(x); for (int x : v) if (x >= key) ref.push_back(x); Node* a = partitionDummy(build(v), key); Node* b = partitionPlain(build(v), key); assert(items(a) == ref && items(b) == ref); destroy(a); destroy(b); }
@@ -2527,7 +2533,7 @@ int main() {
 
 // 가비지 컬렉션(Garbage Collection): 쓰이지 않는 메모리를 자동으로 회수한다. 방식 둘. (1) 참조 계수: 객체마다 가리키는 참조 수를 세어 0 이 되면 즉시 해제(C++ 의 shared_ptr). 단순하고 즉시 회수되지만 순환 참조(a 가 b 를, b 가 a 를 소유)는 계수가 0 이 되지 않아 영원히 샌다 — 한쪽을 weak_ptr 로 바꿔 끊어야 한다. (2) 추적(mark–sweep): 루트에서 도달 가능한 객체를 표시(mark)하고 표시되지 않은 것을 모두 해제(sweep). 순환도 문제없다.
 // 연결 리스트에서 shared_ptr 의 흔한 함정: 노드 사슬을 shared_ptr 로 이으면 머리를 놓는 순간 소멸자가 다음 노드의 소멸자를 재귀로 부른다 — 깊이가 노드 수라 긴 리스트에서 스택이 넘친다. 반복문으로 하나씩 풀어 해제해야 한다. 이중 연결 리스트의 prev 는 weak_ptr(또는 원시 포인터)로 해야 순환 소유가 생기지 않는다.
-// 검증: ① 단방향 shared_ptr 사슬의 소멸 재귀 깊이가 노드 수와 같음(작은 사슬로 측정), 반복 해제는 1,000,000 노드를 스택 없이 처리 ② 순환 shared_ptr 은 누수(생존 노드 수가 외부 참조를 놓은 뒤에도 남음), weak_ptr 로 끊으면 0 ③ 이중 연결 리스트(next 는 shared, prev 는 weak)는 누수 없음 ④ mark–sweep: 무작위 객체 그래프(순환 포함)에서 해제 후 남은 집합이 루트에서의 도달 가능 집합(독립 BFS)과 같고, 해제 횟수가 도달 불가능 객체 수와 같음 ⑤ 같은 GC 를 반복 실행해도 안정적(두 번째 sweep 은 아무것도 해제 안 함).
+// 검증: ① 단방향 shared_ptr 사슬의 소멸 재귀 깊이가 노드 수와 같음(작은 사슬로 측정), 반복 해제는 1,000,000 노드를 스택 없이 처리 ② 순환 shared_ptr 은 누수(생존 노드 수가 외부 참조를 놓은 뒤에도 남음), 한쪽 참조를 reset() 으로 끊으면 연쇄 해제되어 0 ③ 이중 연결 리스트(next 는 shared, prev 는 weak_ptr)는 처음부터 순환 소유가 없어 누수 없음 ④ mark–sweep: 무작위 객체 그래프(순환 포함)에서 해제 후 남은 집합이 루트에서의 도달 가능 집합(독립 BFS)과 같고, 해제 횟수가 도달 불가능 객체 수와 같음 ⑤ 같은 GC 를 반복 실행해도 안정적(두 번째 sweep 은 아무것도 해제 안 함)이고, 루트를 하나씩 빼며 다시 수집할 때마다 남은 집합이 독립 BFS 도달 집합과 같고 해제 수가 줄어든 만큼과 같음(표시 비트를 매번 지워야 맞다).
 struct SNode { int val; std::shared_ptr<SNode> next; static int live, depth, maxDepth; explicit SNode(int v) : val(v) { ++live; } ~SNode() { ++depth; if (depth > maxDepth) maxDepth = depth; next.reset(); --depth; --live; } };       // next.reset() 이 재귀 소멸
 int SNode::live = 0, SNode::depth = 0, SNode::maxDepth = 0;
 void releaseIteratively(std::shared_ptr<SNode>& head) { while (head && head.use_count() == 1) { std::shared_ptr<SNode> nx = std::move(head->next); head = std::move(nx); } head.reset(); }              // 하나씩 풀어 해제(재귀 없음)
@@ -2546,12 +2552,14 @@ int main() {
       { std::shared_ptr<CNode> rescue = leaked->shared_from_this(); rescue->peer.reset(); } assert(CNode::live == 0); }                                                                              // 순환을 끊으면 연쇄 해제
     { std::shared_ptr<DNode> head; std::shared_ptr<DNode> tail; for (int i = 0; i < 100; i++) { auto n = std::make_shared<DNode>(i); if (!head) head = tail = n; else { tail->next = n; n->prev = tail; tail = n; } } assert(DNode::live == 100 && head->next->prev.lock() == head);          // ③ prev 는 weak
       tail.reset(); head.reset(); assert(DNode::live == 0); }
-    std::mt19937 rng(49);
+    std::mt19937 rng(49); long laterFreed = 0;
     for (int rep = 0; rep < 300; rep++) { int n = 1 + (int)(rng() % 30); Heap h; h.objs.resize(n); for (int i = 0; i < n; i++) { int deg = (int)(rng() % 3); for (int d = 0; d < deg; d++) h.objs[i].refs.push_back((int)(rng() % n)); } int nr = (int)(rng() % 3); for (int r = 0; r < nr; r++) h.roots.push_back((int)(rng() % n));    // ④
-        std::set<int> reach; std::vector<int> q(h.roots.begin(), h.roots.end()); for (int r : q) reach.insert(r); for (std::size_t i = 0; i < q.size(); i++) for (int t : h.objs[q[i]].refs) if (reach.insert(t).second) q.push_back(t);                  // 독립 BFS
-        long freed = h.collect(); assert(h.alive() == reach && freed == (long)(n - (int)reach.size()));
-        assert(h.collect() == 0 && h.alive() == reach); }                                                                                                                                                // ⑤
-    std::cout << "GarbageCollection: a shared_ptr chain's destructor recursed to depth n (1500) and an iterative release freed 1,000,000 nodes without recursion; shared_ptr cycles leaked until one side was broken or made weak, doubly linked lists with weak prev pointers leaked nothing, and mark-and-sweep on 300 random object graphs freed exactly the unreachable objects (cycles included)" << std::endl; return 0;
+        auto bfs = [&](const std::vector<int>& roots) { std::set<int> reach(roots.begin(), roots.end()); std::vector<int> q(roots.begin(), roots.end()); for (std::size_t i = 0; i < q.size(); i++) for (int t : h.objs[q[i]].refs) if (reach.insert(t).second) q.push_back(t); return reach; };   // 독립 BFS
+        std::set<int> reach = bfs(h.roots); long freed = h.collect(); assert(h.alive() == reach && freed == (long)(n - (int)reach.size()));
+        assert(h.collect() == 0 && h.alive() == reach);                                                                                                  // ⑤ 반복 실행해도 안정
+        while (!h.roots.empty()) { h.roots.pop_back(); std::set<int> next = bfs(h.roots); long f = h.collect(); assert(h.alive() == next && f == (long)(reach.size() - next.size())); laterFreed += f; reach = next; } }       // 루트를 하나씩 빼며 재수집: 표시 비트를 지워야 맞다
+    assert(laterFreed > 0);                                                                                                                                                // 루트를 빼는 단계가 실제로 객체를 해제했다
+    std::cout << "GarbageCollection: a shared_ptr chain's destructor recursed to depth n (1500) and an iterative release freed 1,000,000 nodes without recursion; a shared_ptr cycle leaked until one reference was reset(), doubly linked lists with weak prev pointers leaked nothing, and mark-and-sweep on 300 random object graphs freed exactly the unreachable objects (cycles included), again after each root was dropped in turn (" << laterFreed << " more objects freed)" << std::endl; return 0;
 }
 // Time Complexity: 참조 계수 갱신 O(1), mark–sweep O(전체 객체 + 참조)
 // Space Complexity: 참조 계수 O(1) 추가, mark–sweep O(표시 비트 + DFS 스택)
@@ -3455,7 +3463,9 @@ int main() {
 ### 대표코드
 ```cpp
 #include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <random>
 #include <vector>
@@ -3463,7 +3473,7 @@ int main() {
 
 // 메모리 단편화(Fragmentation): 전체 빈 메모리는 충분한데도 큰 요청이 실패하는 현상. 두 종류가 있다. 외부 단편화 — 빈 공간이 여러 조각으로 쪼개져 가장 큰 조각이 요청보다 작다. 내부 단편화 — 할당 단위(크기 등급)로 올림해서 블록 안쪽이 낭비된다.
 // 크기가 제각각인 블록을 섞어 할당·해제하면 외부 단편화가 쌓인다. 대책: ① 같은 크기끼리 모으는 풀/슬랩 할당자는 어떤 빈 칸이든 어떤 요청이든 맞아 외부 단편화가 없다(내부는 크기 등급 선택에 달림) ② 인접한 빈 조각을 합치는 병합(coalescing) ③ 살아 있는 블록을 한쪽으로 몰아 큰 빈 조각을 만드는 압축(compaction, 이동 가능한 핸들이 있을 때) ④ 크기 등급을 촘촘히(1.25 배) 두면 2 의 거듭제곱 등급보다 내부 낭비가 줄지만 등급 수가 늘어난다.
-// 이 항목은 아레나(1 MB) 위의 첫 적합(first-fit) 할당자를 직접 만들어 실험한다: 외부 단편화 지표 = 1 − (가장 큰 빈 조각 / 전체 빈 공간). ① 할당자 불변식(블록이 겹치지 않음, 빈 조각은 인접하면 합쳐져 있음, 총합 일치) ② 1 KB 블록을 꽉 채우고 하나 걸러 해제하면 단편화 지표가 0.99 를 넘고 큰 요청(64 KB)이 전체 빈 공간(512 KB)이 충분한데도 실패 ③ 압축 뒤에는 같은 요청 성공 ④ 같은 크기 부하(풀)에서는 요청이 실패하는 일이 없음 ⑤ 내부 단편화: 2 의 거듭제곱 등급의 평균 낭비가 1.25 배 등급보다 크다
+// 이 항목은 아레나(1 MB) 위의 첫 적합(first-fit) 할당자를 직접 만들어 실험한다: 외부 단편화 지표 = 1 − (가장 큰 빈 조각 / 전체 빈 공간). ① 할당자 불변식(블록이 겹치지 않음, 빈 조각은 인접하면 합쳐져 있음, 총합 일치) ② 1 KB 블록을 꽉 채우고 하나 걸러 해제하면 단편화 지표가 0.99 를 넘고 큰 요청(64 KB)이 전체 빈 공간(512 KB)이 충분한데도 실패 ③ 압축 뒤에는 같은 요청 성공 ④ 같은 크기 부하(풀): 64 B 블록을 꽉 채우고 한 칸 걸러 비워 빈 조각이 모두 64 B 인 상태(단편화 지표 0.9 초과, 64 KB 요청은 실패)에서 무작위 할당·해제를 점유율 40~60% 로 2 만 번 해도 64 B 요청은 한 번도 실패하지 않음 ⑤ 내부 단편화: 2 의 거듭제곱 등급의 평균 낭비가 1.25 배 등급보다 크다 ⑥ 첫 적합: 구멍 4 개(100·500·200·900 B)를 만들어 놓고 150 B 를 요청하면 주소가 가장 낮은 맞는 구멍(132)을 돌려주고(최적 적합은 664, 최악·마지막 적합은 896) 딱 맞는 구멍은 통째로 쓰이며, 단편화 지표가 빈 조각 목록과 독립적으로(살아 있는 블록 사이의 틈에서) 계산한 값과 같다
 struct Heap {
     size_t cap; std::map<size_t, size_t> freeList, live;                         // 오프셋 -> 크기
     explicit Heap(size_t c) : cap(c) { freeList[0] = c; }
@@ -3473,23 +3483,31 @@ struct Heap {
     size_t largestFree() const { size_t m = 0; for (auto& f : freeList) m = std::max(m, f.second); return m; }
     double fragmentation() const { size_t t = totalFree(); return t ? 1.0 - (double)largestFree() / t : 0.0; }
     bool check() const { std::map<size_t, size_t> all; for (auto& f : freeList) all[f.first] = f.second; for (auto& l : live) all[l.first] = l.second; size_t pos = 0, sum = 0; for (auto& b : all) { if (b.first != pos) return false; pos += b.second; } for (auto it = freeList.begin(); it != freeList.end(); ++it) { sum += it->second; auto nx = std::next(it); if (nx != freeList.end() && it->first + it->second == nx->first) return false; } size_t liveSum = 0; for (auto& l : live) liveSum += l.second; return pos == cap && sum + liveSum == cap; }
-    size_t compact() { size_t pos = 0; std::map<size_t, size_t> moved; for (auto& l : live) { moved[pos] = l.second; pos += l.second; } live = moved; freeList.clear(); if (pos < cap) freeList[pos] = cap - pos; return pos; }          // 살아 있는 블록을 앞으로 몰기
+    size_t compact() { size_t pos = 0; std::map<size_t, size_t> moved; for (auto& l : live) { moved.emplace_hint(moved.end(), pos, l.second); pos += l.second; } live = moved; freeList.clear(); if (pos < cap) freeList[pos] = cap - pos; return pos; }          // 살아 있는 블록을 앞으로 몰기
 };
 int main() {
     std::mt19937 rng(8); const size_t CAP = 1 << 20; Heap h(CAP); std::vector<size_t> offs;
-    for (;;) { size_t n = 16 + rng() % 1009; long o = h.alloc(n); if (o < 0 || h.cap - h.totalFree() > CAP * 85 / 100) break; offs.push_back((size_t)o); }
+    for (;;) { size_t n = 16 + rng() % 1009; if (h.cap - h.totalFree() + n > CAP * 85 / 100) break; long o = h.alloc(n); if (o < 0) break; offs.push_back((size_t)o); }
     for (int round = 0; round < 40; round++) { for (size_t k = 0; k < offs.size() / 2; k++) { size_t i = rng() % offs.size(); h.release(offs[i]); offs[i] = offs.back(); offs.pop_back(); } for (;;) { size_t n = 16 + rng() % 1009; if (h.cap - h.totalFree() + n > CAP * 85 / 100) break; long o = h.alloc(n); if (o < 0) break; offs.push_back((size_t)o); } assert(h.check()); }          // ① 불변식 유지
-    double churnFrag = h.fragmentation(); assert(h.check() && churnFrag >= 0.0);                                                                                                                      // ① 무작위 교체 뒤에도 불변식 유지
+    double churnFrag = h.fragmentation(); assert(h.check()); { size_t pos = 0, total = 0, largest = 0; for (auto& l : h.live) { size_t gap = l.first - pos; total += gap; largest = std::max(largest, gap); pos = l.first + l.second; } total += CAP - pos; largest = std::max(largest, CAP - pos); assert(std::abs(churnFrag - (1.0 - (double)largest / total)) < 1e-12); }   // 지표를 살아 있는 블록 사이의 틈에서 독립적으로 다시 계산
+                                                                                                                         // ① 무작위 교체 뒤에도 불변식 유지
     Heap cb(CAP); std::vector<size_t> blocks; for (int i = 0; i < 1024; i++) blocks.push_back((size_t)cb.alloc(1024)); for (size_t i = 1; i < blocks.size(); i += 2) cb.release(blocks[i]);        // 1 KB 블록을 꽉 채우고 하나 걸러 해제
-    size_t big = 64 * 1024, freeBefore = cb.totalFree(), largestBefore = cb.largestFree(); double frag = cb.fragmentation(); assert(cb.check() && freeBefore == CAP / 2 && largestBefore == 1024 && frag > 0.99);                         // ② 절반이 비었는데 가장 큰 조각은 1 KB
+    size_t big = 64 * 1024, freeBefore = cb.totalFree(), largestBefore = cb.largestFree(); double frag = cb.fragmentation(); assert(cb.check() && freeBefore == CAP / 2 && largestBefore == 1024 && frag > 0.99 && churnFrag > 0.1 && churnFrag < frag);                         // ② 절반이 비었는데 가장 큰 조각은 1 KB
     assert(cb.alloc(big) < 0); cb.compact(); assert(cb.check() && cb.largestFree() == freeBefore && cb.alloc(big) >= 0);                                                                                    // ③ 압축 후 같은 요청 성공
-    { Heap pool(CAP); std::vector<size_t> pv; const size_t B = 64; for (size_t i = 0; i < CAP / B; i++) pv.push_back((size_t)pool.alloc(B)); long failures = 0;
-      for (int round = 0; round < 20000; round++) { size_t i = rng() % pv.size(); pool.release(pv[i]); long o = pool.alloc(B); if (o < 0) failures++; else pv[i] = (size_t)o; } assert(failures == 0 && pool.check()); }                                       // ④ 같은 크기 부하는 실패하지 않는다
+    { Heap pool(CAP); std::vector<size_t> pv; const size_t B = 64, MAXB = CAP / B; long failures = 0, requests = 0; for (size_t i = 0; i < MAXB; i++) pv.push_back((size_t)pool.alloc(B));   // 꽉 채운 뒤
+      std::vector<size_t> kept; for (size_t i = 0; i < pv.size(); i++) { if (i % 2) pool.release(pv[i]); else kept.push_back(pv[i]); } pv = kept;                                  // 한 칸 걸러 비운다: 빈 조각이 모두 정확히 64 B (최대한 흩어진 상태)
+      assert(pool.check() && pool.fragmentation() > 0.9 && pool.alloc(CAP / 16) < 0 && pv.size() > MAXB * 4 / 10 && pv.size() < MAXB * 6 / 10);
+      for (int round = 0; round < 20000; round++) { if (rng() % 2 == 0) { if (pv.size() <= MAXB * 4 / 10) continue; size_t i = rng() % pv.size(); pool.release(pv[i]); pv[i] = pv.back(); pv.pop_back(); } else { if (pv.size() >= MAXB * 6 / 10) continue; long o = pool.alloc(B); requests++; if (o < 0) failures++; else pv.push_back((size_t)o); } }
+      assert(failures == 0 && requests > 5000 && pool.check() && pool.fragmentation() > 0.9 && pool.alloc(CAP / 16) < 0); }                                       // ④ 같은 크기 부하는 실패하지 않는다
+    { Heap t(1828); long a1 = t.alloc(100); t.alloc(32); long a2 = t.alloc(500); t.alloc(32); long a3 = t.alloc(200); t.alloc(32); long a4 = t.alloc(900); t.alloc(32); assert(a1 == 0 && a2 == 132 && a3 == 664 && a4 == 896 && t.freeList.empty());   // ⑥ 첫 적합
+      for (long a : {a1, a2, a3, a4}) t.release((size_t)a); assert(t.check() && t.freeList.size() == 4);                                              // 구멍 4 개: 100@0, 500@132, 200@664, 900@896 (사이는 살아 있는 32 B 블록)
+      assert(t.alloc(150) == 132 && t.freeList.at(282) == 350 && t.check());                                                                     // 주소가 가장 낮은 맞는 구멍(최적 적합은 664, 최악·마지막 적합은 896)
+      assert(t.alloc(100) == 0 && t.freeList.count(0) == 0 && t.check()); }                                                                        // 딱 맞는 구멍은 통째로 쓰고 목록에서 사라진다
     double wastePow2 = 0, wasteGeo = 0; const int T = 100000; for (int t = 0; t < T; t++) { size_t n = 17 + rng() % 4000; size_t p2 = 1; while (p2 < n) p2 <<= 1; double c = 16; while (c < n) c = std::ceil(c * 1.25); wastePow2 += (double)(p2 - n) / p2; wasteGeo += (c - n) / c; }
     wastePow2 /= T; wasteGeo /= T; assert(wastePow2 > wasteGeo * 1.4 && wastePow2 > 0.2 && wasteGeo < 0.15);                                                                                                                                                                                      // ⑤ 내부 단편화
-    std::cout << "Memory Fragmentation: random churn left fragmentation index " << churnFrag << "; a checkerboard of 1 KB blocks had " << freeBefore << " bytes free but the largest hole was only " << largestBefore << " (index " << frag << "), so a " << big << "-byte request failed until compaction; fixed-size pool never failed; internal waste: power-of-two classes " << wastePow2 << " vs 1.25x classes " << wasteGeo << std::endl; return 0;
+    std::cout << "Memory Fragmentation: random churn left fragmentation index " << churnFrag << "; a checkerboard of 1 KB blocks had " << freeBefore << " bytes free but the largest hole was only " << largestBefore << " (index " << frag << "), so a " << big << "-byte request failed until compaction; an arena whose free space was a checkerboard of single 64-byte slots never failed a 64-byte request across 20000 random allocations and frees even though a 64 KB request could not be served; first-fit returned the lowest-addressed hole that fits; internal waste: power-of-two classes " << wastePow2 << " vs 1.25x classes " << wasteGeo << std::endl; return 0;
 }
-// Time Complexity: 첫 적합 할당 O(빈 조각 수), 해제 O(log N), 압축 O(살아 있는 블록 수)
+// Time Complexity: 첫 적합 할당 O(빈 조각 수), 해제 O(log N), 압축 O(살아 있는 블록 수) (빈 조각은 살아 있는 블록 사이에만 있어 L+1 개 이하)
 // Space Complexity: O(블록 수) 메타데이터
 ```
 ## False Sharing
@@ -3506,8 +3524,8 @@ int main() {
 
 // 거짓 공유(False Sharing): 서로 다른 스레드가 서로 다른 변수를 쓰는데도, 그 변수들이 같은 캐시 라인(64 B)에 있으면 코어들이 라인의 소유권을 두고 핑퐁한다. 캐시 일관성 프로토콜(MESI)에서 한 코어가 라인에 쓰려면 다른 코어의 복사본을 무효화해야 하고, 무효화된 코어가 다시 읽거나 쓸 때 라인을 새로 가져와야 하기 때문이다.
 // 논리적으로는 공유가 없는데 성능은 공유한 것처럼 떨어진다: 스레드별 카운터를 배열에 붙여 두면 (8 바이트 × 8 개 = 한 라인) 코어가 늘수록 오히려 느려질 수 있다. 해결은 변수마다 라인 크기로 정렬·패딩(alignas(64))하거나, 스레드 지역 변수에 누적하다가 마지막에 합치는 것이다.
-// 실제 시간은 기계마다 달라 단언에 쓸 수 없으므로 두 가지로 확인한다. ① 결정적 시뮬레이터: 코어별 라인 소유 상태(M)를 추적하는 일관성 모델에 쓰기 열을 흘려 "무효화 횟수" 를 센다 — 두 코어가 같은 라인의 다른 주소를 번갈아 쓰면 쓰기마다 무효화가 일어나고(N−1 회), 주소가 64 B 떨어져 있으면 최초 소유 이후 0 회다 ② 실제 스레드: 패딩한 카운터와 붙은 카운터를 모두 정확히 증가시켜 결과가 같음을 검증하고(원자 연산이라 정확성은 같다) 걸린 시간은 참고용으로만 출력한다 — 주소가 같은 라인에 있는지는 결정적으로 단언한다
-// audit: closed-form (무효화 횟수 2N−1, 4N−1, 0 은 쓰기 순서에서 유도한 닫힌 식)
+// 실제 시간은 기계마다 달라 단언에 쓸 수 없으므로 두 가지로 확인한다. ① 결정적 시뮬레이터: 코어별 라인 소유 상태(M)를 추적하는 일관성 모델에 쓰기 열을 흘려 "무효화 횟수" 를 센다 — 두 코어가 같은 라인의 다른 주소를 번갈아 쓰면 첫 쓰기를 뺀 모든 쓰기에서 무효화가 일어나고(2 코어 2N−1 회, 4 코어 4N−1 회), 주소가 64 B 떨어져 있으면 최초 소유 이후 0 회다. 코어마다 지역 변수에 누적하다가 같은 라인에 한 번씩만 쓰면 (코어 수 − 1) = 3 회뿐이다 ② 실제 스레드: 패딩한 카운터와 붙은 카운터를 모두 정확히 증가시켜 결과가 같음을 검증하고(원자 연산이라 정확성은 같다) 걸린 시간은 참고용으로만 출력한다(코어가 하나뿐인 기계에서는 거짓 공유가 생기지 않아 두 시간이 비슷하며, 속도 향상은 단언도 주장도 하지 않는다) — 주소가 같은 라인에 있는지는 결정적으로 단언한다
+// audit: closed-form (무효화 횟수 2N−1, 4N−1, 3, 0 은 쓰기 순서에서 유도한 닫힌 식)
 struct Coherence {                                                              // 단순화한 쓰기 무효화 모델: 라인당 현재 소유 코어 하나
     std::map<uint64_t, int> owner; long invalidations = 0, coldMisses = 0;
     void write(int core, uint64_t addr) { uint64_t line = addr >> 6; auto it = owner.find(line); if (it == owner.end()) { coldMisses++; owner[line] = core; } else if (it->second != core) { invalidations++; it->second = core; } }
@@ -3516,15 +3534,18 @@ struct Packed { std::atomic<long> v; };                                         
 struct alignas(64) Padded { std::atomic<long> v; };                              // 라인 하나를 독점
 int main() {
     static_assert(sizeof(Padded) == 64 && alignof(Padded) == 64, "one counter per cache line");
-    const int N = 100000;
+    const int N = 100000; long localInv = 0;
     { Coherence same, apart; for (int i = 0; i < N; i++) for (int core = 0; core < 2; core++) { same.write(core, 0x1000 + core * 8); apart.write(core, 0x1000 + core * 64); } assert(same.invalidations == 2 * N - 1 && same.coldMisses == 1 && apart.invalidations == 0 && apart.coldMisses == 2); }          // ① 같은 라인: 쓰기마다 무효화
-    { Coherence four; for (int i = 0; i < N; i++) for (int core = 0; core < 4; core++) four.write(core, 0x2000 + core * 8); assert(four.invalidations == 4 * N - 1); Coherence local; for (int core = 0; core < 4; core++) { long sum = 0; for (int i = 0; i < N; i++) sum++; local.write(core, 0x3000 + core * 64); assert(sum == N); } assert(local.invalidations == 0); }               // 4 코어, 그리고 지역 누적 후 한 번 쓰기
+    { Coherence four; for (int i = 0; i < N; i++) for (int core = 0; core < 4; core++) four.write(core, 0x2000 + core * 8); assert(four.invalidations == 4 * N - 1);                       // 4 코어: 쓰기마다 무효화
+      Coherence local; long sums[4] = {0, 0, 0, 0}; for (int i = 0; i < N; i++) for (int core = 0; core < 4; core++) sums[core]++;   // 같은 교대 순서로 증가하지만 지역 변수에만 누적한다(일관성 모델에 쓰기 없음)
+      for (int core = 0; core < 4; core++) { assert(sums[core] == N); local.write(core, 0x3000 + core * 8); }                     // 마지막에 코어당 한 번만, 같은 라인에 쓴다
+      assert(local.coldMisses == 1 && local.invalidations == 4 - 1 && four.invalidations == 4 * N - 1); localInv = local.invalidations; }   // 증가마다 쓰면 4N−1 회, 누적 후 한 번이면 정확히 코어 수 − 1 회
     alignas(64) static Packed packed[8]; alignas(64) static Padded padded[8];
     assert(((uintptr_t)&packed[0] >> 6) == ((uintptr_t)&packed[7] >> 6) && ((uintptr_t)&padded[0] >> 6) != ((uintptr_t)&padded[1] >> 6));                                                                 // 붙은 카운터는 같은 라인, 패딩한 것은 서로 다른 라인
     long packedMs = 0, paddedMs = 0; const long ITER = 2000000;
     for (int variant = 0; variant < 2; variant++) { auto t0 = std::chrono::steady_clock::now(); std::vector<std::thread> ts; for (int t = 0; t < 4; t++) ts.emplace_back([&, t, variant] { std::atomic<long>& c = variant ? padded[t].v : packed[t].v; for (long i = 0; i < ITER; i++) c.fetch_add(1, std::memory_order_relaxed); }); for (auto& t : ts) t.join(); auto t1 = std::chrono::steady_clock::now(); (variant ? paddedMs : packedMs) = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(); }
     for (int t = 0; t < 4; t++) assert(packed[t].v.load() == ITER && padded[t].v.load() == ITER);                                                                                                           // ② 정확성은 같다
-    std::cout << "False Sharing: simulated coherence invalidations " << 2 * N - 1 << " for two writers in one cache line vs 0 when 64 bytes apart; real threads counted exactly in both layouts (packed " << packedMs << " ms, padded " << paddedMs << " ms - timing is informational only)" << std::endl; return 0;
+    std::cout << "False Sharing: simulated coherence invalidations " << 2 * N - 1 << " for two writers in one cache line vs 0 when 64 bytes apart, and four cores that accumulate locally and write the shared line once each caused only " << localInv << " (vs " << 4 * N - 1 << " writing every increment); real threads counted exactly in both layouts (packed " << packedMs << " ms, padded " << paddedMs << " ms - timing is informational only, depends on the core count, and no speedup is claimed)" << std::endl; return 0;
 }
 // Time Complexity: 해당 없음 (캐시 일관성 비용 모델)
 // Space Complexity: 변수당 캐시 라인 하나 (64 B) — 메모리를 써서 시간을 산다
