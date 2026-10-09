@@ -392,7 +392,7 @@ int main() {
     ::operator delete(onHeap);
     struct stat st; assert(stat("/proc/self/exe", &st) == 0 && (size_t)st.st_size < sizeof(zeroed) / 2);       // ③ 파일이 bss 배열 크기의 절반도 안 된다
 #if defined(MADV_NOHUGEPAGE)
-    {   uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE), lo = ((uintptr_t)zeroed + pg - 1) & ~(pg - 1), hi = (uintptr_t)(zeroed + 4000000) & ~(pg - 1); madvise((void*)lo, hi - lo, MADV_NOHUGEPAGE); }          // THP 가 켜진 호스트는 첫 쓰기에 2 MB 를 한꺼번에 배정하므로 끈다
+    {   uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE), lo = (uintptr_t)zeroed & ~(pg - 1), hi = ((uintptr_t)(zeroed + 4000000) + pg - 1) & ~(pg - 1); madvise((void*)lo, hi - lo, MADV_NOHUGEPAGE); }          // THP 는 첫 쓰기에 2 MB(또는 mTHP 64 KB) 를 한꺼번에 배정하므로 배열이 걸친 쪽 *전부*(양끝의 부분 쪽 포함)에 끈다
 #endif
     long before = residentPages(); assert(before > 0);                                                   // ④ 요구 페이징
     zeroed[5] = 9; long afterOne = residentPages(); if (afterOne - before > 8) std::fprintf(stderr, "WARNING: one store made %ld pages resident\n", afterOne - before);
