@@ -1094,24 +1094,61 @@ int main() {
 ## new()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdlib>
-#include <new>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <new>
+#include <stdexcept>
+#include <vector>
 
 // new 연산자 = (1) operator new 로 메모리 확보 + (2) 생성자 호출.   delete = (1) 소멸자 호출 + (2) operator delete 로 반환.
-// new[] 는 소멸자를 원소마다 불러야 하므로 개수를 메모리 앞쪽에 따로 기록한다(cookie).  할당 실패 시 new 는 bad_alloc 을 던지고 nothrow new 는 nullptr 를 돌려준다
-static int allocs = 0, frees = 0;
-void* operator new(size_t n) { allocs++; void* p = std::malloc(n); if (!p) throw std::bad_alloc(); return p; }
-void operator delete(void* p) noexcept { if (p) frees++; std::free(p); }
-void operator delete(void* p, size_t) noexcept { if (p) frees++; std::free(p); }
-void* operator new[](size_t n) { allocs++; void* p = std::malloc(n); if (!p) throw std::bad_alloc(); return p; }
-void operator delete[](void* p) noexcept { if (p) frees++; std::free(p); }
-void operator delete[](void* p, size_t) noexcept { if (p) frees++; std::free(p); }
+// new[] 는 소멸자를 원소마다 불러야 하므로 개수를 메모리 앞쪽에 따로 기록한다(cookie).  할당 실패 시 new 는 (new_handler 를 거듭 부른 뒤) bad_alloc 을 던지고 nothrow new 는 nullptr 를 돌려준다
+// 생성자가 예외를 던지면 이미 만든 원소는 거꾸로 소멸되고 메모리는 *대응하는* operator delete 로 반환된다 — placement new 는 대응하는 placement delete 가 불린다
+// 전역 operator new/delete 를 교체해(예산·호출 기록) 이런 규칙들을 직접 관찰한다.  교체한 할당기는 크기를 앞 16 바이트에 적어 두어 delete 가 예산을 정확히 돌려받는다
+// 검증: ① 원래 확인(호출 수·생성/소멸 수·실패 시 예외/nullptr)  ② 쿠키: 소멸자가 사소한 타입은 쿠키 없음, 아니면 원소 수를 담는 8 바이트(정렬 16 타입은 16 바이트) — Itanium ABI
+//        ③ 배열 원소 3 번째 생성자가 예외 → 앞의 2 개가 소멸되고 메모리가 반환됨, 단일 new 의 생성자 예외도 누수 없음  ④ placement new + 대응 placement delete (생성자 예외 시 호출됨), 명시적 소멸자 호출
+//        ⑤ 클래스별 operator new/delete 와 가상 소멸자(파생 클래스 크기가 sized delete 로 전달됨)  ⑥ new_handler: 예산을 푸는 핸들러는 한 번 불린 뒤 재시도로 성공하고, 계속 실패하면 핸들러가 던질 때까지 반복  ⑦ 정렬 요구가 큰 타입은 정렬된 operator new
+static int allocs = 0, frees = 0, handlerCalls = 0; static size_t budget = (size_t)-1, lastSingle = 0, lastArray = 0, lastAlign = 0, lastFreedSize = 0;
+void* rawAlloc(size_t n) {
+    for (;;) {                                                      // 표준이 정한 루프: 실패하면 new_handler 를 부르고 다시 시도, 핸들러가 없으면 bad_alloc
+        if (n <= budget) { void* raw = std::malloc(n + 16); if (raw) { std::memcpy(raw, &n, sizeof n); budget -= n; ++allocs; return (char*)raw + 16; } }
+        std::new_handler h = std::get_new_handler(); if (!h) throw std::bad_alloc(); h();
+    }
+}
+void* operator new(size_t n) { lastSingle = n; return rawAlloc(n); }
+void* operator new[](size_t n) { lastArray = n; return rawAlloc(n); }
+void rawFree(void* p) noexcept { if (!p) return; char* raw = (char*)p - 16; size_t n; std::memcpy(&n, raw, sizeof n); budget += n; lastFreedSize = n; ++frees; std::free(raw); }
+void operator delete(void* p) noexcept { rawFree(p); }
+void operator delete(void* p, size_t) noexcept { rawFree(p); }
+void operator delete[](void* p) noexcept { rawFree(p); }
+void operator delete[](void* p, size_t) noexcept { rawFree(p); }
+struct alignas(64) Big { char data[64]; };
+void* operator new(size_t n, std::align_val_t al) { lastAlign = (size_t)al; void* p = nullptr; if (posix_memalign(&p, (size_t)al, n) != 0) throw std::bad_alloc(); ++allocs; return p; }
+void operator delete(void* p, std::align_val_t) noexcept { ++frees; std::free(p); }
+void operator delete(void* p, size_t, std::align_val_t) noexcept { ++frees; std::free(p); }
 
 struct Obj { static int alive; Obj() { alive++; } ~Obj() { alive--; } };
 int Obj::alive = 0;
+struct Plain { int x; };                                            // 소멸자가 사소하다
+struct NonTrivial { int x; ~NonTrivial() {} };                      // 소멸자를 불러야 한다 -> 원소 수를 기억해야 한다
+struct alignas(16) Wide { char c; ~Wide() {} };
+struct Boom {};                                                     // 메시지 문자열을 할당하는 std::runtime_error 대신, 할당 횟수를 어지럽히지 않는 예외
+struct Thrower { static int constructed, destroyed, throwAt; Thrower() { if (constructed == throwAt) throw Boom(); ++constructed; } ~Thrower() { ++destroyed; } };
+int Thrower::constructed = 0, Thrower::destroyed = 0, Thrower::throwAt = -1;
+struct Arena { alignas(16) char buf[256]; size_t used = 0; };
+int placementDeletes = 0;
+void* operator new(size_t n, Arena& a) { void* p = a.buf + a.used; a.used += (n + 15) & ~size_t(15); return p; }
+void operator delete(void*, Arena&) noexcept { ++placementDeletes; }                       // 생성자가 던질 때만 불리는 대응 delete
+struct Fragile { Fragile(bool boom) { if (boom) throw Boom(); } };
+struct Pooled { static int newCalls, deleteCalls; static size_t lastDeleteSize; char pad[40];
+    static void* operator new(size_t n) { ++newCalls; return ::operator new(n); } static void operator delete(void* p, size_t n) { ++deleteCalls; lastDeleteSize = n; ::operator delete(p); }
+    virtual ~Pooled() {} };
+struct Derived : Pooled { char more[100]; };
+int Pooled::newCalls = 0, Pooled::deleteCalls = 0; size_t Pooled::lastDeleteSize = 0;
+std::size_t reserveBytes = 0;
+void releaseReserve() { ++handlerCalls; if (reserveBytes) { budget += reserveBytes; reserveBytes = 0; } else throw std::bad_alloc(); }            // 예비 메모리를 풀어 주고, 더 줄 것이 없으면 포기
 
 int main() {
     int baseAllocs = allocs, baseFrees = frees;
@@ -1122,18 +1159,47 @@ int main() {
     Obj* arr = new Obj[5];                                              // operator new[] 1번, 생성자 5번
     assert(Obj::alive == 5);
     delete[] arr;                                                       // 소멸자 5번
-    assert(Obj::alive == 0);
-    bool threw = false;
-    volatile size_t huge = (size_t)-1 / 2;                             // 컴파일러가 상수로 판단하지 못하게 volatile
-    try { char* volatile sink = new char[huge]; (void)sink; } catch (const std::bad_alloc&) { threw = true; }       // 결과를 volatile 에 담아 컴파일러가 안 쓰는 할당을 지우지 못하게 한다
+    assert(Obj::alive == 0 && allocs == frees);
+    bool threw = false; budget = 1 << 20;                              // 예산 1 MB
+    try { char* volatile sink = new char[2 << 20]; (void)sink; } catch (const std::bad_alloc&) { threw = true; }       // 실제로 큰 메모리를 요구하지 않고도 실패를 만든다
     assert(threw);                                                      // 실패 -> 예외
-    char* volatile probe = new (std::nothrow) char[huge]; assert(probe == nullptr);                  // 실패 -> nullptr
+    char* volatile probe = new (std::nothrow) char[2 << 20]; assert(probe == nullptr);                  // 실패 -> nullptr
+    budget = (size_t)-1;
+    // ② 쿠키 (Itanium ABI: GCC·Clang)
+#if defined(__GNUC__) || defined(__clang__)
+    { Plain* p = new Plain[5]; assert(lastArray == 5 * sizeof(Plain)); delete[] p;                                 // 쿠키 없음
+      NonTrivial* q = new NonTrivial[5]; assert(lastArray == 5 * sizeof(NonTrivial) + sizeof(size_t)); delete[] q;  // 원소 수를 담는 쿠키
+      Wide* w = new Wide[3]; assert(sizeof(Wide) == 16 && lastArray == 3 * 16 + 16); delete[] w; }                  // 쿠키 크기 = max(size_t 크기, 정렬)
+#endif
+    // ③ 생성자 예외
+    {   int a0 = allocs, f0 = frees; Thrower::constructed = Thrower::destroyed = 0; Thrower::throwAt = 2; bool caught = false;
+        try { Thrower* t = new Thrower[5]; (void)t; } catch (const Boom&) { caught = true; }
+        assert(caught && Thrower::constructed == 2 && Thrower::destroyed == 2 && allocs - a0 == 1 && frees - f0 == 1);            // 만든 2 개는 소멸, 메모리는 반환
+        Thrower::constructed = 0; Thrower::throwAt = 0; caught = false; a0 = allocs; f0 = frees; try { Thrower* t = new Thrower; (void)t; } catch (const Boom&) { caught = true; }
+        assert(caught && allocs - a0 == 1 && frees - f0 == 1 && Thrower::destroyed == 2); Thrower::throwAt = -1; }
+    // ④ placement new
+    {   Arena arena; Obj* p = new (arena) Obj; assert((char*)p == arena.buf && Obj::alive == 1); p->~Obj(); assert(Obj::alive == 0);                // 명시적 소멸자 호출 (메모리는 Arena 가 관리)
+        placementDeletes = 0; Fragile* f = new (arena) Fragile(false); assert(placementDeletes == 0 && (char*)f == arena.buf + 16); bool caught = false;
+        try { new (arena) Fragile(true); } catch (const Boom&) { caught = true; }
+        assert(caught && placementDeletes == 1); }
+    // ⑤ 클래스별 operator new/delete
+    {   Pooled* p = new Pooled; delete p; assert(Pooled::newCalls == 1 && Pooled::deleteCalls == 1 && Pooled::lastDeleteSize == sizeof(Pooled));
+        Pooled* d = new Derived; delete d; assert(Pooled::newCalls == 2 && Pooled::deleteCalls == 2 && Pooled::lastDeleteSize == sizeof(Derived) && sizeof(Derived) > sizeof(Pooled)); }       // 가상 소멸자 → 실제 크기가 전달된다
+    // ⑥ new_handler
+    {   std::set_new_handler(releaseReserve); budget = 1000; reserveBytes = 5000; handlerCalls = 0;
+        char* big = new char[3000]; assert(handlerCalls == 1 && big != nullptr && budget == 1000 + 5000 - 3000); delete[] big;                          // 핸들러가 예산을 풀자 재시도에서 성공
+        budget = 100; reserveBytes = 0; handlerCalls = 0; bool caught = false; try { char* x = new char[5000]; (void)x; } catch (const std::bad_alloc&) { caught = true; } assert(caught && handlerCalls == 1);     // 풀어 줄 것이 없으면 핸들러가 던진다
+        std::set_new_handler(nullptr); budget = (size_t)-1; }
+    // ⑦ 정렬 요구가 큰 타입
+    {   int a0 = allocs, f0 = frees; Big* b = new Big; assert(lastAlign == 64 && ((uintptr_t)b % 64) == 0 && allocs == a0 + 1); delete b; assert(frees == f0 + 1);
+        Big* arr2 = new Big[3]; assert(((uintptr_t)arr2 % 64) == 0 && ((uintptr_t)&arr2[2] - (uintptr_t)arr2) == 128); delete[] arr2; }
+    assert(allocs == frees);
     std::cout << "new/delete: allocs=" << allocs << " frees=" << frees << std::endl;
     return 0;
 }
 // Time Complexity: 할당기에 따라 다름 (평균 O(1))
 // Space Complexity: O(n)
-// audit: no-sanitize (터무니없이 큰 할당을 일부러 요청한다)
+// audit: no-sanitize (전역 operator new/delete 를 교체하고 정렬 할당을 직접 한다)
 ```
 ## PlacementNew()
 ### 대표코드
@@ -1214,16 +1280,38 @@ int main() {
 ## Pointer()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstddef>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <type_traits>
+#include <vector>
 
 // 포인터: 다른 객체의 주소를 값으로 갖는 변수.  p + 1 은 "다음 바이트" 가 아니라 "다음 원소"(sizeof(T) 바이트 뒤).
 // 배열 이름은 첫 원소의 포인터로 변환(decay)된다.  포인터의 포인터, const 의 위치, nullptr 이 핵심 어휘
+// 검증: ① 손으로 고른 사실(원래 예)  ② 여러 타입(char·short·int·double·24 바이트 구조체·64 바이트 정렬 구조체)의 배열에서 무작위 인덱스 쌍으로 포인터 연산이 *바이트 주소 계산* 과 일치:
+//        &a[i] + k == &a[i+k], 뺄셈 = 원소 수, 바이트 차이 = 원소 수 × sizeof, 대소 비교 = 인덱스 대소, 끝 다음 칸(one past the end)은 비교·뺄셈 가능, p[i] == *(p+i) == i[p]
+//        ③ 2차원 배열 a[i][j] 의 주소 = base + (i·열 + j)·4, 배열을 가리키는 포인터와 포인터 배열의 차이  ④ const 의 위치를 타입 특성으로 확인하고, 포인터 크기 = 주소 크기, uintptr_t 왕복, 멤버 포인터의 의미
+struct Rec24 { int64_t a, b, c; };
+struct alignas(64) Line { char b[64]; };
+template <class T> void checkArithmetic(std::mt19937& rng) {
+    std::vector<T> storage(64); T* a = storage.data(); const int n = 64;
+    for (int it = 0; it < 500; ++it) {
+        int i = (int)(rng() % n), j = (int)(rng() % n); T* pi = a + i; T* pj = a + j;
+        assert(pi == &a[i] && &*pi == &a[i] && (pi + (j - i)) == pj);                                                     // &a[i] + k == &a[i+k]
+        assert(pj - pi == (std::ptrdiff_t)(j - i));                                                                        // 뺄셈 = 원소 수
+        assert((uintptr_t)pj - (uintptr_t)pi == (uintptr_t)((std::ptrdiff_t)(j - i) * (std::ptrdiff_t)sizeof(T)));      // 바이트 차이 = 원소 수 × sizeof (부호 있는 차이를 모듈러로)
+        assert((pi < pj) == (i < j) && (pi == pj) == (i == j) && (pi <= pj) == (i <= j));                                 // 주소 순서 = 인덱스 순서
+        assert(reinterpret_cast<char*>(pi) - reinterpret_cast<char*>(a) == (std::ptrdiff_t)(i * sizeof(T)));
+    }
+    T* end = a + n; assert(end - a == n && end > a + (n - 1) && end == &a[n - 1] + 1);                                   // 끝 다음 칸: 역참조는 안 되지만 비교·뺄셈은 된다
+}
+
 int main() {
     int a[5] = {10, 20, 30, 40, 50};
     int* p = a;                                                       // decay: &a[0]
-    assert(*p == 10 && *(p + 2) == 30 && p[3] == 40);                 // p[i] == *(p + i)
+    assert(*p == 10 && *(p + 2) == 30 && p[3] == 40 && 3[p] == 40);   // p[i] == *(p + i) == i[p]
     assert((char*)(p + 1) - (char*)p == sizeof(int));                // +1 은 sizeof(int) 바이트
     assert(&a[4] - &a[1] == 3);                                       // 포인터 뺄셈 = 원소 개수 차이
     int** pp = &p; **pp = 99; assert(a[0] == 99);                     // 포인터의 포인터로 원본을 바꾼다
@@ -1237,7 +1325,23 @@ int main() {
     int* none = nullptr;                                              // 아무것도 가리키지 않음 (역참조는 정의되지 않은 동작)
     assert(none == nullptr && !none);
     assert(sizeof(int*) == sizeof(void*) && sizeof(char*) == sizeof(void*));    // 64비트에서 모두 8바이트
-    std::cout << "Pointer: sizeof(pointer) = " << sizeof(void*) << std::endl;
+    // ② 타입별 포인터 연산
+    std::mt19937 rng(7);
+    checkArithmetic<char>(rng); checkArithmetic<short>(rng); checkArithmetic<int>(rng); checkArithmetic<double>(rng); checkArithmetic<Rec24>(rng); checkArithmetic<Line>(rng);
+    static_assert(sizeof(Rec24) == 24 && sizeof(Line) == 64, "크기가 포인터 증가폭을 정한다");
+    // ③ 2차원 배열
+    int m[3][4]; for (int i = 0; i < 3; i++) for (int j = 0; j < 4; j++) m[i][j] = i * 10 + j;
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 4; j++) { assert(&m[i][j] == (int*)m + i * 4 + j && *(*(m + i) + j) == m[i][j]); }              // 행 우선 배치
+    int (*row)[4] = m; assert((char*)(row + 1) - (char*)row == 4 * sizeof(int) && (*(row + 2))[3] == 23);                              // 배열을 가리키는 포인터는 한 행씩 건너뛴다
+    int* rows[3] = {m[0], m[1], m[2]}; assert(sizeof(rows) == 3 * sizeof(int*) && sizeof(m) == 12 * sizeof(int) && rows[1][2] == 12);   // 포인터 배열은 크기가 다른 별개의 구조
+    // ④ const 의 위치와 타입 특성, 주소 크기, 멤버 포인터
+    static_assert(std::is_same<decltype(pc), const int*>::value && std::is_same<decltype(cp), int* const>::value, "const 가 어디에 붙는지");
+    static_assert(std::is_same<std::remove_pointer<const int*>::type, const int>::value && std::is_same<std::remove_const<int* const>::type, int*>::value, "remove_const 는 최상위 const 만");
+    static_assert(sizeof(uintptr_t) == sizeof(void*) && std::is_pointer<int*>::value && !std::is_pointer<int>::value && std::is_null_pointer<std::nullptr_t>::value, "주소를 담는 정수");
+    assert(reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(p)) == p && p != none);                                                  // 정수로 바꿨다 되돌려도 같은 포인터
+    int Rec24::*member = nullptr; assert(!member); member = nullptr; int64_t Rec24::*mb = &Rec24::b; Rec24 r{1, 2, 3}; assert(r.*mb == 2 && (&r)->*mb == 2); Rec24* pr = &r; pr->*mb = 9; assert(r.b == 9);
+    assert((char*)&r.b - (char*)&r == (std::ptrdiff_t)offsetof(Rec24, b));
+    std::cout << "Pointer: sizeof(pointer) = " << sizeof(void*) << "; pointer arithmetic matched byte arithmetic for 6 element sizes" << std::endl;
     return 0;
 }
 // Time Complexity: O(1)
@@ -1282,42 +1386,151 @@ int main() {
 ## SmartPointer()
 ### 대표코드
 ```cpp
+#include <atomic>
+#include <cassert>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <random>
+#include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
-#include <cassert>
 
 // 스마트 포인터: 소멸자에서 자동으로 해제하는 포인터 (RAII).
 //  unique_ptr: 단독 소유, 복사 불가·이동만 가능, 오버헤드 0.   shared_ptr: 참조 횟수로 공동 소유, 마지막 소유자가 해제.
 //  weak_ptr: 소유하지 않는 관찰자 (순환 참조를 끊거나 캐시에 쓴다).  사용자 지정 삭제자도 가능
-int destroyed = 0;
-struct Res { ~Res() { destroyed++; } };
+// 표준 라이브러리를 쓰지 않고 세 가지를 직접 만든다: MyUnique(삭제자를 빈 기반 클래스 최적화로 담아 크기가 포인터 하나), MyShared/MyWeak(제어 블록에 강한/약한 참조 수를 원자적으로 두고,
+// 강한 수가 0 이 되면 객체를, 약한 수까지 0 이 되면 제어 블록을 해제 — 모든 강한 참조가 약한 참조 하나를 대표한다. lock() 은 강한 수가 0 이 아닐 때만 CAS 로 올린다)
+// 검증: ① 손으로 짠 사용법(원래 예)과 크기 = 포인터 하나  ② 같은 연산열을 MyShared/std::shared_ptr 에 동시에 적용하는 차분 시험 30 000 번(생성·복사·이동·reset·swap·weak 대입·lock·삭제자): 매번 모든 핸들의 use_count·expired·소유 객체의 동치 관계가 같고 살아 있는 객체 수가 같으며 끝나면 0
+//        ③ 순환 참조는 shared 만으로는 샌다(약한 참조로 끊으면 해제)  ④ 스레드 8 개가 한 객체를 복사·소멸 20 000 번씩 + weak.lock 경합: 객체는 정확히 한 번 소멸하고, lock 이 성공했다면 객체는 살아 있다(use-after-free 없음)  ⑤ unique: 삭제자는 정확히 한 번, release 후에는 호출 안 됨
+template <class T> struct DefaultDelete { void operator()(T* p) const { delete p; } };
+template <class D, bool Empty = std::is_class<D>::value && std::is_empty<D>::value> struct DelHolder : private D {   // 빈 클래스 삭제자: 기반 클래스로 두어 공간 0
+    DelHolder() = default; explicit DelHolder(D d) : D(std::move(d)) {}
+    D& deleter() { return *this; }
+};
+template <class D> struct DelHolder<D, false> {                                                      // 함수 포인터·상태 있는 삭제자: 멤버로 저장
+    D d{}; DelHolder() = default; explicit DelHolder(D dd) : d(std::move(dd)) {}
+    D& deleter() { return d; }
+};
+template <class T, class D = DefaultDelete<T>> class MyUnique : private DelHolder<D> {
+    T* p = nullptr;
+    D& del() { return this->deleter(); }
+public:
+    MyUnique() = default; explicit MyUnique(T* q) : p(q) {} MyUnique(T* q, D d) : DelHolder<D>(std::move(d)), p(q) {}
+    MyUnique(const MyUnique&) = delete; MyUnique& operator=(const MyUnique&) = delete;
+    MyUnique(MyUnique&& o) noexcept : DelHolder<D>(std::move(o.del())), p(o.p) { o.p = nullptr; }
+    MyUnique& operator=(MyUnique&& o) noexcept { if (this != &o) { reset(); del() = std::move(o.del()); p = o.p; o.p = nullptr; } return *this; }
+    ~MyUnique() { reset(); }
+    T* get() const { return p; } T* release() { T* t = p; p = nullptr; return t; }
+    void reset(T* q = nullptr) { T* old = p; p = q; if (old) del()(old); }
+    T& operator*() const { return *p; } T* operator->() const { return p; } explicit operator bool() const { return p != nullptr; }
+};
+struct CtrlBase {
+    std::atomic<long> strong{1}, weak{1};                                                          // weak 는 "강한 참조 전체 + 약한 참조들" 의 수
+    virtual void destroyObject() = 0; virtual void destroySelf() = 0; virtual ~CtrlBase() = default;
+    void incStrong() { strong.fetch_add(1, std::memory_order_relaxed); }
+    bool incStrongIfNonZero() { long c = strong.load(std::memory_order_relaxed); while (c != 0) if (strong.compare_exchange_weak(c, c + 1, std::memory_order_acq_rel)) return true; return false; }
+    void decStrong() { if (strong.fetch_sub(1, std::memory_order_acq_rel) == 1) { destroyObject(); decWeak(); } }
+    void incWeak() { weak.fetch_add(1, std::memory_order_relaxed); }
+    void decWeak() { if (weak.fetch_sub(1, std::memory_order_acq_rel) == 1) destroySelf(); }
+};
+template <class T, class D> struct Ctrl : CtrlBase { T* p; D d; Ctrl(T* q, D dd) : p(q), d(std::move(dd)) {} void destroyObject() override { d(p); } void destroySelf() override { delete this; } };
+template <class T> class MyWeak;
+template <class T> class MyShared {
+    T* p = nullptr; CtrlBase* c = nullptr; friend class MyWeak<T>;
+public:
+    MyShared() = default;
+    template <class D = DefaultDelete<T>> explicit MyShared(T* q, D d = D()) : p(q) { try { c = new Ctrl<T, D>(q, std::move(d)); } catch (...) { d(q); throw; } }
+    MyShared(const MyShared& o) : p(o.p), c(o.c) { if (c) c->incStrong(); }
+    MyShared(MyShared&& o) noexcept : p(o.p), c(o.c) { o.p = nullptr; o.c = nullptr; }
+    MyShared& operator=(const MyShared& o) { MyShared tmp(o); swap(tmp); return *this; }
+    MyShared& operator=(MyShared&& o) noexcept { MyShared tmp(std::move(o)); swap(tmp); return *this; }
+    ~MyShared() { if (c) c->decStrong(); }
+    void swap(MyShared& o) noexcept { std::swap(p, o.p); std::swap(c, o.c); }
+    void reset() { MyShared().swap(*this); }
+    T* get() const { return p; } T& operator*() const { return *p; } T* operator->() const { return p; }
+    long use_count() const { return c ? c->strong.load() : 0; }
+    explicit operator bool() const { return p != nullptr; }
+};
+template <class T> class MyWeak {
+    T* p = nullptr; CtrlBase* c = nullptr;
+public:
+    MyWeak() = default;
+    MyWeak(const MyShared<T>& s) : p(s.p), c(s.c) { if (c) c->incWeak(); }
+    MyWeak(const MyWeak& o) : p(o.p), c(o.c) { if (c) c->incWeak(); }
+    MyWeak& operator=(const MyWeak& o) { MyWeak t(o); std::swap(p, t.p); std::swap(c, t.c); return *this; }
+    MyWeak& operator=(const MyShared<T>& s) { MyWeak t(s); std::swap(p, t.p); std::swap(c, t.c); return *this; }
+    ~MyWeak() { if (c) c->decWeak(); }
+    bool expired() const { return !c || c->strong.load() == 0; }
+    long use_count() const { return c ? c->strong.load() : 0; }
+    MyShared<T> lock() const { MyShared<T> s; if (c && c->incStrongIfNonZero()) { s.p = p; s.c = c; } return s; }
+};
+int destroyedStd = 0, destroyedMine = 0, createdStd = 0, createdMine = 0;
+struct ResStd { int magic = 0x5eed; ResStd() { ++createdStd; } ~ResStd() { magic = 0; ++destroyedStd; } };
+struct ResMine { int magic = 0x5eed; ResMine() { ++createdMine; } ~ResMine() { magic = 0; ++destroyedMine; } };
+struct Node { MyShared<Node> next; MyWeak<Node> back; static int alive; Node() { ++alive; } ~Node() { --alive; } };
+int Node::alive = 0;
+int deleterCalls = 0;
 
 int main() {
-    {
-        std::unique_ptr<Res> u = std::make_unique<Res>();
-        std::unique_ptr<Res> v = std::move(u);                         // 소유권 이전
-        assert(!u && v);
-    }                                                                   // 범위를 벗어나면 자동 소멸
+    int destroyed = 0; struct Res { int* d; ~Res() { ++*d; } };
+    {   MyUnique<Res> u(new Res{&destroyed}); MyUnique<Res> v = std::move(u); assert(!u && v); }                  // 소유권 이전
     assert(destroyed == 1);
-
-    std::shared_ptr<Res> s1 = std::make_shared<Res>();
-    std::weak_ptr<Res> w = s1;
-    {
-        std::shared_ptr<Res> s2 = s1;                                  // 공동 소유
-        assert(s1.use_count() == 2);
-    }
+    static_assert(sizeof(MyUnique<int>) == sizeof(int*) && sizeof(std::unique_ptr<int>) == sizeof(int*), "삭제자가 비어 있으면 오버헤드 0");
+    MyShared<Res> s1(new Res{&destroyed}); MyWeak<Res> w = s1;
+    { MyShared<Res> s2 = s1; assert(s1.use_count() == 2); }                                                         // 공동 소유
     assert(s1.use_count() == 1 && !w.expired());
-    s1.reset();                                                         // 마지막 소유자가 사라지면 해제
-    assert(destroyed == 2 && w.expired() && w.lock() == nullptr);
-
+    s1.reset();                                                                                                      // 마지막 소유자가 사라지면 해제
+    assert(destroyed == 2 && w.expired() && w.lock().get() == nullptr);
     int closed = 0;
-    {
-        std::unique_ptr<int, void(*)(int*)> custom(new int(5), [](int* p) { delete p; });     // 사용자 지정 삭제자
-        auto file = std::shared_ptr<int>(new int(1), [&closed](int* p) { delete p; closed++; });
-    }
+    {   MyUnique<int, void (*)(int*)> custom(new int(5), [](int* p) { delete p; });
+        MyShared<int> file(new int(1), [&closed](int* p) { delete p; closed++; }); MyShared<int> copy = file; }       // 사용자 지정 삭제자: 복사본이 있어도 한 번
     assert(closed == 1);
-    std::cout << "SmartPointer verified." << std::endl;
+    // ⑤ unique 의 삭제자 호출 횟수
+    {   deleterCalls = 0; auto counting = [](int* p) { ++deleterCalls; delete p; }; { MyUnique<int, void (*)(int*)> a(new int(1), counting), b(new int(2), counting); a = std::move(b); assert(deleterCalls == 1 && *a == 2 && !b); int* raw = a.release(); assert(!a && deleterCalls == 1); delete raw; a.reset(new int(3)); assert(deleterCalls == 1); a.reset(); assert(deleterCalls == 2); }
+        assert(deleterCalls == 2); }
+    // ② 차분 시험
+    std::mt19937 rng(2025); const int H = 6; MyShared<ResMine> mine[H]; std::shared_ptr<ResStd> std_[H]; MyWeak<ResMine> wm[H]; std::weak_ptr<ResStd> ws[H]; long locks = 0, lockFails = 0;
+    auto classes = [&](auto& handles) { std::vector<int> label(H); for (int i = 0; i < H; i++) { label[i] = -1; for (int j = 0; j <= i; j++) if (handles[j].get() == handles[i].get()) { label[i] = j; break; } if (!handles[i]) label[i] = -2; } return label; };      // 같은 객체를 가리키는 핸들끼리 같은 번호
+    for (int step = 0; step < 30000; ++step) {
+        int i = (int)(rng() % H), j = (int)(rng() % H), op = (int)(rng() % 9);
+        switch (op) {
+            case 0: mine[i] = MyShared<ResMine>(new ResMine); std_[i] = std::shared_ptr<ResStd>(new ResStd); break;                       // 새 객체 (이전 객체는 필요하면 소멸)
+            case 1: mine[i] = mine[j]; std_[i] = std_[j]; break;                                                                         // 복사 대입
+            case 2: { MyShared<ResMine> a = std::move(mine[j]); std::shared_ptr<ResStd> b = std::move(std_[j]); mine[i] = std::move(a); std_[i] = std::move(b); break; }   // 이동
+            case 3: mine[i].reset(); std_[i].reset(); break;
+            case 4: mine[i].swap(mine[j]); std_[i].swap(std_[j]); break;
+            case 5: wm[i] = mine[j]; ws[i] = std_[j]; break;                                                                             // weak 대입
+            case 6: { MyShared<ResMine> a = wm[j].lock(); std::shared_ptr<ResStd> b = ws[j].lock(); assert((bool)a == (bool)b); ++locks; lockFails += !a; if (a) { assert(a->magic == 0x5eed && b->magic == 0x5eed && a.use_count() == b.use_count()); mine[i] = a; std_[i] = b; } break; }       // lock 이 성공하면 객체는 살아 있다
+            case 7: { MyShared<ResMine> copy = mine[j]; std::shared_ptr<ResStd> copy2 = std_[j]; assert(copy.use_count() == copy2.use_count()); break; }             // 임시 복사본은 use_count 를 일시적으로 올린다
+            default: wm[i] = MyWeak<ResMine>(); ws[i] = std::weak_ptr<ResStd>(); break;
+        }
+        for (int k = 0; k < H; k++) assert(mine[k].use_count() == std_[k].use_count() && wm[k].expired() == ws[k].expired() && wm[k].use_count() == ws[k].use_count());
+        assert(classes(mine) == classes(std_) && destroyedMine == destroyedStd && createdMine == createdStd);
+    }
+    for (int k = 0; k < H; k++) { mine[k].reset(); std_[k].reset(); }
+    assert(destroyedMine == createdMine && destroyedStd == createdStd && createdMine == createdStd && createdMine > 1000 && locks > 2000 && lockFails > 100);
+    // ③ 순환 참조
+    {   Node::alive = 0; MyWeak<Node> watcher;
+        { MyShared<Node> a(new Node), b(new Node); a->next = b; b->next = a; watcher = a; }                       // 서로를 강하게 가리킨다 → 바깥 핸들이 사라져도 둘 다 산다
+        assert(Node::alive == 2 && !watcher.expired() && watcher.use_count() == 1);                                 // 누수 상태 (A 는 B 의 next 가 쥐고 있다)
+        { MyShared<Node> t = watcher.lock(); assert(t.use_count() == 2); t->next.reset(); }                         // 한 고리를 끊으면 연쇄로 해제
+        assert(Node::alive == 0 && watcher.expired());
+        { MyShared<Node> a(new Node), b(new Node); a->next = b; b->back = a; }                                      // 되돌아가는 쪽을 weak 로 두면 처음부터 새지 않는다
+        assert(Node::alive == 0); }
+    // ④ 스레드 경합
+    {   destroyedMine = createdMine = 0; MyShared<ResMine> obj(new ResMine); MyWeak<ResMine> watch = obj; std::atomic<bool> go{false}; std::atomic<long> lockOk{0}, bad{0}; std::vector<std::thread> th;
+        for (int t = 0; t < 8; t++) th.emplace_back([&, t] { while (!go.load()) {} for (int i = 0; i < 20000; i++) { MyShared<ResMine> c = obj; MyShared<ResMine> d = c; if (t % 2) { MyShared<ResMine> l = watch.lock(); if (l) { ++lockOk; if (l->magic != 0x5eed) ++bad; } } } });
+        go = true; for (auto& x : th) x.join(); assert(obj.use_count() == 1 && bad == 0 && lockOk == 4 * 20000 && destroyedMine == 0);
+        obj.reset(); assert(destroyedMine == 1 && watch.expired() && watch.lock().get() == nullptr);
+        // 마지막 reset 과 lock 이 동시에: lock 이 성공했다면 객체는 살아 있다
+        long ok = 0, fail = 0, corrupt = 0;
+        for (int round = 0; round < 300; round++) { MyShared<ResMine> o(new ResMine); MyWeak<ResMine> wk = o; std::atomic<bool> start{false}; std::atomic<long> okR{0}, failR{0}, corruptR{0};
+            std::thread locker([&] { while (!start.load()) {} MyShared<ResMine> l = wk.lock(); if (l) { ++okR; if (l->magic != 0x5eed) ++corruptR; } else ++failR; });
+            start = true; o.reset(); locker.join(); ok += okR; fail += failR; corrupt += corruptR; }
+        assert(corrupt == 0 && ok + fail == 300); }
+    std::cout << "SmartPointer verified: MyShared/MyWeak matched std::shared_ptr/weak_ptr over 30000 random operations (" << locks << " lock() calls, " << lockFails << " failed) and survived the thread races." << std::endl;
     return 0;
 }
 // Time Complexity: unique_ptr O(1), shared_ptr 복사 O(1) (원자적 카운터)
