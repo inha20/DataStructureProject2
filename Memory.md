@@ -3536,53 +3536,114 @@ int main() {
 ## CacheMiss()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
+#include <iostream>
 #include <list>
+#include <map>
+#include <random>
 #include <set>
 #include <vector>
-#include <cassert>
 
 // 캐시 미스의 3C 분류:
 //  Compulsory(강제): 처음 접근하는 라인 (캐시가 아무리 커도 발생)
 //  Capacity(용량): 작업 집합이 캐시보다 커서 (같은 크기의 완전 연관 캐시도 미스)
 //  Conflict(충돌): 여러 라인이 같은 세트에 몰려 (완전 연관 캐시라면 적중했을 것)
-struct LRU {
-    size_t sets, ways; std::vector<std::list<uint64_t>> s;
-    LRU(size_t numLines, size_t w) : sets(numLines / w), ways(w), s(numLines / w) {}
-    bool access(uint64_t line) {
-        auto& set = s[line % sets];
+// 이 예제는 세트 연관 LRU 캐시 시뮬레이터에 3C 분류를 붙이고, 독립된 방법으로 대조한다:
+//  ① Mattson 스택 거리: 완전 연관 LRU 캐시(용량 C 라인)의 미스 수 == (처음 접근 + 스택 거리 > C 인 접근 수).  거리를 O(n²) 정의대로 구한 것과 Fenwick 트리 O(n log n) 로 구한 것이 같고, 시뮬레이터가 모든 C 에서 이 값과 일치
+//  ② 분류 항등식: 총 미스 = 강제 + 용량 + 충돌, 강제 = 서로 다른 라인 수, 용량 + 강제 = 같은 크기 완전 연관 캐시의 미스
+//  ③ 행렬 순회(256 x 256 int, 캐시 32KB·8방향·64B 라인): 행 우선은 미스가 정확히 N²/16 = 4096 (강제만), 열 우선은 행 간격이 1024B(16 라인)라 세트 4 개에만 몰려 정확히 N² = 65536 번 모두 미스 — 완전 연관이면 들어가는데도 충돌 미스.
+//        행에 패딩(+16 int)을 넣으면 세트가 고루 퍼져 다시 강제 미스 4096 만 남는다.  전치 연산은 16 x 16 타일로 쪼개면 N²/16 · 2 = 8192 (강제만)
+//  ④ 순차 스캔의 미스 수 == 바이트 수 / 라인 크기, 직접 사상 vs 4방향(원래 예)
+struct Cache {
+    size_t sets, ways, lineBytes; std::vector<std::list<uint64_t>> s; long misses = 0, accesses = 0;
+    Cache(size_t numLines, size_t w, size_t line = 64) : sets(numLines / w), ways(w), lineBytes(line), s(numLines / w) {}
+    bool accessLine(uint64_t line) {
+        ++accesses; auto& set = s[line % sets];
         for (auto it = set.begin(); it != set.end(); ++it) if (*it == line) { set.erase(it); set.push_front(line); return true; }
-        set.push_front(line); if (set.size() > ways) set.pop_back(); return false;
+        set.push_front(line); if (set.size() > ways) set.pop_back(); ++misses; return false;
     }
+    bool access(uint64_t byteAddr) { return accessLine(byteAddr / lineBytes); }
 };
-struct Result { long compulsory = 0, capacity = 0, conflict = 0; };
-Result classify(size_t numLines, size_t ways, const std::vector<uint64_t>& trace) {
-    LRU real(numLines, ways), full(numLines, numLines);           // 실제 캐시 vs 같은 크기의 완전 연관 캐시
-    std::set<uint64_t> seen; Result r;
-    for (uint64_t line : trace) {
-        bool hit = real.access(line), fullHit = full.access(line);
+struct Result { long compulsory = 0, capacity = 0, conflict = 0; long total() const { return compulsory + capacity + conflict; } };
+Result classify(size_t numLines, size_t ways, const std::vector<uint64_t>& lines) {
+    Cache real(numLines, ways), full(numLines, numLines); std::set<uint64_t> seen; Result r;       // 실제 캐시 vs 같은 크기의 완전 연관 캐시
+    for (uint64_t line : lines) {
+        bool hit = real.accessLine(line), fullHit = full.accessLine(line);
         if (!hit) { if (!seen.count(line)) r.compulsory++; else if (!fullHit) r.capacity++; else r.conflict++; }
         seen.insert(line);
     }
     return r;
 }
+std::vector<long> stackDistancesNaive(const std::vector<uint64_t>& t) {                         // 정의 그대로: 직전 접근 이후 서로 다른 라인의 수 + 1 (처음이면 0 = 무한대)
+    std::vector<long> d(t.size(), 0); std::map<uint64_t, size_t> last;
+    for (size_t i = 0; i < t.size(); ++i) { auto it = last.find(t[i]); if (it != last.end()) { std::set<uint64_t> distinct(t.begin() + it->second + 1, t.begin() + i); distinct.erase(t[i]); d[i] = (long)distinct.size() + 1; } last[t[i]] = i; }
+    return d;
+}
+struct Fenwick { std::vector<long> f; explicit Fenwick(size_t n) : f(n + 1, 0) {} void add(size_t i, long v) { for (++i; i < f.size(); i += i & -i) f[i] += v; } long sum(size_t i) const { long s = 0; for (++i; i > 0; i -= i & -i) s += f[i]; return s; } };
+std::vector<long> stackDistancesFast(const std::vector<uint64_t>& t) {                           // 마지막 접근 위치만 1 로 두는 Fenwick 트리
+    std::vector<long> d(t.size(), 0); std::map<uint64_t, size_t> last; Fenwick fw(t.size());
+    for (size_t i = 0; i < t.size(); ++i) { auto it = last.find(t[i]); if (it != last.end()) { d[i] = fw.sum(i) - fw.sum(it->second) + 1; fw.add(it->second, -1); } fw.add(i, 1); last[t[i]] = i; }
+    return d;
+}
+
+// 행렬 접근 시뮬레이션 (원소 4바이트)
+long matrixMisses(const char* mode, size_t N, size_t rowStrideInts, size_t tile = 16) {
+    Cache c(512, 8); auto addr = [&](size_t base, size_t i, size_t j) { return base + (i * rowStrideInts + j) * 4; };
+    if (mode[0] == 'r') { for (size_t i = 0; i < N; ++i) for (size_t j = 0; j < N; ++j) c.access(addr(0, i, j)); }                                   // 행 우선 읽기
+    else if (mode[0] == 'c') { for (size_t j = 0; j < N; ++j) for (size_t i = 0; i < N; ++i) c.access(addr(0, i, j)); }                             // 열 우선 읽기
+    else if (mode[0] == 'n') { const size_t B = 1 << 24; for (size_t i = 0; i < N; ++i) for (size_t j = 0; j < N; ++j) { c.access(addr(0, i, j)); c.access(addr(B, j, i)); } }                         // 전치(B[j][i] = A[i][j]), 단순
+    else { const size_t B = 1 << 24; for (size_t ii = 0; ii < N; ii += tile) for (size_t jj = 0; jj < N; jj += tile) for (size_t i = ii; i < ii + tile; ++i) for (size_t j = jj; j < jj + tile; ++j) { c.access(addr(0, i, j)); c.access(addr(B, j, i)); } }   // 타일
+    return c.misses;
+}
 
 int main() {
-    const size_t numLines = 64;                                    // 64 라인 캐시
-    std::vector<uint64_t> trace;                                   // 라인 0, 64, 128, 192 를 반복: 직접 사상(1-way)이면 모두 같은 세트(번호 % 64 == 0)
-    for (int rep = 0; rep < 50; rep++) for (int k = 0; k < 4; k++) trace.push_back(64ULL * k);
-    Result direct = classify(numLines, 1, trace), assoc = classify(numLines, 4, trace);
-    assert(direct.compulsory == 4 && direct.capacity == 0 && direct.conflict > 150);   // 라인 4개뿐인데 전부 충돌 미스
-    assert(assoc.conflict == 0 && assoc.compulsory == 4);          // 4-way 면 충돌이 사라지고 강제 미스만 남는다
-    std::vector<uint64_t> big; for (int rep = 0; rep < 3; rep++) for (uint64_t l = 0; l < 128; l++) big.push_back(l);   // 128 라인을 순환: 용량 초과
-    Result cap = classify(numLines, 8, big);
-    assert(cap.capacity > 0 && cap.compulsory == 128);             // 완전 연관이어도 미스 -> 용량 미스
-    std::cout << "direct-mapped: conflict=" << direct.conflict << "; 4-way: conflict=" << assoc.conflict << "; oversized set: capacity=" << cap.capacity << std::endl;
+    // 원래 예: 64 라인 캐시에서 직접 사상 vs 4방향
+    {   const size_t numLines = 64; std::vector<uint64_t> trace; for (int rep = 0; rep < 50; rep++) for (int k = 0; k < 4; k++) trace.push_back(64ULL * k);        // 라인 0, 64, 128, 192: 직접 사상이면 모두 세트 0
+        Result direct = classify(numLines, 1, trace), assoc = classify(numLines, 4, trace);
+        assert(direct.compulsory == 4 && direct.capacity == 0 && direct.conflict == 196 && direct.total() == 200);                                         // 라인 4 개뿐인데 전부 충돌 미스
+        assert(assoc.conflict == 0 && assoc.compulsory == 4 && assoc.total() == 4);
+        std::vector<uint64_t> big; for (int rep = 0; rep < 3; rep++) for (uint64_t l = 0; l < 128; l++) big.push_back(l);                                 // 128 라인 순환: 용량 초과
+        Result cap = classify(numLines, 8, big); assert(cap.compulsory == 128 && cap.capacity == 256 && cap.conflict == 0); }
+    // ①② 스택 거리와 3C
+    std::mt19937 rng(11); long checkedTraces = 0, conflictMisses = 0, capacityMisses = 0;
+    for (int it = 0; it < 60; ++it) {
+        size_t universe = 8 + rng() % 120, len = 200 + rng() % 600; std::vector<uint64_t> tr(len);
+        for (auto& x : tr) x = (rng() % 4 == 0) ? rng() % universe : rng() % std::max<size_t>(2, universe / 6);                                           // 지역성이 있는 무작위 트레이스
+        auto dn = stackDistancesNaive(tr), df = stackDistancesFast(tr); assert(dn == df);
+        std::set<uint64_t> distinct(tr.begin(), tr.end());
+        for (size_t C : {(size_t)1, (size_t)2, (size_t)4, (size_t)8, (size_t)16, (size_t)32, (size_t)64}) {
+            long byDistance = 0; for (long d : df) byDistance += (d == 0 || d > (long)C);
+            Cache fa(C, C); for (uint64_t l : tr) fa.accessLine(l); assert(fa.misses == byDistance);                                                      // 완전 연관 LRU 미스 == 거리 > C 인 접근 + 처음 접근
+        }
+        for (size_t ways : {(size_t)1, (size_t)2, (size_t)4}) {
+            Result r = classify(32, ways, tr); Cache real(32, ways); for (uint64_t l : tr) real.accessLine(l);
+            Cache full(32, 32); for (uint64_t l : tr) full.accessLine(l);
+            assert(r.total() == real.misses && r.compulsory == (long)distinct.size());                                                                    // 총 미스 = 강제 + 용량 + 충돌, 강제 = 서로 다른 라인 수
+            assert(r.compulsory + r.capacity <= full.misses);                                                                                              // 강제 + 용량 미스는 모두 같은 크기 완전 연관 캐시의 미스이기도 하다
+            conflictMisses += r.conflict; capacityMisses += r.capacity;
+        }
+        ++checkedTraces;
+    }
+    assert(conflictMisses > 100 && capacityMisses > 100);
+    // ③ 행렬 순회
+    const size_t N = 256;
+    assert(matrixMisses("row", N, N) == (long)(N * N / 16));                                                                                              // 행 우선: 강제 미스만
+    assert(matrixMisses("col", N, N) == (long)(N * N));                                                                                                   // 열 우선(행 간격 1024B): 모두 미스
+    {   std::vector<uint64_t> lines; for (size_t j = 0; j < N; ++j) for (size_t i = 0; i < N; ++i) lines.push_back((i * N + j) * 4 / 64);                    // 같은 접근열을 3C 로 분류
+        Result r = classify(512, 8, lines); assert(r.compulsory == 4096 && r.capacity == 0 && r.conflict == (long)(N * N - 4096)); }                       // 완전 연관이면 256 라인이 512 라인에 다 들어간다 -> 나머지는 전부 충돌 미스
+    assert(matrixMisses("col", N, N + 16) == (long)(N * N / 16));                                                                                         // 행 길이에 한 라인(16 int) 패딩 -> 세트가 퍼져 강제 미스만
+    long naive = matrixMisses("naive", N, N), tiled = matrixMisses("tiled", N, N);
+    assert(tiled == (long)(2 * N * N / 16) && naive > 8 * tiled);                                                                                         // 타일: 읽기·쓰기 각각 강제 미스만
+    // ④ 순차 스캔
+    for (size_t line : {(size_t)16, (size_t)32, (size_t)64, (size_t)128}) { Cache c(1024, 4, line); const size_t bytes = 1 << 20; for (size_t a = 0; a < bytes; a += 4) c.access(a); assert(c.misses == (long)(bytes / line)); }
+    std::cout << "CacheMiss verified: " << checkedTraces << " traces (stack distances naive == Fenwick, fully-associative misses match Mattson), column-major 256x256: " << matrixMisses("col", N, N) << " misses vs "
+              << matrixMisses("col", N, N + 16) << " with padding, transpose " << naive << " vs tiled " << tiled << "." << std::endl;
     return 0;
 }
-// Time Complexity: O(trace · ways)
-// Space Complexity: O(라인 수)
+// Time Complexity: 시뮬레이션 O(접근 수 · 방향 수), 스택 거리 O(n log n) (Fenwick)
+// Space Complexity: O(캐시 라인 수)
 ```
 ## CacheFriendlyTraversal()
 ### 대표코드
@@ -4033,34 +4094,136 @@ int main() {
 ## Paging()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <set>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <deque>
+#include <iostream>
+#include <list>
+#include <map>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
 // 페이징: 메모리를 같은 크기(4KB)의 페이지로 나눠 어디에나 배치할 수 있게 한다 -> 외부 단편화가 없다.  대신 마지막 페이지의 낭비(내부 단편화, 평균 반 페이지)가 생긴다.
 // 문제: 32비트 주소 공간의 평면 페이지 테이블은 2^20 항목 x 4B = 4MB — 프로세스마다 이만큼 필요하다.
 // 해법: 다단계 테이블 — 실제로 쓰는 영역의 테이블만 만든다 (희소한 주소 공간에 매우 유리)
-int main() {
-    const uint64_t PAGE = 4096;
-    auto pages = [&](uint64_t bytes) { return (bytes + PAGE - 1) / PAGE; };
-    assert(pages(1) == 1 && pages(4096) == 1 && pages(4097) == 2);
-    uint64_t request = 10000, waste = pages(request) * PAGE - request;   // 3페이지 = 12288 -> 2288 바이트 낭비
-    assert(waste == 2288);
+// 물리 메모리보다 큰 주소 공간을 쓰려면 요구 페이징(demand paging)이 필요하다: 페이지를 처음 만질 때(또는 쫓겨난 뒤 다시 만질 때) 페이지 폴트가 나고, 빈 프레임이 없으면 교체 알고리즘이 희생 페이지를 고른다.
+// 이 예제는 산술(원래 예)과 함께 교체 알고리즘 네 가지를 서로 다른 구현으로 만들어 성질로 검증한다:
+//  FIFO(들어온 순서), LRU(가장 오래 안 쓴 것; 타임스탬프 구현과 리스트 구현 두 가지), Clock(참조 비트를 가진 원형 큐), OPT(Belady 의 최적: 앞으로 가장 늦게 쓰일 페이지)
+// 검증: ① 고전 Belady 변칙: FIFO 는 프레임 3 개일 때 폴트 9 번, 4 개일 때 10 번  ② OPT == 전수 동적계획법으로 구한 최소 폴트(작은 트레이스 3 000 개) 이고 모든 알고리즘의 폴트 >= OPT
+//        ③ LRU 는 스택 알고리즘: 프레임을 늘려도 폴트가 늘지 않고, 매 순간 k 프레임의 상주 집합 ⊆ k+1 프레임의 상주 집합.  OPT 도 단조.  FIFO 는 (드물게) 무작위 트레이스에서도 변칙이 나온다
+//        ④ LRU 두 구현의 폴트와 상주 집합이 매 단계 같다  ⑤ 순환 접근 닫힌 형태: L 페이지를 K 번 순환, 프레임 F: L <= F 면 폴트 L, L > F 면 LRU·FIFO 는 전부 폴트인데 OPT 는 훨씬 적고 L = F + 1 이면 L + (총접근 - L) / F 번
+enum Algo { FIFO, LRU, LRU2, CLOCK, OPT };
 
-    uint64_t flat = (1ULL << 20) * 4;                                     // 평면 테이블: 4MB
-    assert(flat == 4u << 20);
-    // 2단계(디렉터리 1024 x 테이블 1024): 프로세스가 코드(0x08048000), 힙(0x09000000), 스택(0xBFFFF000) 주변만 쓴다
-    uint64_t used[] = {0x08048000, 0x09000000, 0xBFFFF000};
-    std::set<uint64_t> directoryIndexes; for (uint64_t va : used) directoryIndexes.insert(va >> 22);
-    uint64_t twoLevel = (1 + directoryIndexes.size()) * PAGE;             // 디렉터리 1페이지 + 사용 중인 페이지 테이블들
-    assert(directoryIndexes.size() == 3 && twoLevel == 4 * PAGE);         // 16KB
-    assert(flat / twoLevel == 256);                                       // 평면 테이블의 1/256
-    std::cout << "Paging: flat page table " << flat / 1024 << " KB vs two-level " << twoLevel / 1024 << " KB; internal fragmentation of 10000 B request = " << waste << " B" << std::endl;
+long simulate(Algo algo, size_t frames, const std::vector<int>& trace, std::vector<std::set<int>>* history = nullptr) {
+    long faults = 0; std::set<int> resident; size_t n = trace.size();
+    std::deque<int> fifo; std::map<int, long> lastUse; std::list<int> lruList; std::unordered_map<int, std::list<int>::iterator> where;
+    std::vector<int> ring(frames, -1); std::vector<char> refBit(frames, 0); size_t hand = 0;
+    std::vector<size_t> nextUse(n); { std::map<int, size_t> nxt; for (size_t i = n; i-- > 0;) { auto it = nxt.find(trace[i]); nextUse[i] = it == nxt.end() ? n + 1 : it->second; nxt[trace[i]] = i; } }
+    std::map<int, size_t> nextOf;                                                                  // OPT: 각 상주 페이지의 다음 사용 위치
+    for (size_t t = 0; t < n; ++t) {
+        int p = trace[t]; bool hit = resident.count(p) > 0;
+        if (!hit) {
+            ++faults;
+            if (resident.size() == frames) {                                                     // 희생 페이지 고르기
+                int victim = -1;
+                if (algo == FIFO) { victim = fifo.front(); fifo.pop_front(); }
+                else if (algo == LRU) { long oldest = 1L << 60; for (int q : resident) { if (lastUse[q] < oldest) { oldest = lastUse[q]; victim = q; } } }
+                else if (algo == LRU2) { victim = lruList.back(); lruList.pop_back(); where.erase(victim); }
+                else if (algo == CLOCK) { while (refBit[hand]) { refBit[hand] = 0; hand = (hand + 1) % frames; } victim = ring[hand]; ring[hand] = p; refBit[hand] = 1; hand = (hand + 1) % frames; }
+                else { size_t far = 0; for (int q : resident) { if (nextOf[q] >= far) { if (nextOf[q] > far || victim < 0) victim = q; far = nextOf[q]; } } }
+                resident.erase(victim);
+            } else if (algo == CLOCK) { for (size_t i = 0; i < frames; ++i) { if (ring[i] < 0) { ring[i] = p; refBit[i] = 1; break; } } }
+            resident.insert(p);
+            if (algo == FIFO) fifo.push_back(p);
+            if (algo == LRU2) { lruList.push_front(p); where[p] = lruList.begin(); }
+        } else {
+            if (algo == CLOCK) { for (size_t i = 0; i < frames; ++i) { if (ring[i] == p) refBit[i] = 1; } }
+            if (algo == LRU2) { lruList.erase(where[p]); lruList.push_front(p); where[p] = lruList.begin(); }
+        }
+        lastUse[p] = (long)t; nextOf[p] = nextUse[t];
+        if (history) history->push_back(resident);
+    }
+    return faults;
+}
+
+long optimalByDP(size_t frames, const std::vector<int>& trace, int pages) {                          // 모든 희생 선택을 따져 보는 전수 동적계획법 (페이지 <= 8)
+    size_t S = (size_t)1 << pages; const long INF = 1L << 40; std::vector<long> cur(S, INF), nxt(S, INF); cur[0] = 0;
+    for (int p : trace) {
+        std::fill(nxt.begin(), nxt.end(), INF);
+        for (size_t m = 0; m < S; ++m) {
+            if (cur[m] >= INF) continue;
+            if (m >> p & 1) { nxt[m] = std::min(nxt[m], cur[m]); continue; }
+            if ((size_t)__builtin_popcountll(m) < frames) { size_t m2 = m | (size_t)1 << p; nxt[m2] = std::min(nxt[m2], cur[m] + 1); }
+            else for (int e = 0; e < pages; ++e) { if (m >> e & 1) { size_t m2 = (m & ~((size_t)1 << e)) | (size_t)1 << p; nxt[m2] = std::min(nxt[m2], cur[m] + 1); } }
+        }
+        cur.swap(nxt);
+    }
+    return *std::min_element(cur.begin(), cur.end());
+}
+
+int main() {
+    // 원래 예: 산술
+    {   const uint64_t PAGE = 4096; auto pages = [&](uint64_t bytes) { return (bytes + PAGE - 1) / PAGE; };
+        assert(pages(1) == 1 && pages(4096) == 1 && pages(4097) == 2);
+        uint64_t request = 10000, waste = pages(request) * PAGE - request; assert(waste == 2288);               // 3페이지 = 12288 -> 2288 바이트 낭비
+        uint64_t flat = (1ULL << 20) * 4; assert(flat == 4u << 20);                                              // 평면 테이블: 4MB
+        uint64_t used[] = {0x08048000, 0x09000000, 0xBFFFF000};                                                  // 코드·힙·스택 주변만 쓰는 프로세스
+        std::set<uint64_t> dirs; for (uint64_t va : used) dirs.insert(va >> 22);
+        uint64_t twoLevel = (1 + dirs.size()) * PAGE; assert(dirs.size() == 3 && twoLevel == 4 * PAGE && flat / twoLevel == 256); }
+    // ① Belady 변칙
+    std::vector<int> belady = {1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5};
+    assert(simulate(FIFO, 3, belady) == 9 && simulate(FIFO, 4, belady) == 10);                                  // 프레임을 늘렸더니 폴트가 늘었다
+    assert(simulate(LRU, 3, belady) == 10 && simulate(LRU, 4, belady) == 8 && simulate(OPT, 3, belady) == 7 && simulate(OPT, 4, belady) == 6);
+    // ② OPT 의 최적성, ③ 스택 성질, ④ 두 LRU 구현
+    std::mt19937 rng(2024); long traces = 0, fifoAnomalies = 0, clockBetterThanFifo = 0, clockTotal = 0, fifoTotal = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int pages = 3 + (int)(rng() % 5), len = 10 + (int)(rng() % 31); std::vector<int> tr(len);
+        for (int& x : tr) x = (rng() % 3 == 0) ? (int)(rng() % pages) : (int)(rng() % std::max(2, pages / 2));                                           // 지역성이 약간 있는 트레이스
+        for (size_t F = 1; F <= 4; ++F) {
+            long opt = simulate(OPT, F, tr); assert(opt == optimalByDP(F, tr, pages));                                                                      // OPT == 전수 최솟값
+            for (Algo a : {FIFO, LRU, CLOCK}) assert(simulate(a, F, tr) >= opt);
+            assert(simulate(LRU, F, tr) == simulate(LRU2, F, tr));
+        }
+        ++traces;
+    }
+    for (int it = 0; it < 2000; ++it) {
+        int pages = 8, len = 60; std::vector<int> tr(len); for (int& x : tr) x = (int)(rng() % pages);
+        long prevLru = 1L << 40, prevOpt = 1L << 40; bool anomaly = false; long prevFifo = 1L << 40;
+        std::vector<std::vector<std::set<int>>> hist(7);
+        for (size_t F = 1; F <= 6; ++F) {
+            long lru = simulate(LRU, F, tr, &hist[F]), lru2 = simulate(LRU2, F, tr), opt = simulate(OPT, F, tr), fifo = simulate(FIFO, F, tr);
+            assert(lru == lru2 && lru <= prevLru && opt <= prevOpt);                                                                                            // LRU·OPT 는 프레임을 늘리면 폴트가 줄거나 같다
+            if (fifo > prevFifo) { anomaly = true; }
+            prevLru = lru; prevOpt = opt; prevFifo = fifo;
+            if (F >= 2) for (int t = 0; t < len; ++t) assert(std::includes(hist[F][t].begin(), hist[F][t].end(), hist[F - 1][t].begin(), hist[F - 1][t].end()));   // 포함 성질
+            if (F == 4) { clockTotal += simulate(CLOCK, F, tr); fifoTotal += fifo; clockBetterThanFifo += simulate(CLOCK, F, tr) <= fifo; }
+        }
+        fifoAnomalies += anomaly;
+    }
+    assert(fifoAnomalies >= 1);                                                                                           // 드물지만 무작위 트레이스에서도 실제로 나온다
+    // LRU 두 구현의 상주 집합이 매 단계 같다
+    {   std::vector<int> tr(500); for (int& x : tr) x = (int)(rng() % 12); std::vector<std::set<int>> h1, h2; simulate(LRU, 5, tr, &h1); simulate(LRU2, 5, tr, &h2); assert(h1 == h2); }
+    // ⑤ 순환 접근
+    for (size_t F : {(size_t)4, (size_t)8}) {
+        for (size_t L : {F - 1, F, F + 1, F + 3}) {
+            std::vector<int> tr; for (int k = 0; k < 20; ++k) for (size_t i = 0; i < L; ++i) tr.push_back((int)i);
+            long lru = simulate(LRU, F, tr), fifo = simulate(FIFO, F, tr), opt = simulate(OPT, F, tr);
+            if (L <= F) assert(lru == (long)L && fifo == (long)L && opt == (long)L);                                      // 다 들어가면 처음 한 번씩만
+            else {
+                assert(lru == (long)tr.size() && fifo == (long)tr.size() && opt < lru * 3 / 4);                              // 하나라도 넘치면 LRU·FIFO 는 매번 폴트, OPT 는 훨씬 적다
+                if (L == F + 1) assert(opt == (long)L + ((long)tr.size() - (long)L) / (long)F);                              // L = F + 1 이면 OPT 는 처음 L 번 뒤로 F 번 접근마다 한 번만 폴트
+            }
+        }
+    }
+    std::cout << "Paging verified: " << traces << " small traces (OPT == exhaustive optimum), Belady anomaly 9 -> 10 faults for FIFO, FIFO anomalies (rare) in " << fifoAnomalies << "/2000 random traces, LRU stack property held; Clock avg faults "
+              << clockTotal / 2000.0 << " vs FIFO " << fifoTotal / 2000.0 << " (4 frames)." << std::endl;
     return 0;
 }
-// Time Complexity: O(1) 계산
-// Space Complexity: 다단계 테이블 O(사용 영역)
+// Time Complexity: 시뮬레이션 O(트레이스 길이 · 프레임 수) (LRU 리스트 구현은 O(1)/접근)
+// Space Complexity: O(프레임 수)
 ```
 ## PageTable()
 ### 대표코드
@@ -4580,22 +4743,91 @@ int main() {
 ## ASLR()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
 #include <string>
-#include <cassert>
+#include <vector>
 #if defined(__linux__)
 #include <unistd.h>
 #endif
 
 // ASLR(주소 공간 배치 무작위화): 프로세스를 시작할 때마다 스택·힙·라이브러리(·PIE 실행 파일)의 위치를 무작위로 옮겨, 공격자가 목표 주소를 미리 알 수 없게 한다.
 // 확인: 자기 자신을 두 번 실행(popen)해 스택 주소를 비교한다.  /proc/sys/kernel/randomize_va_space: 0 = 끔, 1 = 스택·mmap, 2 = 힙 포함 전체
+// 이 예제는 무작위화의 "효과"를 수치로 확인한다 (리눅스 x86-64 와 비슷한 엔트로피: 스택 22비트, mmap 28비트, brk 힙 13비트, PIE 실행 파일 28비트 — 모두 4KB 페이지 단위):
+//  ① 배치 모형 10 만 개: 모든 영역이 자기 창(window) 안, 4KB 정렬, 정규 주소, 창끼리 겹치지 않음  ② 균일성: 6비트 영역을 64 만 번 뽑아 카이제곱(자유도 63)이 120 미만
+//  ③ 맹목적 추측: 10비트 영역에 고정 주소를 2^21 번 찍으면 적중이 2^11 번 근처(5 시그마 안)  ④ 공격 비용: 충돌 후 매번 새로 무작위화하면 평균 2^n 번(기하분포), fork 서버처럼 배치가 안 바뀌면 후보를 차례로 시도해 평균 정확히 (2^n + 1) / 2
+//  ⑤ 정보 누출 한 번이면 끝: 영역 안 포인터 하나와 알려진 오프셋으로 기준 주소가 정확히 복원  ⑥ 독립 영역의 엔트로피는 합: 3 + 4 + 2 = 9 비트 설정에서 경험적 엔트로피 ≈ 9 비트이고 512 가지 조합이 고르게 나옴  ⑦ PIE 가 아니면(0 비트) 항상 같은 주소
+//  ⑧ (리눅스) 실제 프로세스 두 개의 스택 주소 비교
+const uint64_t PAGE = 4096;
+struct Window { uint64_t lo, hi; };                                                       // [lo, hi) 안에서만 놓일 수 있다
+struct Layout { uint64_t exe, heap, mmapBase, stack; };
+struct Config { unsigned exeBits, heapBits, mmapBits, stackBits; };
+
+class Randomizer {
+    std::mt19937_64 rng; Config c;
+    uint64_t pick(unsigned bits) { return bits ? (rng() & ((1ULL << bits) - 1)) : 0; }
+public:
+    Randomizer(uint64_t seed, Config cfg) : rng(seed), c(cfg) {}
+    Layout next() {
+        Layout l; l.exe = 0x555500000000ULL + pick(c.exeBits) * PAGE; l.heap = 0x568000000000ULL + pick(c.heapBits) * PAGE;
+        l.mmapBase = 0x7f0000000000ULL - pick(c.mmapBits) * PAGE; l.stack = 0x7ffffffff000ULL - pick(c.stackBits) * PAGE; return l;
+    }
+    static Window exeWin(const Config& c) { return {0x555500000000ULL, 0x555500000000ULL + ((1ULL << c.exeBits) << 12)}; }
+    static Window heapWin(const Config& c) { return {0x568000000000ULL, 0x568000000000ULL + ((1ULL << c.heapBits) << 12)}; }
+    static Window mmapWin(const Config& c) { return {0x7f0000000000ULL - (((1ULL << c.mmapBits) - 1) << 12), 0x7f0000000000ULL + 1}; }
+    static Window stackWin(const Config& c) { return {0x7ffffffff000ULL - (((1ULL << c.stackBits) - 1) << 12), 0x7ffffffff000ULL + 1}; }
+};
+bool inWin(uint64_t a, Window w) { return a >= w.lo && a < w.hi; }
+bool disjoint(Window a, Window b) { return a.hi <= b.lo || b.hi <= a.lo; }
+bool canonicalUser(uint64_t a) { return a < (1ULL << 47); }
+
 int main(int argc, char** argv) {
 #if defined(__linux__)
     if (argc == 2 && std::string(argv[1]) == "child") { int local; std::printf("%lx\n", (unsigned long)&local); return 0; }
+#else
+    (void)argc; (void)argv;
+#endif
+    const Config linuxLike{28, 13, 28, 22};
+    // ① 배치 모형
+    {   Randomizer r(1, linuxLike); Window w[4] = {Randomizer::exeWin(linuxLike), Randomizer::heapWin(linuxLike), Randomizer::mmapWin(linuxLike), Randomizer::stackWin(linuxLike)};
+        for (int i = 0; i < 4; ++i) for (int j = i + 1; j < 4; ++j) assert(disjoint(w[i], w[j]));                                    // 창이 서로 겹치지 않으므로 어떤 배치에서도 영역이 겹칠 수 없다
+        for (int i = 0; i < 100000; ++i) {
+            Layout l = r.next(); uint64_t v[4] = {l.exe, l.heap, l.mmapBase, l.stack};
+            for (int k = 0; k < 4; ++k) { assert(inWin(v[k], w[k]) && v[k] % PAGE == 0 && canonicalUser(v[k])); }
+        } }
+    // ② 균일성
+    {   Randomizer r(2, {0, 0, 6, 0}); std::vector<long> cnt(64, 0); const long N = 640000; for (long i = 0; i < N; ++i) { uint64_t off = (0x7f0000000000ULL - r.next().mmapBase) / PAGE; ++cnt[off]; }
+        double chi = 0, e = N / 64.0; for (long c : cnt) chi += (c - e) * (c - e) / e; assert(chi < 120); }
+    // ③ 맹목적 추측
+    {   Randomizer r(3, {0, 0, 10, 0}); const uint64_t guess = 0x7f0000000000ULL - 517 * PAGE; const long N = 1L << 21; long hits = 0; for (long i = 0; i < N; ++i) hits += r.next().mmapBase == guess;
+        double expect = N / 1024.0, sd = std::sqrt(expect); assert(std::abs(hits - expect) < 5 * sd); }
+    // ④ 공격 비용
+    {   const unsigned bits = 6; const uint64_t N = 1ULL << bits; Randomizer r(4, {0, 0, bits, 0}); double total = 0; const int TR = 3000;
+        for (int t = 0; t < TR; ++t) { long tries = 0; const uint64_t g = 0x7f0000000000ULL - 11 * PAGE; do { ++tries; } while (r.next().mmapBase != g); total += (double)tries; }       // 충돌할 때마다 새 배치
+        assert(std::abs(total / TR - (double)N) < 0.1 * (double)N);                                                                   // 기하분포: 평균 2^n
+        double sum = 0; for (uint64_t secret = 0; secret < N; ++secret) { uint64_t tries = 0; for (uint64_t cand = 0; cand < N; ++cand) { ++tries; if (cand == secret) break; } sum += (double)tries; }
+        assert(sum / (double)N == (double)(N + 1) / 2);                                                                              // 배치가 고정이면 평균 (2^n + 1) / 2 — 새로 무작위화하는 쪽(평균 2^n)의 절반
+    }
+    // ⑤ 정보 누출 한 번
+    {   Randomizer r(5, linuxLike); const uint64_t knownOffsetOfFunction = 0x2a4d0;                                                  // 라이브러리 안의 함수 오프셋은 파일에서 알 수 있다
+        for (int i = 0; i < 10000; ++i) { Layout l = r.next(); uint64_t leaked = l.mmapBase + knownOffsetOfFunction; assert(leaked - knownOffsetOfFunction == l.mmapBase); } }
+    // ⑥ 엔트로피는 합
+    {   Randomizer r(6, {0, 3, 4, 2}); std::map<std::vector<uint64_t>, long> freq; const long N = 200000;
+        for (long i = 0; i < N; ++i) { Layout l = r.next(); ++freq[{l.heap, l.mmapBase, l.stack}]; }
+        assert(freq.size() == 512); double chi = 0, e = N / 512.0, H = 0; for (auto& kv : freq) { chi += (kv.second - e) * (kv.second - e) / e; double p = (double)kv.second / N; H -= p * std::log2(p); }
+        assert(chi < 640 && std::abs(H - 9.0) < 0.01); }
+    // ⑦ PIE 가 아니면 항상 같은 주소
+    {   Randomizer r(7, {0, 0, 0, 0}); std::set<uint64_t> exes; for (int i = 0; i < 1000; ++i) exes.insert(r.next().exe); assert(exes.size() == 1); }
+#if defined(__linux__)
     int mode = -1; { std::ifstream f("/proc/sys/kernel/randomize_va_space"); f >> mode; }
     assert(mode >= 0 && mode <= 2);
     auto runChild = [&]() {
@@ -4606,16 +4838,15 @@ int main(int argc, char** argv) {
     };
     std::string a = runChild(), b = runChild();
     assert(!a.empty() && !b.empty());
-    if (mode >= 1) assert(a != b);                                  // 실행마다 스택 주소가 달라진다 (우연히 같을 확률은 2^-22 이하)
+    if (mode >= 1) assert(a != b);                                  // ⑧ 실행마다 스택 주소가 달라진다 (우연히 같을 확률은 2^-22 이하)
     else assert(a == b);                                            // 끄면 항상 같다
-    std::cout << "ASLR (mode " << mode << "): run1 stack=" << a.substr(0, a.size() - 1) << " run2 stack=" << b.substr(0, b.size() - 1) << std::endl;
+    std::cout << "ASLR verified (model + real, kernel mode " << mode << "): run1 stack=" << a.substr(0, a.size() - 1) << " run2 stack=" << b.substr(0, b.size() - 1) << "; fixed layout halves the expected brute-force cost, one leak defeats it." << std::endl;
 #else
-    (void)argc; (void)argv;
-    std::cout << "ASLR: Linux-only demonstration" << std::endl;
+    std::cout << "ASLR verified (model only; the real-process comparison is Linux-only)." << std::endl;
 #endif
     return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: O(1) (모형의 한 번 뽑기)
 // Space Complexity: O(1)
 ```
 ## DEP()
@@ -6162,9 +6393,16 @@ int main() {
 ## HugePage()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <list>
+#include <map>
+#include <random>
+#include <set>
+#include <vector>
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
@@ -6172,30 +6410,103 @@ int main() {
 // 대형 페이지(2MB / 1GB): 페이지가 클수록 TLB 항목 하나가 덮는 범위(TLB reach)가 커져 TLB 미스와 페이지 테이블 크기가 줄어든다.
 //   TLB reach = 항목 수 x 페이지 크기.   데이터베이스·JVM·HPC 처럼 큰 메모리를 쓰는 프로그램에서 수 %~수십 % 성능 향상.
 // 단점: 페이지 단위 보호/스왑이 거칠어지고, 큰 연속 물리 메모리가 필요하며 내부 단편화가 커진다.  리눅스는 Transparent Huge Pages(THP)와 madvise(MADV_HUGEPAGE)를 제공
+// 이 예제는 장단점을 숫자로 확인한다:
+//  ① TLB 시뮬레이션: 완전 연관 LRU TLB 64 항목에서 균일 무작위 접근의 미스율은 1 - 항목/페이지 수 (4KB: 작업 집합 64MB 는 거의 100% 미스, 2MB: 작업 집합 128MB 는 전부 TLB 에 들어가 0%, 512MB 는 87.5%)  — 이론값과 시뮬레이션 일치
+//  ② 페이지 테이블 메모리: 밀집 매핑 N 바이트에 필요한 테이블 프레임 수를 직접 센 값 == 올림 공식, 4KB 페이지는 매핑 크기의 0.2%, 2MB 페이지는 그 1/512
+//  ③ 메모리 부풀림: 2MB 구역마다 1 바이트만 건드리면 대형 페이지는 구역마다 2MB(512배)를 쓰고, "채운 비율이 임계값을 넘으면 합친다" 는 정책은 닫힌 형태와 일치
+//  ④ 물리 단편화: 프레임을 확률 f 로 점유했을 때 비어 있는 정렬된 2MB 블록 수의 기댓값 32 · (1-f)^512 와 시뮬레이션 평균이 일치(f = 0.001), 압축(compaction) 후엔 floor(빈 프레임 / 512) 개이고 옮긴 프레임 수는 정확히 계산한 값
+struct Tlb {
+    size_t cap; std::list<uint64_t> lru; std::map<uint64_t, std::list<uint64_t>::iterator> pos; long misses = 0, accesses = 0;
+    explicit Tlb(size_t c) : cap(c) {}
+    void access(uint64_t page) {
+        ++accesses; auto it = pos.find(page);
+        if (it != pos.end()) { lru.splice(lru.begin(), lru, it->second); return; }
+        ++misses; lru.push_front(page); pos[page] = lru.begin(); if (lru.size() > cap) { pos.erase(lru.back()); lru.pop_back(); }
+    }
+    double missRate() const { return accesses ? (double)misses / accesses : 0; }
+};
+
+size_t tableFramesDense(uint64_t pageCount) {                                                  // 연속 매핑 pageCount 개 4KB 페이지에 필요한 테이블 프레임을 직접 센다
+    std::set<uint64_t> pt, pd, pdpt; for (uint64_t i = 0; i < pageCount; ++i) { pt.insert(i >> 9); pd.insert(i >> 18); pdpt.insert(i >> 27); } return 1 + pdpt.size() + pd.size() + pt.size();
+}
+
 int main() {
     const uint64_t KB = 1024, MB = KB * 1024, GB = MB * 1024;
-    const uint64_t entries = 64;
-    assert(entries * 4 * KB == 256 * KB);                              // 4KB 페이지: 64 항목이 겨우 256KB 를 덮는다
-    assert(entries * 2 * MB == 128 * MB);                              // 2MB 페이지: 512배
-    assert(entries * 1 * GB == 64 * GB);
-    assert(GB / (4 * KB) == 262144 && GB / (2 * MB) == 512);           // 1GB 를 매핑하는 데 필요한 페이지 항목 수: 262144 vs 512
-    assert(GB / (4 * KB) * 8 == 2 * MB && GB / (2 * MB) * 8 == 4 * KB);   // 항목당 8바이트: 말단 테이블 2MB vs 4KB
+    // 원래 예: 산술
+    {   const uint64_t entries = 64;
+        assert(entries * 4 * KB == 256 * KB && entries * 2 * MB == 128 * MB && entries * 1 * GB == 64 * GB);
+        assert(GB / (4 * KB) == 262144 && GB / (2 * MB) == 512);
+        assert(GB / (4 * KB) * 8 == 2 * MB && GB / (2 * MB) * 8 == 4 * KB); }
+    // ① TLB 미스율: 균일 무작위 접근
+    {   std::mt19937_64 rng(2); auto rate = [&](uint64_t workingSet, uint64_t pageSize, size_t entries) {
+            Tlb t(entries); uint64_t pages = workingSet / pageSize; for (uint64_t i = 0; i < pages * 2; ++i) t.access(i % pages);                       // 워밍업
+            t.misses = t.accesses = 0; for (int i = 0; i < 300000; ++i) t.access(rng() % pages); return t.missRate(); };
+        double r4k = rate(64 * MB, 4 * KB, 64), r2m = rate(64 * MB, 2 * MB, 64), r2mBig = rate(512 * MB, 2 * MB, 32);
+        assert(std::abs(r4k - (1.0 - 64.0 / 16384)) < 0.005);                                                            // 4KB 페이지: 항목 64 / 페이지 16384 -> 적중 0.4%
+        assert(r2m == 0.0);                                                                                              // 2MB 페이지: 페이지 32 개가 64 항목에 다 들어간다
+        assert(std::abs(r2mBig - (1.0 - 32.0 / 256)) < 0.005);                                                           // 512MB 는 256 개 -> 적중 12.5%
+        assert(rate(128 * MB, 4 * KB, 64) > 0.99 && rate(128 * KB, 4 * KB, 64) == 0.0); }
+    // ② 페이지 테이블 메모리
+    for (uint64_t mb : {(uint64_t)1, (uint64_t)2, (uint64_t)64, (uint64_t)1024, (uint64_t)3000}) {
+        uint64_t pagesN = mb * MB / (4 * KB), c512 = 512; auto ceilDiv = [](uint64_t a, uint64_t b) { return (a + b - 1) / b; };
+        assert(tableFramesDense(pagesN) == 1 + ceilDiv(pagesN, c512 * c512 * c512) + ceilDiv(pagesN, c512 * c512) + ceilDiv(pagesN, c512));            // 올림 공식
+        if (mb >= 64) { double overhead = (double)tableFramesDense(pagesN) * 4 * KB / (mb * MB); assert(overhead > 0.0019 && overhead < 0.0022); }                // 4KB 페이지: 약 0.2%
+        uint64_t hugeN = ceilDiv(mb * MB, 2 * MB); uint64_t frames2m = 1 + ceilDiv(hugeN, c512 * c512) + ceilDiv(hugeN, c512);                           // 2MB 페이지: PT 단계가 없다
+        assert(frames2m <= tableFramesDense(pagesN));
+        if (mb >= 1024) assert(ceilDiv(pagesN, c512) >= 500 * ceilDiv(hugeN, c512)); }                                    // 잎 단계 테이블: 4KB 페이지는 PT 프레임 hugeN 개, 2MB 페이지는 PD 프레임 hugeN/512 개 -> 약 512 배 차이
+    // ③ 메모리 부풀림 정책: 2MB 구역(= 4KB 페이지 512 개)마다 건드린 페이지 수 c 가 need 이상이 되면 대형 페이지 하나로 합친다
+    {   const uint64_t REGIONS = 64; std::mt19937 rng(9); const size_t NEED[4] = {(size_t)-1, 256, 512, 1};                                 // 합치지 않음 / 절반 / 전부 / 처음 만질 때부터
+        const char* names[4] = {"never", "half", "full", "always"}; (void)names;
+        uint64_t committedSparse[4], committedDense[4];
+        for (int workload = 0; workload < 2; ++workload) {
+            for (int p = 0; p < 4; ++p) {
+                std::mt19937 r(100 + workload); std::vector<std::set<unsigned>> touched(REGIONS); std::vector<char> promoted(REGIONS, 0); uint64_t committed = 0; int touches = workload == 0 ? 20000 : 400000;
+                for (int i = 0; i < touches; ++i) {
+                    uint64_t region = r() % REGIONS; unsigned pg = (unsigned)(r() % (workload == 0 ? 4 : 512));                          // 희소: 구역당 페이지 4 개만, 밀집: 전부
+                    if (promoted[region]) continue;
+                    if (touched[region].insert(pg).second) committed += 4 * KB;
+                    if (touched[region].size() >= NEED[p]) { promoted[region] = 1; committed += 2 * MB - touched[region].size() * 4 * KB; }   // 작은 페이지들을 큰 페이지 하나로 교체
+                }
+                uint64_t expect = 0; for (uint64_t g = 0; g < REGIONS; ++g) { size_t c = touched[g].size(); expect += (c >= NEED[p]) ? 2 * MB : c * 4 * KB; }
+                assert(committed == expect);                                                                                  // 순서와 무관하게 구역별 닫힌 형태
+                (workload == 0 ? committedSparse : committedDense)[p] = committed;
+            }
+        }
+        assert(committedSparse[3] == 128 * committedSparse[0] && committedSparse[1] == committedSparse[0] && committedSparse[2] == committedSparse[0]);                  // 희소하면 항상 합치는 정책이 128 배(512/4) 부풀린다
+        for (int p = 1; p < 4; ++p) assert(committedDense[p] == committedDense[0] && committedDense[0] == REGIONS * 2 * MB);                                                // 밀집하면 합쳐도 메모리가 늘지 않는다
+        uint64_t sparseSmall = 100 * 4 * KB, sparseHuge = 100 * 2 * MB; assert(sparseHuge == 512 * sparseSmall); (void)rng; }                                         // 구역마다 1 바이트: 512 배
+    // ④ 물리 단편화와 압축
+    {   const uint64_t FR = 16384, BLK = 512; std::mt19937_64 rng(5); const double f = 0.001; double sum = 0; const int TR = 2000;
+        auto freeBlocksOf = [&](const std::vector<char>& used) { long n = 0; for (uint64_t b = 0; b < FR / BLK; ++b) { bool ok = true; for (uint64_t i = 0; i < BLK && ok; ++i) ok = !used[b * BLK + i]; n += ok; } return n; };
+        for (int t = 0; t < TR; ++t) { std::vector<char> used(FR, 0); for (uint64_t i = 0; i < FR; ++i) used[i] = (double)(rng() % 1000000) / 1000000.0 < f; sum += (double)freeBlocksOf(used); }
+        double expect = (double)(FR / BLK) * std::pow(1.0 - f, 512); assert(std::abs(sum / TR - expect) < 0.5);                                                          // 기댓값 32 * 0.999^512 = 19.2
+        for (int t = 0; t < 50; ++t) {
+            std::vector<char> used(FR, 0); uint64_t usedCount = 0; double dens = 0.05 + 0.5 * (double)(rng() % 100) / 100.0;
+            for (uint64_t i = 0; i < FR; ++i) { used[i] = (double)(rng() % 1000000) / 1000000.0 < dens; usedCount += used[i]; }
+            long expectMoves = 0; for (uint64_t i = usedCount; i < FR; ++i) expectMoves += used[i];                                                                       // 윗부분에 있는 점유 프레임 수 = 옮겨야 할 프레임 수
+            long moves = 0; uint64_t lo = 0, hi = FR;
+            for (;;) {                                                                                                                                                    // 두 손가락 압축: 아래쪽 빈 칸에 위쪽 점유 프레임을 채운다
+                while (lo < usedCount && used[lo]) ++lo;
+                while (hi > usedCount && !used[hi - 1]) --hi;
+                if (lo >= usedCount || hi <= usedCount) break;
+                used[lo] = 1; used[hi - 1] = 0; ++moves;
+            }
+            assert(moves == expectMoves && freeBlocksOf(used) == (long)((FR - usedCount) / BLK));                                                                         // 압축 뒤 빈 정렬 블록 = floor(빈 프레임 / 512)
+            for (uint64_t i = 0; i < usedCount; ++i) assert(used[i]);                                                                                                     // 점유가 앞쪽에 모였다
+        } }
 #if defined(__linux__)
-    size_t len = 4 * MB;
-    void* p = mmap(nullptr, len + 2 * MB, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (p != MAP_FAILED) {
-        uintptr_t aligned = ((uintptr_t)p + 2 * MB - 1) & ~(uintptr_t)(2 * MB - 1);   // 2MB 경계로 정렬 (대형 페이지의 조건)
-        int rc = madvise((void*)aligned, len, MADV_HUGEPAGE);             // 커널에 "대형 페이지를 써도 좋다" 고 알린다 (시스템 설정에 따라 무시될 수 있음)
-        *(volatile char*)aligned = 1;
-        std::cout << "HugePage: madvise(MADV_HUGEPAGE) returned " << rc << " (kernel may or may not back it with a huge page)" << std::endl;
-        munmap(p, len + 2 * MB);
-    }
+    {   size_t len = 4 * MB; void* p = mmap(nullptr, len + 2 * MB, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p != MAP_FAILED) {
+            uintptr_t aligned = ((uintptr_t)p + 2 * MB - 1) & ~(uintptr_t)(2 * MB - 1);                  // 2MB 경계로 정렬 (대형 페이지의 조건)
+            int rc = madvise((void*)aligned, len, MADV_HUGEPAGE); (void)rc;                              // 커널에 "대형 페이지를 써도 좋다" 고 알린다 (시스템 설정에 따라 무시될 수 있음)
+            *(volatile char*)aligned = 1; munmap(p, len + 2 * MB);
+        } }
 #endif
-    std::cout << "HugePage: TLB reach 4KB=" << entries * 4 * KB / KB << "KB, 2MB=" << entries * 2 * MB / MB << "MB, 1GB=" << entries * GB / GB << "GB" << std::endl;
+    std::cout << "HugePage verified: TLB miss rates match 1 - entries/pages, page-table overhead 0.2% vs 1/512 of that, sparse touching bloats memory 512x, and compaction restores floor(free/512) aligned 2MB blocks." << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
-// Space Complexity: 페이지 테이블 크기가 1/512 로 감소
+// Time Complexity: TLB 적중 O(log 항목) (시뮬레이션), 압축 O(프레임 수)
+// Space Complexity: O(항목 수), 페이지 테이블 O(매핑 크기 / 4KB · 8B)
 ```
 ## RDMA()
 ### 대표코드
