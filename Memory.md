@@ -6149,84 +6149,357 @@ int main() {
 ## ZGC()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <unordered_map>
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <random>
+#include <set>
+#include <vector>
 
 // ZGC: 포인터 자체에 "색(color)" 메타데이터 비트를 넣고(colored pointers), 객체를 읽을 때마다 로드 장벽(load barrier)이 색을 검사한다.
 // 객체를 이동(재배치)하는 동안에도 프로그램이 돌아가며, 오래된 포인터를 읽는 순간 장벽이 새 주소를 찾아 그 필드를 고쳐 쓴다(self-healing) -> 정지 시간이 힙 크기와 무관(밀리초 미만).
 // 색 비트 하나(good color)를 전역으로 바꾸면 "모든 포인터가 낡은 것" 이 되고, 이후 각 포인터는 처음 읽힐 때 한 번씩만 느린 경로를 탄다
-const uint64_t ADDR_MASK = (1ULL << 42) - 1, COLOR_SHIFT = 42;
-uint64_t goodColor = 1;                                                     // 현재 유효한 색 (1 = 사이클 A, 2 = 사이클 B)
-uint64_t colored(uint64_t addr, uint64_t color) { return addr | color << COLOR_SHIFT; }
-uint64_t addrOf(uint64_t p) { return p & ADDR_MASK; }
-uint64_t colorOf(uint64_t p) { return p >> COLOR_SHIFT; }
+// 이 구현은 한 사이클 전체를 시뮬레이션한다 (스레드 없이, 뮤테이터 연산과 GC 단계를 무작위로 번갈아 실행):
+//  페이지(8 칸) 단위 힙, 포인터 = (주소 << 4) | 색 {M0, M1, REMAP}.  사이클: ① 표시 시작(정지): good color 를 M0/M1 로 번갈아 바꾸고 루트를 표시  ② 동시 표시: GC 가 객체의 필드를 장벽으로 읽어 표시·치유,
+//  뮤테이터도 읽을 때 표시  ③ 표시 끝(정지): 살아 있는 객체가 없는 페이지는 즉시 해제, 살아 있는 비율이 절반 미만인 페이지를 "재배치 집합" 으로 고르고 good color 를 REMAP 으로 바꿔 루트를 갱신
+//  ④ 동시 재배치: GC 가 객체를 새 페이지로 옮기며 페이지별 전달 표에 기록, 뮤테이터도 낡은 포인터를 읽다가 아직 안 옮겨진 객체를 만나면 그 자리에서 옮긴다.  옛 페이지는 비워지지만 전달 표는 다음 표시가 끝날 때까지 유지
+//  (다음 표시 단계가 모든 도달 가능한 필드를 치유하므로 그 뒤에는 낡은 포인터가 없다)
+// 검증: 무작위 변경 6 000 번 × 8 시드: 뮤테이터는 루트에서 장벽을 거쳐 길을 따라가며 읽고 쓴다 — 매번 도착한 객체의 id 가 모형과 같다.  표시 끝마다 (a) 모형에서 도달 가능한 객체는 모두 표시됨 (b) 표시된 객체 ⊆ 시작 때 도달 가능 ∪ 사이클 중 새로 만든 것
+//  (c) 도달 가능한 모든 필드가 good color 이고 해제된 페이지를 가리키지 않음 (치유 완료).  느린 경로 횟수 > 0, 빠른 경로가 훨씬 많음, 재배치로 페이지가 실제로 해제됨, GC 와 뮤테이터가 모두 객체를 옮겨 봄
+typedef uint64_t Ptr;
+const int SLOTS = 8;
+enum { M0 = 1, M1 = 2, REMAP = 4 };
+inline Ptr mk(uint32_t addr, int color) { return ((Ptr)(addr + 1) << 4) | (Ptr)color; }
+inline uint32_t addrOf(Ptr p) { return (uint32_t)(p >> 4) - 1; }
+inline int colorOf(Ptr p) { return (int)(p & 15); }
 
-std::unordered_map<uint64_t, uint64_t> forwarding;                          // 재배치된 객체의 옛 주소 -> 새 주소
-long slowPaths = 0, fastPaths = 0;
-uint64_t loadBarrier(uint64_t* field) {
-    uint64_t p = *field;
-    if (colorOf(p) == goodColor) { fastPaths++; return addrOf(p); }         // 빠른 경로: 색이 맞으면 그대로
-    slowPaths++;                                                             // 느린 경로: 새 주소를 찾아 자기 치유
-    uint64_t a = addrOf(p); auto it = forwarding.find(a); if (it != forwarding.end()) a = it->second;
-    *field = colored(a, goodColor);                                         // 필드를 올바른 주소·색으로 고쳐 쓴다
-    return a;
-}
+struct Obj { bool used = false, relocated = false; int id = 0, markEpoch = -1; Ptr refs[2] = {0, 0}; };
+struct Page { Obj slots[SLOTS]; int top = 0, live = 0, pendingLive = 0; bool target = false, relocSet = false, retired = false, freed = false; std::map<int, uint32_t> fwd; };
+
+struct ZHeap {
+    std::vector<std::unique_ptr<Page>> pages; std::vector<Ptr> roots; std::vector<uint32_t> markStack; int goodColor = REMAP, epoch = 0, allocPage = -1, relocPage = -1;
+    enum Phase { IDLE, MARKING, RELOCATING } phase = IDLE;
+    long slow = 0, fast = 0, relocByGC = 0, relocByMutator = 0, pagesFreed = 0;
+    Obj& at(uint32_t addr) { Page& p = *pages[addr / SLOTS]; assert(!p.freed); return p.slots[addr % SLOTS]; }
+    uint32_t newSlot(bool forReloc) {
+        int& cur = forReloc ? relocPage : allocPage;
+        if (cur < 0 || pages[cur]->top == SLOTS) { if (cur >= 0) pages[cur]->target = false; pages.emplace_back(new Page()); cur = (int)pages.size() - 1; pages[cur]->target = true; }
+        return (uint32_t)(cur * SLOTS + pages[cur]->top++);
+    }
+    void markObj(uint32_t addr) { Obj& o = at(addr); if (o.markEpoch != epoch) { o.markEpoch = epoch; ++pages[addr / SLOTS]->live; markStack.push_back(addr); } }
+    uint32_t relocate(uint32_t addr, bool byMutator) {
+        Page& p = *pages[addr / SLOTS]; uint32_t na = newSlot(true); Obj& o = at(addr); Obj& n = at(na);
+        n = o; n.relocated = false; o.relocated = true; p.fwd[addr % SLOTS] = na; (byMutator ? relocByMutator : relocByGC)++;
+        if (--p.pendingLive == 0) { p.retired = true; p.relocSet = false; }                // 다 옮겼다: 비워진 페이지 (전달 표는 유지)
+        return na;
+    }
+    uint32_t forward(uint32_t addr) {
+        Page& p = *pages[addr / SLOTS]; assert(!p.freed);
+        if (!p.relocSet && !p.retired) return addr;
+        auto it = p.fwd.find(addr % SLOTS); if (it != p.fwd.end()) return it->second;
+        assert(p.relocSet); return relocate(addr, true);                                       // 아직 안 옮겨진 객체를 읽다가 만났다: 뮤테이터가 직접 옮긴다
+    }
+    Ptr heal(Ptr p) { uint32_t a = forward(addrOf(p)); if (phase == MARKING) markObj(a); return mk(a, goodColor); }
+    Ptr load(Ptr* field) {                                                                      // 로드 장벽
+        Ptr p = *field; if (!p) return 0;
+        if (colorOf(p) == goodColor) { ++fast; return p; }
+        ++slow; Ptr q = heal(p); *field = q; return q;                                           // 느린 경로 + 자기 치유
+    }
+    Ptr alloc(int id) {
+        uint32_t a = newSlot(false); Obj& o = at(a); o = Obj(); o.used = true; o.id = id;
+        if (phase == MARKING) { o.markEpoch = epoch; ++pages[a / SLOTS]->live; }               // 표시 중 할당 = 이미 표시됨
+        return mk(a, goodColor);
+    }
+    void startMark() {
+        assert(phase == IDLE); ++epoch; goodColor = (epoch % 2) ? M0 : M1; phase = MARKING;                    // 색을 바꾸는 순간 모든 기존 포인터가 낡은 것이 된다
+        for (auto& p : pages) p->live = 0;                                                                      // 이전 사이클의 표시는 epoch 가 달라 자동으로 무효
+        for (Ptr& r : roots) r = heal(r);                                                                       // 루트를 치유하며 표시
+    }
+    bool markStep(int budget) {                                                                 // 표시 스택을 budget 개 처리, 비었으면 true
+        while (budget-- > 0 && !markStack.empty()) { uint32_t a = markStack.back(); markStack.pop_back(); Obj& o = at(a); for (int i = 0; i < 2; ++i) load(&o.refs[i]); }
+        return markStack.empty();
+    }
+    template <class F> void forEachLive(F f) { for (size_t pi = 0; pi < pages.size(); ++pi) { Page& p = *pages[pi]; if (p.freed) continue; for (int s = 0; s < p.top; ++s) { Obj& o = p.slots[s]; if (o.used && !o.relocated && o.markEpoch == epoch) f((uint32_t)(pi * SLOTS + s), o); } } }
+    void checkHealed() {                                                                        // 표시 끝: 도달 가능한 모든 필드는 good color 이고 해제된 페이지를 가리키지 않는다
+        forEachLive([&](uint32_t, Obj& o) { for (int i = 0; i < 2; ++i) { Ptr p = o.refs[i]; if (!p) continue; assert(colorOf(p) == goodColor); Page& t = *pages[addrOf(p) / SLOTS]; assert(!t.freed && !t.retired && !t.relocSet); assert(at(addrOf(p)).used && at(addrOf(p)).markEpoch == epoch); } });
+        for (Ptr r : roots) { assert(colorOf(r) == goodColor); }
+    }
+    void finishMark() {
+        assert(phase == MARKING && markStack.empty()); checkHealed();
+        for (auto& p : pages) {                                                                 // 이전 사이클에서 비워진 페이지와 산 객체가 없는 페이지를 해제
+            if (p->freed) continue;
+            if (p->retired || (p->live == 0 && !p->target)) { p->freed = true; p->fwd.clear(); ++pagesFreed; }
+        }
+        for (auto& p : pages) { if (!p->freed && !p->target && p->live > 0 && p->live < SLOTS / 2) { p->relocSet = true; p->pendingLive = p->live; p->fwd.clear(); } }   // 절반 미만만 산 페이지 = 재배치 집합
+        goodColor = REMAP; phase = RELOCATING;
+        for (Ptr& r : roots) r = heal(r);                                                       // 루트 갱신 (필요하면 그 자리에서 옮긴다)
+        bool any = false; for (auto& p : pages) any |= (!p->freed && p->relocSet); if (!any) phase = IDLE;
+    }
+    bool relocStep(int budget) {                                                                // 재배치 집합에서 객체를 budget 개 옮긴다, 끝나면 true
+        for (size_t pi = 0; pi < pages.size() && budget > 0; ++pi) {
+            Page& p = *pages[pi]; if (!p.relocSet) continue;
+            for (int s = 0; s < p.top && budget > 0 && p.relocSet; ++s) { Obj& o = p.slots[s]; if (o.used && !o.relocated && o.markEpoch == epoch && !p.fwd.count(s)) { relocate((uint32_t)(pi * SLOTS + s), false); --budget; } }
+        }
+        for (auto& p : pages) { if (!p->freed && p->relocSet) return false; }
+        phase = IDLE; return true;
+    }
+};
+
+struct Sim {
+    ZHeap h; std::mt19937 rng; std::map<int, std::array<int, 2>> refs; std::vector<int> roots; int nextId = 1;
+    long cycles = 0, loads = 0; std::set<int> s0, allocated;
+    explicit Sim(uint32_t seed) : rng(seed) {}
+    std::set<int> reachable() { std::set<int> seen; std::vector<int> st(roots.begin(), roots.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (x <= 0 || !seen.insert(x).second) continue; for (int c : refs[x]) st.push_back(c); } return seen; }
+    bool pathTo(int target, int& root, std::vector<int>& path) {                                // 모형에서 루트부터 target 까지의 슬롯 열
+        for (size_t r = 0; r < roots.size(); ++r) {
+            std::map<int, std::pair<int, int>> parent; std::vector<int> q{roots[r]}; parent[roots[r]] = {0, -1};
+            for (size_t i = 0; i < q.size(); ++i) { int x = q[i]; if (x == target) { path.clear(); for (int y = x; parent[y].first != 0; y = parent[y].first) path.push_back(parent[y].second); std::reverse(path.begin(), path.end()); root = (int)r; return true; }
+                for (int k = 0; k < 2; ++k) { int c = refs[x][k]; if (c > 0 && !parent.count(c)) { parent[c] = {x, k}; q.push_back(c); } } }
+        }
+        return false;
+    }
+    Ptr fetch(int target) {                                                                      // 루트에서 장벽을 거쳐 길을 따라가 target 의 포인터를 얻는다
+        int r; std::vector<int> path; bool ok = pathTo(target, r, path); assert(ok);
+        Ptr p = h.load(&h.roots[r]); assert(h.at(addrOf(p)).id == roots[r]); int cur = roots[r]; ++loads;
+        for (int k : path) { Ptr q = h.load(&h.at(addrOf(p)).refs[k]); cur = refs[cur][k]; assert(q && h.at(addrOf(q)).id == cur); p = q; ++loads; }
+        assert(cur == target && colorOf(p) == h.goodColor); return p;
+    }
+    void verifyAll() {                                                                           // 모형 전체를 장벽으로 순회해 대조
+        std::set<int> reach = reachable(); std::set<int> seen;
+        for (int id : reach) { Ptr p = fetch(id); Obj& o = h.at(addrOf(p)); assert(o.id == id); for (int k = 0; k < 2; ++k) { Ptr c = h.load(&o.refs[k]); int cid = c ? h.at(addrOf(c)).id : 0; assert(cid == refs[id][k]); } seen.insert(id); }
+        assert(seen == reach);
+    }
+    void endMark() {
+        std::set<int> reach = reachable(); std::set<int> marked; h.forEachLive([&](uint32_t, Obj& o) { marked.insert(o.id); });
+        for (int id : reach) assert(marked.count(id));                                            // (a) 도달 가능한 객체는 모두 표시
+        for (int id : marked) assert(s0.count(id) || allocated.count(id));                         // (b) 표시된 객체 ⊆ 시작 때 도달 가능 ∪ 새로 만든 것
+        h.finishMark(); ++cycles; verifyAll();                                                      // (c) finishMark 안에서 치유 완료도 검사
+    }
+    void drain() {
+        if (h.phase == ZHeap::MARKING) { while (!h.markStep(100)) {} endMark(); }
+        while (h.phase == ZHeap::RELOCATING) h.relocStep(100);
+    }
+    void gcStep() {
+        int g = (int)(rng() % 100);
+        if (h.phase == ZHeap::IDLE) { if (g < 6) { s0 = reachable(); allocated.clear(); h.startMark(); } }
+        else if (h.phase == ZHeap::MARKING) {
+            bool done = h.markStep(1 + (int)(rng() % 3));
+            if (done && g < 50) endMark();
+        } else { if (g < 70) h.relocStep(1 + (int)(rng() % 2)); }
+    }
+    void mutate() {
+        std::set<int> reach = reachable(); std::vector<int> rl(reach.begin(), reach.end()); int op = (int)(rng() % 100);
+        if (op < 40 || rl.empty()) {
+            int id = nextId++; Ptr np = h.alloc(id); refs[id] = {0, 0}; if (h.phase == ZHeap::MARKING) allocated.insert(id);
+            if ((rng() % 10 < 3 && roots.size() < 5) || rl.empty()) { if (roots.size() < 5) { roots.push_back(id); h.roots.push_back(np); } }
+            else { int host = rl[rng() % rl.size()]; Ptr hp = fetch(host); int k = (int)(rng() % 2); h.at(addrOf(hp)).refs[k] = np; refs[host][k] = id; }
+        } else if (op < 75) {
+            int host = rl[rng() % rl.size()], tgt = rl[rng() % rl.size()]; int k = (int)(rng() % 2);
+            Ptr hp = fetch(host); Ptr tp = (rng() % 6 == 0) ? 0 : fetch(tgt);
+            h.at(addrOf(hp)).refs[k] = tp; refs[host][k] = tp ? tgt : 0;                         // 두 포인터 모두 방금 장벽을 거쳐 good color
+        } else if (op < 85) { if (!roots.empty()) { size_t i = rng() % roots.size(); roots.erase(roots.begin() + i); h.roots.erase(h.roots.begin() + i); } }
+        else if (op < 93) { if (roots.size() < 5) { int id = rl[rng() % rl.size()]; Ptr p = fetch(id); roots.push_back(id); h.roots.push_back(p); } }
+        else { int id = rl[rng() % rl.size()]; Ptr p = fetch(id); assert(h.at(addrOf(p)).id == id); }
+    }
+};
 
 int main() {
-    uint64_t fieldA = colored(0x1000, goodColor), fieldB = colored(0x1000, goodColor);   // 같은 객체를 가리키는 포인터 두 개
-    assert(loadBarrier(&fieldA) == 0x1000 && slowPaths == 0 && fastPaths == 1);
-    // GC 가 0x1000 의 객체를 0x2000 으로 옮기고 전역 색을 바꾼다
-    forwarding[0x1000] = 0x2000; goodColor = 2;
-    assert(loadBarrier(&fieldA) == 0x2000 && slowPaths == 1);              // 낡은 포인터를 읽는 순간 새 주소를 얻는다
-    assert(colorOf(fieldA) == goodColor && addrOf(fieldA) == 0x2000);       // 필드가 고쳐졌다 (self-healing)
-    assert(loadBarrier(&fieldA) == 0x2000 && slowPaths == 1);              // 다음부터는 빠른 경로
-    assert(loadBarrier(&fieldB) == 0x2000 && slowPaths == 2);              // 다른 낡은 포인터도 처음 읽을 때 한 번만 느린 경로
-    std::cout << "ZGC: slow paths=" << slowPaths << ", fast paths=" << fastPaths << " (each stale pointer healed once)" << std::endl;
+    // 원래 예: 낡은 포인터 두 개가 한 객체를 가리킨다 -> 재배치 -> 각각 처음 읽을 때 한 번씩만 느린 경로
+    {   ZHeap h; Ptr h1 = h.alloc(1), h2 = h.alloc(2), a = h.alloc(3);
+        for (int i = 0; i < 6; ++i) h.alloc(100 + i);                                              // 쓰레기 6 개: 첫 페이지(8 칸)에서 산 객체는 3 개뿐
+        h.at(addrOf(h1)).refs[0] = a; h.at(addrOf(h2)).refs[0] = a; h.roots = {h1, h2};
+        uint32_t oldAddr = addrOf(a); Ptr direct = h.alloc(9); assert(h.load(&direct) == direct && h.slow == 0 && h.fast == 1);   // 색이 맞으면 빠른 경로
+        h.startMark(); while (!h.markStep(10)) {} h.finishMark();                                  // 표시 -> 첫 페이지가 재배치 집합이 되고 루트가 새 주소로
+        assert(h.phase == ZHeap::RELOCATING && h.pages[0]->relocSet);
+        Obj& n1 = h.at(addrOf(h.roots[0])); Obj& n2 = h.at(addrOf(h.roots[1])); long slow0 = h.slow;
+        Ptr p1 = h.load(&n1.refs[0]);                                                              // 낡은 포인터(옛 주소 + 옛 색) -> 느린 경로: 새 주소를 얻고 필드를 고친다
+        assert(h.slow == slow0 + 1 && h.at(addrOf(p1)).id == 3 && addrOf(p1) != oldAddr && colorOf(n1.refs[0]) == REMAP);
+        assert(h.load(&n1.refs[0]) == p1 && h.slow == slow0 + 1);                                  // 다음부터는 빠른 경로
+        assert(h.load(&n2.refs[0]) == p1 && h.slow == slow0 + 2);                                  // 다른 낡은 포인터도 처음 읽을 때 한 번만 느린 경로, 같은 새 객체
+        assert(h.relocStep(1) && h.phase == ZHeap::IDLE);
+    }
+    // 무작위 시뮬레이션
+    long cycles = 0, slow = 0, fast = 0, byGC = 0, byMut = 0, freed = 0, loads = 0, pagesMax = 0;
+    for (uint32_t seed = 1; seed <= 8; ++seed) {
+        Sim s(seed * 6151u);
+        for (int step = 0; step < 6000; ++step) { s.mutate(); s.gcStep(); }
+        s.drain();
+        s.verifyAll();
+        cycles += s.cycles; slow += s.h.slow; fast += s.h.fast; byGC += s.h.relocByGC; byMut += s.h.relocByMutator; freed += s.h.pagesFreed; loads += s.loads; pagesMax = std::max<long>(pagesMax, (long)s.h.pages.size());
+    }
+    assert(cycles > 40 && slow > 100 && fast > 4 * slow && byGC > 50 && byMut > 50 && freed > 50);
+    std::cout << "ZGC verified: " << cycles << " cycles, " << loads << " barrier-checked loads (" << fast << " fast, " << slow << " slow/self-healing), " << byGC << " objects relocated by the GC and " << byMut
+              << " by the mutator's barrier, " << freed << " pages freed." << std::endl;
     return 0;
 }
-// Time Complexity: 빠른 경로 O(1) 비교, 느린 경로 O(1) 조회
-// Space Complexity: 포인터 상위 비트 + 전달 테이블
+// Time Complexity: 로드 장벽 빠른 경로 O(1) 비교, 느린 경로 O(1) 조회(+재배치 시 객체 복사), 정지 시간은 루트 수에 비례
+// Space Complexity: 포인터 상위 비트 + 페이지별 전달 표 (다음 표시가 끝나면 해제)
 ```
 ## ShenandoahGC()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <array>
 #include <atomic>
-#include <vector>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <thread>
+#include <vector>
 
 // Shenandoah: 모든 객체 앞에 Brooks 전달 포인터(forwarding pointer)를 둔다.  평소에는 자기 자신을 가리키고, 객체가 이동하면 새 사본을 가리킨다.
 // 프로그램은 항상 "전달 포인터를 한 번 따라간 뒤" 읽고 쓰므로, GC 가 동시에 객체를 옮겨도 읽는 쪽과 쓰는 쪽이 같은 사본을 보게 된다.
 // 이동은 CAS 로 전달 포인터를 바꾸는 쪽이 이기게 하여 여러 스레드가 동시에 같은 객체를 옮기려 해도 사본이 하나만 유효하다
-struct Obj { std::atomic<Obj*> fwd; int value; Obj(int v) : fwd(this), value(v) {} };
-Obj* resolve(Obj* o) { return o->fwd.load(); }                              // 모든 접근의 첫 단계
-int read(Obj* o) { return resolve(o)->value; }
-void write(Obj* o, int v) { resolve(o)->value = v; }
-Obj* evacuate(Obj* o, std::vector<Obj*>& heap) {                            // 사본을 만들고, 전달 포인터 CAS 에 성공한 쪽만 채택
-    Obj* copy = new Obj(o->value);
-    Obj* expected = o;
-    if (o->fwd.compare_exchange_strong(expected, copy)) { heap.push_back(copy); return copy; }         // 내가 이겼다
-    delete copy; return expected;                                              // 다른 스레드가 먼저 옮겼다: 그 사본을 사용 (내 사본은 버림)
+// 이 구현의 쓰기 장벽: 수집 집합에 있고 아직 안 옮겨진 객체에 쓰려면 먼저 그 자리에서 옮긴다(evacuate-on-write) -> 옛 사본에는 쓰기가 일어나지 않으므로 GC 가 복사하는 동안 쓰기를 잃지 않는다.
+//  사이클: 표시(정지) -> 수집 집합 선택 -> 동시 이동(GC 와 뮤테이터가 함께) -> 동시 참조 갱신(update-refs: 힙의 참조 칸을 전달 포인터를 따라 새 사본으로 고침) -> 루트 갱신(정지) -> 옛 사본 해제
+// 검증: ① 잃어버린 쓰기의 결정적 재현: GC 가 사본을 뜬 직후 장벽 없는 쓰기가 들어오면 사라지고, 장벽이 있으면 살아남는다  ② 단일 스레드 시뮬레이션(무작위 변경 5 000 번 × 8 시드, GC 단계와 번갈아):
+//        뮤테이터는 루트에서 전달 포인터를 따라 길을 걷고 값을 읽고 쓴다 — 도착한 객체의 id·값이 모형과 같고, 사이클이 끝나면 해제된 옛 사본을 가리키는 참조가 없음  ③ 진짜 스레드: 이동 스레드 4 개가 같은 2 000 개 객체를 서로 다른 순서로
+//        동시에 옮기고 쓰기 스레드 4 개가 장벽을 거쳐 값을 증가 — CAS 에서 진 쪽은 사본을 버림: 객체마다 유효한 사본이 정확히 하나, 모든 스레드가 같은 사본을 보고, 증가분을 하나도 잃지 않으며, 사본 수 회계가 맞다(해제 후 0)
+std::atomic<long> liveObjs{0};
+struct Obj {
+    std::atomic<Obj*> fwd; int id; std::atomic<int> value; Obj* refs[2]; bool inCset = false;
+    explicit Obj(int i) : fwd(this), id(i), value(0) { refs[0] = refs[1] = nullptr; ++liveObjs; }
+    Obj(const Obj& o) : fwd(this), id(o.id), value(o.value.load()) { refs[0] = o.refs[0]; refs[1] = o.refs[1]; ++liveObjs; }       // 사본: 전달 포인터는 자기 자신, 수집 집합에서는 빠진다
+    ~Obj() { --liveObjs; }
+};
+inline Obj* resolve(Obj* o) { return o->fwd.load(); }                              // 읽기 장벽: 전달 포인터를 한 번 따라간다
+Obj* evacuate(Obj* o) {                                                            // 사본을 만들고, 전달 포인터 CAS 에 성공한 쪽만 채택
+    Obj* cur = o->fwd.load(); if (cur != o) return cur;                              // 이미 옮겨졌다
+    Obj* copy = new Obj(*o); Obj* expected = o;
+    if (o->fwd.compare_exchange_strong(expected, copy)) return copy;                 // 내가 이겼다
+    delete copy; return expected;                                                    // 다른 스레드가 먼저 옮겼다: 그 사본을 쓰고 내 사본은 버린다
 }
+Obj* writeBarrier(Obj* o) { Obj* c = resolve(o); if (c->inCset && c->fwd.load() == c) c = evacuate(c); return c; }       // 수집 집합의 안 옮겨진 객체에 쓰려면 먼저 옮긴다
+
+struct Heap {
+    std::vector<Obj*> all, roots; enum Phase { IDLE, EVAC, UPDATE } phase = IDLE; std::vector<Obj*> cset, toUpdate; size_t evacPos = 0, updPos = 0; long evacByGC = 0, evacByMut = 0, stalePointerReads = 0, cycles = 0;
+    Obj* alloc(int id) { Obj* o = new Obj(id); all.push_back(o); if (phase == UPDATE) toUpdate.push_back(o); return o; }       // 갱신 중 새 객체도 갱신 대상
+    Obj* load(Obj* p) { Obj* r = resolve(p); if (r != p) ++stalePointerReads; return r; }       // 필드에서 읽은 포인터를 전달 포인터로 정규화
+    Obj* wb(Obj* o) { Obj* before = resolve(o); Obj* c = writeBarrier(o); if (c != before) { all.push_back(c); ++evacByMut; } return c; }                 // 쓰기 장벽 (뮤테이터가 옮긴 사본도 힙에 등록)
+    void store(Obj* host, int k, Obj* v) { Obj* h = wb(host); h->refs[k] = v ? resolve(v) : nullptr; }                                                      // 저장하는 값은 새 사본으로 정규화
+    void startCycle(std::mt19937& rng) {                                                          // 표시(정지) + 수집 집합 선택
+        std::set<Obj*> live; std::vector<Obj*> st; for (Obj* r : roots) st.push_back(resolve(r));
+        while (!st.empty()) { Obj* o = st.back(); st.pop_back(); if (!live.insert(o).second) continue; for (Obj* c : o->refs) { if (c) st.push_back(resolve(c)); } }
+        cset.clear();
+        for (Obj* o : live) { if (rng() % 2) { o->inCset = true; cset.push_back(o); } }
+        evacPos = updPos = 0; phase = EVAC; if (cset.empty()) beginUpdate();
+    }
+    void beginUpdate() { toUpdate.clear(); for (Obj* o : all) { if (o->fwd.load() == o) toUpdate.push_back(o); } phase = UPDATE; }      // 이동이 끝난 시점의 모든 유효 사본을 갱신 대상으로
+    void finishCycle() {                                                                           // 루트 갱신(정지) -> 옛 사본 해제
+        for (Obj*& r : roots) r = resolve(r);
+        std::vector<Obj*> keep; for (Obj* o : all) { if (o->fwd.load() != o) delete o; else keep.push_back(o); }
+        all.swap(keep); phase = IDLE; ++cycles;
+    }
+    void gcStep(int budget) {
+        if (phase == EVAC) {
+            while (budget-- > 0 && evacPos < cset.size()) { Obj* o = cset[evacPos++]; if (o->fwd.load() == o) { all.push_back(evacuate(o)); ++evacByGC; } }
+            if (evacPos == cset.size()) beginUpdate();
+        } else if (phase == UPDATE) {
+            while (budget-- > 0 && updPos < toUpdate.size()) {
+                Obj* o = resolve(toUpdate[updPos++]);                                              // 이 객체의 최신 사본의 참조 칸을 새 사본으로 갱신
+                for (Obj*& c : o->refs) { if (c) c = resolve(c); }
+            }
+            if (updPos == toUpdate.size()) finishCycle();
+        }
+    }
+};
 
 int main() {
-    std::vector<Obj*> heap; Obj* a = new Obj(10); heap.push_back(a);
-    assert(read(a) == 10 && resolve(a) == a);                                 // 이동 전: 전달 포인터는 자기 자신
-    Obj* moved = evacuate(a, heap);                                           // GC 가 객체를 이동
-    assert(resolve(a) == moved && moved != a);
-    write(a, 99);                                                             // 뮤테이터는 옛 주소 a 로 쓰지만 전달 포인터를 따라 새 사본에 쓰인다
-    assert(moved->value == 99 && read(a) == 99);                              // 새 사본에 반영되고, 옛 주소로 읽어도 최신 값
-    assert(a->value == 10);                                                   // 옛 사본은 더 이상 쓰이지 않는다 (낡은 값)
-    Obj* second = evacuate(a, heap);                                          // 두 번째 이동 시도 -> 이미 이동됨: 기존 사본을 돌려준다
-    assert(second == moved && resolve(a) == moved);
-    for (Obj* o : heap) delete o;                                             // 힙의 모든 사본 해제
-    std::cout << "ShenandoahGC: accesses through the forwarding pointer saw the relocated copy; duplicate evacuation lost the CAS." << std::endl;
+    // ① 잃어버린 쓰기의 결정적 재현
+    {   Obj* o = new Obj(1); o->value = 10; o->inCset = true;
+        Obj* c = new Obj(*o); o->value.store(99);                                    // GC 가 사본을 떴는데 (전달 포인터 설치 전) 장벽 없는 뮤테이터가 옛 객체에 쓴다
+        Obj* e = o; assert(o->fwd.compare_exchange_strong(e, c)); assert(resolve(o)->value == 10);   // GC 가 설치: 쓰기 99 를 잃었다
+        Obj* o2 = new Obj(2); o2->value = 10; o2->inCset = true;
+        Obj* c2 = new Obj(*o2);                                                      // 같은 상황이지만 이번에는 장벽을 쓴다
+        Obj* w = writeBarrier(o2); w->value.store(99);                               // 뮤테이터가 먼저 자기가 옮기고(CAS 성공) 새 사본에 쓴다
+        Obj* e2 = o2; assert(!o2->fwd.compare_exchange_strong(e2, c2) && e2 == w);     // GC 의 CAS 는 실패
+        delete c2; assert(resolve(o2)->value == 99 && resolve(o2) == w);
+        delete o; delete c; delete o2; delete w;
+    }
+    // ② 단일 스레드 시뮬레이션
+    long cycles = 0, evacGC = 0, evacMut = 0, stale = 0, ops = 0;
+    for (uint32_t seed = 1; seed <= 8; ++seed) {
+        Heap h; std::mt19937 rng(seed * 2711u); struct M { int value = 0; std::array<int, 2> refs{{0, 0}}; }; std::map<int, M> model; std::map<int, Obj*> handle; std::vector<int> rootIds; int nextId = 1;
+        auto reachable = [&]() { std::set<int> seen; std::vector<int> st(rootIds.begin(), rootIds.end()); while (!st.empty()) { int x = st.back(); st.pop_back(); if (x <= 0 || !seen.insert(x).second) continue; for (int c : model[x].refs) st.push_back(c); } return seen; };
+        auto fetch = [&](int target) -> Obj* {                                                  // 루트에서 전달 포인터를 따라 target 까지 걷는다 (모형의 BFS 경로)
+            for (size_t r = 0; r < rootIds.size(); ++r) {
+                std::map<int, std::pair<int, int>> parent; std::vector<int> q{rootIds[r]}; parent[rootIds[r]] = {0, -1};
+                for (size_t i = 0; i < q.size(); ++i) {
+                    int x = q[i];
+                    if (x == target) {
+                        std::vector<int> path; for (int y = x; parent[y].first != 0; y = parent[y].first) path.push_back(parent[y].second); std::reverse(path.begin(), path.end());
+                        Obj* p = h.load(h.roots[r]); assert(p->id == rootIds[r]); int cur = rootIds[r];
+                        for (int k : path) { p = h.load(p->refs[k]); cur = model[cur].refs[k]; assert(p && p->id == cur); }
+                        return p;
+                    }
+                    for (int k = 0; k < 2; ++k) { int c = model[x].refs[k]; if (c > 0 && !parent.count(c)) { parent[c] = {x, k}; q.push_back(c); } }
+                }
+            }
+            assert(false); return nullptr;
+        };
+        auto verifyAll = [&]() {
+            std::set<int> reach = reachable(); std::set<Obj*> exist(h.all.begin(), h.all.end());
+            for (int id : reach) { Obj* p = fetch(id); assert(p->id == id && p->value == model[id].value); for (int k = 0; k < 2; ++k) { Obj* c = p->refs[k]; assert((c ? resolve(c)->id : 0) == model[id].refs[k]); } }
+            if (h.phase == Heap::IDLE) {                                                          // 사이클 밖: 해제된 옛 사본을 가리키는 참조가 없고 전달 포인터는 모두 자기 자신
+                for (Obj* o : h.all) { assert(o->fwd.load() == o); for (Obj* c : o->refs) assert(!c || exist.count(c)); }
+                for (Obj* r : h.roots) assert(exist.count(r));
+            }
+        };
+        for (int step = 0; step < 5000; ++step) {
+            ++ops; std::set<int> reach; std::vector<int> rl; { reach = reachable(); rl.assign(reach.begin(), reach.end()); } int op = (int)(rng() % 100);
+            if (op < 35 || rl.empty()) {
+                int id = nextId++; Obj* o = h.alloc(id); o->value = (int)(rng() % 1000); model[id].value = o->value;
+                if ((rng() % 10 < 3 && rootIds.size() < 5) || rl.empty()) { if (rootIds.size() < 5) { rootIds.push_back(id); h.roots.push_back(o); } }
+                else { int host = rl[rng() % rl.size()]; int k = (int)(rng() % 2); h.store(fetch(host), k, o); model[host].refs[k] = id; }
+            } else if (op < 55) {
+                int id = rl[rng() % rl.size()]; Obj* w = h.wb(fetch(id)); int v = (int)(rng() % 1000); w->value = v; model[id].value = v;          // 값 쓰기
+            } else if (op < 75) {
+                int id = rl[rng() % rl.size()]; Obj* p = fetch(id); assert(p->value == model[id].value);                                                 // 값 읽기
+            } else if (op < 88) {
+                int host = rl[rng() % rl.size()], tgt = rl[rng() % rl.size()]; int k = (int)(rng() % 2); Obj* hp = fetch(host); Obj* tp = (rng() % 6 == 0) ? nullptr : fetch(tgt);
+                h.store(hp, k, tp); model[host].refs[k] = tp ? tgt : 0;
+            } else if (op < 94) { if (!rootIds.empty()) { size_t i = rng() % rootIds.size(); rootIds.erase(rootIds.begin() + i); h.roots.erase(h.roots.begin() + i); } }
+            else if (rootIds.size() < 5) { int id = rl[rng() % rl.size()]; Obj* p = fetch(id); rootIds.push_back(id); h.roots.push_back(p); }
+            int g = (int)(rng() % 100);
+            if (h.phase == Heap::IDLE) { if (g < 5) h.startCycle(rng); } else if (g < 60) { h.gcStep(1 + (int)(rng() % 3)); if (h.phase == Heap::IDLE) verifyAll(); }
+            if (step % 250 == 0) verifyAll();
+        }
+        while (h.phase != Heap::IDLE) { h.gcStep(50); }
+        verifyAll();
+        cycles += h.cycles; evacGC += h.evacByGC; evacMut += h.evacByMut; stale += h.stalePointerReads;
+        for (Obj* o : h.all) { delete o; }
+        h.all.clear();
+    }
+    assert(cycles > 40 && evacGC > 200 && evacMut > 50 && stale > 100);
+    // ③ 진짜 스레드: 같은 객체를 동시에 옮기는 경쟁
+    {   const int N = 2000, TE = 4, TW = 4, ITER = 100000; std::vector<Obj*> heap(N); for (int i = 0; i < N; ++i) { heap[i] = new Obj(i); heap[i]->value = i; heap[i]->inCset = true; }
+        std::vector<std::vector<Obj*>> seen(TE, std::vector<Obj*>(N, nullptr)); std::vector<std::vector<int>> counts(TW, std::vector<int>(N, 0)); std::vector<std::thread> ts;
+        for (int t = 0; t < TE; ++t) ts.emplace_back([&, t] { std::vector<int> perm(N); for (int i = 0; i < N; ++i) perm[i] = i; std::mt19937 rng(100 + t); std::shuffle(perm.begin(), perm.end(), rng); for (int i : perm) seen[t][i] = evacuate(heap[i]); });
+        for (int t = 0; t < TW; ++t) ts.emplace_back([&, t] { std::mt19937 rng(200 + t); for (int it = 0; it < ITER; ++it) { int i = (int)(rng() % N); writeBarrier(heap[i])->value.fetch_add(1); ++counts[t][i]; } });
+        for (auto& th : ts) th.join();
+        long totalInc = 0, winners = 0;
+        for (int i = 0; i < N; ++i) {
+            Obj* canon = resolve(heap[i]); assert(canon != heap[i] && canon->fwd.load() == canon && canon->id == i);   // 유효한 사본은 정확히 하나
+            for (int t = 0; t < TE; ++t) assert(seen[t][i] == canon);                                                // 경쟁한 모든 스레드가 같은 사본을 본다
+            long inc = 0; for (int t = 0; t < TW; ++t) inc += counts[t][i]; assert(canon->value.load() == i + inc);  // 증가분을 하나도 잃지 않았다
+            totalInc += inc; ++winners;
+        }
+        assert(totalInc == (long)TW * ITER && winners == N && liveObjs.load() == 2 * N);                              // 졌던 사본은 모두 버려져 N 개의 원본 + N 개의 유효 사본만 남는다
+        for (int i = 0; i < N; ++i) { delete resolve(heap[i]); delete heap[i]; }
+        assert(liveObjs.load() == 0);
+    }
+    std::cout << "ShenandoahGC verified: lost-write interleaving reproduced and fixed; " << cycles << " simulated cycles over " << ops << " ops (" << evacGC << " evacuations by the GC, " << evacMut << " by write barriers, " << stale
+              << " stale pointers resolved); 4 racing evacuators + 4 writers lost no update and kept exactly one copy per object." << std::endl;
     return 0;
 }
-// Time Complexity: 접근마다 포인터 한 번 더 (간접 참조 비용)
-// Space Complexity: 객체당 포인터 하나
+// Time Complexity: 접근마다 포인터 한 번 더 (간접 참조 비용), 쓰기는 수집 집합 객체에 처음 쓸 때 복사 O(객체 크기)
+// Space Complexity: 객체당 포인터 하나 (+ 이동 중에는 옛 사본과 새 사본)
 ```
 ## RegionBasedMemory()
 ### 대표코드
@@ -6316,51 +6589,132 @@ int main() {
 ## EscapeAnalysis()
 ### 대표코드
 ```cpp
+#include <array>
+#include <cassert>
+#include <deque>
 #include <iostream>
+#include <map>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 탈출 분석(escape analysis): 객체가 만들어진 함수 밖으로 "빠져나가는가" 를 컴파일 시점에 분석한다.  빠져나가지 않으면 힙 대신 스택에 두거나(스택 할당),
 // 필드를 지역 변수로 쪼개 객체 자체를 없앨 수 있다(스칼라 치환) -> GC 부담 제거.  JVM(HotSpot), Go, V8 이 사용
-// 단순화한 중간 표현에서 분석을 직접 구현한다.  탈출 조건: (1) 반환됨 (2) 전역/미지의 함수에 전달됨 (3) 이미 탈출하는 객체의 필드에 저장됨
-enum Op { NEW, MOVE, STORE, RETURN, PASS };
-struct Stmt { Op op; std::string a, b; };     // NEW a: a = new / MOVE a, b: a = b / STORE a, b: a.f = b / RETURN a / PASS a: 미지의 함수에 인자로 전달
+// 작은 중간 표현(변수 5 개, 전역 2 개, 객체마다 참조 필드 2 개와 정수 값 1 개, 반복문)에서 분석을 직접 구현한다.  탈출 조건: (1) 반환됨 (2) 전역에 저장됨 (3) 이미 탈출하는 객체의 필드에 저장됨(전이적으로)
+//  분석은 흐름 무관(flow-insensitive) 포인트-투 분석: 변수·필드·전역이 가리킬 수 있는 "할당 위치(site)" 의 집합을 고정점까지 전파하고, 전역·반환값이 가리키는 site 에서 필드를 따라 닫는다
+// 검증: 무작위 프로그램 20 000 개를 두 가지 방식으로 실행해 분석을 정확성으로 대조한다 —
+//  ① 동적 기준: 실행하면서 "실제로 탈출한 객체" 를 추적(전역 저장·반환 시 도달 가능한 객체 전부, 탈출한 객체의 필드에 저장될 때) -> 분석이 NoEscape 라 한 site 에서 실제 탈출이 한 번도 없어야 한다(건전성)
+//  ② 최적화 실행: NoEscape site 의 객체는 "스택"(함수가 끝나면 사라지는 영역)에 만들고 힙 할당 횟수를 센다 -> 출력(값 합계, 반환값·전역이 가리키는 객체 그래프)이 일반 실행과 같고, 끝났을 때 전역·반환값에서 스택 객체로 가는 참조(댕글링)가 0
+//  ③ 필드 폐포 규칙을 뺀 틀린 분석은 이 시험에서 건전성 위반이 나온다(규칙의 필요성), ④ 손으로 짠 6 개 프로그램의 판정
+enum Op { NEW, MOVE, STORE, LOAD, GSTORE, GLOAD, SETVAL, ADDVAL, RET, LOOP, ENDLOOP };
+struct Stmt { Op op; int a = 0, b = 0, c = 0; };      // NEW a / MOVE a,b / STORE a.f(c)=b / LOAD a=b.f(c) / GSTORE G[a]=v[b] / GLOAD v[a]=G[b] / SETVAL v[a].val=c / ADDVAL acc+=v[b].val / RET v[a] / LOOP c 번 / ENDLOOP
+typedef std::vector<Stmt> Prog;
+const int NV = 5, NG = 2;
 
-std::set<std::string> escaped(const std::vector<Stmt>& prog) {
-    std::set<std::string> esc;
-    for (auto& s : prog) if (s.op == RETURN || s.op == PASS) esc.insert(s.a);
-    for (bool changed = true; changed;) {                                    // 고정점 반복: 탈출이 별칭·필드를 통해 전파된다
+struct Analysis { std::vector<std::set<int>> pts, gpts; std::map<int, std::array<std::set<int>, 2>> fld; std::set<int> esc, sites; };
+bool addAll(std::set<int>& dst, const std::set<int>& src) { size_t n = dst.size(); dst.insert(src.begin(), src.end()); return dst.size() != n; }
+Analysis analyze(const Prog& p, bool closure = true) {
+    Analysis A; A.pts.assign(NV, {}); A.gpts.assign(NG, {}); int retVar = -1;
+    for (size_t i = 0; i < p.size(); ++i) { if (p[i].op == NEW) { A.sites.insert((int)i); A.fld[(int)i]; } if (p[i].op == RET) retVar = p[i].a; }
+    for (bool changed = true; changed;) {                                                    // 고정점 반복
         changed = false;
-        for (auto& s : prog) {
-            if (s.op == MOVE && esc.count(s.a) && esc.insert(s.b).second) changed = true;      // a = b 에서 a 가 탈출하면 b 도 탈출
-            if (s.op == MOVE && esc.count(s.b) && esc.insert(s.a).second) changed = true;      // 별칭이므로 양방향
-            if (s.op == STORE && esc.count(s.a) && esc.insert(s.b).second) changed = true;      // 탈출하는 객체의 필드에 저장된 값도 탈출
+        for (size_t i = 0; i < p.size(); ++i) {
+            const Stmt& s = p[i];
+            switch (s.op) {
+                case NEW: changed |= A.pts[s.a].insert((int)i).second; break;
+                case MOVE: changed |= addAll(A.pts[s.a], A.pts[s.b]); break;
+                case STORE: for (int site : A.pts[s.a]) changed |= addAll(A.fld[site][s.c], A.pts[s.b]); break;
+                case LOAD: for (int site : A.pts[s.b]) changed |= addAll(A.pts[s.a], A.fld[site][s.c]); break;
+                case GSTORE: changed |= addAll(A.gpts[s.a], A.pts[s.b]); break;
+                case GLOAD: changed |= addAll(A.pts[s.a], A.gpts[s.b]); break;
+                default: break;
+            }
         }
     }
-    return esc;
+    for (int g = 0; g < NG; ++g) A.esc.insert(A.gpts[g].begin(), A.gpts[g].end());           // 전역에 저장된 것
+    if (retVar >= 0) A.esc.insert(A.pts[retVar].begin(), A.pts[retVar].end());                // 반환되는 것
+    if (closure) { for (bool changed = true; changed;) { changed = false; for (int s : std::set<int>(A.esc)) for (int f = 0; f < 2; ++f) changed |= addAll(A.esc, A.fld[s][f]); } }   // 탈출하는 객체의 필드가 가리키는 것도 탈출
+    return A;
+}
+
+struct Inst { int site; int val = 0; Inst* f[2] = {nullptr, nullptr}; bool onStack = false, escaped = false; };
+struct Result { long heapAllocs = 0, stackAllocs = 0, dangling = 0; std::string out; std::set<int> dynEsc; };
+std::string serialize(Inst* o, std::map<Inst*, int>& num) {                                  // 도달 가능한 그래프를 방문 순서로 번호 매겨 직렬화
+    if (!o) return "-";
+    auto it = num.find(o); if (it != num.end()) return "#" + std::to_string(it->second);
+    int id = (int)num.size(); num[o] = id; return "(" + std::to_string(o->val) + " " + serialize(o->f[0], num) + " " + serialize(o->f[1], num) + ")";
+}
+Result execute(const Prog& p, const std::set<int>* stackSites) {                              // stackSites 가 있으면 그 site 의 객체는 스택에 만든다
+    Result R; std::deque<Inst> pool; Inst* v[NV] = {}; Inst* G[NG] = {}; Inst* ret = nullptr; long acc = 0; std::vector<std::pair<size_t, int>> loops;
+    auto markEscaped = [&](Inst* o) { std::vector<Inst*> st{o}; while (!st.empty()) { Inst* x = st.back(); st.pop_back(); if (!x || x->escaped) continue; x->escaped = true; R.dynEsc.insert(x->site); st.push_back(x->f[0]); st.push_back(x->f[1]); } };
+    for (size_t pc = 0; pc < p.size(); ++pc) {
+        const Stmt& s = p[pc];
+        switch (s.op) {
+            case NEW: { pool.emplace_back(); Inst* o = &pool.back(); o->site = (int)pc; if (stackSites && stackSites->count((int)pc)) { o->onStack = true; ++R.stackAllocs; } else ++R.heapAllocs; v[s.a] = o; break; }
+            case MOVE: v[s.a] = v[s.b]; break;
+            case STORE: if (v[s.a]) { v[s.a]->f[s.c] = v[s.b]; if (v[s.a]->escaped) markEscaped(v[s.b]); } break;
+            case LOAD: v[s.a] = v[s.b] ? v[s.b]->f[s.c] : nullptr; break;
+            case GSTORE: G[s.a] = v[s.b]; markEscaped(v[s.b]); break;
+            case GLOAD: v[s.a] = G[s.b]; break;
+            case SETVAL: if (v[s.a]) v[s.a]->val = s.c; break;
+            case ADDVAL: if (v[s.b]) acc += v[s.b]->val; break;
+            case RET: ret = v[s.a]; markEscaped(ret); pc = p.size(); break;
+            case LOOP: loops.push_back({pc, s.c}); break;
+            case ENDLOOP: if (--loops.back().second > 0) pc = loops.back().first; else loops.pop_back(); break;
+        }
+    }
+    std::map<Inst*, int> num; R.out = std::to_string(acc) + "|" + serialize(ret, num) + "|" + serialize(G[0], num) + "|" + serialize(G[1], num);
+    std::set<Inst*> seen; std::vector<Inst*> st{ret, G[0], G[1]};                            // 끝났을 때 전역·반환값에서 스택 객체로 가는 참조 = 댕글링
+    while (!st.empty()) { Inst* x = st.back(); st.pop_back(); if (!x || !seen.insert(x).second) continue; if (x->onStack) ++R.dangling; st.push_back(x->f[0]); st.push_back(x->f[1]); }
+    return R;
+}
+
+Prog randomProgram(std::mt19937& rng) {
+    Prog p; int n = 6 + (int)(rng() % 18);
+    for (int i = 0; i < n; ++i) {
+        int r = (int)(rng() % 100); Stmt s;
+        if (r < 22) s = {NEW, (int)(rng() % NV)}; else if (r < 34) s = {MOVE, (int)(rng() % NV), (int)(rng() % NV)}; else if (r < 50) s = {STORE, (int)(rng() % NV), (int)(rng() % NV), (int)(rng() % 2)};
+        else if (r < 62) s = {LOAD, (int)(rng() % NV), (int)(rng() % NV), (int)(rng() % 2)}; else if (r < 68) s = {GSTORE, (int)(rng() % NG), (int)(rng() % NV)}; else if (r < 74) s = {GLOAD, (int)(rng() % NV), (int)(rng() % NG)};
+        else if (r < 86) s = {SETVAL, (int)(rng() % NV), 0, 1 + (int)(rng() % 9)}; else s = {ADDVAL, 0, (int)(rng() % NV)};
+        p.push_back(s);
+    }
+    if (rng() % 100 < 40) { size_t i = rng() % p.size(), j = i + 1 + rng() % (p.size() - i); p.insert(p.begin() + j, Stmt{ENDLOOP}); p.insert(p.begin() + i, Stmt{LOOP, 0, 0, 2 + (int)(rng() % 3)}); }
+    p.push_back({RET, (int)(rng() % NV)}); return p;
 }
 
 int main() {
-    using V = std::vector<Stmt>;
-    // 1) p 는 함수 안에서만 쓰인다 -> 탈출 없음 -> 스택/스칼라 치환 가능
-    assert(escaped(V{{NEW, "p", ""}, {STORE, "p", "p"}}).empty());
-    // 2) 반환되는 객체는 탈출
-    assert((escaped(V{{NEW, "p", ""}, {RETURN, "p", ""}}) == std::set<std::string>{"p"}));
-    // 3) q 를 탈출하는 p 의 필드에 저장 -> q 도 탈출
-    assert((escaped(V{{NEW, "q", ""}, {NEW, "p", ""}, {STORE, "p", "q"}, {RETURN, "p", ""}}) == std::set<std::string>{"p", "q"}));
-    // 4) 둘 다 지역에서만 연결되면 탈출 없음
-    assert(escaped(V{{NEW, "q", ""}, {NEW, "p", ""}, {STORE, "p", "q"}}).empty());
-    // 5) 별칭을 통한 탈출: r = p; return r;
-    assert((escaped(V{{NEW, "p", ""}, {MOVE, "r", "p"}, {RETURN, "r", ""}}) == std::set<std::string>{"p", "r"}));
-    // 6) 미지의 함수에 전달하면 탈출
-    assert((escaped(V{{NEW, "p", ""}, {PASS, "p", ""}}) == std::set<std::string>{"p"}));
-    std::cout << "EscapeAnalysis: classified 6 programs; non-escaping objects can live on the stack." << std::endl;
+    // ④ 손으로 짠 프로그램 (v0 = p, v1 = q, v2 = r)
+    {   auto esc = [](const Prog& p) { return analyze(p).esc; };
+        Prog a = {{NEW, 0}, {STORE, 0, 0, 0}, {RET, 4}};                                                 // p = new; p.f = p; (아무것도 반환 안 함)
+        assert(esc(a).empty());
+        assert((esc({{NEW, 0}, {RET, 0}}) == std::set<int>{0}));                                          // 반환되는 객체는 탈출
+        assert((esc({{NEW, 1}, {NEW, 0}, {STORE, 0, 1, 0}, {RET, 0}}) == std::set<int>{0, 1}));            // q 를 탈출하는 p 의 필드에 저장 -> q 도 탈출
+        assert(esc({{NEW, 1}, {NEW, 0}, {STORE, 0, 1, 0}, {RET, 4}}).empty());                             // 둘 다 지역에서만 연결되면 탈출 없음
+        assert((esc({{NEW, 0}, {MOVE, 2, 0}, {RET, 2}}) == std::set<int>{0}));                             // 별칭을 통한 탈출: r = p; return r
+        assert((esc({{NEW, 0}, {GSTORE, 0, 0}, {RET, 4}}) == std::set<int>{0}));                           // 전역에 저장하면 탈출
+        assert((esc({{NEW, 0}, {NEW, 1}, {STORE, 0, 1, 1}, {GSTORE, 1, 0}, {RET, 4}}) == std::set<int>{0, 1}));   // 전역에 간 객체의 필드에 있는 것도 탈출
+    }
+    // ①②③ 무작위 프로그램
+    std::mt19937 rng(20240501); long programs = 0, sites = 0, noEscSites = 0, heapBefore = 0, heapAfter = 0, stackAllocs = 0, wrongClosureViolations = 0, loopPrograms = 0;
+    for (int it = 0; it < 20000; ++it) {
+        Prog p = randomProgram(rng); Analysis A = analyze(p), B = analyze(p, false);
+        std::set<int> noEsc; for (int s : A.sites) { if (!A.esc.count(s)) noEsc.insert(s); }
+        Result plain = execute(p, nullptr), opt = execute(p, &noEsc);
+        for (int s : plain.dynEsc) assert(A.esc.count(s));                                                  // ① 건전성: 실제로 탈출한 site 는 모두 분석이 탈출이라 했다
+        assert(plain.out == opt.out && opt.dangling == 0);                                                   // ② 최적화해도 결과가 같고 댕글링이 없다
+        assert(opt.heapAllocs + opt.stackAllocs == plain.heapAllocs && opt.heapAllocs <= plain.heapAllocs);
+        bool wrong = false; for (int s : plain.dynEsc) { if (!B.esc.count(s)) wrong = true; } if (wrong) ++wrongClosureViolations;     // ③ 폐포 규칙이 없으면 위반
+        ++programs; sites += (long)A.sites.size(); noEscSites += (long)noEsc.size(); heapBefore += plain.heapAllocs; heapAfter += opt.heapAllocs; stackAllocs += opt.stackAllocs;
+        for (const Stmt& s : p) { if (s.op == LOOP) { ++loopPrograms; break; } }
+    }
+    assert(wrongClosureViolations > 50 && noEscSites * 4 > sites && stackAllocs > 10000 && loopPrograms > 5000);
+    std::cout << "EscapeAnalysis verified: " << programs << " random programs sound (0 escapes missed), outputs identical after moving " << stackAllocs << "/" << heapBefore << " allocations to the stack ("
+              << noEscSites << "/" << sites << " sites proven non-escaping); without the field-closure rule " << wrongClosureViolations << " programs break." << std::endl;
     return 0;
 }
-// Time Complexity: O(문장 수 · 반복)
-// Space Complexity: O(변수 수)
+// Time Complexity: 고정점 반복 O(반복 · 문장 수 · site 수)
+// Space Complexity: O(변수 · site 수)
 ```
 ## OwnershipTypeSystem()
 ### 대표코드
