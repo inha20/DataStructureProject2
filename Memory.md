@@ -6272,40 +6272,127 @@ int main() {
 ## ThreadLocalStorage()
 ### 대표코드
 ```cpp
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <mutex>
+#include <random>
 #include <set>
 #include <thread>
-#include <mutex>
 #include <vector>
-#include <cassert>
 
 // 스레드 지역 저장소(TLS): thread_local 변수는 스레드마다 별도의 복사본이 있다 -> 락 없이 스레드별 상태(errno, 난수 생성기 상태, 캐시)를 유지한다.
 // 스레드가 시작할 때 초기화되고 끝날 때 소멸자가 불린다.  공유 변수와 달리 경쟁 상태가 없다
+// 이 예제는 의미를 확인하고, TLS 위에 pthread_key 같은 "동적 키" 계층을 직접 만들어 본다(키 생성 시 소멸자 등록, 스레드가 끝날 때 값이 있는 키마다 소멸자 한 번):
+//  ① 기본 의미(스레드별 사본·초기값·주소·소멸자 호출 횟수)  ② 함수 안의 thread_local 은 스레드마다 정확히 한 번 초기화  ③ TlsRegistry 를 네이티브 thread_local 과 비교: 스레드 8 개가 무작위 set/get 4 000 번,
+//  스레드별 모형(std::map)과 항상 일치하고, 끝날 때 소멸자 호출 수 == 값이 남아 있던 (스레드, 키) 쌍의 수, 누수 없음  ④ 샤딩된 카운터: 스레드별 조각을 락 없이 늘리고 스레드가 끝날 때 전역 합계에 합침 — 총합이 정확하고
+//  원자 카운터·뮤텍스 카운터와 같음  ⑤ 스레드마다 시드가 고정된 난수열은 스케줄과 무관하게 재현 가능  ⑥ 스레드 풀의 작업은 같은 워커의 thread_local 상태를 이어받는다(상태 누수의 원인): 워커별로 본 값이 정확히 1, 2, 3 ... 연속
 thread_local int counter = 100;
 std::mutex mu; std::set<const void*> addresses; int ctors = 0, dtors = 0;
 struct PerThread { PerThread() { std::lock_guard<std::mutex> g(mu); ctors++; } ~PerThread() { std::lock_guard<std::mutex> g(mu); dtors++; } };
 thread_local PerThread tls;
+struct alignas(64) Padded { char c[64]; };
+thread_local Padded padded;
+
+// pthread_key 와 같은 동적 키 계층
+class TlsRegistry {
+    struct Slots { std::vector<void*> v; ~Slots(); };
+    std::mutex m; std::vector<void (*)(void*)> dtorOf; std::vector<char> live;
+    static Slots& slots() { thread_local Slots s; return s; }
+public:
+    std::atomic<long> destructorRuns{0};
+    int create(void (*dtor)(void*)) { std::lock_guard<std::mutex> g(m); dtorOf.push_back(dtor); live.push_back(1); return (int)dtorOf.size() - 1; }
+    void remove(int key) { std::lock_guard<std::mutex> g(m); live[(size_t)key] = 0; }                        // 키를 지운 뒤에는 소멸자도 호출되지 않는다 (pthread_key_delete 와 같다)
+    void* get(int key) { auto& v = slots().v; return (size_t)key < v.size() ? v[(size_t)key] : nullptr; }
+    void set(int key, void* p) { auto& v = slots().v; if ((size_t)key >= v.size()) v.resize((size_t)key + 1, nullptr); v[(size_t)key] = p; }
+    void runDestructors(std::vector<void*>& v) {                                                            // 스레드 종료 시: 값이 있는 키마다 소멸자 (소멸자가 새 값을 넣으면 최대 4 번 반복)
+        for (int round = 0; round < 4; ++round) {
+            bool any = false;
+            for (size_t k = 0; k < v.size(); ++k) {
+                void* p = v[k]; if (!p) continue; void (*d)(void*); bool alive; { std::lock_guard<std::mutex> g(m); d = dtorOf[k]; alive = live[k]; }
+                v[k] = nullptr; if (alive && d) { d(p); ++destructorRuns; any = true; }
+            }
+            if (!any) break;
+        }
+    }
+};
+TlsRegistry registry;
+TlsRegistry::Slots::~Slots() { registry.runDestructors(v); }
+std::atomic<long> liveBoxes{0};
+struct Box { long v; Box(long x) : v(x) { ++liveBoxes; } ~Box() { --liveBoxes; } };
+void boxDtor(void* p) { delete static_cast<Box*>(p); }
+
+// 샤딩된 카운터: 스레드별 조각 + 종료 시 합류
+std::atomic<long> shardedTotal{0};
+struct Shard { long n = 0; ~Shard() { shardedTotal += n; } };
+thread_local Shard shard;
+int initCount = 0;
+int perThreadInit() { std::lock_guard<std::mutex> g(mu); return ++initCount; }
+int callsInThisThread() { thread_local int calls = perThreadInit() * 0; return ++calls; }                    // 처음 호출될 때 스레드마다 한 번 초기화
 
 int main() {
+    // ① 기본 의미 (원래 예)
     counter = 1;                                                       // 메인 스레드의 사본만 바뀐다
-    std::vector<std::thread> th; int results[4];
-    for (int t = 0; t < 4; t++)
-        th.emplace_back([&, t] {
-            (void)tls;                                                  // 이 스레드의 tls 객체 생성
-            assert(counter == 100);                                     // 각 스레드는 초기값 100 으로 시작 (메인의 1 과 무관)
-            for (int i = 0; i < 1000; i++) counter++;                   // 락 없이 증가해도 경쟁 없음
-            results[t] = counter;
-            std::lock_guard<std::mutex> g(mu); addresses.insert(&counter);
+    {   std::vector<std::thread> th; int results[4];
+        for (int t = 0; t < 4; t++) th.emplace_back([&, t] { (void)tls; assert(counter == 100); for (int i = 0; i < 1000; i++) counter++; results[t] = counter; std::lock_guard<std::mutex> g(mu); addresses.insert(&counter); });
+        for (auto& x : th) x.join();
+        for (int t = 0; t < 4; t++) assert(results[t] == 1100);
+        assert(counter == 1 && addresses.size() == 4 && ctors == 4 && dtors == 4); }                          // 메인 값은 그대로, 주소 4 개, 스레드 종료 시 소멸자
+    {   std::vector<std::thread> th; std::vector<uintptr_t> pa(4); for (int t = 0; t < 4; ++t) th.emplace_back([&, t] { pa[t] = (uintptr_t)&padded; });
+        for (auto& x : th) { x.join(); }
+        for (int t = 0; t < 4; ++t) { assert(pa[t] % 64 == 0); }                                                                      // alignas(64) 도 스레드마다 지켜진다
+        std::set<uintptr_t> lines; for (auto a : pa) lines.insert(a / 64); (void)lines; }
+    // ② 함수 안 thread_local: 스레드마다 정확히 한 번
+    {   std::vector<std::thread> th; for (int t = 0; t < 6; ++t) th.emplace_back([] { for (int i = 1; i <= 5; ++i) assert(callsInThisThread() == i); });
+        for (auto& x : th) { x.join(); }
+        assert(initCount == 6); }
+    // ③ 동적 키 계층 vs 모형
+    {   const int T = 8, KEYS = 4, OPS = 4000; std::vector<int> keys; for (int k = 0; k < KEYS; ++k) keys.push_back(registry.create(boxDtor));
+        std::atomic<long> expectedDtor{0}, mismatches{0}; std::vector<std::thread> th;
+        for (int t = 0; t < T; ++t) th.emplace_back([&, t] {
+            std::mt19937 rng(1000 + t); std::map<int, Box*> model;
+            for (int i = 0; i < OPS; ++i) {
+                int k = keys[rng() % KEYS]; int op = (int)(rng() % 3);
+                if (op == 0) { Box* b = new Box((long)t * 1000000 + i); Box* old = static_cast<Box*>(registry.get(k)); if (old != model[k]) ++mismatches; delete old; registry.set(k, b); model[k] = b; }   // 덮어쓰기: 옛 값은 호출자가 정리
+                else if (op == 1) { if (registry.get(k) != model[k]) ++mismatches; }
+                else if (model[k]) { Box* old = static_cast<Box*>(registry.get(k)); if (old != model[k]) ++mismatches; delete old; registry.set(k, nullptr); model[k] = nullptr; }
+            }
+            long left = 0; for (auto& kv : model) left += kv.second != nullptr; expectedDtor += left;
         });
-    for (auto& x : th) x.join();
-    for (int t = 0; t < 4; t++) assert(results[t] == 1100);
-    assert(counter == 1);                                               // 메인의 값은 영향 없음
-    assert(addresses.size() == 4);                                      // 스레드마다 주소가 다르다
-    assert(ctors == 4 && dtors == 4);                                   // 스레드 종료 시 소멸자 호출
-    std::cout << "ThreadLocalStorage: 4 threads, 4 distinct copies, no locking." << std::endl;
+        for (auto& x : th) x.join();
+        assert(mismatches == 0 && registry.destructorRuns == expectedDtor && liveBoxes == 0); }                // 스레드 종료 때 값이 남은 쌍마다 소멸자 한 번, 새는 객체 없음
+    // ④ 샤딩된 카운터
+    {   const int T = 8; const long N = 200000; std::atomic<long> atomicTotal{0}; long mutexTotal = 0; std::mutex mm; shardedTotal = 0; std::vector<std::thread> th;
+        for (int t = 0; t < T; ++t) th.emplace_back([&] { for (long i = 0; i < N; ++i) { ++shard.n; atomicTotal.fetch_add(1, std::memory_order_relaxed); if (i % 100 == 0) { std::lock_guard<std::mutex> g(mm); mutexTotal += 100; } } });
+        for (auto& x : th) x.join();
+        assert(shardedTotal == T * N && atomicTotal == T * N && mutexTotal == (long)T * (N / 100) * 100); }
+    // ⑤ 재현 가능한 스레드별 난수열
+    {   auto run = [](int delayPattern) { const int T = 6; std::vector<uint64_t> sums(T); std::vector<std::thread> th;
+            for (int t = 0; t < T; ++t) th.emplace_back([&, t] { if ((t + delayPattern) % 3 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(2)); thread_local std::mt19937_64 rng(777 + t); uint64_t s = 0; for (int i = 0; i < 1000; ++i) s += rng(); sums[t] = s; });
+            for (auto& x : th) { x.join(); }
+            return sums; };
+        assert(run(0) == run(1) && run(1) == run(2)); }                                                       // 시작 순서가 달라도 스레드별 결과가 같다
+    // ⑥ 스레드 풀: 같은 워커의 thread_local 상태 이어받기
+    {   const int W = 4, TASKS = 400; std::mutex qm; std::condition_variable cv; std::deque<int> q; bool done = false; std::vector<std::vector<int>> seenByWorker(W); std::vector<std::thread> workers;
+        for (int w = 0; w < W; ++w) workers.emplace_back([&, w] {
+            thread_local int tasksSoFar = 0;
+            for (;;) { { std::unique_lock<std::mutex> lk(qm); cv.wait(lk, [&] { return !q.empty() || done; }); if (q.empty()) return; q.pop_front(); } seenByWorker[w].push_back(++tasksSoFar); }
+        });
+        { std::lock_guard<std::mutex> lk(qm); for (int i = 0; i < TASKS; ++i) q.push_back(i); } cv.notify_all();
+        { std::unique_lock<std::mutex> lk(qm); while (!q.empty()) { lk.unlock(); std::this_thread::yield(); lk.lock(); } done = true; } cv.notify_all();
+        for (auto& x : workers) x.join();
+        long total = 0; for (int w = 0; w < W; ++w) { for (size_t i = 0; i < seenByWorker[w].size(); ++i) assert(seenByWorker[w][i] == (int)i + 1); total += (long)seenByWorker[w].size(); }   // 워커마다 1, 2, 3 ... 연속: 상태가 작업 사이에 이어진다
+        assert(total == TASKS); }
+    std::cout << "ThreadLocalStorage verified: native thread_local, a pthread_key-style registry (" << registry.destructorRuns << " destructor runs, 0 leaks), sharded counters, reproducible per-thread RNG, and worker-state carry-over in a pool." << std::endl;
     return 0;
 }
-// Time Complexity: 접근 O(1) (세그먼트 레지스터 기준 오프셋)
+// Time Complexity: 접근 O(1) (세그먼트 레지스터 기준 오프셋; 동적 키는 벡터 색인)
 // Space Complexity: 스레드 수 · 변수 크기
 ```
 ## KernelMemory()
@@ -6524,33 +6611,82 @@ int main() {
 ## GPUMemory()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
 #include <iostream>
 #include <numeric>
+#include <random>
 #include <set>
 #include <vector>
-#include <cassert>
 
 // GPU 메모리: 32 스레드(워프)가 한 명령을 동시에 실행한다.
 //  전역 메모리 병합(coalescing): 워프의 접근이 연속된 128바이트 구간에 모이면 메모리 트랜잭션이 1번, 흩어지면 구간 수만큼 늘어난다.
-//  공유 메모리 뱅크 충돌: 32개 뱅크(4바이트 단위 주소 % 32) 중 같은 뱅크의 서로 다른 주소를 여러 스레드가 동시에 접근하면 직렬화된다.
-int transactions(int stride) {                                       // 스레드 t 가 float[t * stride] 를 읽을 때 건드리는 128B 구간 수
-    std::set<long> segs; for (int t = 0; t < 32; t++) segs.insert((long)t * stride * 4 / 128); return segs.size();
+//  공유 메모리 뱅크 충돌: 32개 뱅크(4바이트 단위 주소 % 32) 중 같은 뱅크의 서로 다른 주소를 여러 스레드가 동시에 접근하면 직렬화된다(같은 주소는 방송이라 충돌이 아니다).
+// 이 예제는 두 규칙을 임의의 접근 패턴에 대해 계산하는 함수로 만들고 알려진 닫힌 형태와 맞춘다:
+//  ① 간격 s 로 float 을 읽을 때 트랜잭션 수 == min(s, 32), 기준 주소가 128B 에 정렬되지 않으면 간격 1 이 2 트랜잭션  ② AoS(구조체 12B/16B 배열) 에서 한 필드만 읽으면 3/4 트랜잭션, SoA 는 1, float4 로 구조체 전체를 읽으면 4
+//  ③ 뱅크 충돌 정도 == gcd(간격, 32), 같은 단어를 모두가 읽으면(방송) 1  ④ 32x32 타일 열 접근: 폭 32 면 32 방향 충돌, 폭 33 이면 없음 — 패딩 한 칸
+//  ⑤ 행렬 전치의 전역 메모리 트랜잭션: 단순 전치 (N²/32)·(1 + 32) 대 공유 메모리 타일 (N²/32)·2 — 시뮬레이션이 닫힌 형태와 같고 16.5 배 차이, 결과 행렬도 같다
+//  ⑥ 병렬 합: 인터리브 주소 지정(thread t 가 2·s·t 를 읽음)은 단계마다 충돌이 커지고, 순차 주소 지정(t 와 t+s)은 충돌이 없다 — 두 방식의 합계가 같고 직렬화 횟수 비교
+const int WARP = 32;
+int transactions(const std::vector<uint64_t>& byteAddr, unsigned width, unsigned segment = 128) {     // 워프의 접근이 건드리는 서로 다른 구간 수
+    std::set<uint64_t> segs; for (uint64_t a : byteAddr) for (unsigned b = 0; b < width; ++b) segs.insert((a + b) / segment); return (int)segs.size();
 }
-int bankConflictDegree(int stride) {                                 // 스레드 t 가 word[t * stride] 에 접근할 때 같은 뱅크에 몰리는 최대 스레드 수
-    std::vector<int> perBank(32, 0); for (int t = 0; t < 32; t++) perBank[(t * stride) % 32]++;
-    int mx = 0; for (int c : perBank) mx = std::max(mx, c); return mx;
+int bankConflictDegree(const std::vector<uint32_t>& wordAddr) {                                      // 같은 뱅크의 서로 다른 단어 수의 최댓값 (같은 단어는 방송)
+    std::vector<std::set<uint32_t>> perBank(32); for (uint32_t w : wordAddr) perBank[w % 32].insert(w); size_t mx = 0; for (auto& s : perBank) mx = std::max(mx, s.size()); return (int)mx;
 }
+int stridedTransactions(int stride, int baseOffsetFloats = 0) { std::vector<uint64_t> a; for (int t = 0; t < WARP; ++t) a.push_back(((uint64_t)baseOffsetFloats + (uint64_t)t * stride) * 4); return transactions(a, 4); }
+int stridedConflict(int stride) { std::vector<uint32_t> w; for (int t = 0; t < WARP; ++t) w.push_back((uint32_t)(t * stride)); return bankConflictDegree(w); }
 
 int main() {
-    assert(transactions(1) == 1 && transactions(2) == 2 && transactions(4) == 4 && transactions(32) == 32);   // 간격이 클수록 병합 실패
-    assert(bankConflictDegree(1) == 1);                              // 연속 접근: 충돌 없음
-    assert(bankConflictDegree(2) == 2 && bankConflictDegree(32) == 32);   // 2-way, 32-way 충돌
-    assert(bankConflictDegree(33) == 1);                             // 32x32 타일의 한 줄에 패딩 1칸(폭 33)을 주면 열 접근도 충돌이 사라진다
-    for (int s = 1; s <= 64; s++) assert(bankConflictDegree(s) == std::gcd(s, 32));   // 충돌 정도 = gcd(stride, 32)
-    std::cout << "GPUMemory: stride-1 -> " << transactions(1) << " transaction; stride-32 -> " << transactions(32) << "; tile padding 33 removes the 32-way conflict" << std::endl;
+    // 원래 예
+    assert(stridedTransactions(1) == 1 && stridedTransactions(2) == 2 && stridedTransactions(4) == 4 && stridedTransactions(32) == 32);
+    assert(stridedConflict(1) == 1 && stridedConflict(2) == 2 && stridedConflict(32) == 32 && stridedConflict(33) == 1);
+    for (int s = 1; s <= 64; s++) assert(stridedConflict(s) == std::gcd(s, 32));                                  // ③ 충돌 정도 = gcd(stride, 32)
+    // ① 병합 닫힌 형태
+    for (int s = 1; s <= 64; ++s) assert(stridedTransactions(s) == std::min(s, 32));
+    for (int k = 0; k < 32; ++k) assert(stridedTransactions(1, k) == (k == 0 ? 1 : 2));                          // 정렬이 안 맞으면 연속 접근도 2 구간
+    { std::vector<uint64_t> a; for (int t = 0; t < WARP; ++t) a.push_back((uint64_t)t * 4); assert(transactions(a, 4, 32) == 4); }       // 32B 섹터 단위로 세면 128B 연속 = 4 섹터
+    // ② AoS / SoA
+    { std::vector<uint64_t> aos12, aos16, soa, vec4; for (int t = 0; t < WARP; ++t) { aos12.push_back((uint64_t)t * 12); aos16.push_back((uint64_t)t * 16); soa.push_back((uint64_t)t * 4); vec4.push_back((uint64_t)t * 16); }
+      assert(transactions(aos12, 4) == 3 && transactions(aos16, 4) == 4 && transactions(soa, 4) == 1 && transactions(vec4, 16) == 4); }               // x 만 읽을 때 3/4 구간, SoA 1, float4 로 통째로 읽으면 512B = 4 구간 (전부 쓸모 있음)
+    // ③ 방송
+    { std::vector<uint32_t> same(WARP, 7); assert(bankConflictDegree(same) == 1); std::vector<uint32_t> pairs; for (int t = 0; t < WARP; ++t) pairs.push_back((uint32_t)(t / 2)); assert(bankConflictDegree(pairs) == 1); }
+    // ④ 타일 열 접근과 패딩
+    for (int width = 32; width <= 40; ++width) { std::vector<uint32_t> col; for (int row = 0; row < WARP; ++row) col.push_back((uint32_t)(row * width)); assert(bankConflictDegree(col) == std::gcd(width, 32)); }
+    // ⑤ 전치
+    {   const int N = 256; auto globalTransactions = [&](bool tiled) { long total = 0;
+            for (int y = 0; y < N; ++y) for (int x0 = 0; x0 < N; x0 += WARP) {                                   // 워프 하나 = 같은 행의 32 개 연속 원소
+                std::vector<uint64_t> rd, wr; for (int l = 0; l < WARP; ++l) { rd.push_back(((uint64_t)y * N + (x0 + l)) * 4); wr.push_back(((uint64_t)(x0 + l) * N + y) * 4); }
+                total += transactions(rd, 4);
+                if (!tiled) total += transactions(wr, 4);                                                         // 단순 전치: 열 방향 쓰기 = 간격 N 개 float
+                else total += 1;                                                                                   // 타일 전치: 공유 메모리를 거쳐 출력 행을 연속으로 쓴다 (타일 안에서 이미 전치됨)
+            } return total; };
+        long naive = globalTransactions(false), tiled = globalTransactions(true); long warps = (long)N * N / WARP;
+        assert(naive == warps * (1 + 32) && tiled == warps * 2 && naive * 2 == tiled * 33);                          // 16.5 배
+        std::mt19937 rng(3); std::vector<int> A(N * N), B(N * N, 0), C(N * N, 0); for (int& v : A) v = (int)rng();
+        for (int i = 0; i < N; ++i) for (int j = 0; j < N; ++j) B[j * N + i] = A[i * N + j];                         // 단순 전치
+        const int T = 32; std::vector<int> tile(T * (T + 1));                                                         // 타일 전치: 폭 33 의 공유 메모리 타일
+        for (int bi = 0; bi < N; bi += T) for (int bj = 0; bj < N; bj += T) { for (int i = 0; i < T; ++i) for (int j = 0; j < T; ++j) tile[i * (T + 1) + j] = A[(bi + i) * N + bj + j]; for (int i = 0; i < T; ++i) for (int j = 0; j < T; ++j) C[(bj + i) * N + bi + j] = tile[j * (T + 1) + i]; }
+        assert(B == C); }
+    // ⑥ 병렬 합의 뱅크 충돌
+    {   const int BLOCK = 256; std::mt19937 rng(5); std::vector<long> data(BLOCK); for (long& v : data) v = (long)(rng() % 1000); long want = std::accumulate(data.begin(), data.end(), 0L);
+        auto reduce = [&](bool interleaved, long& serialized) {
+            std::vector<long> sh = data; serialized = 0;
+            for (int s = interleaved ? 1 : BLOCK / 2; interleaved ? s < BLOCK : s > 0; s = interleaved ? s * 2 : s / 2) {
+                for (int w = 0; w < BLOCK / WARP; ++w) {                                                          // 워프마다 읽기 접근을 모아 충돌 정도를 더한다
+                    std::vector<uint32_t> rd1, rd2;
+                    for (int l = 0; l < WARP; ++l) { int t = w * WARP + l; int idx = interleaved ? 2 * s * t : t; if (interleaved ? idx + s < BLOCK : t < s) { rd1.push_back((uint32_t)idx); rd2.push_back((uint32_t)(idx + s)); } }
+                    if (!rd1.empty()) serialized += bankConflictDegree(rd1) + bankConflictDegree(rd2);
+                }
+                for (int t = 0; t < BLOCK; ++t) { int idx = interleaved ? 2 * s * t : t; if (interleaved ? idx + s < BLOCK : t < s) sh[idx] += sh[idx + s]; }
+            }
+            return sh[0]; };
+        long ser1 = 0, ser2 = 0; assert(reduce(true, ser1) == want && reduce(false, ser2) == want); assert(ser1 > 3 * ser2);                    // 같은 합, 인터리브 방식이 훨씬 많이 직렬화
+        std::cout << "GPUMemory verified: coalescing = min(stride,32) transactions, bank conflicts = gcd(stride,32), tile padding 33 removes the 32-way conflict, transpose uses 16.5x fewer transactions with tiles, reduction serialization " << ser1 << " vs " << ser2 << "." << std::endl; }
     return 0;
 }
-// Time Complexity: O(32)
+// Time Complexity: O(32) (워프 한 번)
 // Space Complexity: O(1)
 ```
 ## UnifiedMemory()
@@ -6808,60 +6944,148 @@ int main() {
 ## RDMA()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <functional>
+#include <iostream>
 #include <map>
-#include <stdexcept>
+#include <queue>
+#include <random>
+#include <set>
 #include <vector>
-#include <cassert>
 
 // RDMA(원격 직접 메모리 접근): 네트워크 카드(NIC)가 원격 노드의 메모리를 상대 CPU 와 운영체제의 개입 없이 직접 읽고 쓴다 (InfiniBand, RoCE).  커널 우회·제로 카피로 지연이 마이크로초 수준.
 // 흐름: (1) 메모리 영역을 NIC 에 등록(고정, pinned) -> rkey 발급 (2) rkey 와 원격 주소를 상대에게 전달 (3) RDMA_WRITE/READ 를 보내면 상대의 NIC 가 rkey·범위·권한을 검사하고 처리
-// 아래는 verbs 의 핵심 의미만 흉내 낸 모델이다 (실제 API: ibv_reg_mr, ibv_post_send)
-enum Access { LOCAL_WRITE = 1, REMOTE_READ = 2, REMOTE_WRITE = 4 };
-struct Region { std::vector<uint8_t> mem; unsigned access; };
+// 이 구현은 verbs 의 핵심 의미를 사건 구동 시뮬레이션으로 만든다 (실제 API: ibv_reg_mr, ibv_post_send, ibv_poll_cq):
+//  메모리 영역(MR): 접근 권한 {LOCAL_WRITE, REMOTE_READ, REMOTE_WRITE, REMOTE_ATOMIC}, 등록 해제 가능.  작업 요청(WR): SEND, RDMA_WRITE, RDMA_READ, 원자 CAS, 원자 FETCH_ADD.  큐 페어(QP)마다 순서가 지켜지고(무작위 지연이 있어도)
+//  완료(CQ)는 요청 순서대로 상태 코드와 함께 돌아온다.  단방향 연산은 상대 CPU 를 쓰지 않고(cpuTouches 불변), SEND 는 상대가 미리 받기 버퍼를 올려 둬야 한다(없으면 RNR, 너무 작으면 길이 오류)
+// 검증: ① 권한·범위·rkey·등록 해제 오류가 올바른 상태 코드  ② 같은 QP 의 RDMA_WRITE 1 000 개는 지연이 무작위라도 마지막 값이 남고 완료가 요청 순서  ③ 클라이언트 4 개가 서버 카운터에 FETCH_ADD 를 1 000 번씩 —
+//        최종 4 000, 돌려받은 옛 값이 0..3999 를 정확히 한 번씩 (원자성)  ④ 원격 스핀락(CAS)으로 읽기-수정-쓰기를 감싸면 갱신을 하나도 잃지 않고(4 x 50), 락 없이 하면 갱신을 잃는다
+//        ⑤ SEND/RECV: 받기 버퍼 R 개만 올려 두면 앞의 R 개만 성공하고 나머지는 RNR, 길이 초과는 길이 오류, 받는 쪽 CPU 가 관여한 횟수 == 올린 수 + 처리한 수
+enum Access : unsigned { LOCAL_WRITE = 1, REMOTE_READ = 2, REMOTE_WRITE = 4, REMOTE_ATOMIC = 8 };
+enum Opcode { SEND, RDMA_WRITE, RDMA_READ, ATOMIC_CAS, ATOMIC_FADD };
+enum Status { SUCCESS, REM_ACCESS_ERR, LOC_PROT_ERR, LOC_LEN_ERR, RNR_ERR };
+struct MR { std::vector<uint8_t> mem; unsigned access; bool valid; };
+struct WR { Opcode op; uint64_t id; uint32_t lkey; size_t loff, len; uint32_t rkey; size_t roff; uint64_t cmp, val; };
+struct Completion { uint64_t id; Status st; uint64_t old; int qp; };
+struct RecvWR { uint32_t lkey; size_t off, len; };
+
 class Node {
-    std::map<uint32_t, Region> mr; uint32_t nextKey = 0x100;
 public:
-    long cpuInvolvements = 0;                                        // 이 노드의 CPU 가 처리에 관여한 횟수 (RDMA 에서는 0)
-    uint32_t registerRegion(size_t bytes, unsigned access) { mr[nextKey] = Region{std::vector<uint8_t>(bytes, 0), access}; return nextKey++; }
-    uint8_t* local(uint32_t key) { return mr.at(key).mem.data(); }
-    // 상대 NIC 가 수행하는 검사 (수신 노드의 CPU 는 호출되지 않는다)
-    void nicWrite(uint32_t rkey, size_t off, const void* src, size_t n) {
-        auto it = mr.find(rkey); if (it == mr.end()) throw std::runtime_error("invalid rkey");
-        if (!(it->second.access & REMOTE_WRITE)) throw std::runtime_error("remote write not permitted");
-        if (off + n > it->second.mem.size()) throw std::runtime_error("out of bounds");
-        std::memcpy(&it->second.mem[off], src, n);
-    }
-    void nicRead(uint32_t rkey, size_t off, void* dst, size_t n) {
-        auto it = mr.find(rkey); if (it == mr.end()) throw std::runtime_error("invalid rkey");
-        if (!(it->second.access & REMOTE_READ)) throw std::runtime_error("remote read not permitted");
-        if (off + n > it->second.mem.size()) throw std::runtime_error("out of bounds");
-        std::memcpy(dst, &it->second.mem[off], n);
+    std::map<uint32_t, MR> mrs; std::deque<RecvWR> recvQ; uint32_t nextKey; long cpuTouches = 0; explicit Node(uint32_t base) : nextKey(base) {}
+    uint32_t reg(size_t bytes, unsigned access) { mrs[nextKey] = MR{std::vector<uint8_t>(bytes, 0), access, true}; return nextKey++; }
+    void dereg(uint32_t key) { mrs.at(key).valid = false; }
+    uint8_t* mem(uint32_t key) { return mrs.at(key).mem.data(); }
+    uint64_t load64(uint32_t key, size_t off) { uint64_t v; std::memcpy(&v, mem(key) + off, 8); return v; }
+    void store64(uint32_t key, size_t off, uint64_t v) { std::memcpy(mem(key) + off, &v, 8); }
+    void postRecv(const RecvWR& r) { recvQ.push_back(r); ++cpuTouches; }                           // 받는 쪽 CPU 가 버퍼를 올린다
+    MR* find(uint32_t key, unsigned need, size_t off, size_t len) {                                  // NIC 의 검사: 존재·유효·권한·범위
+        auto it = mrs.find(key); if (it == mrs.end() || !it->second.valid || (it->second.access & need) != need || off + len > it->second.mem.size()) return nullptr; return &it->second;
     }
 };
-template <class F> bool fails(F f) { try { f(); } catch (const std::runtime_error&) { return true; } return false; }
+
+class Fabric {
+    struct Ev { long time, seq; bool complete; int qp; WR wr; Completion c; bool operator>(const Ev& o) const { return time != o.time ? time > o.time : seq > o.seq; } };
+    std::priority_queue<Ev, std::vector<Ev>, std::greater<Ev>> pq; long now = 0, seq = 0; std::mt19937 rng; std::map<int, long> lastDeliver, lastComplete; struct Qp { int from, to; }; std::vector<Qp> qps;
+public:
+    std::vector<Node> nodes; std::function<void(const Completion&)> onComplete; std::map<int, std::vector<Completion>> cq; long executed = 0;
+    explicit Fabric(int n, uint32_t seed) : rng(seed) { for (int i = 0; i < n; ++i) nodes.emplace_back(0x100u * (uint32_t)(i + 1)); }
+    int connect(int from, int to) { qps.push_back({from, to}); return (int)qps.size() - 1; }
+    void post(int qp, const WR& wr) { long t = std::max(now + 1 + (long)(rng() % 20), lastDeliver[qp] + 1); lastDeliver[qp] = t; pq.push({t, seq++, false, qp, wr, {}}); }   // 지연은 무작위지만 QP 안의 순서는 보존
+    void run() {
+        while (!pq.empty()) {
+            Ev e = pq.top(); pq.pop(); now = e.time;
+            if (!e.complete) { Completion c = execute(e.qp, e.wr); long t = std::max(now + 1 + (long)(rng() % 20), lastComplete[e.qp] + 1); lastComplete[e.qp] = t; pq.push({t, seq++, true, e.qp, e.wr, c}); }
+            else { cq[e.qp].push_back(e.c); if (onComplete) onComplete(e.c); }
+        }
+    }
+    Completion execute(int qp, const WR& w) {                                                         // 응답 노드의 NIC 가 하는 일
+        ++executed; Node& src = nodes[qps[qp].from]; Node& dst = nodes[qps[qp].to]; Completion c{w.id, SUCCESS, 0, qp};
+        bool writesLocal = w.op == RDMA_READ || w.op == ATOMIC_CAS || w.op == ATOMIC_FADD;
+        MR* loc = src.find(w.lkey, writesLocal ? (unsigned)LOCAL_WRITE : 0u, w.loff, w.op == ATOMIC_CAS || w.op == ATOMIC_FADD ? 8 : w.len);
+        if (!loc) { c.st = LOC_PROT_ERR; return c; }                                                    // 보내는 쪽 지역 버퍼 검사
+        if (w.op == SEND) {
+            if (dst.recvQ.empty()) { c.st = RNR_ERR; return c; } RecvWR r = dst.recvQ.front(); dst.recvQ.pop_front(); ++dst.cpuTouches;        // 받는 쪽 CPU 가 완료를 처리
+            MR* buf = dst.find(r.lkey, LOCAL_WRITE, r.off, w.len); if (w.len > r.len || !buf) { c.st = LOC_LEN_ERR; return c; }
+            std::memcpy(&buf->mem[r.off], &loc->mem[w.loff], w.len); return c;
+        }
+        unsigned need = w.op == RDMA_WRITE ? REMOTE_WRITE : w.op == RDMA_READ ? REMOTE_READ : REMOTE_ATOMIC; size_t len = (w.op == ATOMIC_CAS || w.op == ATOMIC_FADD) ? 8 : w.len;
+        MR* rem = dst.find(w.rkey, need, w.roff, len); if (!rem || ((w.op == ATOMIC_CAS || w.op == ATOMIC_FADD) && w.roff % 8)) { c.st = REM_ACCESS_ERR; return c; }   // 상대 CPU 는 쓰이지 않는다
+        if (w.op == RDMA_WRITE) std::memcpy(&rem->mem[w.roff], &loc->mem[w.loff], w.len);
+        else if (w.op == RDMA_READ) std::memcpy(&loc->mem[w.loff], &rem->mem[w.roff], w.len);
+        else { uint64_t old; std::memcpy(&old, &rem->mem[w.roff], 8); uint64_t nv = (w.op == ATOMIC_CAS) ? (old == w.cmp ? w.val : old) : old + w.val; std::memcpy(&rem->mem[w.roff], &nv, 8); std::memcpy(&loc->mem[w.loff], &old, 8); c.old = old; }
+        return c;
+    }
+};
 
 int main() {
-    Node client, server;
-    uint32_t rkey = server.registerRegion(64, REMOTE_READ | REMOTE_WRITE);
-    uint32_t roKey = server.registerRegion(64, REMOTE_READ);
-    const char msg[] = "hello rdma";
-    server.nicWrite(rkey, 8, msg, sizeof msg);                        // 클라이언트가 서버 메모리에 직접 쓴다 (서버 CPU 는 코드를 실행하지 않는다)
-    char back[16] = {0};
-    server.nicRead(rkey, 8, back, sizeof msg);                         // 직접 읽어 온다
-    assert(std::strcmp(back, "hello rdma") == 0 && server.cpuInvolvements == 0);
-    assert(std::memcmp(server.local(rkey) + 8, msg, sizeof msg) == 0); // 서버의 메모리에 실제로 반영됨
-    assert(fails([&] { server.nicWrite(0xdead, 0, msg, 4); }));        // 알 수 없는 rkey
-    assert(fails([&] { server.nicWrite(roKey, 0, msg, 4); }));         // 읽기 전용으로 등록된 영역에 쓰기
-    assert(fails([&] { server.nicWrite(rkey, 62, msg, 8); }));         // 범위 초과
-    (void)client;
-    std::cout << "RDMA: remote write/read completed without involving the target CPU; invalid access rejected by the NIC." << std::endl;
+    // ① 상태 코드
+    {   Fabric f(2, 1); int qp = f.connect(0, 1); Node& cli = f.nodes[0]; Node& srv = f.nodes[1];
+        uint32_t l = cli.reg(64, LOCAL_WRITE), rw = srv.reg(64, REMOTE_READ | REMOTE_WRITE | REMOTE_ATOMIC), ro = srv.reg(64, REMOTE_READ), dead = srv.reg(64, REMOTE_READ | REMOTE_WRITE); srv.dereg(dead);
+        const char msg[] = "hello rdma"; std::memcpy(cli.mem(l), msg, sizeof msg);
+        f.post(qp, {RDMA_WRITE, 1, l, 0, sizeof msg, rw, 8, 0, 0}); f.post(qp, {RDMA_READ, 2, l, 32, sizeof msg, rw, 8, 0, 0});
+        f.post(qp, {RDMA_WRITE, 3, l, 0, 4, ro, 0, 0, 0}); f.post(qp, {RDMA_READ, 4, l, 0, 8, rw, 60, 0, 0}); f.post(qp, {RDMA_READ, 5, l, 0, 8, 0xdead, 0, 0, 0}); f.post(qp, {RDMA_WRITE, 6, l, 0, 4, dead, 0, 0, 0});
+        f.post(qp, {ATOMIC_FADD, 7, l, 48, 0, rw, 3, 0, 1}); f.post(qp, {ATOMIC_FADD, 8, l, 48, 0, ro, 0, 0, 1}); f.post(qp, {RDMA_READ, 9, 0xbeef, 0, 4, rw, 0, 0, 0});
+        f.run(); auto& c = f.cq[qp];
+        assert(c.size() == 9 && c[0].st == SUCCESS && c[1].st == SUCCESS && std::strcmp((char*)cli.mem(l) + 32, "hello rdma") == 0 && srv.cpuTouches == 0);   // 직접 쓰기·읽기, 서버 CPU 불관여
+        assert(c[2].st == REM_ACCESS_ERR && c[3].st == REM_ACCESS_ERR && c[4].st == REM_ACCESS_ERR && c[5].st == REM_ACCESS_ERR);                        // 쓰기 권한 없음, 범위 초과, 잘못된 rkey, 등록 해제됨
+        assert(c[6].st == REM_ACCESS_ERR && c[7].st == REM_ACCESS_ERR && c[8].st == LOC_PROT_ERR);                                                         // 정렬 안 된 원자 연산, 원자 권한 없음, 잘못된 lkey
+        for (size_t i = 0; i < c.size(); ++i) assert(c[i].id == i + 1); }                                                                                  // 완료는 요청 순서
+    // ② 순서 보존
+    {   Fabric f(2, 2); int qp = f.connect(0, 1); uint32_t rw = f.nodes[1].reg(8, REMOTE_WRITE);
+        uint32_t src = f.nodes[0].reg(8 * 1000, LOCAL_WRITE);                                                       // 요청마다 별도의 지역 버퍼 칸 (전송은 나중에 일어나므로)
+        for (uint64_t i = 1; i <= 1000; ++i) f.nodes[0].store64(src, (i - 1) * 8, i * 7);
+        for (uint64_t i = 1; i <= 1000; ++i) f.post(qp, {RDMA_WRITE, i, src, (i - 1) * 8, 8, rw, 0, 0, 0});
+        f.run(); assert(f.nodes[1].load64(rw, 0) == 7000); auto& c = f.cq[qp]; assert(c.size() == 1000); for (size_t i = 0; i < c.size(); ++i) { assert(c[i].id == i + 1 && c[i].st == SUCCESS); } }       // 마지막 값이 남고 완료는 순서대로
+    // ③ 원자 FETCH_ADD
+    {   const int C = 4, N = 1000; Fabric f(1 + C, 3); uint32_t counter = f.nodes[0].reg(8, REMOTE_ATOMIC); std::vector<int> qp(C); std::vector<uint32_t> loc(C);
+        for (int c = 0; c < C; ++c) { qp[c] = f.connect(1 + c, 0); loc[c] = f.nodes[1 + c].reg(8 * N, LOCAL_WRITE); }
+        for (int i = 0; i < N; ++i) for (int c = 0; c < C; ++c) f.post(qp[c], {ATOMIC_FADD, (uint64_t)i, loc[c], (size_t)i * 8, 0, counter, 0, 0, 1});
+        f.run(); assert(f.nodes[0].load64(counter, 0) == (uint64_t)C * N && f.nodes[0].cpuTouches == 0);
+        std::set<uint64_t> olds; for (int c = 0; c < C; ++c) for (int i = 0; i < N; ++i) olds.insert(f.nodes[1 + c].load64(loc[c], (size_t)i * 8));
+        assert(olds.size() == (size_t)C * N && *olds.begin() == 0 && *olds.rbegin() == (uint64_t)C * N - 1); }                                         // 옛 값이 0..3999 를 정확히 한 번씩: 원자성
+    // ④ 원격 스핀락
+    long lostWithLock = 0, lostWithout = 0;
+    for (int useLock = 1; useLock >= 0; --useLock) {
+        const int C = 4, ITER = 50; Fabric f(1 + C, useLock ? 4 : 5); uint32_t lockWord = f.nodes[0].reg(16, REMOTE_ATOMIC | REMOTE_READ | REMOTE_WRITE);       // [0] 락, [8] 공유 카운터
+        std::vector<int> qp(C); std::vector<uint32_t> loc(C); std::vector<int> state(C, 0), done(C, 0);                                                      // state: 0 락 시도, 1 읽는 중, 2 쓰는 중, 3 해제 중
+        for (int c = 0; c < C; ++c) { qp[c] = f.connect(1 + c, 0); loc[c] = f.nodes[1 + c].reg(32, LOCAL_WRITE); }
+        auto step = [&](int c) {
+            if (done[c] == ITER) return;
+            if (state[c] == 0) { if (useLock) { f.post(qp[c], {ATOMIC_CAS, 0, loc[c], 0, 0, lockWord, 0, 0, (uint64_t)c + 1}); } else { state[c] = 1; f.post(qp[c], {RDMA_READ, 1, loc[c], 8, 8, lockWord, 8, 0, 0}); } }
+            else if (state[c] == 1) f.post(qp[c], {RDMA_READ, 1, loc[c], 8, 8, lockWord, 8, 0, 0});
+            else if (state[c] == 2) { uint64_t v = f.nodes[1 + c].load64(loc[c], 8) + 1; f.nodes[1 + c].store64(loc[c], 16, v); f.post(qp[c], {RDMA_WRITE, 2, loc[c], 16, 8, lockWord, 8, 0, 0}); }
+            else { f.nodes[1 + c].store64(loc[c], 24, 0); f.post(qp[c], {RDMA_WRITE, 3, loc[c], 24, 8, lockWord, 0, 0, 0}); }
+        };
+        f.onComplete = [&](const Completion& cp) {
+            int c = cp.qp; assert(cp.st == SUCCESS);
+            if (state[c] == 0) { if (cp.old == 0) { state[c] = 1; } step(c); }                                  // CAS: 옛 값이 0 이면 락을 얻었다, 아니면 다시 시도(스핀)
+            else if (state[c] == 1) { state[c] = 2; step(c); }
+            else if (state[c] == 2) { if (useLock) { state[c] = 3; } else { ++done[c]; state[c] = 0; } step(c); }
+            else { ++done[c]; state[c] = 0; step(c); }
+        };
+        for (int c = 0; c < C; ++c) step(c);
+        f.run(); long total = (long)f.nodes[0].load64(lockWord, 8), want = (long)C * ITER; (useLock ? lostWithLock : lostWithout) = want - total;
+        if (useLock) assert(f.nodes[0].load64(lockWord, 0) == 0);                                              // 끝나면 락이 풀려 있다
+    }
+    assert(lostWithLock == 0 && lostWithout > 0);                                                              // 락이 있으면 한 번도 안 잃고, 없으면 읽기-수정-쓰기가 서로 덮어쓴다
+    // ⑤ SEND / RECV
+    {   Fabric f(2, 6); int qp = f.connect(0, 1); Node& cli = f.nodes[0]; Node& srv = f.nodes[1]; uint32_t l = cli.reg(128, LOCAL_WRITE), rb = srv.reg(256, LOCAL_WRITE);
+        const int R = 5, M = 8; for (int i = 0; i < R; ++i) srv.postRecv({rb, (size_t)i * 32, 32});
+        for (int i = 0; i < M; ++i) { std::memset(cli.mem(l) + i * 16, 'a' + i, 16); f.post(qp, {SEND, (uint64_t)i, l, (size_t)i * 16, 16, 0, 0, 0, 0}); }       // 메시지마다 다른 칸 (전송은 나중에 일어난다)
+        f.run(); auto& c = f.cq[qp]; int ok = 0, rnr = 0; for (auto& x : c) { ok += x.st == SUCCESS; rnr += x.st == RNR_ERR; }
+        assert(ok == R && rnr == M - R && srv.cpuTouches == 2 * R);                                            // 받기 버퍼 5 개 -> 앞의 5 개만 성공, CPU 관여 == 올린 수 + 처리한 수
+        for (int i = 0; i < R; ++i) assert(srv.mem(rb)[i * 32] == 'a' + i);                                      // 각자 다음 받기 버퍼에 순서대로
+        Fabric g(2, 7); int q2 = g.connect(0, 1); uint32_t l2 = g.nodes[0].reg(64, LOCAL_WRITE), rb2 = g.nodes[1].reg(64, LOCAL_WRITE); g.nodes[1].postRecv({rb2, 0, 8});
+        g.post(q2, {SEND, 1, l2, 0, 16, 0, 0, 0, 0}); g.run(); assert(g.cq[q2][0].st == LOC_LEN_ERR); }          // 받기 버퍼보다 큰 메시지
+    std::cout << "RDMA verified: error codes, per-QP ordering with random delays, atomic FETCH_ADD uniqueness over 4000 operations, remote CAS lock (0 lost updates vs " << lostWithout << " without), SEND/RNR accounting." << std::endl;
     return 0;
 }
-// Time Complexity: O(n) 복사 (NIC 가 DMA)
-// Space Complexity: 등록된 영역(고정 메모리)
+// Time Complexity: 연산당 O(1) 검사 (NIC 가 처리), 시뮬레이션은 사건 수 · log
+// Space Complexity: 등록한 영역 크기
 ```
 ## MemoryCompression()
 ### 대표코드
@@ -7600,14 +7824,22 @@ int main() {
 ## OwnershipTypeSystem()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <random>
 #include <stdexcept>
 #include <string>
-#include <cassert>
+#include <vector>
 
 // 소유권 타입 시스템(Rust): (1) 값의 소유자는 하나  (2) 소유권이 이동(move)하면 원래 변수는 사용 불가  (3) 빌림(borrow) 규칙: 읽기 참조는 여러 개 OR 쓰기 참조는 정확히 한 개 (동시에는 불가)
-// -> 데이터 경쟁과 댕글링 참조를 컴파일 시점에 막는다.  Rust 는 컴파일러가 하지만, 여기서는 같은 규칙을 런타임 검사로 흉내 내 규칙의 의미를 확인한다 (RefCell 과 비슷)
+// -> 데이터 경쟁과 댕글링 참조를 컴파일 시점에 막는다.  Rust 는 컴파일러가 하지만, 여기서는 같은 규칙을 두 가지로 구현한다:
+//  (A) 런타임 검사 Owned<T> (RefCell 과 비슷): 위반하는 순간 예외  (B) 작은 언어의 "빌림 검사기": 정적 분석(참조의 마지막 사용까지만 빌림이 살아 있다는 NLL 방식의 생존 구간 + 접근과 충돌 검사)
+//  (C) 같은 프로그램을 앞에서부터 실행하며 "소유자에 접근하면 충돌하는 참조를 무효화하고, 무효화된 참조를 쓰면 오류" 로 판정하는 동적 검사기 (Stacked Borrows 와 비슷한 발상)
+// 검증: 무작위 프로그램 30 000 개에서 정적 검사기(B)와 동적 검사기(C)가 (1) 통과/거부가 항상 같고 (2) 거부할 때 첫 오류가 일어나는 문장 번호까지 같다 — 서로 다른 알고리즘이 같은 규칙을 구현함을 보인다.
+//        손으로 짠 대표 예 6 개: 읽기 참조 여러 개 OK / 쓰기 참조 하나 / 읽기와 쓰기 동시 거부 / NLL(마지막 사용 뒤 쓰기 OK, 어휘적 범위였다면 거부) / 이동 후 사용 거부 / 빌린 채 이동 거부
 template <class T> class Owned {
     std::unique_ptr<T> v; int shared = 0; bool mut = false;
 public:
@@ -7620,21 +7852,103 @@ public:
 };
 template <class F> bool throws(F f) { try { f(); } catch (const std::logic_error&) { return true; } return false; }
 
+// 작은 언어: 변수 번호는 한 번만 정의된다 (SSA 비슷)
+enum Kind { LET, BORROW, BORROW_MUT, USE, USE_MUT, READ, WRITE, MOVE };      // LET a: 소유자 a / BORROW a = &b / BORROW_MUT a = &mut b / USE a: 참조 a 로 읽기 / USE_MUT a: 참조 a 로 쓰기 / READ a, WRITE a: 소유자 직접 접근 / MOVE a -> b
+struct Stmt { Kind k; int a, b; };
+typedef std::vector<Stmt> Prog;
+
+int staticFirstError(const Prog& p) {                                           // (B) 생존 구간 + 충돌: 첫 오류 문장 번호, 없으면 -1
+    int n = (int)p.size(); std::map<int, int> def, lastUse, owner, movedAt; std::map<int, bool> isMut;
+    for (int i = 0; i < n; ++i) {
+        const Stmt& s = p[i];
+        if (s.k == BORROW || s.k == BORROW_MUT) { def[s.a] = i; lastUse[s.a] = i; owner[s.a] = s.b; isMut[s.a] = s.k == BORROW_MUT; }
+        if (s.k == USE || s.k == USE_MUT) lastUse[s.a] = i;
+        if (s.k == MOVE && !movedAt.count(s.a)) movedAt[s.a] = i;
+    }
+    int best = n + 1;
+    for (int i = 0; i < n; ++i) {
+        const Stmt& s = p[i]; int x = -1; bool write = false;                     // 이 문장이 소유자 x 에 하는 접근
+        if (s.k == BORROW) x = s.b; else if (s.k == BORROW_MUT) { x = s.b; write = true; } else if (s.k == READ) x = s.a; else if (s.k == WRITE) { x = s.a; write = true; } else if (s.k == MOVE) { x = s.a; write = true; }
+        if (x < 0) continue;
+        if (movedAt.count(x) && movedAt[x] < i) best = std::min(best, i);       // 이동한 소유자에 접근
+        for (auto& kv : owner) {                                                // 이 접근에서 아직 살아 있는(나중에 쓰이는) 참조와의 충돌
+            int r = kv.first; if (kv.second != x || def[r] >= i || lastUse[r] <= i) continue;
+            if (write || isMut[r]) { for (int j = i + 1; j <= lastUse[r]; ++j) if ((p[j].k == USE || p[j].k == USE_MUT) && p[j].a == r) { best = std::min(best, j); break; } }   // 오류는 충돌 뒤 처음 그 참조를 쓰는 곳에서 드러난다
+        }
+    }
+    return best == n + 1 ? -1 : best;
+}
+
+int dynamicFirstError(const Prog& p) {                                          // (C) 실행하며 무효화: 첫 오류 문장 번호, 없으면 -1
+    std::map<int, bool> moved, valid; std::map<int, int> owner; std::map<int, bool> isMut;
+    auto invalidate = [&](int x, bool onlyMut) { for (auto& kv : owner) if (kv.second == x && (!onlyMut || isMut[kv.first])) valid[kv.first] = false; };
+    for (int i = 0; i < (int)p.size(); ++i) {
+        const Stmt& s = p[i];
+        switch (s.k) {
+            case LET: break;
+            case BORROW: if (moved[s.b]) return i; invalidate(s.b, true); owner[s.a] = s.b; isMut[s.a] = false; valid[s.a] = true; break;
+            case BORROW_MUT: if (moved[s.b]) return i; invalidate(s.b, false); owner[s.a] = s.b; isMut[s.a] = true; valid[s.a] = true; break;
+            case USE: case USE_MUT: if (!valid[s.a]) return i; break;
+            case READ: if (moved[s.a]) return i; invalidate(s.a, true); break;
+            case WRITE: if (moved[s.a]) return i; invalidate(s.a, false); break;
+            case MOVE: if (moved[s.a]) return i; invalidate(s.a, false); moved[s.a] = true; break;
+        }
+    }
+    return -1;
+}
+
+Prog randomProgram(std::mt19937& rng) {
+    Prog p; int next = 0; std::vector<int> owners; std::vector<std::pair<int, bool>> refs;                  // 참조 (번호, 쓰기 가능?)
+    int n = 5 + (int)(rng() % 14);
+    for (int i = 0; i < n; ++i) {
+        int r = (int)(rng() % 100);
+        if (owners.empty() || r < 12) { owners.push_back(next); p.push_back({LET, next++, 0}); }
+        else if (r < 32) { int x = owners[rng() % owners.size()]; refs.push_back({next, false}); p.push_back({BORROW, next++, x}); }
+        else if (r < 44) { int x = owners[rng() % owners.size()]; refs.push_back({next, true}); p.push_back({BORROW_MUT, next++, x}); }
+        else if (r < 64 && !refs.empty()) p.push_back({USE, refs[rng() % refs.size()].first, 0});
+        else if (r < 72) { std::vector<int> mr; for (auto& q : refs) if (q.second) mr.push_back(q.first); if (!mr.empty()) p.push_back({USE_MUT, mr[rng() % mr.size()], 0}); }
+        else if (r < 80) p.push_back({READ, owners[rng() % owners.size()], 0});
+        else if (r < 87) p.push_back({WRITE, owners[rng() % owners.size()], 0});
+        else if (r < 93) { int x = owners[rng() % owners.size()]; owners.push_back(next); p.push_back({MOVE, x, next++}); }
+    }
+    return p;
+}
+
 int main() {
-    Owned<std::string> a(std::string("data"));
-    { auto r1 = a.borrow(); auto r2 = a.borrow(); assert(r1.get() == "data" && r2.get() == "data"); }     // 읽기 참조는 여러 개 가능
-    { auto w = a.borrowMut(); w.getMut() += "!"; }                                                            // 쓰기 참조는 하나
-    assert(a.borrow().get() == "data!");
-    { auto r = a.borrow(); assert(throws([&] { a.borrowMut(); })); }                                         // 읽는 중에 쓰기 참조 -> 위반
-    { auto w = a.borrowMut(); assert(throws([&] { a.borrow(); })); assert(throws([&] { a.borrowMut(); })); } // 쓰는 중에는 어떤 참조도 불가
-    assert(!throws([&] { a.borrowMut(); }));                                                                  // 참조가 끝나면 다시 가능
-    Owned<std::string> b = std::move(a);                                                                      // 소유권 이동
-    assert(a.moved() && !b.moved() && throws([&] { a.borrow(); }));                                           // 이동 후 원본 사용은 오류
-    std::cout << "OwnershipTypeSystem: aliasing XOR mutation enforced; use after move rejected." << std::endl;
+    // (A) 런타임 검사 (원래 예)
+    {   Owned<std::string> a(std::string("data"));
+        { auto r1 = a.borrow(); auto r2 = a.borrow(); assert(r1.get() == "data" && r2.get() == "data"); }
+        { auto w = a.borrowMut(); w.getMut() += "!"; }
+        assert(a.borrow().get() == "data!");
+        { auto r = a.borrow(); assert(throws([&] { a.borrowMut(); })); }
+        { auto w = a.borrowMut(); assert(throws([&] { a.borrow(); })); assert(throws([&] { a.borrowMut(); })); }
+        assert(!throws([&] { a.borrowMut(); }));
+        Owned<std::string> b = std::move(a); assert(a.moved() && !b.moved() && throws([&] { a.borrow(); })); }
+    // 손으로 짠 예: 변수 0 = x (소유자), 1.. = 참조/새 소유자
+    {   Prog sharedOk = {{LET, 0, 0}, {BORROW, 1, 0}, {BORROW, 2, 0}, {USE, 1, 0}, {USE, 2, 0}};                             // 읽기 참조 여러 개
+        Prog mutOk = {{LET, 0, 0}, {BORROW_MUT, 1, 0}, {USE_MUT, 1, 0}, {USE_MUT, 1, 0}};                                       // 쓰기 참조 하나
+        Prog both = {{LET, 0, 0}, {BORROW, 1, 0}, {BORROW_MUT, 2, 0}, {USE, 1, 0}};                                             // 읽기 참조가 살아 있는 동안 쓰기 참조
+        Prog nll = {{LET, 0, 0}, {BORROW, 1, 0}, {USE, 1, 0}, {WRITE, 0, 0}};                                                   // 마지막 사용 뒤의 쓰기는 OK (어휘적 범위였다면 거부될 것)
+        Prog nllBad = {{LET, 0, 0}, {BORROW, 1, 0}, {WRITE, 0, 0}, {USE, 1, 0}};                                                // 쓰기 뒤에 참조를 다시 쓰면 거부
+        Prog useAfterMove = {{LET, 0, 0}, {MOVE, 0, 1}, {READ, 0, 0}};                                                          // 이동 후 사용
+        Prog moveWhileBorrowed = {{LET, 0, 0}, {BORROW, 1, 0}, {MOVE, 0, 2}, {USE, 1, 0}};                                      // 빌린 채 이동
+        assert(staticFirstError(sharedOk) == -1 && staticFirstError(mutOk) == -1 && staticFirstError(nll) == -1);
+        assert(staticFirstError(both) == 3 && staticFirstError(nllBad) == 3 && staticFirstError(useAfterMove) == 2 && staticFirstError(moveWhileBorrowed) == 3);
+        for (const Prog* q : {&sharedOk, &mutOk, &both, &nll, &nllBad, &useAfterMove, &moveWhileBorrowed}) assert(staticFirstError(*q) == dynamicFirstError(*q)); }
+    // 무작위 프로그램: 정적 == 동적
+    std::mt19937 rng(2025); long accepted = 0, rejected = 0, useAfterMoveErrors = 0, conflictErrors = 0;
+    for (int it = 0; it < 30000; ++it) {
+        Prog p = randomProgram(rng); int s = staticFirstError(p), d = dynamicFirstError(p);
+        assert(s == d);                                                                                                         // 통과/거부와 첫 오류 문장이 같다
+        if (s < 0) ++accepted; else { ++rejected; if (p[s].k == USE || p[s].k == USE_MUT) ++conflictErrors; else ++useAfterMoveErrors; }
+    }
+    assert(accepted > 3000 && rejected > 3000 && useAfterMoveErrors > 100 && conflictErrors > 1000);
+    std::cout << "OwnershipTypeSystem verified: static (liveness + conflicts) and dynamic (invalidate on access) borrow checkers agreed on all 30000 random programs (" << accepted << " accepted, " << rejected << " rejected: "
+              << conflictErrors << " reference-invalidated, " << useAfterMoveErrors << " use-after-move/borrow-after-move)." << std::endl;
     return 0;
 }
-// Time Complexity: O(1) 검사
-// Space Complexity: O(1)
+// Time Complexity: O(1) 런타임 검사, 정적 검사기 O(문장 수² · 참조 수) (설명용)
+// Space Complexity: O(1) / O(변수 수)
 ```
 ## PersistentHeap()
 ### 대표코드
@@ -7702,198 +8016,497 @@ int main() {
 ## TransactionalMemory()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
 #include <atomic>
-#include <mutex>
-#include <stdexcept>
-#include <thread>
-#include <unordered_map>
-#include <vector>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <numeric>
+#include <random>
+#include <set>
+#include <thread>
+#include <vector>
 
 // 소프트웨어 트랜잭셔널 메모리(STM, TL2 방식): 락 대신 트랜잭션으로 공유 변수를 다룬다.  읽기는 낙관적으로(락 없이) 하고 쓰기는 버퍼에 모았다가,
 // 커밋할 때 "내가 읽은 변수들이 시작 이후 바뀌지 않았는가"(버전 검증)를 확인한다.  충돌했으면 버리고 처음부터 재시도 — 교착 상태가 없고 조합이 쉽다
-struct TVar { std::atomic<int> value{0}; std::atomic<long> version{0}; };       // 낙관적 읽기와 커밋 쓰기가 겹칠 수 있으므로 값도 원자 변수로 둔다 (겹침은 버전 검사로 걸러낸다)
-std::atomic<long> globalClock(0); std::mutex commitLock;
+// TL2 의 구성: 전역 시계 gclock, 변수마다 "버전 + 잠금 비트" 한 워드.  트랜잭션은 시작할 때 rv = gclock 을 읽고, 읽을 때마다 (잠겨 있지 않고, 읽는 동안 안 바뀌고, 버전 <= rv) 를 확인해 일관된 스냅샷만 본다(opacity:
+// 나중에 중단될 트랜잭션도 모순된 상태를 보지 않는다).  커밋: ① 쓰기 집합을 주소 순서로 잠금(실패하면 중단) ② wv = gclock 증가 ③ 읽기 집합 재검증(버전 > rv 이거나 남이 잠갔으면 중단) ④ 값 쓰기 ⑤ 버전 wv 로 풀기
+// 검증: ① 모든 가능한 끼어들기(interleaving)를 전수 탐색 — 트랜잭션 2 개(연산 4 개 + 커밋) 252 가지, 3 개(연산 2 개 + 커밋) 1 680 가지, 쓰기 편향 시나리오: 각 일정에서 커밋된 트랜잭션들이 "어떤 순차 순서"로 실행한 것과
+//        읽은 값·최종 상태가 같고(직렬화 가능성), 중단된 트랜잭션이 읽은 값도 그 순서의 어떤 시점의 일관된 상태에 해당(opacity), 끼어들지 않은 순차 일정에서는 중단이 없다
+//        ② 진짜 스레드: x == y 불변식을 지키는 쓰기 스레드 4 개와 둘을 읽는 스레드 4 개 — 읽는 쪽이 트랜잭션 안에서(중단될 시도 포함) 불변식이 깨진 값을 본 횟수 0  ③ 계좌 16 개 이체 스레드 4 개 × 5 000 번 + 감사 스레드 2 개의 전체 합(읽기 전용 트랜잭션):
+//        감사가 본 합은 항상 16 000, 최종 합 보존, 중단(재시도) 횟수 > 0
+struct Abort {};
+struct TVar { std::atomic<uint64_t> vlock{0}; std::atomic<int64_t> value{0}; };                  // vlock = (버전 << 1) | 잠금 비트
+std::atomic<uint64_t> gclock{0};
+std::atomic<long> commits{0}, aborts{0};
 
 struct Tx {
-    long start = globalClock.load();
-    std::unordered_map<TVar*, long> readSet;                         // 읽은 변수 -> 읽은 시점의 버전
-    std::unordered_map<TVar*, int> writeBuf;
-    int read(TVar& v) {
-        auto w = writeBuf.find(&v); if (w != writeBuf.end()) return w->second;     // 자기 쓰기 우선
-        long ver = v.version.load(); int val = v.value;
-        if (v.version.load() != ver || ver > start) throw std::runtime_error("conflict");   // 읽는 도중이거나 시작 후에 바뀐 값
-        readSet[&v] = ver; return val;
+    uint64_t rv; std::map<TVar*, int64_t> wset; std::vector<TVar*> rset;
+    Tx() : rv(gclock.load()) {}
+    int64_t read(TVar& v) {
+        auto w = wset.find(&v); if (w != wset.end()) return w->second;                           // 자기 쓰기 우선
+        uint64_t l1 = v.vlock.load(); int64_t val = v.value.load(); uint64_t l2 = v.vlock.load();
+        if ((l1 & 1) || l1 != l2 || (l1 >> 1) > rv) throw Abort();                              // 잠겨 있거나, 읽는 도중 바뀌었거나, 내 시작 뒤에 커밋된 값
+        rset.push_back(&v); return val;
     }
-    void write(TVar& v, int x) { writeBuf[&v] = x; }
+    void write(TVar& v, int64_t x) { wset[&v] = x; }
     void commit() {
-        std::lock_guard<std::mutex> g(commitLock);
-        for (auto& r : readSet) if (r.first->version.load() != r.second) throw std::runtime_error("conflict");   // 읽기 집합 검증
-        long wv = globalClock.fetch_add(1) + 1;
-        for (auto& w : writeBuf) { w.first->value = w.second; w.first->version.store(wv); }                    // 쓰기 반영
+        if (wset.empty()) return;                                                               // 읽기 전용: 읽을 때마다 일관성을 확인했으므로 커밋 작업이 없다
+        std::vector<TVar*> locked;
+        auto unlockAll = [&] { for (TVar* v : locked) v->vlock.fetch_and(~1ULL); };
+        for (auto& kv : wset) {                                                                  // 주소 순서대로 잠금 (교착 방지)
+            TVar* v = kv.first; uint64_t l = v->vlock.load();
+            if ((l & 1) || !v->vlock.compare_exchange_strong(l, l | 1)) { unlockAll(); throw Abort(); }
+            locked.push_back(v);
+        }
+        uint64_t wv = gclock.fetch_add(1) + 1;
+        for (TVar* r : rset) { uint64_t l = r->vlock.load(); bool mine = wset.count(r) > 0; if ((l >> 1) > rv || ((l & 1) && !mine)) { unlockAll(); throw Abort(); } }   // 읽기 집합 재검증
+        for (auto& kv : wset) kv.first->value.store(kv.second);
+        for (TVar* v : locked) v->vlock.store(wv << 1);                                          // 새 버전으로 풀기
     }
 };
-template <class F> void atomically(F f) { for (;;) { Tx tx; try { f(tx); tx.commit(); return; } catch (const std::runtime_error&) {} } }
+template <class F> void atomically(F f) { for (;;) { Tx tx; try { f(tx); tx.commit(); ++commits; return; } catch (const Abort&) { ++aborts; } } }
+
+// 전수 탐색용 프로그램: 연산 R(읽기), W(쓰기: 변수 = reg[a] + reg[b] + c), 마지막은 항상 커밋
+struct Op { char k; int var, reg, a, b; int64_t c; };
+typedef std::vector<Op> Program;
+struct Observed { bool committed = false, aborted = false; std::vector<std::pair<int, int64_t>> reads; std::vector<int64_t> regs = std::vector<int64_t>(4, 0); };
+const int NV = 3;
+TVar tv[NV];
+void resetVars(const std::vector<int64_t>& init) { gclock = 0; for (int i = 0; i < NV; ++i) { tv[i].vlock = 0; tv[i].value = init[(size_t)i]; } }
+
+std::vector<Observed> runSchedule(const std::vector<Program>& progs, const std::vector<int>& schedule, const std::vector<int64_t>& init, std::vector<int64_t>& finalState) {
+    resetVars(init); size_t n = progs.size(); std::vector<Observed> obs(n); std::vector<size_t> pc(n, 0); std::vector<Tx*> txs(n, nullptr);
+    for (int t : schedule) {
+        size_t i = (size_t)t; if (obs[i].aborted) continue;
+        if (!txs[i]) txs[i] = new Tx();                                                           // 트랜잭션은 첫 연산 때 시작 (rv 를 읽는다)
+        const Op& op = progs[i][pc[i]++];
+        try {
+            if (op.k == 'R') { int64_t v = txs[i]->read(tv[op.var]); obs[i].regs[(size_t)op.reg] = v; obs[i].reads.push_back({op.var, v}); }
+            else if (op.k == 'W') txs[i]->write(tv[op.var], (op.a >= 0 ? obs[i].regs[(size_t)op.a] : 0) + (op.b >= 0 ? obs[i].regs[(size_t)op.b] : 0) + op.c);
+            else { txs[i]->commit(); obs[i].committed = true; }
+        } catch (const Abort&) { obs[i].aborted = true; }
+    }
+    for (Tx* t : txs) delete t;
+    finalState.assign((size_t)NV, 0); for (int i = 0; i < NV; ++i) finalState[(size_t)i] = tv[i].value.load(); return obs;
+}
+
+// 직렬화 가능성 + opacity 검사: 커밋된 트랜잭션들의 어떤 순서 π 가 모든 읽기와 최종 상태를 설명하고, 중단된 트랜잭션이 읽은 값은 π 의 어떤 접두 상태와 일치
+bool explains(const std::vector<Program>& progs, const std::vector<Observed>& obs, const std::vector<int64_t>& init, const std::vector<int64_t>& finalState) {
+    std::vector<int> committed, abortedTx; for (size_t i = 0; i < obs.size(); ++i) (obs[i].committed ? committed : abortedTx).push_back((int)i);
+    std::sort(committed.begin(), committed.end());
+    do {
+        std::vector<std::vector<int64_t>> states{init}; bool ok = true;
+        for (int t : committed) {
+            std::vector<int64_t> s = states.back(), regs(4, 0);
+            for (const Op& op : progs[(size_t)t]) {
+                if (op.k == 'R') { regs[(size_t)op.reg] = states.back()[(size_t)op.var]; }
+                else if (op.k == 'W') s[(size_t)op.var] = (op.a >= 0 ? regs[(size_t)op.a] : 0) + (op.b >= 0 ? regs[(size_t)op.b] : 0) + op.c;
+            }
+            for (const auto& r : obs[(size_t)t].reads) { if (states.back()[(size_t)r.first] != r.second) ok = false; }          // 이 트랜잭션이 본 값 == 순서상 바로 앞 상태
+            states.push_back(s);
+        }
+        if (!ok || states.back() != finalState) continue;
+        for (int t : abortedTx) {                                                                  // opacity: 중단된 트랜잭션도 어떤 시점의 일관된 스냅샷을 봤다
+            bool any = false; for (const auto& st : states) { bool match = true; for (const auto& r : obs[(size_t)t].reads) { if (st[(size_t)r.first] != r.second) match = false; } any |= match; }
+            if (!any) { ok = false; break; }
+        }
+        if (ok) return true;
+    } while (std::next_permutation(committed.begin(), committed.end()));
+    return false;
+}
+
+void allSchedules(std::vector<int> remaining, std::vector<int>& cur, std::vector<std::vector<int>>& out) {
+    bool any = false;
+    for (size_t t = 0; t < remaining.size(); ++t) { if (remaining[t] == 0) continue; any = true; --remaining[t]; cur.push_back((int)t); allSchedules(remaining, cur, out); cur.pop_back(); ++remaining[t]; }
+    if (!any) out.push_back(cur);
+}
+bool isSerial(const std::vector<int>& sch) { std::set<int> done; int prev = -1; for (int t : sch) { if (t != prev) { if (done.count(t)) return false; if (prev >= 0) done.insert(prev); prev = t; } } return true; }
+
+struct Scenario { std::vector<Program> progs; std::vector<int64_t> init; };
+struct Totals { long schedules = 0, withAbort = 0, allCommit = 0, serial = 0; };
+Totals exploreAll(const Scenario& sc) {
+    std::vector<int> lens; for (const auto& p : sc.progs) lens.push_back((int)p.size()); std::vector<std::vector<int>> all; std::vector<int> cur; allSchedules(lens, cur, all); Totals t;
+    for (const auto& sch : all) {
+        std::vector<int64_t> fin; auto obs = runSchedule(sc.progs, sch, sc.init, fin); assert(explains(sc.progs, obs, sc.init, fin));
+        bool anyAbort = false; for (const auto& o : obs) anyAbort |= o.aborted; ++t.schedules; t.withAbort += anyAbort; t.allCommit += !anyAbort;
+        if (isSerial(sch)) { ++t.serial; assert(!anyAbort); }                                       // 끼어들지 않은 일정에서는 중단이 없다
+    }
+    return t;
+}
 
 int main() {
-    // 결정적 충돌: tx1 이 x 를 읽은 뒤 tx2 가 x 를 바꿔 커밋하면 tx1 의 커밋은 실패해야 한다
-    TVar x; x.value = 5;
-    Tx tx1; int seen = tx1.read(x);
-    atomically([&](Tx& t) { t.write(x, t.read(x) + 1); });
-    tx1.write(x, seen + 100);
-    bool conflicted = false; try { tx1.commit(); } catch (const std::runtime_error&) { conflicted = true; }
-    assert(conflicted && x.value == 6);                              // tx1 의 쓰기는 반영되지 않았다 (낡은 읽기에 기반한 갱신 차단)
-
-    // 여러 스레드가 두 계좌 사이에서 동시에 이체: 락 없이도 합계가 보존된다
-    TVar a, b; a.value = 1000; b.value = 1000;
-    std::vector<std::thread> th;
-    for (int t = 0; t < 4; t++) th.emplace_back([&, t] { for (int i = 0; i < 2000; i++) atomically([&](Tx& tx) { int amount = 1 + (i + t) % 5; tx.write(a, tx.read(a) - amount); tx.write(b, tx.read(b) + amount); }); });
-    for (auto& s : th) s.join();
-    assert(a.value + b.value == 2000);                               // 불변식 유지
-    assert(a.value != 1000);                                         // 이체가 실제로 일어났다
-    std::cout << "TransactionalMemory: stale transaction aborted; 8000 concurrent transfers kept the total at " << a.value + b.value << std::endl;
+    // 결정적 충돌: tx1 이 x 를 읽은 뒤 tx2 가 x 를 바꿔 커밋하면 tx1 의 커밋은 실패해야 한다 (원래 예)
+    {   resetVars({5, 0, 0}); Tx t1; int64_t seen = t1.read(tv[0]); atomically([&](Tx& t) { t.write(tv[0], t.read(tv[0]) + 1); });
+        t1.write(tv[0], seen + 100); bool conflicted = false; try { t1.commit(); } catch (const Abort&) { conflicted = true; }
+        assert(conflicted && tv[0].value == 6); }                                                       // tx1 의 쓰기는 반영되지 않았다 (낡은 읽기에 기반한 갱신 차단)
+    // ① 전수 탐색
+    Totals tA, tB, tC;
+    {   Scenario a; a.init = {0, 0, 0};                                                                   // 서로의 변수를 읽고 쓰는 두 트랜잭션
+        a.progs.push_back({{'R', 0, 0, 0, 0, 0}, {'R', 1, 1, 0, 0, 0}, {'W', 0, 0, 0, 1, 1}, {'W', 1, 0, 1, -1, 1}, {'C', 0, 0, 0, 0, 0}});
+        a.progs.push_back({{'R', 1, 0, 0, 0, 0}, {'R', 0, 1, 0, 0, 0}, {'W', 1, 0, 0, 1, 10}, {'W', 0, 0, 1, -1, 10}, {'C', 0, 0, 0, 0, 0}});
+        tA = exploreAll(a); assert(tA.schedules == 252 && tA.serial == 2 && tA.withAbort > 100); }
+    {   Scenario b; b.init = {0, 0, 0};                                                                   // 고리 모양 의존: x -> y -> z -> x
+        b.progs.push_back({{'R', 0, 0, 0, 0, 0}, {'W', 1, 0, 0, -1, 1}, {'C', 0, 0, 0, 0, 0}});
+        b.progs.push_back({{'R', 1, 0, 0, 0, 0}, {'W', 2, 0, 0, -1, 1}, {'C', 0, 0, 0, 0, 0}});
+        b.progs.push_back({{'R', 2, 0, 0, 0, 0}, {'W', 0, 0, 0, -1, 1}, {'C', 0, 0, 0, 0, 0}});
+        tB = exploreAll(b); assert(tB.schedules == 1680 && tB.serial == 6); }
+    {   Scenario c; c.init = {1, 1, 0};                                                                   // 쓰기 편향(write skew): 둘 다 x, y 를 읽고 서로 다른 변수만 갱신
+        c.progs.push_back({{'R', 0, 0, 0, 0, 0}, {'R', 1, 1, 0, 0, 0}, {'W', 0, 0, 0, 1, -2}, {'C', 0, 0, 0, 0, 0}});
+        c.progs.push_back({{'R', 0, 0, 0, 0, 0}, {'R', 1, 1, 0, 0, 0}, {'W', 1, 0, 0, 1, -2}, {'C', 0, 0, 0, 0, 0}});
+        tC = exploreAll(c); assert(tC.schedules == 70 && tC.withAbort > 20 && tC.allCommit > 0); }          // 직렬화 불가능한 결과는 어떤 일정에서도 나오지 않는다 (exploreAll 안의 assert)
+    // ② 진짜 스레드: opacity
+    {   TVar x, y; std::atomic<long> bad{0}, reads{0}; std::atomic<bool> stop{false}; std::vector<std::thread> ts;
+        for (int w = 0; w < 4; ++w) ts.emplace_back([&] { for (int i = 0; i < 5000; ++i) atomically([&](Tx& tx) { int64_t v = tx.read(x); tx.write(x, v + 1); tx.write(y, v + 1); }); });
+        std::vector<std::thread> rs;
+        for (int r = 0; r < 4; ++r) rs.emplace_back([&] { while (!stop) { atomically([&](Tx& tx) { int64_t a = tx.read(x), b = tx.read(y); if (a != b) ++bad; ++reads; }); } });         // 중단될 시도 안에서도 검사
+        for (auto& t : ts) { t.join(); }
+        stop = true; for (auto& t : rs) { t.join(); }
+        assert(bad == 0 && x.value == 20000 && y.value == 20000 && reads > 100); }
+    // ③ 은행 계좌
+    {   const int A = 16; std::vector<TVar> acct(A); for (auto& a : acct) a.value = 1000; std::atomic<long> badSum{0}, audits{0}; std::atomic<bool> stop{false}; commits = aborts = 0; std::vector<std::thread> ts, auditors;
+        for (int t = 0; t < 4; ++t) ts.emplace_back([&, t] { std::mt19937 rng(t + 1); for (int i = 0; i < 5000; ++i) { int from = (int)(rng() % A), to = (int)(rng() % A); int64_t amount = 1 + (int64_t)(rng() % 50);
+            atomically([&](Tx& tx) { int64_t f = tx.read(acct[from]); if (from == to) return; int64_t g = tx.read(acct[to]); tx.write(acct[from], f - amount); tx.write(acct[to], g + amount); }); } });
+        for (int a = 0; a < 2; ++a) auditors.emplace_back([&] { for (int i = 0; i < 5000 && !stop; ++i) { atomically([&](Tx& tx) { int64_t s = 0; for (auto& v : acct) s += tx.read(v); if (s != 16000) ++badSum; ++audits; }); } });
+        for (auto& t : ts) { t.join(); }
+        stop = true; for (auto& t : auditors) { t.join(); }
+        int64_t total = 0; for (auto& a : acct) total += a.value; assert(total == 16000 && badSum == 0 && audits > 10 && aborts > 0); }
+    std::cout << "TransactionalMemory verified: all " << tA.schedules + tB.schedules + tC.schedules << " interleavings serializable and opaque (" << tA.withAbort + tB.withAbort + tC.withAbort << " with aborts), no torn snapshot seen by 4 readers, 20000 concurrent transfers kept the total at 16000 with " << aborts << " retries." << std::endl;
     return 0;
 }
-// Time Complexity: 트랜잭션당 O(읽기 + 쓰기 집합), 충돌 시 재시도
-// Space Complexity: O(읽기·쓰기 집합)
+// Time Complexity: 읽기 O(1) (+ 쓰기 집합 조회), 커밋 O(쓰기 집합 · log + 읽기 집합)
+// Space Complexity: 트랜잭션당 O(읽기 집합 + 쓰기 집합), 변수당 한 워드(버전 + 잠금 비트)
 ```
 ## CapabilityPointer()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <stdexcept>
-#include <vector>
+#include <algorithm>
+#include <bitset>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
 // 케이퍼빌리티 포인터(CHERI): 포인터를 "주소" 만이 아니라 (기준 주소 base, 길이 length, 권한 perms) 를 함께 담은 불변 토큰으로 만든다.
 // 접근할 때 하드웨어가 범위와 권한을 검사한다.  케이퍼빌리티는 "축소만" 가능하다(단조성): 더 좁은 범위·더 적은 권한은 만들 수 있지만 넓히거나 권한을 추가할 수는 없다 -> 최소 권한 원칙을 하드웨어가 강제
-enum Perm : unsigned { LOAD = 1, STORE = 2 };
+// 이 구현은 CHERI 의 규칙을 순서대로 갖춘다: 유효 비트(tag), 커서(cursor, 현재 주소), 권한 비트 7 개, 봉인(sealed, 객체 유형 otype),  연산은 위반 시 예외가 아니라 "유효 비트를 끈 케이퍼빌리티"를 돌려주고
+//  (사용하는 순간 트랩), 접근 검사 순서는 유효 비트 -> 봉인 -> 권한 -> 범위.  경계 압축: 가수 8 비트 모형이라 긴 객체는 정렬된 경계로 올림되는데, 올림 결과가 부모 범위를 벗어나면 유효 비트를 끈다(올림으로 권한이 커지지 않는다)
+// 검증: ① 무작위 파생 연쇄 200 000 번(setBounds, andPerms, setAddr, seal, unseal): 모든 파생물의 권한(권한 x 주소 집합)이 부모의 권한 부분집합 — 단조성  ② 경계 올림: 결과가 요청을 포함하고, 정렬되고, 최소(더 작은 표현 가능한 경계가 없음, 전수 비교),
+//        길이 <= 256 이면 정확  ③ 접근 오류 종류가 바이트별 기준과 같음  ④ 봉인된 케이퍼빌리티는 호출(invoke) 쌍으로만 열린다 — 호출자는 데이터를 직접 못 읽는다
+enum Perm : unsigned { LOAD = 1, STORE = 2, EXEC = 4, SEAL = 8, UNSEAL = 16, LOAD_CAP = 32, STORE_CAP = 64, ALL = 127 };
+enum Fault { NONE, TAG_FAULT, SEAL_FAULT, PERM_FAULT, BOUNDS_FAULT };
 struct Cap {
-    uint64_t base, length, addr; unsigned perms;
-    Cap derive(uint64_t newBase, uint64_t newLen, unsigned newPerms) const {
-        if (newBase < base || newBase + newLen > base + length) throw std::runtime_error("monotonicity: range would widen");
-        if (newPerms & ~perms) throw std::runtime_error("monotonicity: permissions would increase");
-        return {newBase, newLen, newBase, newPerms};
-    }
+    uint64_t base = 0, length = 0, cursor = 0; unsigned perms = 0; bool tag = false; int otype = -1;      // otype -1 = 봉인 안 됨
+    uint64_t top() const { return base + length; } bool sealed() const { return otype >= 0; }
+    bool operator==(const Cap& o) const { return base == o.base && length == o.length && cursor == o.cursor && perms == o.perms && tag == o.tag && otype == o.otype; }
 };
-class Memory {
-    std::vector<uint8_t> bytes;
-public:
-    explicit Memory(size_t n) : bytes(n, 0) {}
-    uint8_t load(const Cap& c, uint64_t off) const { check(c, off, LOAD); return bytes[c.base + off]; }
-    void store(const Cap& c, uint64_t off, uint8_t v) { check(c, off, STORE); bytes[c.base + off] = v; }
-private:
-    static void check(const Cap& c, uint64_t off, unsigned need) {
-        if (off >= c.length) throw std::runtime_error("bounds violation");
-        if (!(c.perms & need)) throw std::runtime_error("permission violation");
+const unsigned MW = 8;                                                                                     // 가수(mantissa) 폭: 길이 <= 2^MW 는 정확, 그보다 크면 2^e 정렬
+Cap untagged(Cap c) { c.tag = false; return c; }
+Fault check(const Cap& c, uint64_t addr, uint64_t n, unsigned need) {
+    if (!c.tag) return TAG_FAULT;
+    if (c.sealed()) return SEAL_FAULT;
+    if ((c.perms & need) != need) return PERM_FAULT;
+    if (addr < c.base || addr + n > c.top()) return BOUNDS_FAULT;
+    return NONE;
+}
+// 경계 올림: 요청 [b, b + len) 을 덮는 표현 가능한 가장 작은 정렬 경계
+void representable(uint64_t b, uint64_t len, uint64_t& rb, uint64_t& rt, unsigned& e) {
+    e = 0; while (len > (1ULL << (e + MW))) ++e;                                                            // len <= 2^(e + MW) 인 가장 작은 e
+    for (;; ++e) {
+        uint64_t a = 1ULL << e; rb = b / a * a; rt = (b + len + a - 1) / a * a;
+        if (rt - rb <= (1ULL << (e + MW))) return;                                                          // 올림 결과가 가수에 들어가면 끝
     }
-};
-template <class F> bool traps(F f) { try { f(); } catch (const std::runtime_error&) { return true; } return false; }
+}
+Cap setBounds(const Cap& c, uint64_t b, uint64_t len, bool exact = false) {
+    Cap r = c; uint64_t rb, rt; unsigned e; representable(b, len, rb, rt, e);
+    if (!c.tag || c.sealed() || b < c.base || b + len > c.top() || (exact && (rb != b || rt != b + len))) return untagged(c);   // 요청 자체가 부모 밖이거나 정확하게 표현이 안 되면 무효
+    if (rb < c.base || rt > c.top()) return untagged(c);                                                    // 올림 결과가 부모를 벗어나도 무효
+    r.base = rb; r.length = rt - rb; r.cursor = b; return r;
+}
+Cap andPerms(const Cap& c, unsigned mask) { if (!c.tag || c.sealed()) return untagged(c); Cap r = c; r.perms &= mask; return r; }
+Cap setAddr(const Cap& c, uint64_t a) { if (c.sealed()) return untagged(c); Cap r = c; r.cursor = a; return r; }                // 커서는 범위 밖으로 가도 되지만 접근할 때 검사
+Cap seal(const Cap& c, const Cap& sealer) {
+    if (!c.tag || c.sealed() || !sealer.tag || sealer.sealed() || !(sealer.perms & SEAL) || sealer.cursor < sealer.base || sealer.cursor >= sealer.top()) return untagged(c);
+    Cap r = c; r.otype = (int)sealer.cursor; return r;
+}
+Cap unseal(const Cap& c, const Cap& unsealer) {
+    if (!c.tag || !c.sealed() || !unsealer.tag || unsealer.sealed() || !(unsealer.perms & UNSEAL) || unsealer.cursor != (uint64_t)c.otype || unsealer.cursor < unsealer.base || unsealer.cursor >= unsealer.top()) return untagged(c);
+    Cap r = c; r.otype = -1; return r;
+}
+bool invoke(const Cap& code, const Cap& data, Cap& codeOut, Cap& dataOut) {                              // CInvoke: 같은 유형으로 봉인된 (코드, 데이터) 쌍을 열어 준다
+    if (!code.tag || !data.tag || !code.sealed() || !data.sealed() || code.otype != data.otype || !(code.perms & EXEC)) return false;
+    codeOut = code; codeOut.otype = -1; dataOut = data; dataOut.otype = -1; return true;
+}
+const uint64_t SPACE = 512;
+std::bitset<SPACE * 3> authority(Cap c) {                                                                   // 봉인을 풀었을 때 접근 가능한 (주소, 권한 비트) 집합 — 권한의 크기
+    std::bitset<SPACE * 3> s; if (!c.tag) return s; c.otype = -1;
+    for (uint64_t a = 0; a < SPACE; ++a) { if (check(c, a, 1, LOAD) == NONE) s.set(a * 3); if (check(c, a, 1, STORE) == NONE) s.set(a * 3 + 1); if (check(c, a, 1, EXEC) == NONE) s.set(a * 3 + 2); }
+    return s;
+}
+bool subset(const std::bitset<SPACE * 3>& a, const std::bitset<SPACE * 3>& b) { return (a & ~b).none(); }
 
 int main() {
-    Memory mem(1024);
-    Cap whole{0, 1024, 0, LOAD | STORE};
-    Cap buf = whole.derive(100, 16, LOAD | STORE);                    // 16바이트 버퍼에 대한 케이퍼빌리티
-    mem.store(buf, 15, 7); assert(mem.load(buf, 15) == 7);             // 범위 안: 정상
-    assert(traps([&] { mem.store(buf, 16, 1); }));                     // 버퍼 오버플로: 1바이트만 넘어도 하드웨어가 거부
-    Cap readOnly = buf.derive(100, 8, LOAD);                           // 더 좁고 더 약한 케이퍼빌리티는 만들 수 있다
-    assert(mem.load(readOnly, 0) == 0 && traps([&] { mem.store(readOnly, 0, 1); }));   // 읽기 전용: 쓰기 거부
-    assert(traps([&] { readOnly.derive(100, 8, LOAD | STORE); }));     // 권한을 되살릴 수 없다
-    assert(traps([&] { buf.derive(100, 32, LOAD); }));                 // 범위를 넓힐 수 없다
-    assert(traps([&] { buf.derive(90, 8, LOAD); }));                   // 범위 밖으로 이동할 수 없다
-    std::cout << "CapabilityPointer: bounds and permissions enforced; derivation can only shrink." << std::endl;
+    // 원래 예
+    {   Cap whole{0, 1024, 0, ALL, true, -1}; Cap buf = setBounds(whole, 100, 16); buf = andPerms(buf, LOAD | STORE); assert(buf.tag && buf.base == 100 && buf.length == 16);
+        assert(check(buf, 115, 1, STORE) == NONE && check(buf, 116, 1, STORE) == BOUNDS_FAULT);                // 버퍼 오버플로: 1바이트만 넘어도 하드웨어가 거부
+        Cap ro = andPerms(setBounds(buf, 100, 8), LOAD); assert(ro.tag && check(ro, 100, 1, LOAD) == NONE && check(ro, 100, 1, STORE) == PERM_FAULT);          // 더 좁고 약한 케이퍼빌리티
+        Cap again = andPerms(ro, LOAD | STORE); assert(again.tag && (again.perms & STORE) == 0);                                                                  // 권한 마스크는 AND 이므로 권한을 되살릴 수 없다
+        assert(!setBounds(buf, 100, 32).tag && !setBounds(buf, 90, 8).tag);                                       // 범위를 넓히거나 밖으로 이동할 수 없다
+        assert(check(untagged(buf), 100, 1, LOAD) == TAG_FAULT); }
+    // ① 단조성: 무작위 파생 연쇄
+    std::mt19937_64 rng(2024); long derivations = 0, tagCleared = 0;
+    for (int chain = 0; chain < 2000; ++chain) {
+        Cap root{0, SPACE, 0, ALL, true, -1}; Cap cur = root; Cap sealer{0, 16, 7, SEAL | UNSEAL, true, -1}; std::bitset<SPACE * 3> prev = authority(cur);
+        for (int step = 0; step < 100; ++step) {
+            Cap next; int op = (int)(rng() % 6);
+            if (op == 0) { uint64_t b = rng() % (SPACE + 20), len = rng() % 200; next = setBounds(cur, b, len); }
+            else if (op == 1) next = andPerms(cur, (unsigned)(rng() & ALL)); else if (op == 2) next = setAddr(cur, rng() % (SPACE + 20));
+            else if (op == 3) next = seal(cur, sealer); else if (op == 4) next = cur.sealed() ? unseal(cur, sealer) : cur; else next = setBounds(cur, cur.base + rng() % (cur.length + 1), rng() % (cur.length + 1), true);
+            std::bitset<SPACE * 3> now = authority(next); assert(subset(now, prev)); ++derivations; tagCleared += !next.tag;      // 어떤 연산으로도 권한이 커지지 않는다
+            if (!next.tag) { assert(!seal(next, sealer).tag && !setBounds(next, 0, 1).tag && !andPerms(next, ALL).tag && !setAddr(next, 3).tag && !unseal(next, sealer).tag); cur = root; prev = authority(cur); }   // 유효 비트가 꺼진 것은 어떤 연산으로도 되살릴 수 없다 — 새 연쇄를 루트에서 다시 시작
+            else { cur = next; prev = now; }
+        }
+    }
+    assert(derivations == 200000 && tagCleared > 10000 && tagCleared < 150000);
+    // ② 경계 올림
+    long exactSmall = 0, rounded = 0;
+    for (uint64_t b = 0; b < 1200; b += 7) for (uint64_t len = 1; len < 1500; len += 5) {
+        uint64_t rb, rt; unsigned e; representable(b, len, rb, rt, e);
+        assert(rb <= b && rt >= b + len && rb % (1ULL << e) == 0 && rt % (1ULL << e) == 0 && rt - rb <= (1ULL << (e + MW)));                // 요청을 포함, 정렬, 가수에 들어간다
+        for (unsigned e2 = 0; e2 < e; ++e2) { uint64_t a = 1ULL << e2, lo = b / a * a, hi = (b + len + a - 1) / a * a; assert(hi - lo > (1ULL << (e2 + MW))); }       // 더 작은 지수로는 표현 불가 -> 최소
+        if (len <= (1ULL << MW)) { assert(e == 0 && rb == b && rt == b + len); ++exactSmall; } if (rb != b || rt != b + len) ++rounded;       // 짧은 객체는 정확
+    }
+    assert(exactSmall > 3000 && rounded > 3000);
+    { Cap whole{0, 4096, 0, ALL, true, -1}; assert(!setBounds(whole, 1, 1000, true).tag && setBounds(whole, 1, 1000, false).tag && setBounds(whole, 256, 1024, true).tag);     // 정확히 표현할 수 없으면 정확 모드는 무효, 올림 모드는 성공
+      Cap tight{3, 700, 3, ALL, true, -1}; assert(!setBounds(tight, 3, 700).tag && !setBounds(tight, 3, 700, true).tag); }                                         // 부모 자체가 정렬 안 된 경계: 올림 결과가 부모를 벗어나면 무효
+    // ③ 접근 오류 종류 (바이트 기준과 비교)
+    long faults[5] = {0, 0, 0, 0, 0};
+    for (int i = 0; i < 60000; ++i) {
+        Cap c{rng() % 300, rng() % 200, 0, (unsigned)(rng() & ALL), rng() % 8 != 0, rng() % 5 == 0 ? (int)(rng() % 16) : -1}; uint64_t a = rng() % 520, n = 1 + rng() % 8; unsigned need = 1u << (rng() % 3);
+        Fault want = !c.tag ? TAG_FAULT : c.sealed() ? SEAL_FAULT : ((c.perms & need) != need) ? PERM_FAULT : NONE;
+        if (want == NONE) { for (uint64_t b = a; b < a + n; ++b) { if (b < c.base || b >= c.base + c.length) { want = BOUNDS_FAULT; break; } } }       // 접근하는 바이트가 하나라도 범위 밖이면
+        assert(check(c, a, n, need) == want); ++faults[want];
+    }
+    for (int k = 0; k < 5; ++k) assert(faults[k] > 500);
+    // ④ 봉인과 호출
+    {   Cap data{100, 64, 100, LOAD | STORE, true, -1}, code{200, 32, 200, LOAD | EXEC, true, -1}; Cap sealerCap{0, 16, 7, SEAL | UNSEAL, true, -1}, otherSealer{0, 16, 9, SEAL | UNSEAL, true, -1};
+        Cap sd = seal(data, sealerCap), sc = seal(code, sealerCap); assert(sd.tag && sd.sealed() && sc.sealed() && check(sd, 100, 1, LOAD) == SEAL_FAULT);        // 봉인된 데이터는 호출자가 직접 못 읽는다
+        assert(!unseal(sd, otherSealer).tag && unseal(sd, sealerCap).tag && check(unseal(sd, sealerCap), 100, 1, STORE) == NONE);                              // 맞는 유형으로만 열린다
+        Cap c2, d2; assert(invoke(sc, sd, c2, d2) && check(d2, 163, 1, STORE) == NONE && check(d2, 164, 1, STORE) == BOUNDS_FAULT && check(c2, 200, 4, EXEC) == NONE);   // 호출하면 피호출자만 데이터를 쓴다
+        Cap wrongType = seal(data, otherSealer); assert(!invoke(sc, wrongType, c2, d2));                           // 서로 다른 유형은 호출 불가
+        assert(!seal(sd, sealerCap).tag && !setBounds(sd, 100, 8).tag && !andPerms(sd, LOAD).tag); }               // 봉인된 것은 다시 봉인·축소할 수 없다
+    std::cout << "CapabilityPointer verified: " << derivations << " random derivations never increased authority (" << tagCleared << " invalidated), bounds rounding is minimal and never widens past the parent, fault precedence matched on 60000 accesses, sealed invoke pairs work." << std::endl;
     return 0;
 }
-// Time Complexity: O(1) 검사
-// Space Complexity: 포인터당 base·length·perms 추가 (CHERI 는 128비트 포인터)
+// Time Complexity: O(1) 검사 (하드웨어)
+// Space Complexity: 포인터당 base·length·perms 추가 (CHERI 는 128비트 포인터 + 태그 1비트)
 ```
 ## CHERIArchitecture()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
+#include <random>
+#include <set>
 #include <stdexcept>
 #include <vector>
-#include <cassert>
 
 // CHERI 의 핵심 아이디어 두 가지: (1) 케이퍼빌리티는 16바이트로 정렬된 메모리에 저장되고, 메모리 16바이트마다 숨은 "태그 비트" 가 붙는다.
 // (2) 케이퍼빌리티를 저장하면 태그가 1 이 되지만, 같은 16바이트에 일반 데이터를 쓰면 태그가 자동으로 0 이 된다 -> 바이트를 조작해 케이퍼빌리티를 위조할 수 없다.
 // 태그가 꺼진 케이퍼빌리티는 사용하려 하면 예외.  이 두 가지로 "포인터 위조 불가" 가 하드웨어 수준에서 성립한다
+// 이 구현은 케이퍼빌리티를 진짜 128비트(축소된 32비트 주소 공간: base 32 + length 32 + cursor 32 + perms 16 + otype 16)로 인코딩해 메모리 바이트에 쓰고, 태그는 바이트와 별도의 비트 배열에 둔다.
+//  연산: 데이터 저장(1/2/4/8 바이트; 겹치는 16바이트 칸의 태그를 지움), 케이퍼빌리티 저장(16 바이트 정렬; 태그는 값의 태그), 케이퍼빌리티 읽기, 데이터 memcpy(태그를 버림), 케이퍼빌리티 인식 memcpy(정렬되어 있으면 태그째 복사),
+//  해제 영역을 가리키는 케이퍼빌리티의 태그를 지우는 회수(revocation) 훑기
+// 검증: ① 인코딩 왕복 200 000 개  ② 무작위 연산 30 000 번을 "칸마다 값/무효 표시를 따로 둔 모형" 과 대조 — 모든 칸의 태그가 같고, 태그가 켜진 칸을 읽으면 모형의 케이퍼빌리티와 같음
+//        ③ 위조 불가: 데이터 연산(저장·memcpy)만 가진 공격자가 메모리를 10 만 번 만져도 태그가 켜진 케이퍼빌리티는 처음에 신뢰된 코드가 넣어 둔 값들뿐이고, 케이퍼빌리티 인식 복사로는 복제만 될 뿐 새 값은 안 생김
+//        ④ 회수: 훑은 뒤 해제 영역을 가리키는 유효한 케이퍼빌리티가 하나도 없고(use-after-free 차단), 그 외 케이퍼빌리티는 그대로
 const size_t GRANULE = 16;
-struct Cap { uint64_t base, length; bool tag; };
+struct Cap { uint32_t base = 0, length = 0, cursor = 0; uint16_t perms = 0, otype = 0xFFFF; bool tag = false;
+    bool sameValue(const Cap& o) const { return base == o.base && length == o.length && cursor == o.cursor && perms == o.perms && otype == o.otype; } };
+void encode(const Cap& c, uint8_t out[16]) { uint64_t lo = (uint64_t)c.base | ((uint64_t)c.length << 32), hi = (uint64_t)c.cursor | ((uint64_t)c.perms << 32) | ((uint64_t)c.otype << 48); std::memcpy(out, &lo, 8); std::memcpy(out + 8, &hi, 8); }
+Cap decode(const uint8_t in[16]) { uint64_t lo, hi; std::memcpy(&lo, in, 8); std::memcpy(&hi, in + 8, 8); Cap c; c.base = (uint32_t)lo; c.length = (uint32_t)(lo >> 32); c.cursor = (uint32_t)hi; c.perms = (uint16_t)(hi >> 32); c.otype = (uint16_t)(hi >> 48); return c; }
+
 class TaggedMemory {
-    std::vector<uint8_t> bytes; std::vector<bool> tags; std::vector<Cap> capStore;       // 케이퍼빌리티 값은 별도 저장 (16B 칸마다 하나)
+    std::vector<uint8_t> bytes; std::vector<bool> tags;
 public:
-    explicit TaggedMemory(size_t n) : bytes(n, 0), tags(n / GRANULE, false), capStore(n / GRANULE) {}
-    void storeCap(size_t addr, const Cap& c) { assert(addr % GRANULE == 0); capStore[addr / GRANULE] = c; tags[addr / GRANULE] = true; }
-    Cap loadCap(size_t addr) const { Cap c = capStore[addr / GRANULE]; c.tag = tags[addr / GRANULE]; return c; }
-    void storeByte(size_t addr, uint8_t v) { bytes[addr] = v; tags[addr / GRANULE] = false; }      // 일반 저장은 해당 칸의 태그를 지운다
+    explicit TaggedMemory(size_t n) : bytes(n, 0), tags(n / GRANULE, false) {}
+    size_t granules() const { return tags.size(); }
     bool tagAt(size_t addr) const { return tags[addr / GRANULE]; }
+    void storeData(size_t addr, unsigned size, uint64_t value) { std::memcpy(&bytes[addr], &value, size); for (size_t g = addr / GRANULE; g <= (addr + size - 1) / GRANULE; ++g) tags[g] = false; }   // 일반 저장은 겹치는 칸의 태그를 지운다
+    void storeCap(size_t addr, const Cap& c) { assert(addr % GRANULE == 0); encode(c, &bytes[addr]); tags[addr / GRANULE] = c.tag; }
+    Cap loadCap(size_t addr) const { assert(addr % GRANULE == 0); Cap c = decode(&bytes[addr]); c.tag = tags[addr / GRANULE]; return c; }
+    void memcpyData(size_t dst, size_t src, size_t n) { std::vector<uint8_t> tmp(bytes.begin() + (long)src, bytes.begin() + (long)(src + n)); std::copy(tmp.begin(), tmp.end(), bytes.begin() + (long)dst); for (size_t g = dst / GRANULE; g <= (dst + n - 1) / GRANULE; ++g) tags[g] = false; }   // 태그 없이 바이트만
+    void memcpyCap(size_t dst, size_t src, size_t n) {                                              // 케이퍼빌리티 인식: 둘 다 16 바이트 정렬이고 길이가 16 의 배수면 태그째 복사
+        if (dst % GRANULE || src % GRANULE || n % GRANULE) { memcpyData(dst, src, n); return; }
+        std::vector<uint8_t> tmp(bytes.begin() + (long)src, bytes.begin() + (long)(src + n)); std::vector<bool> tt; for (size_t g = 0; g < n / GRANULE; ++g) tt.push_back(tags[src / GRANULE + g]);
+        std::copy(tmp.begin(), tmp.end(), bytes.begin() + (long)dst); for (size_t g = 0; g < n / GRANULE; ++g) tags[dst / GRANULE + g] = tt[g];
+    }
+    size_t revoke(uint32_t lo, uint32_t hi) {                                                       // 회수 훑기: [lo, hi) 와 겹치는 영역을 가리키는 케이퍼빌리티의 태그를 끈다
+        size_t cleared = 0; for (size_t g = 0; g < tags.size(); ++g) { if (!tags[g]) continue; Cap c = decode(&bytes[g * GRANULE]); if ((uint64_t)c.base < hi && lo < (uint64_t)c.base + c.length) { tags[g] = false; ++cleared; } } return cleared;
+    }
 };
 uint8_t use(const Cap& c) { if (!c.tag) throw std::runtime_error("tag violation: invalid capability"); return 1; }
 
 int main() {
-    TaggedMemory mem(256);
-    mem.storeCap(32, Cap{100, 16, true});                           // 정상적인 케이퍼빌리티 저장
-    assert(mem.tagAt(32) && use(mem.loadCap(32)) == 1);             // 태그가 켜져 있어 사용 가능
-    mem.storeByte(40, 0xFF);                                        // 공격자가 같은 16바이트 칸의 일부 바이트를 덮어써 케이퍼빌리티를 변조하려 한다
-    assert(!mem.tagAt(32));                                         // 태그가 자동으로 꺼졌다
-    bool trapped = false; try { use(mem.loadCap(32)); } catch (const std::runtime_error&) { trapped = true; }
-    assert(trapped);                                                // 변조된 케이퍼빌리티는 쓸 수 없다
-    // 위조 시도: 일반 데이터로 "그럴듯한 케이퍼빌리티 비트 패턴" 을 써도 태그가 없으므로 무효
-    for (size_t i = 64; i < 80; i++) mem.storeByte(i, 0x41);
-    assert(!mem.tagAt(64) && !mem.loadCap(64).tag);
-    std::cout << "CHERIArchitecture: writing data over a capability cleared its tag; forged capabilities are unusable." << std::endl;
+    // 원래 예: 덮어쓰면 태그가 꺼진다
+    {   TaggedMemory mem(256); Cap k; k.base = 100; k.length = 16; k.tag = true; mem.storeCap(32, k);
+        assert(mem.tagAt(32) && use(mem.loadCap(32)) == 1);
+        mem.storeData(40, 1, 0xFF); assert(!mem.tagAt(32));                                                       // 같은 16바이트 칸의 일부를 덮어쓰면 태그가 자동으로 꺼진다
+        bool trapped = false; try { use(mem.loadCap(32)); } catch (const std::runtime_error&) { trapped = true; } assert(trapped);
+        for (size_t i = 64; i < 80; i++) { mem.storeData(i, 1, 0x41); }
+        assert(!mem.tagAt(64) && !mem.loadCap(64).tag); }                    // 그럴듯한 비트 패턴을 써도 태그가 없어 무효
+    // ① 인코딩 왕복
+    std::mt19937_64 rng(77);
+    for (int i = 0; i < 200000; ++i) { Cap c; c.base = (uint32_t)rng(); c.length = (uint32_t)rng(); c.cursor = (uint32_t)rng(); c.perms = (uint16_t)rng(); c.otype = (uint16_t)rng(); uint8_t buf[16]; encode(c, buf); assert(decode(buf).sameValue(c)); }
+    // ② 모형과 대조
+    {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<bool> isCap(G, false); std::vector<Cap> val(G); long capStores = 0, strips = 0, copies = 0;
+        auto randomCap = [&](bool tag) { Cap c; c.base = (uint32_t)(rng() % 3000); c.length = (uint32_t)(rng() % 1000); c.cursor = c.base; c.perms = (uint16_t)(rng() & 127); c.otype = 0xFFFF; c.tag = tag; return c; };
+        for (int step = 0; step < 30000; ++step) {
+            int op = (int)(rng() % 100);
+            if (op < 40) { unsigned sz = 1u << (rng() % 4); size_t addr = rng() % (N - 8); addr &= ~(size_t)(sz - 1); mem.storeData(addr, sz, rng()); for (size_t g = addr / GRANULE; g <= (addr + sz - 1) / GRANULE; ++g) isCap[g] = false; ++strips; }
+            else if (op < 65) { size_t g = rng() % G; Cap c = randomCap(true); mem.storeCap(g * GRANULE, c); isCap[g] = true; val[g] = c; ++capStores; }
+            else if (op < 72) { size_t g = rng() % G; Cap c = randomCap(false); mem.storeCap(g * GRANULE, c); isCap[g] = false; }
+            else if (op < 90) { size_t n = (1 + rng() % 8) * GRANULE, dst = (rng() % (G - 8)) * GRANULE, src = (rng() % (G - 8)) * GRANULE; if (dst < src + n && src < dst + n) continue;
+                mem.memcpyCap(dst, src, n); for (size_t k = 0; k < n / GRANULE; ++k) { isCap[dst / GRANULE + k] = isCap[src / GRANULE + k]; val[dst / GRANULE + k] = val[src / GRANULE + k]; } ++copies; }
+            else if (op < 97) { size_t n = 1 + rng() % 64, dst = rng() % (N - 80), src = rng() % (N - 80); if (dst < src + n && src < dst + n) continue; mem.memcpyData(dst, src, n); for (size_t g = dst / GRANULE; g <= (dst + n - 1) / GRANULE; ++g) isCap[g] = false; }
+            else { uint32_t lo = (uint32_t)(rng() % 3000), hi = lo + (uint32_t)(rng() % 400); mem.revoke(lo, hi); for (size_t g = 0; g < G; ++g) { if (isCap[g] && (uint64_t)val[g].base < hi && lo < (uint64_t)val[g].base + val[g].length) isCap[g] = false; } }
+            if (step % 7 == 0) for (size_t g = 0; g < G; ++g) { assert(mem.tagAt(g * GRANULE) == isCap[g]); if (isCap[g]) { Cap c = mem.loadCap(g * GRANULE); assert(c.tag && c.sameValue(val[g])); } }
+        }
+        assert(capStores > 5000 && strips > 8000 && copies > 3000); }
+    // ③ 위조 불가
+    {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<Cap> original; std::set<std::vector<uint32_t>> originalValues;
+        for (size_t g = 0; g < G; g += 3) { Cap c; c.base = (uint32_t)(g * 100); c.length = (uint32_t)(16 + g); c.cursor = c.base; c.perms = 7; c.tag = true; mem.storeCap(g * GRANULE, c); originalValues.insert({c.base, c.length, c.cursor, c.perms}); }
+        for (int step = 0; step < 100000; ++step) {                                                          // 공격자: 데이터 저장과 memcpy 와 케이퍼빌리티 인식 복사만 쓴다 (새 값을 만들 수단이 없다)
+            int op = (int)(rng() % 3);
+            if (op == 0) { unsigned sz = 1u << (rng() % 4); size_t addr = (rng() % (N - 8)) & ~(size_t)(sz - 1); mem.storeData(addr, sz, rng()); }
+            else if (op == 1) { size_t n = 1 + rng() % 40, dst = rng() % (N - 64), src = rng() % (N - 64); if (!(dst < src + n && src < dst + n)) mem.memcpyData(dst, src, n); }
+            else { size_t n = (1 + rng() % 4) * GRANULE, dst = (rng() % (G - 4)) * GRANULE, src = (rng() % (G - 4)) * GRANULE; if (!(dst < src + n && src < dst + n)) mem.memcpyCap(dst, src, n); }
+            if (step % 500 == 0) for (size_t g = 0; g < G; ++g) { if (!mem.tagAt(g * GRANULE)) continue; Cap c = mem.loadCap(g * GRANULE); assert(originalValues.count({c.base, c.length, c.cursor, c.perms})); }   // 태그가 켜진 것은 모두 처음 값의 복제
+        }
+        size_t tagged = 0; for (size_t g = 0; g < G; ++g) tagged += mem.tagAt(g * GRANULE); assert(tagged <= G / 3 + 1 + G); }
+    // ④ 회수
+    {   const size_t N = 4096, G = N / GRANULE; TaggedMemory mem(N); std::vector<Cap> caps(G); long toFree = 0, keep = 0;
+        for (size_t g = 0; g < G; ++g) { Cap c; c.base = (uint32_t)(rng() % 3500); c.length = (uint32_t)(1 + rng() % 200); c.cursor = c.base; c.perms = 3; c.tag = true; caps[g] = c; mem.storeCap(g * GRANULE, c); }
+        const uint32_t lo = 1000, hi = 1600; size_t cleared = mem.revoke(lo, hi);
+        for (size_t g = 0; g < G; ++g) { bool refers = (uint64_t)caps[g].base < hi && lo < (uint64_t)caps[g].base + caps[g].length; assert(mem.tagAt(g * GRANULE) == !refers); toFree += refers; keep += !refers; }   // 해제 영역을 가리키는 것만 꺼졌다
+        assert(cleared == (size_t)toFree && toFree > 30 && keep > 30 && mem.revoke(lo, hi) == 0); }                  // 두 번째 훑기에는 더 지울 것이 없다
+    std::cout << "CHERIArchitecture verified: 128-bit encoding round-trips, tag semantics match the per-granule model over 30000 operations, a data-only attacker forged nothing in 100000 operations, and revocation cleared exactly the capabilities that referred to freed memory." << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: 저장·읽기 O(1), 회수 훑기 O(메모리 / 16)
 // Space Complexity: 16바이트당 태그 1비트 (약 0.8%)
 ```
 ## MemoryTagging()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <random>
-#include <stdexcept>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <vector>
 
 // 메모리 태깅(ARM MTE): 메모리를 16바이트 단위(granule)로 나눠 각각에 4비트 "태그" 를 붙이고, 포인터의 상위 비트에도 같은 4비트 태그를 넣는다.
 // 접근할 때 하드웨어가 포인터 태그 == 메모리 태그 인지 검사한다.  할당할 때 임의 태그를 붙이고, 해제하면 다른 태그로 바꾸면 해제 후 사용(UAF)이 대부분(15/16) 잡히고,
 // 이웃한 할당끼리 태그를 달리하면 오버플로도 잡힌다.  CHERI 와 달리 포인터 크기가 그대로이고 확률적 보호
-struct TaggedPtr { uint64_t addr; unsigned tag; };
+// 이 구현은 포인터 상위 비트(56~59)에 실제로 태그를 넣고, 태그 1~15 를 쓴다(0 은 태그 없는 메모리). 태그 정책 두 가지를 비교한다: RANDOM(독립 균등 무작위)과 AVOID(옛 태그·이웃 태그를 제외하고 무작위).
+//  동기(sync) 모드는 불일치 접근을 막고, 비동기(async) 모드는 접근을 허용하되 불일치를 기록해 두었다가 sync() 에서 한꺼번에 알린다
+// 검증: ① 원래 장면(이웃 오버플로, 해제 후 사용)  ② 접근 [off, off + w) 의 판정을 바이트별 태그 배열을 쓴 독립 기준과 전수 대조 — 할당 크기 1..80, 오프셋 -20..100, 폭 1/2/4/8/16 모든 조합
+//        (16 바이트 올림 안의 "조각" 은 못 잡는다는 한계 포함)  ③ 몬테카를로 200 000 번: 해제 후 사용 탐지율이 RANDOM 은 14/15, AVOID 는 1 세대 전 낡은 포인터를 100%, 2 세대 전은 13/14 (옛 태그만 제외하므로 후보 14 개 중 하나가 2 세대 전 태그, 5 시그마 안)
+//        이웃 오버플로: AVOID 100%, RANDOM 14/15  ④ 비동기 모드: 불일치한 접근 수 == sync() 가 알린 수, 접근은 실제로 실행됨(메모리 변경) / 동기 모드는 실행 안 됨  ⑤ 무작위 할당·해제·접근 50 000 번이 바이트 기준과 일치
+const uint64_t TAG_SHIFT = 56;
+inline unsigned tagOf(uint64_t p) { return (unsigned)(p >> TAG_SHIFT & 0xf); }
+inline uint64_t addrOf(uint64_t p) { return p & ((1ULL << TAG_SHIFT) - 1); }
+inline uint64_t withTag(uint64_t addr, unsigned t) { return addr | ((uint64_t)t << TAG_SHIFT); }
+enum Policy { RANDOM, AVOID };
+
+struct SplitMix { uint64_t s; explicit SplitMix(uint64_t seed) : s(seed) {} uint32_t operator()() { uint64_t z = (s += 0x9E3779B97F4A7C15ULL); z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL; z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL; return (uint32_t)((z ^ (z >> 31)) >> 16); } };      // 시드 비용이 작은 난수 발생기
 class TaggedHeap {
-    std::vector<uint8_t> mem, tags; uint64_t top = 0; unsigned nextTag = 1;
-public:
-    explicit TaggedHeap(size_t n) : mem(n, 0), tags(n / 16, 0) {}
-    TaggedPtr alloc(size_t n) {
-        size_t g = (n + 15) / 16; unsigned t = nextTag; nextTag = nextTag % 15 + 1;          // 이웃에 다른 태그가 가도록 순환
-        TaggedPtr p{top, t}; for (size_t i = 0; i < g; i++) tags[top / 16 + i] = t; top += g * 16; return p;
+    std::vector<uint8_t> mem, tags; uint64_t top = 16; SplitMix rng; Policy policy; std::vector<uint64_t> pendingFaults; bool async;
+    unsigned pick(unsigned avoid1, unsigned avoid2) {
+        for (;;) { unsigned t = 1 + (unsigned)(rng() % 15); if (policy == RANDOM || (t != avoid1 && t != avoid2)) return t; }
     }
-    void release(TaggedPtr p, size_t n) { unsigned nt = p.tag % 15 + 1; for (size_t i = 0; i < (n + 15) / 16; i++) tags[p.addr / 16 + i] = nt; }   // 해제: 메모리 태그를 다른 값으로 바꿔 둔다 (옛 포인터의 태그와 달라진다)
-    uint8_t read(TaggedPtr p, size_t off) const { if (tags[(p.addr + off) / 16] != p.tag) throw std::runtime_error("tag mismatch"); return mem[p.addr + off]; }
-    void write(TaggedPtr p, size_t off, uint8_t v) { if (tags[(p.addr + off) / 16] != p.tag) throw std::runtime_error("tag mismatch"); mem[p.addr + off] = v; }
+public:
+    long writes = 0;
+    TaggedHeap(size_t n, Policy p, uint32_t seed, bool asyncMode = false) : mem(n, 0), tags(n / 16, 0), rng(seed), policy(p), async(asyncMode) {}
+    uint64_t alloc(size_t n) {                                                                          // 이웃(왼쪽) 할당의 태그를 피한다
+        size_t g = (n + 15) / 16; unsigned left = top >= 32 ? tags[top / 16 - 1] : 0; unsigned t = pick(left, 0);
+        uint64_t addr = top; for (size_t i = 0; i < g; ++i) tags[addr / 16 + i] = (uint8_t)t; top += g * 16; return withTag(addr, t);
+    }
+    void release(uint64_t p, size_t n) { unsigned old = tagOf(p); unsigned t = pick(old, old); for (size_t i = 0; i < (n + 15) / 16; ++i) tags[addrOf(p) / 16 + i] = (uint8_t)t; }   // 해제: 메모리 태그를 옛 태그와 다른 값으로
+    bool matches(uint64_t p, size_t off, size_t w) const { for (uint64_t g = (addrOf(p) + off) / 16; g <= (addrOf(p) + off + w - 1) / 16; ++g) { if (g >= tags.size() || tags[g] != tagOf(p)) return false; } return true; }   // 걸친 모든 칸을 검사
+    bool access(uint64_t p, size_t off, size_t w, bool isWrite) {                                         // 성공하면 true
+        if (!matches(p, off, w)) { if (!async) return false; pendingFaults.push_back(addrOf(p) + off); }   // 동기: 막는다, 비동기: 기록하고 계속
+        if (isWrite) { for (size_t i = 0; i < w; ++i) mem[addrOf(p) + off + i] = 0xAB; ++writes; } return true;
+    }
+    size_t sync() { size_t n = pendingFaults.size(); pendingFaults.clear(); return n; }
+    uint8_t byteAt(uint64_t addr) const { return mem[addr]; }
+    uint8_t memTag(uint64_t addr) const { return tags[addr / 16]; }
 };
-template <class F> bool traps(F f) { try { f(); } catch (const std::runtime_error&) { return true; } return false; }
 
 int main() {
-    TaggedHeap h(1024);
-    TaggedPtr a = h.alloc(32), b = h.alloc(32);                          // 서로 다른 태그를 가진 이웃 할당
-    assert(a.tag != b.tag);
-    h.write(a, 31, 9); assert(h.read(a, 31) == 9);                        // 범위 안: 정상
-    assert(traps([&] { h.write(a, 32, 1); }));                            // 오버플로: a 의 끝을 넘어 b 의 영역(다른 태그)에 쓰기 -> 탐지
-    h.release(a, 32);
-    assert(traps([&] { h.read(a, 0); }));                                 // 해제 후 사용: 메모리 태그가 바뀌어 탐지
-    TaggedPtr c = h.alloc(32);                                            // 같은 번호의 새 할당 (다른 태그)
-    assert(traps([&] { h.read(a, 0); }) || c.tag != a.tag);               // 재할당 후에도 옛 포인터는 (태그가 다르면) 거부
-    std::cout << "MemoryTagging: overflow into a neighbour and use-after-free both caught by tag mismatch." << std::endl;
+    // ① 원래 장면
+    {   TaggedHeap h(1024, AVOID, 1); uint64_t a = h.alloc(32), b = h.alloc(32); assert(tagOf(a) != tagOf(b) && tagOf(a) >= 1);
+        assert(h.access(a, 31, 1, true) && !h.access(a, 32, 1, true));                                    // 오버플로: a 의 끝을 넘어 b 의 영역(다른 태그)에 쓰기 -> 탐지
+        h.release(a, 32); assert(!h.access(a, 0, 1, false));                                              // 해제 후 사용: 메모리 태그가 바뀌어 탐지
+        assert(h.access(b, 0, 1, false)); }
+    // ② 바이트 기준과 전수 대조
+    long cells = 0, intraGranuleMisses = 0;
+    for (size_t n = 1; n <= 80; ++n) {
+        TaggedHeap h(512, AVOID, (uint32_t)n); h.alloc(16); uint64_t p = h.alloc(n); h.alloc(48); size_t rounded = (n + 15) / 16 * 16; uint64_t base = addrOf(p);
+        std::vector<int> byteTag(512, -1); for (size_t i = 0; i < 512; ++i) byteTag[i] = h.memTag(i);                // 바이트마다 태그를 따로 펼친 기준
+        for (long off = -20; off <= 100; ++off) for (unsigned w : {1u, 2u, 4u, 8u, 16u}) {
+            if ((long)base + off < 0 || (long)base + off + (long)w > 512) continue;
+            bool want = true; for (unsigned i = 0; i < w; ++i) { if (byteTag[(size_t)((long)base + off + (long)i)] != (int)tagOf(p)) want = false; }
+            if (off >= 0) { assert(h.matches(p, (size_t)off, w) == want); }
+            if (off >= (long)n && (size_t)off + w <= rounded && off >= 0) { assert(want); ++intraGranuleMisses; }   // 올림 안의 조각(n 이상 16 의 배수 미만)은 태그가 같아 통과 — MTE 의 한계
+            ++cells;
+        }
+    }
+    assert(cells > 40000 && intraGranuleMisses > 1000);
+    // ③ 몬테카를로
+    {   const int TR = 200000; auto detectRate = [&](Policy pol, int generations, bool neighbor) {
+            long caught = 0; std::mt19937 r(5 + generations + (neighbor ? 1000 : 0));
+            for (int t = 0; t < TR; ++t) {
+                TaggedHeap g(256, pol, (uint32_t)r()); uint64_t a = g.alloc(32), b = g.alloc(32); (void)b;
+                if (neighbor) { caught += !g.access(a, 32, 1, false); continue; }                              // 이웃 오버플로: a 의 끝 다음 칸은 b
+                uint64_t stale = a; for (int k = 0; k < generations; ++k) { g.release(a, 32); a = withTag(addrOf(a), g.memTag(addrOf(a))); }                     // 해제할 때마다 메모리 태그가 바뀌고, 새 소유자의 포인터는 새 태그를 받는다
+                caught += !g.access(stale, 0, 1, false);
+            } return (double)caught / TR; };
+        auto within = [&](double got, double p) { double sd = std::sqrt(p * (1 - p) / TR); return std::abs(got - p) <= 5 * sd + 1e-9; };
+        assert(within(detectRate(RANDOM, 1, false), 14.0 / 15) && detectRate(AVOID, 1, false) == 1.0 && within(detectRate(AVOID, 2, false), 13.0 / 14));   // 낡은 포인터: 1 세대 전은 AVOID 가 100%
+        assert(detectRate(AVOID, 1, true) == 1.0 && within(detectRate(RANDOM, 1, true), 14.0 / 15)); }          // 이웃 오버플로: 이웃과 태그를 다르게 하면 100%
+    // ④ 비동기 vs 동기
+    {   for (int mode = 0; mode < 2; ++mode) {
+            TaggedHeap h(1024, AVOID, 7, mode == 1); uint64_t a = h.alloc(16), b = h.alloc(16); (void)b;
+            for (int i = 0; i < 10; ++i) { h.access(a, 16 + (size_t)i, 1, true); }                                                   // 이웃 영역에 10 번 쓰기
+            if (mode == 0) { assert(h.writes == 0 && h.byteAt(addrOf(a) + 16) == 0 && h.sync() == 0); }            // 동기: 접근이 막혀 메모리가 안 바뀌고 기록할 것도 없다
+            else { assert(h.writes == 10 && h.byteAt(addrOf(a) + 16) == 0xAB && h.sync() == 10); }                 // 비동기: 실행되어 메모리가 바뀌었고 sync() 가 10 번을 한꺼번에 알린다
+            } }
+    // ⑤ 무작위 할당·해제·접근
+    {   TaggedHeap h(1 << 16, AVOID, 31); std::mt19937 rng(8); struct Blk { uint64_t p; size_t n; bool freed; unsigned memTagNow; }; std::vector<Blk> blks; long checks = 0, caught = 0;
+        for (int step = 0; step < 50000; ++step) {
+            int op = (int)(rng() % 100);
+            if (op < 25 && blks.size() < 800) { size_t n = 1 + rng() % 70; uint64_t p = h.alloc(n); blks.push_back({p, n, false, tagOf(p)}); }
+            else if (op < 40 && !blks.empty()) { Blk& b = blks[rng() % blks.size()]; if (!b.freed) { h.release(b.p, b.n); b.freed = true; b.memTagNow = h.memTag(addrOf(b.p)); } }
+            else if (!blks.empty()) {
+                Blk& b = blks[rng() % blks.size()]; long off = (long)(rng() % (b.n + 40)) - 8; unsigned w = 1u << (rng() % 4); if ((long)addrOf(b.p) + off < 0 || addrOf(b.p) + (uint64_t)off + w > (1 << 16)) continue;
+                size_t o = off < 0 ? 0 : (size_t)off; bool want = true;
+                for (uint64_t byte = addrOf(b.p) + o; byte < addrOf(b.p) + o + w; ++byte) { if (h.memTag(byte) != tagOf(b.p)) want = false; }           // 바이트 기준: 걸친 바이트의 칸 태그가 모두 같은가
+                assert(h.access(b.p, o, w, false) == want); ++checks; caught += !want;
+            }
+        }
+        assert(checks > 10000 && caught > 500); }
+    std::cout << "MemoryTagging verified: granule-exact tag checks over " << cells << " (size, offset, width) cases incl. the 16-byte-rounding blind spot, detection rates match 14/15 (random) and 100% (avoid old/neighbour tags), async mode logs without blocking." << std::endl;
     return 0;
 }
-// Time Complexity: O(1) 검사
+// Time Complexity: O(1) 검사 (걸친 칸 수)
 // Space Complexity: 16바이트당 4비트 (3%)
 ```
 ## HardwareMemorySafety()
