@@ -355,12 +355,18 @@ int main() {
 ## Compare()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstring>
-#include <string>
+#include <algorithm>
 #include <cassert>
+#include <cstring>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
 
 // 사전식 비교: 처음 다른 문자의 값(부호 없는 바이트)으로 결정하고, 모두 같으면 짧은 쪽이 작다
+// 검증: ① 손으로 고른 경우(접두사·대소문자·UTF-8 바이트·내장 NUL)  ② 알파벳 {0x00, 0x7F, 0x80, 0xFF} 위의 길이 ≤ 4 문자열 *전부* (341 개)의 모든 쌍을
+//        std::string::compare 와 "바이트를 int 벡터로 바꿔 벡터끼리 비교" 라는 독립 오라클로 대조  ③ 전순서의 성질(반사·반대칭·추이)과 정렬 결과
+//        ④ char 를 부호 있는 채로 비교하는 흔한 버그판은 상위 바이트에서 오라클과 달라진다는 음성 대조군
 int compare(const std::string& a, const std::string& b) {
     size_t n = std::min(a.size(), b.size());
     for (size_t i = 0; i < n; i++) {
@@ -369,7 +375,24 @@ int compare(const std::string& a, const std::string& b) {
     }
     return a.size() == b.size() ? 0 : (a.size() < b.size() ? -1 : 1);
 }
+int compareSignedBug(const std::string& a, const std::string& b) {          // 흔한 실수: char 를 그대로 비교
+    size_t n = std::min(a.size(), b.size());
+    for (size_t i = 0; i < n; i++) if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    return a.size() == b.size() ? 0 : (a.size() < b.size() ? -1 : 1);
+}
+int compareIgnoreCase(const std::string& a, const std::string& b) {         // ASCII 대소문자 무시 (A-Z 만 소문자로)
+    auto low = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; };
+    size_t n = std::min(a.size(), b.size());
+    for (size_t i = 0; i < n; i++) { int x = low(a[i]), y = low(b[i]); if (x != y) return x < y ? -1 : 1; }
+    return a.size() == b.size() ? 0 : (a.size() < b.size() ? -1 : 1);
+}
 int sign(int v) { return (v > 0) - (v < 0); }
+int oracle(const std::string& a, const std::string& b) {                    // 독립 오라클: 바이트를 0..255 정수 벡터로 바꿔 operator< 로 비교
+    std::vector<int> x(a.begin(), a.end()), y(b.begin(), b.end());
+    for (int& v : x) v &= 0xFF;
+    for (int& v : y) v &= 0xFF;
+    return x < y ? -1 : y < x ? 1 : 0;
+}
 
 int main() {
     assert(compare("apple", "apple") == 0);
@@ -377,9 +400,36 @@ int main() {
     assert(compare("app", "apple") < 0);                 // 접두사는 더 작다
     assert(compare("Zebra", "apple") < 0);               // 대문자(65~90) < 소문자(97~122)
     assert(compare("é", "z") > 0);                       // UTF-8 바이트 0xC3 > 'z' (바이트 기준 비교)
-    for (auto p : {std::pair<const char*, const char*>{"a", "b"}, {"abc", "abd"}, {"", "x"}, {"same", "same"}})
-        assert(sign(compare(p.first, p.second)) == sign(std::strcmp(p.first, p.second)));
-    std::cout << "Compare verified." << std::endl;
+    assert(compareSignedBug("é", "z") < 0);              // 부호 있는 비교는 0xC3 을 음수로 보아 순서가 뒤집힌다
+    assert(compare("", "") == 0 && compare("", "a") < 0 && compare("a", "") > 0);
+    assert(compare(std::string("a\0b", 3), std::string("a\0c", 3)) < 0);     // NUL 이 들어 있어도 끝까지 비교 (strcmp 와 다른 점)
+    assert(compare(std::string("a\0", 2), "a") > 0);
+    assert(std::strcmp("a\0b", "a\0c") == 0);
+    for (auto p : {std::pair<const char*, const char*>{"a", "b"}, {"abc", "abd"}, {"", "x"}, {"same", "same"}, {"\xC3\xA9", "z"}})
+        assert(sign(compare(p.first, p.second)) == sign(std::strcmp(p.first, p.second)));       // NUL 이 없으면 strcmp(부호 없는 바이트 기준) 와 일치
+    assert(compareIgnoreCase("Apple", "aPPLE") == 0 && compareIgnoreCase("apple", "BANANA") < 0 && compareIgnoreCase("Z", "a") > 0 && compareIgnoreCase("a", "A") == 0);
+
+    // ② 경계 바이트 알파벳 위의 모든 문자열 쌍
+    const char alpha[] = {'\x00', '\x7F', '\x80', '\xFF'}; std::vector<std::string> all{std::string()};
+    for (size_t i = 0; i < all.size(); ++i) if (all[i].size() < 4) for (char c : alpha) all.push_back(all[i] + c);
+    assert(all.size() == 341);                           // 1 + 4 + 16 + 64 + 256
+    long pairs = 0, bugDiffers = 0, eq = 0;
+    for (const std::string& a : all) for (const std::string& b : all) {
+        int c = compare(a, b); assert(c == oracle(a, b) && sign(a.compare(b)) == c);
+        assert(compare(b, a) == -c);                     // 반대칭
+        if (compareSignedBug(a, b) != c) ++bugDiffers;
+        eq += c == 0; ++pairs;
+    }
+    assert(pairs == 341L * 341 && eq == 341 && bugDiffers > 1000);
+    // ③ 무작위 문자열: 정렬 결과가 같고, 추이성
+    std::mt19937 rng(5); std::vector<std::string> v;
+    for (int i = 0; i < 2000; ++i) { std::string s(rng() % 8, 'a'); for (char& ch : s) ch = (char)(rng() % 4 == 0 ? 0x80 + rng() % 128 : 'a' + rng() % 3); v.push_back(s); }
+    std::vector<std::string> byCompare = v, byStd = v;
+    std::sort(byCompare.begin(), byCompare.end(), [](const std::string& a, const std::string& b) { return compare(a, b) < 0; });
+    std::sort(byStd.begin(), byStd.end());
+    assert(byCompare == byStd);
+    for (int i = 0; i < 20000; ++i) { const std::string &a = v[rng() % v.size()], &b = v[rng() % v.size()], &c = v[rng() % v.size()]; if (compare(a, b) <= 0 && compare(b, c) <= 0) assert(compare(a, c) <= 0); }
+    std::cout << "Compare: " << pairs << " boundary-byte pairs matched std::string::compare and the int-vector oracle; the signed-char bug differed on " << bugDiffers << " of them" << std::endl;
     return 0;
 }
 // Time Complexity: O(min(|a|, |b|))
@@ -943,49 +993,102 @@ int main() {
 ## UTF-8과 UTF-16의 차이
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <cassert>
 #include <cstdint>
+#include <iostream>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // UTF-8: 1~4바이트 가변, ASCII 호환, 바이트 순서 문제 없음.   UTF-16: 2바이트 단위, U+10000 이상은 서로게이트 쌍(4바이트).
 // 같은 글자라도 크기가 다르다: 영어는 UTF-8 이 작고, 한글은 UTF-16(2B)이 UTF-8(3B)보다 작다
+// 검증: ① 알려진 값(€ = E2 82 AC, 😀 = F0 9F 98 80 = D83D DE00)  ② 유니코드 스칼라 값 1 112 064 개 *전부* 의 UTF-8/UTF-16 왕복과 상호 변환, 크기 공식(1/2/3/4 바이트 개수 128·1 920·61 440·1 048 576)
+//        ③ 정렬 순서: UTF-8 바이트 순서는 코드 포인트 순서와 같지만 UTF-16 코드 단위 순서는 U+E000..U+FFFF 와 U+10000 이상에서 뒤집힌다  ④ 잘못된 UTF-16(짝 없는 서로게이트)은 거부
 std::vector<uint16_t> utf16Encode(uint32_t cp) {
     if (cp < 0x10000) return {(uint16_t)cp};
     cp -= 0x10000;
     return {(uint16_t)(0xD800 + (cp >> 10)), (uint16_t)(0xDC00 + (cp & 0x3FF))};    // 상위/하위 서로게이트
 }
-uint32_t utf16Decode(const std::vector<uint16_t>& u) {
-    if (u.size() == 1) return u[0];
-    return 0x10000 + ((u[0] - 0xD800) << 10) + (u[1] - 0xDC00);
+bool utf16Decode(const std::vector<uint16_t>& u, size_t& pos, uint32_t& cp) {         // pos 에서 한 글자를 읽는다. 짝 없는 서로게이트는 false
+    uint16_t a = u[pos];
+    if (a < 0xD800 || a > 0xDFFF) { cp = a; pos += 1; return true; }
+    if (a >= 0xDC00 || pos + 1 >= u.size() || u[pos + 1] < 0xDC00 || u[pos + 1] > 0xDFFF) return false;
+    cp = 0x10000 + (((uint32_t)a - 0xD800) << 10) + (u[pos + 1] - 0xDC00); pos += 2; return true;
 }
 size_t utf8Size(uint32_t cp) { return cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4; }
+std::string utf8Encode(uint32_t cp) {
+    std::string s;
+    if (cp < 0x80) s += (char)cp;
+    else if (cp < 0x800) { s += (char)(0xC0 | cp >> 6); s += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { s += (char)(0xE0 | cp >> 12); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
+    else { s += (char)(0xF0 | cp >> 18); s += (char)(0x80 | ((cp >> 12) & 0x3F)); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
+    return s;
+}
+uint32_t utf8Decode(const std::string& s, size_t& i) {                                // 올바른 UTF-8 이라고 가정하고 한 글자를 읽는다
+    unsigned char c = s[i]; int len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    uint32_t cp = len == 1 ? c : len == 2 ? c & 0x1F : len == 3 ? c & 0x0F : c & 0x07;
+    for (int k = 1; k < len; k++) cp = cp << 6 | (s[i + k] & 0x3F);
+    i += len; return cp;
+}
+bool isScalar(uint32_t cp) { return cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF); }
 
 int main() {
     assert(utf8Size('A') == 1 && utf16Encode('A').size() * 2 == 2);              // 영어: UTF-8 이 작다
     assert(utf8Size(0xD55C) == 3 && utf16Encode(0xD55C).size() * 2 == 2);        // 한글: UTF-16 이 작다
     assert(utf8Size(0x1F600) == 4 && utf16Encode(0x1F600).size() * 2 == 4);      // 이모지: 같다
+    assert(utf8Encode(0x20AC) == "\xE2\x82\xAC" && utf8Encode(0x1F600) == "\xF0\x9F\x98\x80" && utf8Encode(0xD55C) == "\xED\x95\x9C");
     auto pair = utf16Encode(0x1F600);
     assert(pair[0] == 0xD83D && pair[1] == 0xDE00);                               // 😀 의 서로게이트 쌍
-    assert(utf16Decode(pair) == 0x1F600);
-    for (uint32_t cp : {0x41u, 0xD55Cu, 0x10000u, 0x10FFFFu}) assert(utf16Decode(utf16Encode(cp)) == cp);
-    std::cout << "UTF-16 surrogate pair for U+1F600: " << std::hex << pair[0] << " " << pair[1] << std::endl;
+    assert(utf16Encode(0x10000)[0] == 0xD800 && utf16Encode(0x10000)[1] == 0xDC00 && utf16Encode(0x10FFFF)[0] == 0xDBFF && utf16Encode(0x10FFFF)[1] == 0xDFFF);
+
+    // ② 모든 스칼라 값 왕복
+    long count[5] = {0, 0, 0, 0, 0}, units16[3] = {0, 0, 0}; uint32_t prev = 0; std::string prevBytes; bool first = true;
+    for (uint32_t cp = 0; cp <= 0x10FFFF; ++cp) {
+        if (!isScalar(cp)) continue;
+        std::string u8 = utf8Encode(cp); assert(u8.size() == utf8Size(cp)); ++count[u8.size()];
+        size_t i = 0; assert(utf8Decode(u8, i) == cp && i == u8.size());          // UTF-8 왕복
+        std::vector<uint16_t> u16 = utf16Encode(cp); ++units16[u16.size()];
+        size_t pos = 0; uint32_t back = 0; assert(utf16Decode(u16, pos, back) && back == cp && pos == u16.size());     // UTF-16 왕복
+        assert((u16.size() == 2) == (cp >= 0x10000));
+        if (!first) assert(u8 > prevBytes);                                   // UTF-8 의 바이트 사전식 순서 = 코드 포인트 순서 (std::string 비교는 부호 없는 바이트)
+        prev = cp; prevBytes = u8; first = false;
+    }
+    (void)prev;
+    assert(count[1] == 128 && count[2] == 1920 && count[3] == 61440 && count[4] == 1048576);
+    assert(count[1] + count[2] + count[3] + count[4] == 1112064 && units16[1] == 63488 && units16[2] == 1048576);
+    // 한글 완성형 음절 11 172 자: UTF-8 은 3 바이트, UTF-16 은 2 바이트 -> UTF-16 이 1/3 작다
+    long hangul8 = 0, hangul16 = 0; for (uint32_t cp = 0xAC00; cp <= 0xD7A3; ++cp) { hangul8 += (long)utf8Size(cp); hangul16 += 2 * (long)utf16Encode(cp).size(); }
+    assert(hangul8 == 3L * 11172 && hangul16 == 2L * 11172);
+    // 혼합 문자열 한 줄: 코드 포인트 수, UTF-16 단위 수 = 코드 포인트 수 + 보충 평면 글자 수
+    std::string text = utf8Encode('H') + utf8Encode('i') + utf8Encode(0xD55C) + utf8Encode(0xAE00) + utf8Encode(0x1F600) + utf8Encode(0x20AC); size_t cps = 0, supp = 0;
+    std::vector<uint16_t> all16; for (size_t i = 0; i < text.size();) { uint32_t cp = utf8Decode(text, i); ++cps; supp += cp >= 0x10000; for (uint16_t w : utf16Encode(cp)) all16.push_back(w); }
+    assert(cps == 6 && supp == 1 && all16.size() == cps + supp && text.size() == 1 + 1 + 3 + 3 + 4 + 3);
+    size_t pos = 0, decoded = 0; while (pos < all16.size()) { uint32_t cp; assert(utf16Decode(all16, pos, cp)); ++decoded; } assert(decoded == cps);
+    // ③ 정렬 순서가 뒤집히는 쌍: U+FF5E 와 U+10000 은 코드 포인트로는 FF5E < 10000 이지만 UTF-16 코드 단위로는 D800 < FF5E 라서 반대다
+    assert(0xFF5E < 0x10000 && utf8Encode(0xFF5E) < utf8Encode(0x10000));
+    assert(utf16Encode(0x10000)[0] < utf16Encode(0xFF5E)[0]);
+    // ④ 짝 없는 서로게이트는 UTF-16 으로 해석할 수 없다
+    for (auto bad : {std::vector<uint16_t>{0xD800}, std::vector<uint16_t>{0xDC00}, std::vector<uint16_t>{0xD800, 0x0041}, std::vector<uint16_t>{0xDC00, 0xD800}}) { size_t p = 0; uint32_t cp; assert(!utf16Decode(bad, p, cp)); }
+    std::cout << "UTF-8/16: all " << count[1] + count[2] + count[3] + count[4] << " scalar values round-tripped; U+1F600 = " << std::hex << pair[0] << " " << pair[1] << std::dec << ", Hangul syllables take " << hangul8 << " bytes in UTF-8 vs " << hangul16 << " in UTF-16" << std::endl;
     return 0;
 }
-// Time Complexity: O(1)
+// Time Complexity: O(1) (글자당)
 // Space Complexity: O(1)
 ```
 ## UTF8Validate()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cstdint>
-#include <string>
 #include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
 
 // UTF-8 검증: 선행 바이트가 알려 주는 길이만큼 연속 바이트(10xxxxxx)가 와야 하고,
 // (1) 과잉 부호화(overlong)  (2) 서로게이트 영역 U+D800~DFFF  (3) U+10FFFF 초과  는 모두 무효다 (보안 취약점의 단골 원인)
+// 검증: ① 알려진 무효 입력  ② 길이 1~3 의 바이트열 *전부* (256 + 65 536 + 16 777 216 개)를 독립 오라클(유니코드 표 3-7 의 "잘 형성된 바이트 범위" 표)과 대조하고,
+//        유효한 개수가 점화식 c(n) = 128·c(n-1) + 1 920·c(n-2) + 61 440·c(n-3) + 1 048 576·c(n-4) 와 정확히 일치  ③ 경계 바이트 27 종의 길이 4 문자열 전부 + 무작위 긴 문자열
+//        ④ 유효한 문자열은 "디코딩 후 다시 인코딩하면 원본" (정규형이 유일), 모든 코드 포인트의 인코딩은 유효하고 서로게이트는 무효
 bool validUtf8(const std::string& s) {
     for (size_t i = 0; i < s.size();) {
         unsigned char c = s[i]; int len; uint32_t cp, minCp;
@@ -1005,15 +1108,84 @@ bool validUtf8(const std::string& s) {
     }
     return true;
 }
+bool inR(unsigned char c, int lo, int hi) { return c >= lo && c <= hi; }
+bool validTable(const std::string& s) {                          // 오라클: 유니코드 표 3-7 (각 바이트 위치별 허용 범위만 쓰고 코드 포인트 산술은 쓰지 않는다)
+    size_t i = 0, n = s.size();
+    auto B = [&](size_t k) { return (unsigned char)s[k]; };
+    while (i < n) {
+        unsigned char c = B(i);
+        if (c <= 0x7F) { i += 1; }
+        else if (inR(c, 0xC2, 0xDF)) { if (i + 1 < n && inR(B(i + 1), 0x80, 0xBF)) i += 2; else return false; }
+        else if (c == 0xE0 || inR(c, 0xE1, 0xEC) || c == 0xED || inR(c, 0xEE, 0xEF)) {
+            int lo = c == 0xE0 ? 0xA0 : 0x80, hi = c == 0xED ? 0x9F : 0xBF;
+            if (i + 2 < n && inR(B(i + 1), lo, hi) && inR(B(i + 2), 0x80, 0xBF)) i += 3; else return false;
+        } else if (c == 0xF0 || inR(c, 0xF1, 0xF3) || c == 0xF4) {
+            int lo = c == 0xF0 ? 0x90 : 0x80, hi = c == 0xF4 ? 0x8F : 0xBF;
+            if (i + 3 < n && inR(B(i + 1), lo, hi) && inR(B(i + 2), 0x80, 0xBF) && inR(B(i + 3), 0x80, 0xBF)) i += 4; else return false;
+        } else return false;                                     // 80..C1, F5..FF
+    }
+    return true;
+}
+std::string encode(uint32_t cp) {
+    std::string s;
+    if (cp < 0x80) s += (char)cp;
+    else if (cp < 0x800) { s += (char)(0xC0 | cp >> 6); s += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { s += (char)(0xE0 | cp >> 12); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
+    else { s += (char)(0xF0 | cp >> 18); s += (char)(0x80 | ((cp >> 12) & 0x3F)); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
+    return s;
+}
+std::string reencode(const std::string& s) {                     // 유효한 문자열을 코드 포인트로 읽어 다시 인코딩
+    std::string out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = s[i]; int len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4; uint32_t cp = len == 1 ? c : len == 2 ? c & 0x1F : len == 3 ? c & 0x0F : c & 0x07;
+        for (int k = 1; k < len; k++) cp = cp << 6 | (s[i + k] & 0x3F);
+        out += encode(cp); i += len;
+    }
+    return out;
+}
 
 int main() {
-    assert(validUtf8("hello") && validUtf8("한글😀"));
+    assert(validUtf8("hello") && validUtf8("한글😀") && validUtf8(""));
     assert(!validUtf8(std::string("\xC0\x80", 2)));              // overlong NUL
     assert(!validUtf8(std::string("\xED\xA0\x80", 3)));          // U+D800 서로게이트
     assert(!validUtf8(std::string("\xF4\x90\x80\x80", 4)));      // U+110000 범위 초과
     assert(!validUtf8(std::string("\xE2\x82", 2)));              // 잘린 시퀀스
     assert(!validUtf8(std::string("\x80", 1)));                  // 선행 위치의 연속 바이트
-    std::cout << "UTF8Validate verified." << std::endl;
+    assert(!validUtf8(std::string("\xE0\x80\x80", 3)) && !validUtf8(std::string("\xF0\x80\x80\x80", 4)) && !validUtf8(std::string("\xC1\xBF", 2)));   // 3·4·2 바이트 과잉 부호화
+    assert(validUtf8(std::string("\x00", 1)) && validUtf8(std::string("\xF4\x8F\xBF\xBF", 4)) && validUtf8(std::string("\xED\x9F\xBF", 3)) && validUtf8(std::string("\xEE\x80\x80", 3)));   // 경계의 유효값
+
+    // ② 길이 1~3 전수
+    long valid[4] = {1, 0, 0, 0};                                // valid[0] = 빈 문자열 1 개
+    std::string s1(1, 0), s2(2, 0), s3(3, 0);
+    for (int a = 0; a < 256; ++a) { s1[0] = (char)a; bool v = validUtf8(s1); assert(v == validTable(s1)); valid[1] += v; }
+    for (int a = 0; a < 256; ++a) for (int b = 0; b < 256; ++b) { s2[0] = (char)a; s2[1] = (char)b; bool v = validUtf8(s2); assert(v == validTable(s2)); valid[2] += v; }
+    for (int a = 0; a < 256; ++a) for (int b = 0; b < 256; ++b) for (int c = 0; c < 256; ++c) {
+        s3[0] = (char)a; s3[1] = (char)b; s3[2] = (char)c; bool v = validUtf8(s3); assert(v == validTable(s3)); valid[3] += v;
+        if (v && (a | b | c) != 0 && ((a * 7 + b * 13 + c) & 63) == 0) assert(reencode(s3) == s3);      // 표본: 유효하면 정규형 (3 바이트 전수 대신 1/64 표본)
+    }
+    long rec[5] = {1, 128, 0, 0, 0};                             // c(0) = 1, c(1) = 128
+    rec[2] = 128 * rec[1] + 1920 * rec[0]; rec[3] = 128 * rec[2] + 1920 * rec[1] + 61440 * rec[0];
+    assert(valid[1] == rec[1] && valid[2] == rec[2] && valid[3] == rec[3] && rec[2] == 18304 && rec[3] == 2650112);
+
+    // ③ 경계 바이트 27 종의 길이 4 문자열 전부 (531 441 개)
+    const int edge[] = {0x00, 0x41, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC1, 0xC2, 0xDF, 0xE0, 0xE1, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF3, 0xF4, 0xF5, 0xF7, 0xF8, 0xFF};
+    std::string s4(4, 0); long valid4 = 0, total4 = 0;
+    for (int a : edge) for (int b : edge) for (int c : edge) for (int d : edge) {
+        s4[0] = (char)a; s4[1] = (char)b; s4[2] = (char)c; s4[3] = (char)d; bool v = validUtf8(s4); assert(v == validTable(s4)); valid4 += v; ++total4;
+        if (v) assert(reencode(s4) == s4);
+    }
+    assert(total4 == 531441 && valid4 == 2277);                // 2277 은 다른 구현(파이썬의 엄격한 UTF-8 디코더)으로 같은 531 441 개를 돌려 얻은 값
+    // ④ 모든 코드 포인트: 서로게이트만 무효, 인코딩은 항상 정규형
+    for (uint32_t cp = 0; cp <= 0x10FFFF; ++cp) { std::string e = encode(cp); bool ok = !(cp >= 0xD800 && cp <= 0xDFFF); assert(validUtf8(e) == ok && validTable(e) == ok); if (ok) assert(reencode(e) == e); }
+    std::mt19937 rng(11); long randomValid = 0;                  // 유효한 글자를 이어 붙인 긴 문자열 / 한 바이트만 바꾼 변형
+    for (int it = 0; it < 3000; ++it) {
+        std::string s; int n = 1 + (int)(rng() % 12);
+        while (n--) { uint32_t cp; do cp = (uint32_t)(rng() % 3 == 0 ? rng() % 0x110000 : rng() % 0x3000); while (cp >= 0xD800 && cp <= 0xDFFF); s += encode(cp); }
+        assert(validUtf8(s) && validTable(s)); ++randomValid;
+        std::string m = s; m[rng() % m.size()] = (char)(rng() % 256); assert(validUtf8(m) == validTable(m));
+        if (validUtf8(m)) assert(reencode(m) == m);
+    }
+    std::cout << "UTF8Validate: all " << valid[1] + valid[2] + valid[3] << "+ valid byte strings of length 1..3 counted (" << valid[3] << " of length 3) and matched the range-table oracle; " << total4 << " boundary strings of length 4 agreed" << std::endl;
     return 0;
 }
 // Time Complexity: O(n)
@@ -1116,19 +1288,24 @@ int main() {
 ## GapBuffer()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 갭 버퍼: 커서 위치에 "빈 구간(gap)"을 두고 그 앞뒤에 텍스트를 저장한다. (Emacs 의 편집 버퍼)
 // 커서 근처 삽입·삭제는 O(1), 커서를 옮기면 이동 거리만큼 문자를 갭 반대편으로 옮긴다
+// 검증: ① 손으로 짠 편집 시나리오  ② 무작위 편집 30 000 회(문자·문자열 삽입, 백스페이스, 앞으로 지우기, 커서 이동, 용량 0~8 에서 시작)를 std::string 모델과 매 단계 대조
+//        ③ 비용 모델: 이동 비용 = 커서 이동 거리의 합과 *정확히* 같고, 제자리 타이핑 5 000 자는 문자를 하나도 옮기지 않으며, 용량은 배증해서 재할당이 O(log n) 번
 class GapBuffer {
     std::vector<char> buf; size_t gs, ge;                       // 갭 = [gs, ge)
+    size_t moved_ = 0, grows_ = 0;                               // 커서 이동으로 옮긴 문자 수 / 용량 확장 횟수 (분석용)
     void ensure(size_t extra) {
         if (ge - gs >= extra) return;
         size_t oldCap = buf.size(), newCap = std::max(oldCap * 2, oldCap + extra);
-        buf.resize(newCap);
+        buf.resize(newCap); ++grows_;
         size_t tail = oldCap - ge;
         for (size_t i = 0; i < tail; i++) buf[newCap - 1 - i] = buf[oldCap - 1 - i];     // 뒤쪽 텍스트를 끝으로 밀기
         ge = newCap - tail;
@@ -1136,13 +1313,20 @@ class GapBuffer {
 public:
     explicit GapBuffer(size_t cap = 8) : buf(cap), gs(0), ge(cap) {}
     size_t size() const { return buf.size() - (ge - gs); }
+    size_t capacity() const { return buf.size(); }
     size_t cursor() const { return gs; }
+    size_t moved() const { return moved_; }
+    size_t grows() const { return grows_; }
     void move(size_t pos) {                                      // 커서를 pos 로 이동 (갭도 함께 이동)
-        while (gs > pos) buf[--ge] = buf[--gs];
-        while (gs < pos) buf[gs++] = buf[ge++];
+        assert(pos <= size());
+        while (gs > pos) { buf[--ge] = buf[--gs]; ++moved_; }
+        while (gs < pos) { buf[gs++] = buf[ge++]; ++moved_; }
     }
     void insert(char c) { ensure(1); buf[gs++] = c; }
+    void insert(const std::string& s) { ensure(s.size()); for (char c : s) buf[gs++] = c; }
     void erase() { if (gs > 0) gs--; }                           // 백스페이스: 갭을 넓히기만 하면 된다
+    void eraseForward() { if (ge < buf.size()) ge++; }           // Delete 키: 갭의 오른쪽 끝을 넓힌다
+    char at(size_t i) const { return i < gs ? buf[i] : buf[i + (ge - gs)]; }
     std::string str() const { return std::string(buf.begin(), buf.begin() + gs) + std::string(buf.begin() + ge, buf.end()); }
 };
 
@@ -1157,7 +1341,35 @@ int main() {
     assert(g.str() == "Hello world");
     g.move(0); g.insert('>');
     assert(g.str() == ">Hello world" && g.size() == 12);
-    std::cout << "GapBuffer: " << g.str() << std::endl;
+    g.move(g.size()); g.erase(); g.erase(); assert(g.str() == ">Hello wor");
+    g.move(0); g.eraseForward(); assert(g.str() == "Hello wor" && g.at(0) == 'H' && g.at(8) == 'r');
+    GapBuffer e(0); assert(e.size() == 0 && e.str().empty()); e.erase(); e.eraseForward(); e.insert("ab"); e.move(1); e.insert('X'); assert(e.str() == "aXb");   // 경계: 용량 0, 빈 버퍼에서 지우기
+
+    // ② 모델 대조
+    std::mt19937 rng(2024); long checks = 0, grownTotal = 0;
+    for (size_t cap0 : {0u, 1u, 2u, 4u, 8u}) {
+        GapBuffer b(cap0); std::string model; size_t cur = 0; size_t expectMoved = 0;
+        for (int step = 0; step < 6000; ++step) {
+            int op = (int)(rng() % 10);
+            if (op < 4) { char c = (char)('a' + rng() % 26); b.insert(c); model.insert(model.begin() + cur, c); ++cur; }
+            else if (op == 4) { std::string s; for (int k = 0, n = (int)(rng() % 12); k < n; ++k) s += (char)('A' + rng() % 26); b.insert(s); model.insert(cur, s); cur += s.size(); }
+            else if (op == 5) { b.erase(); if (cur > 0) { model.erase(cur - 1, 1); --cur; } }
+            else if (op == 6) { b.eraseForward(); if (cur < model.size()) model.erase(cur, 1); }
+            else { size_t to = rng() % (model.size() + 1); expectMoved += cur > to ? cur - to : to - cur; b.move(to); cur = to; }
+            assert(b.size() == model.size() && b.cursor() == cur && b.str() == model && b.capacity() >= b.size());
+            if (!model.empty()) { size_t i = rng() % model.size(); assert(b.at(i) == model[i]); }
+            ++checks;
+        }
+        assert(b.moved() == expectMoved);                        // ③ 이동 비용 = 이동 거리의 합
+        grownTotal += (long)b.grows();
+    }
+    // 제자리 타이핑은 옮기는 문자가 없고, 재할당은 배증이라 log 번
+    GapBuffer t(4); for (int i = 0; i < 5000; ++i) t.insert((char)('a' + i % 26));
+    assert(t.moved() == 0 && t.size() == 5000 && t.grows() <= 11 && t.grows() >= 10);          // 4 -> 8 -> ... -> 8192: 11 번
+    // 커서 근처 편집은 멀리 있는 텍스트를 건드리지 않는다: 가운데에서 1 000 번 지우고 쓰기 -> 옮긴 문자 수 = 처음 가운데로 간 거리뿐
+    t.move(2500); size_t before = t.moved(); for (int i = 0; i < 1000; ++i) { t.insert('x'); t.erase(); } assert(t.moved() == before && t.size() == 5000);
+    std::cout << "GapBuffer: " << checks << " random edits matched std::string; typing 5000 chars moved " << 0 << " characters in " << t.grows() << " growths" << std::endl;
+    (void)grownTotal;
     return 0;
 }
 // Time Complexity: 커서 근처 삽입/삭제 O(1), 이동 O(거리)
@@ -1166,26 +1378,38 @@ int main() {
 ## PieceTable()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 피스 테이블(VS Code, Word): 원본 파일 버퍼(읽기 전용)와 추가 버퍼(append-only)를 두고,
 // 문서는 "어느 버퍼의 어디부터 몇 글자"인 조각(piece)들의 목록으로 표현한다. 편집은 조각 목록만 바꾸므로 텍스트 복사가 없고 undo 가 쉽다
+// 이 구현의 undo 는 편집 전의 조각 목록(글자가 아니라 (버퍼, 시작, 길이) 세 수의 배열)을 보관한다.  이어서 타이핑하면 직전 추가 조각을 늘려 조각 수가 늘지 않는다
+// 검증: ① 손으로 짠 시나리오  ② 무작위 편집 8 000 회(삽입·삭제·undo·redo, 40 개 문서)를 std::string 모델(상태 스택)과 매 단계 대조하고 불변식 확인:
+//        빈 조각 없음, 모든 조각이 버퍼 범위 안, 원본 버퍼 불변, 추가 버퍼는 길이가 줄지 않음, 조각 수 ≤ 1 + 2·삽입 + 삭제  ③ 이어 타이핑 5 000 자 -> 조각 2 개
 struct Piece { int buf; size_t start, len; };               // buf 0 = original, 1 = added
 class PieceTable {
-    std::string orig, added;
+    std::string orig, added, origCopy;
     std::vector<Piece> pieces;
+    std::vector<std::vector<Piece>> undoS, redoS;
+    void snapshot() { undoS.push_back(pieces); redoS.clear(); }
 public:
-    explicit PieceTable(const std::string& text) : orig(text) { if (!text.empty()) pieces.push_back({0, 0, text.size()}); }
+    explicit PieceTable(const std::string& text) : orig(text), origCopy(text) { if (!text.empty()) pieces.push_back({0, 0, text.size()}); }
+    size_t size() const { size_t n = 0; for (auto& p : pieces) n += p.len; return n; }
     void insert(size_t pos, const std::string& text) {
+        assert(pos <= size());
+        if (text.empty()) return;
+        snapshot();
         size_t start = added.size(); added += text;
         size_t off = 0;
         for (size_t i = 0; i <= pieces.size(); i++) {
-            if (i == pieces.size() || pos <= off + pieces[i].len) {
-                if (i == pieces.size()) { pieces.push_back({1, start, text.size()}); return; }
+            if (i == pieces.size()) { pieces.push_back({1, start, text.size()}); return; }
+            if (pos <= off + pieces[i].len) {
                 Piece p = pieces[i]; size_t inner = pos - off;
+                if (inner == p.len && p.buf == 1 && p.start + p.len == start) { pieces[i].len += text.size(); return; }   // 이어 타이핑: 추가 버퍼 끝에서 이어지는 조각
                 std::vector<Piece> rep;
                 if (inner > 0) rep.push_back({p.buf, p.start, inner});
                 rep.push_back({1, start, text.size()});
@@ -1197,7 +1421,10 @@ public:
         }
     }
     void erase(size_t pos, size_t n) {
-        std::vector<Piece> out; size_t off = 0, end = pos + n;
+        size_t sz = size();
+        if (pos >= sz || n == 0) return;
+        snapshot();
+        std::vector<Piece> out; size_t off = 0, end = std::min(pos + n, sz);
         for (auto p : pieces) {
             size_t a = off, b = off + p.len; off = b;
             if (b <= pos || a >= end) { out.push_back(p); continue; }
@@ -1206,12 +1433,20 @@ public:
         }
         pieces.swap(out);
     }
+    bool undo() { if (undoS.empty()) return false; redoS.push_back(pieces); pieces = undoS.back(); undoS.pop_back(); return true; }
+    bool redo() { if (redoS.empty()) return false; undoS.push_back(pieces); pieces = redoS.back(); redoS.pop_back(); return true; }
     std::string text() const {
         std::string r;
         for (auto& p : pieces) r += (p.buf ? added : orig).substr(p.start, p.len);
         return r;
     }
     size_t pieceCount() const { return pieces.size(); }
+    size_t addedSize() const { return added.size(); }
+    bool consistent() const {                                  // 불변식: 빈 조각 없음, 범위 안, 원본 불변
+        if (orig != origCopy) return false;
+        for (auto& p : pieces) if (p.len == 0 || p.start + p.len > (p.buf ? added : orig).size()) return false;
+        return true;
+    }
 };
 
 int main() {
@@ -1224,7 +1459,34 @@ int main() {
     assert(t.text() == "Hello world!");
     t.erase(0, 6);
     assert(t.text() == "world!");
-    std::cout << "PieceTable: " << t.text() << " (" << t.pieceCount() << " pieces)" << std::endl;
+    assert(t.undo() && t.text() == "Hello world!" && t.undo() && t.text() == "Hello, world!" && t.redo() && t.text() == "Hello world!");
+    t.insert(0, "X"); assert(!t.redo());                                // 새 편집은 redo 기록을 지운다
+    PieceTable empty(""); assert(empty.size() == 0 && empty.text().empty() && !empty.undo() && !empty.redo());
+    empty.insert(0, "abc"); empty.erase(1, 100); assert(empty.text() == "a" && empty.pieceCount() == 1);       // 경계: 빈 문서에서 시작, 길이를 넘는 삭제
+    empty.erase(5, 1); empty.erase(0, 0); empty.insert(0, ""); assert(empty.text() == "a");                      // 범위 밖/빈 편집은 무시
+
+    // ② 모델 대조 (모델은 문자열 상태 스택)
+    std::mt19937 rng(99); long ops = 0, undos = 0, redos = 0;
+    for (int doc = 0; doc < 40; ++doc) {
+        std::string init; for (int i = 0, n = (int)(rng() % 30); i < n; ++i) init += (char)('a' + rng() % 26);
+        PieceTable pt(init); std::string cur = init; std::vector<std::string> undoM, redoM; size_t inserts = 0, erases = 0, prevAdded = 0;
+        for (int step = 0; step < 200; ++step) {
+            int op = (int)(rng() % 10);
+            if (op < 4) { size_t pos = rng() % (cur.size() + 1); std::string s; for (int k = 0, n = 1 + (int)(rng() % 5); k < n; ++k) s += (char)('A' + rng() % 26); pt.insert(pos, s); undoM.push_back(cur); redoM.clear(); cur.insert(pos, s); ++inserts; }
+            else if (op < 7) { size_t pos = rng() % (cur.size() + 2), n = rng() % 8; pt.erase(pos, n); if (pos < cur.size() && n > 0) { undoM.push_back(cur); redoM.clear(); cur.erase(pos, n); ++erases; } }
+            else if (op < 9) { bool r = pt.undo(); assert(r == !undoM.empty()); if (r) { redoM.push_back(cur); cur = undoM.back(); undoM.pop_back(); ++undos; } }
+            else { bool r = pt.redo(); assert(r == !redoM.empty()); if (r) { undoM.push_back(cur); cur = redoM.back(); redoM.pop_back(); ++redos; } }
+            assert(pt.text() == cur && pt.size() == cur.size() && pt.consistent() && pt.addedSize() >= prevAdded && pt.pieceCount() <= 1 + 2 * inserts + erases);
+            prevAdded = pt.addedSize(); ++ops;
+        }
+    }
+    assert(ops == 8000 && undos > 400 && redos > 100);
+    // ③ 이어 타이핑: 가운데에 ", dear" 를 한 글자씩 -> 조각 3 개 (원본 앞, 추가, 원본 뒤). 맨 끝에 5 000 자를 한 글자씩 -> 조각 2 개
+    PieceTable typing("Hello world"); std::string typed = ", dear"; for (size_t i = 0; i < typed.size(); ++i) typing.insert(5 + i, std::string(1, typed[i]));
+    assert(typing.text() == "Hello, dear world" && typing.pieceCount() == 3);
+    PieceTable tail("start"); for (int i = 0; i < 5000; ++i) tail.insert(5 + i, std::string(1, (char)('a' + i % 26)));
+    assert(tail.size() == 5005 && tail.pieceCount() == 2 && tail.addedSize() == 5000);
+    std::cout << "PieceTable: " << ops << " random edits matched the string model (" << undos << " undos, " << redos << " redos); typing 5000 characters kept " << tail.pieceCount() << " pieces" << std::endl;
     return 0;
 }
 // Time Complexity: 편집 O(조각 수), 균형 트리로 O(log 조각 수) 개선 가능
@@ -1806,24 +2068,34 @@ int main() {
 ## AhoCorasick()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
+#include <iostream>
 #include <queue>
+#include <random>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
-#include <cassert>
 
 // 아호-코라식: 여러 패턴을 트라이로 합치고 KMP 의 실패 함수를 트라이 전체로 확장(실패 링크)해,
 // 텍스트를 한 번만 훑어 모든 패턴의 모든 출현을 O(n + 패턴 총 길이 + 출현 수)에 찾는다
+// 검증: ① 교과서 예 {he, she, his, hers} / "ushers"  ② 무작위 패턴 집합(알파벳 2~3, 중복 패턴 포함)과 텍스트 3 000 쌍을 나이브 전수 탐색과 대조
+//        ③ 구조 불변식: 실패 링크 = "그 노드 문자열의 가장 긴 진 접미사 중 트라이에 있는 것", 노드의 출력 목록 = 그 문자열의 접미사인 패턴(중복 포함) 전부
+//        ④ 큰 입력(텍스트 200 000 자, 패턴 40 개)의 패턴별 출현 횟수와 닫힌 식: 패턴 a, aa, …, a^k 와 텍스트 a^n 의 총 출현 수 = Σ(n - j + 1)
 class AhoCorasick {
-    struct Node { int next[26]; int fail = 0; std::vector<int> out; Node() { std::fill(next, next + 26, -1); } };
+    struct Node { int next[26]; int fail = 0, parent = -1; char ch = 0; std::vector<int> out; Node() { std::fill(next, next + 26, -1); } };
     std::vector<Node> t; std::vector<std::string> pats;
 public:
     explicit AhoCorasick(const std::vector<std::string>& patterns) : t(1), pats(patterns) {
         for (int id = 0; id < (int)pats.size(); id++) {
+            if (pats[id].empty()) continue;                            // 빈 패턴은 무시
             int cur = 0;
-            for (char ch : pats[id]) { int c = ch - 'a'; if (t[cur].next[c] < 0) { t[cur].next[c] = t.size(); t.emplace_back(); } cur = t[cur].next[c]; }
+            for (char ch : pats[id]) {
+                int c = ch - 'a';
+                if (t[cur].next[c] < 0) { int v = (int)t.size(); t.emplace_back(); t[v].parent = cur; t[v].ch = ch; t[cur].next[c] = v; }
+                cur = t[cur].next[c];
+            }
             t[cur].out.push_back(id);
         }
         std::queue<int> q;                                         // BFS 로 실패 링크를 만든다
@@ -1848,7 +2120,21 @@ public:
         }
         return res;
     }
+    std::vector<size_t> countPerPattern(const std::string& text) const {   // 문자열을 만들지 않고 패턴별 출현 횟수만 센다
+        std::vector<size_t> cnt(pats.size(), 0); int cur = 0;
+        for (char ch : text) { cur = t[cur].next[ch - 'a']; for (int id : t[cur].out) ++cnt[id]; }
+        return cnt;
+    }
+    size_t nodes() const { return t.size(); }
+    std::string nodeString(int v) const { std::string s; for (; v > 0; v = t[v].parent) s += t[v].ch; std::reverse(s.begin(), s.end()); return s; }
+    int failOf(int v) const { return t[v].fail; }
+    size_t outCount(int v) const { return t[v].out.size(); }
 };
+std::vector<std::pair<std::string, size_t>> naive(const std::vector<std::string>& pats, const std::string& text) {
+    std::vector<std::pair<std::string, size_t>> r;
+    for (const std::string& p : pats) { if (p.empty()) continue; for (size_t i = 0; i + p.size() <= text.size(); ++i) if (text.compare(i, p.size(), p) == 0) r.push_back({p, i}); }
+    std::sort(r.begin(), r.end()); return r;
+}
 
 int main() {
     AhoCorasick ac({"he", "she", "his", "hers"});
@@ -1857,7 +2143,38 @@ int main() {
     std::vector<std::pair<std::string, size_t>> expect = {{"he", 2}, {"hers", 2}, {"she", 1}};
     assert(r == expect);
     assert(AhoCorasick({"a", "aa"}).search("aaa").size() == 5);       // a×3 + aa×2
-    std::cout << "AhoCorasick found " << r.size() << " matches in 'ushers'" << std::endl;
+    assert(AhoCorasick({}).search("abc").empty() && AhoCorasick({""}).search("abc").empty() && AhoCorasick({"abc"}).search("").empty());   // 경계: 패턴 없음, 빈 패턴, 빈 텍스트
+    assert(AhoCorasick({"ab", "ab"}).search("abab").size() == 4);     // 같은 패턴 둘은 각각 보고된다
+
+    // ② 무작위 대조 + ③ 구조 불변식
+    std::mt19937 rng(1234); long matches = 0, nodesTotal = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int sigma = 2 + (int)(rng() % 2), np = 1 + (int)(rng() % 8); std::vector<std::string> pats;
+        for (int i = 0; i < np; ++i) { std::string p; for (int k = 0, n = 1 + (int)(rng() % 5); k < n; ++k) p += (char)('a' + rng() % sigma); pats.push_back(p); }
+        if (rng() % 4 == 0) pats.push_back(pats[rng() % pats.size()]);          // 중복 패턴
+        std::string text; for (int k = 0, n = (int)(rng() % 60); k < n; ++k) text += (char)('a' + rng() % sigma);
+        AhoCorasick a(pats); auto got = a.search(text); std::sort(got.begin(), got.end()); auto want = naive(pats, text);
+        assert(got == want); matches += (long)got.size(); nodesTotal += (long)a.nodes();
+        std::vector<size_t> cnt = a.countPerPattern(text); size_t sum = 0; for (size_t c : cnt) sum += c; assert(sum == got.size());
+        std::set<std::string> trie; for (int v = 0; v < (int)a.nodes(); ++v) trie.insert(a.nodeString(v));
+        assert(trie.size() == a.nodes());                                       // 노드마다 문자열이 다르다
+        for (int v = 1; v < (int)a.nodes(); ++v) {
+            std::string s = a.nodeString(v), best;
+            for (size_t k = 1; k < s.size(); ++k) if (trie.count(s.substr(k))) { best = s.substr(k); break; }       // 가장 긴 진 접미사부터
+            assert(a.nodeString(a.failOf(v)) == best);                          // 실패 링크의 정의
+            size_t suffixPatterns = 0; for (const std::string& p : pats) if (!p.empty() && p.size() <= s.size() && s.compare(s.size() - p.size(), p.size(), p) == 0) ++suffixPatterns;
+            assert(a.outCount(v) == suffixPatterns);                            // 출력 목록 = 접미사인 패턴 전부
+        }
+    }
+    assert(matches > 20000 && nodesTotal > 15000);
+    // ④ 큰 입력
+    std::vector<std::string> big; for (int i = 0; i < 40; ++i) { std::string p; for (int k = 0, n = 1 + (int)(rng() % 8); k < n; ++k) p += (char)('a' + rng() % 4); big.push_back(p); }
+    std::string bigText(200000, 'a'); for (char& c : bigText) c = (char)('a' + rng() % 4);
+    AhoCorasick ab(big); std::vector<size_t> cnt = ab.countPerPattern(bigText);
+    for (size_t i = 0; i < big.size(); ++i) { size_t c = 0; for (size_t pos = bigText.find(big[i]); pos != std::string::npos; pos = bigText.find(big[i], pos + 1)) ++c; assert(cnt[i] == c); }
+    const int K = 20, N = 1000; std::vector<std::string> as; for (int j = 1; j <= K; ++j) as.push_back(std::string(j, 'a'));
+    std::vector<size_t> ac2 = AhoCorasick(as).countPerPattern(std::string(N, 'a')); for (int j = 1; j <= K; ++j) assert(ac2[j - 1] == (size_t)(N - j + 1));
+    std::cout << "AhoCorasick: " << matches << " matches in 3000 random pattern sets agreed with naive search; failure links and output lists matched their definitions; 200000-char text checked for 40 patterns" << std::endl;
     return 0;
 }
 // Time Complexity: O(n + Σ|패턴| + z)  (z = 출현 횟수)
@@ -2361,13 +2678,19 @@ int main() {
 ## LongestCommonSubstring()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <map>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 최장 공통 부분 문자열: a 의 접미사 자동자를 만들고 b 를 한 글자씩 흘려 보내며 "현재 일치 길이"를 추적한다. O(|a| + |b|)
+// 검증: ① 손으로 고른 경우(빈 문자열, 전체 일치, 겹치는 반복)  ② 접미사 자동자 자체: 서로 다른 부분 문자열의 수 Σ(len[v] - len[link[v]]) 가 브루트포스 집합 크기와 같고,
+//        상태 수 ≤ 2n - 1, 모든 부분 문자열은 받아들이고 아닌 문자열은 거부  ③ 무작위 쌍 4 000 개(알파벳 2~4)를 O(|a||b|) DP 오라클과 대조 — 길이뿐 아니라 *반환 문자열* 도 같다(b 에서 가장 먼저 끝나는 최장 일치)
+//        ④ 긴 입력(각 2 000 자) 5 쌍
 struct SAM {
     struct State { int len = 0, link = -1; std::map<char, int> next; };
     std::vector<State> st; int last = 0;
@@ -2388,6 +2711,8 @@ struct SAM {
         }
         last = cur;
     }
+    long long distinctSubstrings() const { long long s = 0; for (size_t v = 1; v < st.size(); ++v) s += st[v].len - st[st[v].link].len; return s; }
+    bool contains(const std::string& s) const { int v = 0; for (char c : s) { auto it = st[v].next.find(c); if (it == st[v].next.end()) return false; v = it->second; } return true; }
 };
 std::string lcsubstr(const std::string& a, const std::string& b) {
     SAM sam; for (char c : a) sam.extend(c);
@@ -2398,14 +2723,53 @@ std::string lcsubstr(const std::string& a, const std::string& b) {
         if (sam.st[v].next.count(c)) { v = sam.st[v].next[c]; l++; }
         if (l > best) { best = l; bestEnd = (int)i; }
     }
-    return b.substr(bestEnd - best + 1, best);
+    return best == 0 ? std::string() : b.substr(bestEnd - best + 1, best);        // best == 0 일 때 b 가 비어 있으면 substr(1, 0) 이 예외를 던지므로 따로 처리
+}
+std::string oracleLcs(const std::string& a, const std::string& b) {                // O(|a||b|) DP: dp[j] = a[..i] 와 b[..j] 가 접미사로 일치하는 길이
+    std::vector<int> prev(a.size() + 1, 0), cur(a.size() + 1, 0); int best = 0, bestEnd = 0;
+    for (size_t j = 0; j < b.size(); ++j) {
+        for (size_t i = 0; i < a.size(); ++i) cur[i + 1] = a[i] == b[j] ? prev[i] + 1 : 0;
+        for (size_t i = 1; i <= a.size(); ++i) if (cur[i] > best) { best = cur[i]; bestEnd = (int)j; }     // b 에서 가장 먼저 끝나는 최장 일치
+        std::swap(prev, cur);
+    }
+    return best == 0 ? std::string() : b.substr(bestEnd - best + 1, best);
 }
 
 int main() {
     assert(lcsubstr("abcdxyz", "xyzabcd") == "abcd");
     assert(lcsubstr("zxabcdezy", "yzabcdezx") == "abcdez");
     assert(lcsubstr("abc", "xyz").empty());
-    std::cout << "LongestCommonSubstring(abcdxyz, xyzabcd) = " << lcsubstr("abcdxyz", "xyzabcd") << std::endl;
+    assert(lcsubstr("", "abc").empty() && lcsubstr("abc", "").empty() && lcsubstr("", "").empty());       // 경계: 빈 입력 (b 가 비어도 예외 없음)
+    assert(lcsubstr("hello", "hello") == "hello" && lcsubstr("aaaa", "aaaaaa") == "aaaa" && lcsubstr("abab", "baba") == "bab");      // "aba" 와 "bab" 이 같은 길이: b 에서 먼저 끝나는 "bab" 을 돌려준다
+    // ② 접미사 자동자의 성질
+    std::mt19937 rng(8); long samChecks = 0;
+    for (int it = 0; it < 2000; ++it) {
+        int sigma = 2 + (int)(rng() % 3), n = (int)(rng() % 14); std::string s; for (int i = 0; i < n; ++i) s += (char)('a' + rng() % sigma);
+        SAM sam; for (char c : s) sam.extend(c);
+        std::set<std::string> subs; for (size_t i = 0; i < s.size(); ++i) for (size_t l = 1; i + l <= s.size(); ++l) subs.insert(s.substr(i, l));
+        assert(sam.distinctSubstrings() == (long long)subs.size());
+        assert(n < 2 || sam.st.size() <= (size_t)(2 * n - 1) + 1);                      // 상태 수 ≤ 2n - 1 (+ 빈 문자열을 나타내는 시작 상태)
+        for (auto& x : subs) assert(sam.contains(x));
+        for (int k = 0; k < 20; ++k) { std::string q; for (int i = 0, m = 1 + (int)(rng() % 6); i < m; ++i) q += (char)('a' + rng() % sigma); assert(sam.contains(q) == (subs.count(q) > 0)); ++samChecks; }
+    }
+    // ③ 무작위 쌍
+    long totalLen = 0, empties = 0;
+    for (int it = 0; it < 4000; ++it) {
+        int sigma = 2 + (int)(rng() % 3); std::string a, b;
+        for (int i = 0, n = (int)(rng() % 25); i < n; ++i) a += (char)('a' + rng() % sigma);
+        for (int i = 0, n = (int)(rng() % 25); i < n; ++i) b += (char)('a' + rng() % sigma);
+        std::string got = lcsubstr(a, b); assert(got == oracleLcs(a, b));
+        assert(a.find(got) != std::string::npos && b.find(got) != std::string::npos);   // 실제로 공통 부분 문자열
+        totalLen += (long)got.size(); empties += got.empty();
+    }
+    assert(totalLen > 10000 && empties > 5 && samChecks == 40000);
+    // ④ 긴 입력
+    for (int it = 0; it < 5; ++it) {
+        std::string a, b; for (int i = 0; i < 2000; ++i) { a += (char)('a' + rng() % 4); b += (char)('a' + rng() % 4); }
+        std::string common = a.substr(500, 40 + it); b.replace(1200, common.size(), common);          // 길이 40+ 의 공통 구간을 심는다
+        std::string got = lcsubstr(a, b); assert(got == oracleLcs(a, b) && got.size() >= common.size());
+    }
+    std::cout << "LongestCommonSubstring: 4000 random pairs and 5 long pairs matched the DP oracle (including the returned string); the automaton's distinct-substring count matched brute force on 2000 strings" << std::endl;
     return 0;
 }
 // Time Complexity: O(|a| log σ + |b| log σ)
@@ -2415,47 +2779,101 @@ int main() {
 ## LZW()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
 #include <iostream>
 #include <map>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // LZW: 지금까지 본 문자열을 사전에 등록하며 코드로 대체한다. 사전은 부호기와 복호기가 같은 규칙으로 따로 만들기 때문에 사전을 전송하지 않는다 (GIF, 옛 Unix compress)
-std::vector<int> lzwEncode(const std::string& in) {
+// 사전 크기를 maxCodes 로 제한하면(GIF 는 4096) 가득 찬 뒤로는 더 등록하지 않는다. 코드를 바이트로 묶을 때는 i 번째 코드의 비트 폭을 *인덱스만으로* 정해 부호기와 복호기가 어긋나지 않게 한다
+// 검증: ① 위키백과의 알려진 출력 [84 79 66 69 79 82 78 79 84 256 258 260 265 259 261 263]  ② 닫힌 식: a^n 은 길이 1, 2, 3, … 인 조각들로 나뉜다(1000 자 -> 45 코드)
+//        ③ 무작위 입력(알파벳 1·2·4·256, 길이 0~3 000, 상한 260·300·512·4096·무제한) 왕복을 코드열과 비트 포장 두 단계 모두에서 확인 (KwKwK 경우 포함)  ④ 압축률: 반복 텍스트는 30 % 미만, 난수 바이트는 늘어남이 제한적
+std::vector<int> lzwEncode(const std::string& in, int maxCodes = 1 << 30) {
     std::map<std::string, int> dict;
     for (int i = 0; i < 256; i++) dict[std::string(1, (char)i)] = i;
     std::vector<int> out; std::string w;
     for (char c : in) {
         std::string wc = w + c;
         if (dict.count(wc)) w = wc;
-        else { out.push_back(dict[w]); dict[wc] = dict.size(); w = std::string(1, c); }
+        else { out.push_back(dict[w]); if ((int)dict.size() < maxCodes) { int id = (int)dict.size(); dict[wc] = id; } w = std::string(1, c); }
     }
     if (!w.empty()) out.push_back(dict[w]);
     return out;
 }
-std::string lzwDecode(const std::vector<int>& codes) {
-    std::map<int, std::string> dict;
+std::string lzwDecode(const std::vector<int>& codes, int maxCodes = 1 << 30) {
+    if (codes.empty()) return std::string();                           // 빈 입력: codes[0] 을 읽으면 안 된다
+    std::vector<std::string> dict(256);
     for (int i = 0; i < 256; i++) dict[i] = std::string(1, (char)i);
     std::string w = dict[codes[0]], out = w;
     for (size_t i = 1; i < codes.size(); i++) {
-        std::string entry = dict.count(codes[i]) ? dict[codes[i]] : w + w[0];     // 아직 등록 전인 코드(KwKwK 경우)
+        int k = codes[i]; std::string entry;
+        if (k < (int)dict.size()) entry = dict[k]; else { assert(k == (int)dict.size()); entry = w + w[0]; }     // 아직 등록 전인 코드(KwKwK 경우)
         out += entry;
-        dict[dict.size()] = w + entry[0];
+        if ((int)dict.size() < maxCodes) dict.push_back(w + entry[0]);
         w = entry;
     }
     return out;
+}
+int widthAt(size_t i, int maxCodes) {                                  // i 번째 코드가 가질 수 있는 최댓값 = min(255 + i, maxCodes - 1)
+    long long top = std::min<long long>(255 + (long long)i, maxCodes - 1); int w = 9; while ((1LL << w) <= top) ++w; return w;
+}
+std::vector<uint8_t> pack(const std::vector<int>& codes, int maxCodes) {       // 헤더 4 바이트(코드 수) + LSB 우선 비트열
+    std::vector<uint8_t> out(4); for (int k = 0; k < 4; ++k) out[k] = (uint8_t)((uint32_t)codes.size() >> (8 * k));
+    uint64_t acc = 0; int bits = 0;
+    for (size_t i = 0; i < codes.size(); ++i) {
+        int w = widthAt(i, maxCodes); assert(codes[i] >= 0 && (1LL << w) > codes[i]);
+        acc |= (uint64_t)codes[i] << bits; bits += w;
+        while (bits >= 8) { out.push_back((uint8_t)acc); acc >>= 8; bits -= 8; }
+    }
+    if (bits > 0) out.push_back((uint8_t)acc);
+    return out;
+}
+std::vector<int> unpack(const std::vector<uint8_t>& bytes, int maxCodes) {
+    size_t n = 0; for (int k = 0; k < 4; ++k) n |= (size_t)bytes[k] << (8 * k);
+    std::vector<int> codes; uint64_t acc = 0; int bits = 0; size_t pos = 4;
+    for (size_t i = 0; i < n; ++i) {
+        int w = widthAt(i, maxCodes);
+        while (bits < w) { acc |= (uint64_t)bytes[pos++] << bits; bits += 8; }
+        codes.push_back((int)(acc & ((1ULL << w) - 1))); acc >>= w; bits -= w;
+    }
+    return codes;
 }
 
 int main() {
     std::string s = "TOBEORNOTTOBEORTOBEORNOT";
     auto codes = lzwEncode(s);
+    assert((codes == std::vector<int>{84, 79, 66, 69, 79, 82, 78, 79, 84, 256, 258, 260, 265, 259, 261, 263}));    // 알려진 출력
     assert(lzwDecode(codes) == s);
     assert(codes.size() < s.size());                                   // 반복 덕분에 코드 수가 줄어든다
     assert(codes[0] == 'T' && codes[9] == 256);                        // 9번째 코드: 처음으로 사전 항목("TO")을 사용
     std::string rep(1000, 'a');
-    assert(lzwDecode(lzwEncode(rep)) == rep && lzwEncode(rep).size() < 60);
-    std::cout << "LZW: " << s.size() << " chars -> " << codes.size() << " codes" << std::endl;
+    assert(lzwDecode(lzwEncode(rep)) == rep && lzwEncode(rep).size() == 45);          // a^1000: 길이 1,2,…,44 조각(합 990) + 마지막 10
+    assert(lzwEncode("").empty() && lzwDecode({}).empty() && lzwDecode(lzwEncode("x")) == "x");           // 경계: 빈 입력, 한 글자
+    assert(lzwDecode(lzwEncode(std::string("\0\xFF\0", 3))) == std::string("\0\xFF\0", 3));              // 바이너리(NUL 포함)
+    assert(widthAt(0, 1 << 30) == 9 && widthAt(256, 1 << 30) == 9 && widthAt(257, 1 << 30) == 10 && widthAt(768, 1 << 30) == 10 && widthAt(769, 1 << 30) == 11 && widthAt(100000, 300) == 9);   // 폭이 늘어나는 경계
+
+    std::mt19937 rng(77); long cases = 0, kwkwk = 0, totalIn = 0, totalCodes = 0;
+    const int limits[] = {260, 300, 512, 4096, 1 << 30}; const int sigmas[] = {1, 2, 4, 256};
+    for (int it = 0; it < 400; ++it) {
+        int sigma = sigmas[rng() % 4], limit = limits[rng() % 5], n = (int)(rng() % 3001);
+        std::string in; for (int i = 0; i < n; ++i) in += (char)(sigma == 256 ? rng() % 256 : 'a' + rng() % sigma);
+        std::vector<int> c = lzwEncode(in, limit); assert(lzwDecode(c, limit) == in);
+        std::vector<uint8_t> bytes = pack(c, limit); assert(unpack(bytes, limit) == c && lzwDecode(unpack(bytes, limit), limit) == in);
+        for (int code : c) assert(code < std::max(limit, 256));
+        { std::map<int, int> firstSeen; for (size_t i = 0; i < c.size(); ++i) if (c[i] >= 256 && !firstSeen.count(c[i])) { firstSeen[c[i]] = (int)i; if (c[i] == 256 + (int)i - 1 && limit > 256 + (int)i - 1) ++kwkwk; } }      // 방금 만든 항목을 바로 쓰는 경우의 수
+        ++cases; totalIn += n; totalCodes += (long)c.size();
+    }
+    assert(cases == 400 && kwkwk > 50 && totalCodes < totalIn);
+    // ④ 압축률
+    std::string text; for (int i = 0; i < 200; ++i) text += "the quick brown fox ";
+    assert(pack(lzwEncode(text), 1 << 30).size() * 10 < text.size() * 3);
+    std::string noise(3000, 'x'); for (char& ch : noise) ch = (char)rng();
+    size_t packed = pack(lzwEncode(noise, 4096), 4096).size(); assert(packed >= noise.size() && packed <= noise.size() * 3 / 2 + 8);        // 난수 바이트는 압축되지 않고 9~12 비트로 늘어난다
+    std::cout << "LZW: " << cases << " round trips (" << totalIn << " bytes -> " << totalCodes << " codes) at every dictionary limit; the textbook vector matched; repeated text packed to " << pack(lzwEncode(text), 1 << 30).size() << " of " << text.size() << " bytes" << std::endl;
     return 0;
 }
 // Time Complexity: O(n log D)
@@ -2464,48 +2882,115 @@ int main() {
 ## BurrowsWheelerTransform()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
-#include <numeric>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <iostream>
+#include <numeric>
+#include <random>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 // BWT: 모든 회전을 정렬해 마지막 열만 취한다. 같은 문맥 뒤의 글자들이 모여 반복(run)이 늘어나므로 압축에 유리하다(bzip2).
-// 가역 변환: 마지막 열 L 과 정렬된 첫 열 F 사이의 LF 대응으로 원문을 복원한다 (끝 표식 '$' 필요)
-std::string bwt(std::string s) {
-    s += '$';
-    std::vector<int> idx(s.size()); std::iota(idx.begin(), idx.end(), 0);
+// 가역 변환: 마지막 열 L 과 정렬된 첫 열 F 사이의 LF 대응으로 원문을 복원한다.  두 가지 표기:
+//   ① 끝 표식 '$' (가장 작은 유일한 글자로 취급) — 원문에 '$' 가 없어야 한다.  접미사 배열(배증)로 O(n log² n) 에 만드는 빠른 판과 회전 전수 정렬 판을 둘 다 둔다
+//   ② 표식 없는 판: 정렬된 회전 중 *원문이 있는 행 번호* 를 함께 저장한다 (bzip2 방식) — 모든 바이트(NUL, '$' 포함)와 주기 문자열을 처리한다
+// 검증: 교과서 값 3 개(banana, abracadabra, mississippi)  ② {a,b} 위의 길이 ≤ 10 문자열 2 047 개 *전부*: 세 구현이 같고 복원이 정확하며 변환이 단사
+//        ③ 무작위 바이트 문자열 600 개의 왕복 + 접미사 배열 판과 회전 판 일치  ④ 반복이 모이는 효과: 자연어풍 텍스트의 run 수가 줄어든다
+int ord(char c) { return c == '$' ? -1 : (unsigned char)c; }
+std::string bwt(const std::string& s) {                          // 느린 정의 그대로: 회전을 모두 비교해 정렬
+    assert(s.find('$') == std::string::npos);
+    std::string t = s + '$'; size_t n = t.size();
+    std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
     std::sort(idx.begin(), idx.end(), [&](int a, int b) {                       // 회전 비교
-        for (size_t k = 0; k < s.size(); k++) { char x = s[(a + k) % s.size()], y = s[(b + k) % s.size()]; if (x != y) return x < y; }
+        for (size_t k = 0; k < n; k++) { int x = ord(t[(a + k) % n]), y = ord(t[(b + k) % n]); if (x != y) return x < y; }
         return false; });
     std::string L;
-    for (int i : idx) L += s[(i + s.size() - 1) % s.size()];
+    for (int i : idx) L += t[(i + n - 1) % n];
+    return L;
+}
+std::vector<int> suffixArray(const std::string& t) {              // 접미사 배열(배증): 끝 표식이 가장 작고 유일하므로 접미사 순서 = 회전 순서
+    int n = (int)t.size(); std::vector<int> sa(n), rk(n), tmp(n);
+    for (int i = 0; i < n; i++) { sa[i] = i; rk[i] = ord(t[i]); }
+    for (int k = 1;; k <<= 1) {
+        auto cmp = [&](int a, int b) { if (rk[a] != rk[b]) return rk[a] < rk[b]; int ra = a + k < n ? rk[a + k] : -2, rb = b + k < n ? rk[b + k] : -2; return ra < rb; };
+        std::sort(sa.begin(), sa.end(), cmp);
+        tmp[sa[0]] = 0; for (int i = 1; i < n; i++) tmp[sa[i]] = tmp[sa[i - 1]] + (cmp(sa[i - 1], sa[i]) ? 1 : 0);
+        rk = tmp; if (rk[sa[n - 1]] == n - 1) break;
+    }
+    return sa;
+}
+std::string bwtFast(const std::string& s) {
+    assert(s.find('$') == std::string::npos);
+    std::string t = s + '$'; std::vector<int> sa = suffixArray(t); std::string L;
+    for (int i : sa) L += t[(i + t.size() - 1) % t.size()];
     return L;
 }
 std::string inverseBwt(const std::string& L) {
     size_t n = L.size();
     std::vector<int> order(n); std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return L[a] < L[b]; });   // order[i] = F 의 i번째 글자가 L 의 몇 번째인가
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ord(L[a]) < ord(L[b]); });   // order[i] = F 의 i번째 글자가 L 의 몇 번째인가
     size_t row = std::find(L.begin(), L.end(), '$') - L.begin();
     std::string out;
     for (size_t i = 0; i < n; i++) { row = order[row]; out += L[row]; }
     // 위 루프는 '$' 다음 글자부터 차례로 복원한다 (마지막에 '$' 도달)
     return out.substr(0, n - 1);
 }
+std::string bwtRot(const std::string& s, size_t& row) {            // ② 표식 없는 판: 정렬된 회전의 마지막 열 + 원문이 놓인 행
+    size_t n = s.size(); std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+        for (size_t k = 0; k < n; k++) { unsigned char x = s[(a + k) % n], y = s[(b + k) % n]; if (x != y) return x < y; }
+        return a < b; });                                          // 같은 회전(주기 문자열)은 번호순
+    std::string L; row = 0;
+    for (size_t i = 0; i < n; i++) { L += s[(idx[i] + n - 1) % n]; if (idx[i] == 0) row = i; }
+    return L;
+}
+std::string inverseRot(const std::string& L, size_t row) {
+    size_t n = L.size(); std::vector<int> order(n); std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return (unsigned char)L[a] < (unsigned char)L[b]; });
+    std::string out; size_t cur = row;
+    for (size_t i = 0; i < n; i++) { out += L[order[cur]]; cur = order[cur]; }                     // F[cur] = L[order[cur]]
+    return out;
+}
+int runs(const std::string& x) { int r = x.empty() ? 0 : 1; for (size_t i = 1; i < x.size(); i++) r += x[i] != x[i - 1]; return r; }
 
 int main() {
     assert(bwt("banana") == "annb$aa");                       // 교과서의 표준 예
     assert(inverseBwt("annb$aa") == "banana");
-    for (std::string s : {"abracadabra", "mississippi", "aaaa", "a"}) assert(inverseBwt(bwt(s)) == s);
-    // 효과: 같은 글자가 이어진다 -> BWT 결과의 run 개수가 줄어든다
-    auto runs = [](const std::string& x) { int r = 1; for (size_t i = 1; i < x.size(); i++) r += x[i] != x[i - 1]; return r; };
-    std::string text = "mississippi$mississippi$mississippi";
-    assert(runs(bwt("mississippimississippimississippi")) < runs(text));
-    std::cout << "BWT(banana) = " << bwt("banana") << std::endl;
+    assert(bwt("abracadabra") == "ard$rcaaaabb" && bwt("mississippi") == "ipssm$pissii" && bwtFast("mississippi") == "ipssm$pissii");     // 알려진 값 (정의대로 정렬한 결과)
+    for (std::string s : {"abracadabra", "mississippi", "aaaa", "a", ""}) assert(inverseBwt(bwt(s)) == s && inverseBwt(bwtFast(s)) == s);
+    assert(bwt("") == "$" && inverseBwt("$") == "");           // 경계: 빈 문자열
+    // ② {a,b} 위의 길이 ≤ 10 문자열 전부
+    std::vector<std::string> all{std::string()};
+    for (size_t i = 0; i < all.size(); ++i) if (all[i].size() < 10) { all.push_back(all[i] + 'a'); all.push_back(all[i] + 'b'); }
+    assert(all.size() == 2047);
+    std::set<std::pair<size_t, std::string>> images;       // 변환이 단사인가
+    for (const std::string& s : all) {
+        std::string L = bwt(s); assert(L == bwtFast(s) && inverseBwt(L) == s);
+        std::string sortedL = L, sortedT = s + '$'; std::sort(sortedL.begin(), sortedL.end()); std::sort(sortedT.begin(), sortedT.end()); assert(sortedL == sortedT);   // 글자의 재배열
+        images.insert({s.size(), L});
+        size_t row = 0; std::string R = bwtRot(s, row); assert(inverseRot(R, row) == s);
+    }
+    assert(images.size() == 2047);                              // 길이가 같은 서로 다른 문자열은 다른 BWT
+    // ③ 무작위 바이트 문자열
+    std::mt19937 rng(3);
+    for (int it = 0; it < 600; ++it) {
+        int n = (int)(rng() % 120), sigma = it % 3 == 0 ? 256 : it % 3 == 1 ? 3 : 20; std::string s;
+        for (int i = 0; i < n; ++i) { char c; do c = (char)(sigma == 256 ? rng() % 256 : 'a' + rng() % sigma); while (c == '$'); s += c; }
+        std::string L = bwt(s); assert(L == bwtFast(s) && inverseBwt(L) == s);
+        std::string any(n, 'x'); for (char& c : any) c = (char)(sigma == 256 ? rng() % 256 : '$' + rng() % 3);    // '$' 와 NUL 이 섞여도 표식 없는 판은 된다
+        size_t row = 0; std::string R = bwtRot(any, row); assert(inverseRot(R, row) == any && R.size() == any.size());
+    }
+    for (std::string per : std::vector<std::string>{"abab", "aaaa", "abcabc", std::string("\0\0", 2), std::string("$$$", 3)}) { size_t row = 0; std::string R = bwtRot(per, row); assert(inverseRot(R, row) == per); }     // 주기 문자열
+    // ④ 반복이 모이는 효과
+    std::string text; for (int i = 0; i < 60; ++i) text += (i % 3 == 0 ? "the cat sat on the mat " : i % 3 == 1 ? "the dog sat on the log " : "the bat sat on the hat ");
+    std::string tb = bwtFast(text); assert(inverseBwt(tb) == text && runs(tb) * 4 < runs(text));
+    std::string rnd(2000, 'a'); for (char& c : rnd) c = (char)('a' + rng() % 26); assert(runs(bwtFast(rnd)) > runs(rnd) * 9 / 10);        // 무작위 텍스트에서는 모이지 않는다 (대조군)
+    std::cout << "BWT: banana -> " << bwt("banana") << "; all 2047 binary strings up to length 10 matched across three implementations and were uniquely invertible; natural-like text runs " << runs(text) << " -> " << runs(tb) << std::endl;
     return 0;
 }
-// Time Complexity: 순진한 구현 O(n² log n), 접미사 배열 기반 O(n log n)
+// Time Complexity: 정의대로 O(n² log n), 접미사 배열(배증) O(n log² n), SA-IS 로 O(n)
 // Space Complexity: O(n)
 ```
 ## MoveToFront()
@@ -2563,51 +3048,140 @@ int main() {
 ## Huffman()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cmath>
-#include <map>
-#include <memory>
-#include <queue>
-#include <string>
-#include <vector>
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <queue>
+#include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
 // 허프먼 부호: 자주 나오는 글자에 짧은 비트열을 준다. 가장 빈도가 낮은 두 노드를 합치는 탐욕 알고리즘으로 최적의 접두사 부호를 만든다.
-// 평균 부호 길이 L 은 엔트로피 H 이상, H + 1 미만
-struct Node { char c; long f; std::unique_ptr<Node> l, r; };
-struct Cmp { bool operator()(const Node* a, const Node* b) const { return a->f > b->f || (a->f == b->f && a->c > b->c); } };
-void assign(const Node* n, const std::string& code, std::map<char, std::string>& out) {
-    if (!n->l && !n->r) { out[n->c] = code.empty() ? "0" : code; return; }
-    assign(n->l.get(), code + "0", out); assign(n->r.get(), code + "1", out);
+// 평균 부호 길이 L 은 엔트로피 H 이상, H + 1 미만.  트리 모양이 아니라 *코드 길이* 만 전송하면 복호기가 같은 정규(canonical) 부호를 재구성한다 (DEFLATE, JPEG)
+// 검증: ① 예제 문장의 비용(55 비트)과 왕복  ② 최적성 오라클 둘: (가) 글자 2~6 개의 무작위 빈도 1 500 개에서 *모든* 길이 배정을 크래프트 부등식으로 걸러 최솟값을 전수 탐색,
+//        (나) 정렬된 빈도에 대한 투 큐 O(n) 알고리즘(글자 최대 200 개) — 비용이 일치  ③ 접두사 부호성(크래프트 합 = 1, 어떤 부호도 다른 부호의 접두사가 아님),
+//        정규 복호(길이별 첫 부호값 표)와 트리 복호가 같고 비트 패킹 왕복  ④ H ≤ 평균 < H+1, 2의 거듭제곱 분포는 평균 = H 정확히, 피보나치 빈도는 깊이 σ-1, 글자 하나·빈 입력 경계
+struct HNode { long f; int l, r; };
+std::vector<int> huffmanLengths(const std::vector<long>& freq) {         // freq[s] == 0 이면 쓰지 않는 글자 (길이 0)
+    int n = (int)freq.size(); std::vector<int> len(n, 0); std::vector<HNode> t(n);
+    typedef std::pair<long, int> Q; std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq;
+    for (int i = 0; i < n; i++) { t[i] = {freq[i], -1, -1}; if (freq[i] > 0) pq.push({freq[i], i}); }
+    if (pq.empty()) return len;
+    if (pq.size() == 1) { len[pq.top().second] = 1; return len; }      // 글자가 하나뿐이어도 1 비트는 쓴다
+    while (pq.size() > 1) {
+        Q a = pq.top(); pq.pop(); Q b = pq.top(); pq.pop();
+        int id = (int)t.size(); t.push_back({a.first + b.first, a.second, b.second}); pq.push({t[id].f, id});
+    }
+    std::vector<std::pair<int, int>> st{{pq.top().second, 0}};
+    while (!st.empty()) { std::pair<int, int> p = st.back(); st.pop_back(); if (t[p.first].l < 0) len[p.first] = p.second; else { st.push_back({t[p.first].l, p.second + 1}); st.push_back({t[p.first].r, p.second + 1}); } }
+    return len;
 }
+std::vector<std::string> canonicalCodes(const std::vector<int>& len) {   // (길이, 글자) 순으로 번호를 매기며 코드를 1 씩 늘리고, 길이가 늘면 왼쪽으로 민다
+    std::vector<int> syms; for (int i = 0; i < (int)len.size(); i++) if (len[i] > 0) syms.push_back(i);
+    std::sort(syms.begin(), syms.end(), [&](int a, int b) { return len[a] != len[b] ? len[a] < len[b] : a < b; });
+    std::vector<std::string> code(len.size()); unsigned long long c = 0; int prev = 0;
+    for (int s : syms) {
+        assert(len[s] <= 62); c <<= (len[s] - prev); prev = len[s];
+        for (int b = len[s] - 1; b >= 0; b--) code[s] += (char)('0' + ((c >> b) & 1));
+        ++c;
+    }
+    return code;
+}
+struct CanonicalDecoder {                                                // 트리 없이 복호: 길이별 첫 부호값 / 개수 / 글자 표
+    std::vector<int> syms; std::vector<long long> first, count, offset; int maxLen = 0;
+    explicit CanonicalDecoder(const std::vector<int>& len) {
+        for (int l : len) maxLen = std::max(maxLen, l);
+        for (int i = 0; i < (int)len.size(); i++) if (len[i] > 0) syms.push_back(i);
+        std::sort(syms.begin(), syms.end(), [&](int a, int b) { return len[a] != len[b] ? len[a] < len[b] : a < b; });
+        first.assign(maxLen + 2, 0); count.assign(maxLen + 2, 0); offset.assign(maxLen + 2, 0);
+        for (int s : syms) ++count[len[s]];
+        long long code = 0, off = 0;
+        for (int l = 1; l <= maxLen; l++) { first[l] = code; offset[l] = off; code = (code + count[l]) << 1; off += count[l]; }
+    }
+    std::vector<int> decode(const std::string& bits, size_t n) const {
+        std::vector<int> out; long long code = 0; int l = 0;
+        for (char b : bits) {
+            code = code << 1 | (b - '0'); ++l; assert(l <= maxLen);
+            if (count[l] && code >= first[l] && code - first[l] < count[l]) { out.push_back(syms[offset[l] + code - first[l]]); code = 0; l = 0; if (out.size() == n) break; }
+        }
+        return out;
+    }
+};
+std::vector<int> treeDecode(const std::vector<std::string>& code, const std::string& bits, size_t n) {   // 오라클: 부호표로 트라이를 만들어 비트를 따라 내려간다
+    std::vector<std::array<int, 3>> trie(1, {-1, -1, -1});               // {0 자식, 1 자식, 글자}
+    for (int s = 0; s < (int)code.size(); s++) if (!code[s].empty()) { int cur = 0; for (char ch : code[s]) { int b = ch - '0'; if (trie[cur][b] < 0) { trie[cur][b] = (int)trie.size(); trie.push_back({-1, -1, -1}); } cur = trie[cur][b]; } assert(trie[cur][2] < 0); trie[cur][2] = s; }
+    std::vector<int> out; int cur = 0;
+    for (char ch : bits) { cur = trie[cur][ch - '0']; assert(cur >= 0); if (trie[cur][2] >= 0) { out.push_back(trie[cur][2]); cur = 0; if (out.size() == n) break; } }
+    return out;
+}
+long twoQueueCost(std::vector<long> f) {                                 // 정렬된 빈도에서 O(n): 합쳐진 노드의 가중치 합 = Σ 빈도 × 깊이
+    std::sort(f.begin(), f.end()); std::queue<long> q1, q2; for (long x : f) q1.push(x);
+    long cost = 0; auto pop = [&]() { long v; if (q2.empty() || (!q1.empty() && q1.front() <= q2.front())) { v = q1.front(); q1.pop(); } else { v = q2.front(); q2.pop(); } return v; };
+    while (q1.size() + q2.size() > 1) { long a = pop(), b = pop(); cost += a + b; q2.push(a + b); }
+    return cost;
+}
+long weightedLength(const std::vector<long>& f, const std::vector<int>& len) { long s = 0; for (size_t i = 0; i < f.size(); i++) s += f[i] * len[i]; return s; }
+long bruteOptimum(const std::vector<long>& f) {                          // 오라클 (가): 길이 1..σ-1 의 모든 배정 중 Σ 2^-l ≤ 1 인 것의 최소 비용
+    int s = (int)f.size(); std::vector<int> len(s, 1); long best = -1;
+    for (;;) {
+        long kraft = 0; for (int l : len) kraft += 1L << (s - 1 - l);
+        if (kraft <= (1L << (s - 1))) { long c = weightedLength(f, len); if (best < 0 || c < best) best = c; }
+        int i = 0; while (i < s && len[i] == s - 1) { len[i] = 1; ++i; } if (i == s) break; ++len[i];
+    }
+    return best;
+}
+std::string packedBits(const std::string& bits, std::vector<uint8_t>& bytes) { bytes.assign((bits.size() + 7) / 8, 0); for (size_t i = 0; i < bits.size(); i++) if (bits[i] == '1') bytes[i / 8] |= (uint8_t)(0x80 >> (i % 8)); std::string back; for (size_t i = 0; i < bits.size(); i++) back += (char)('0' + ((bytes[i / 8] >> (7 - i % 8)) & 1)); return back; }
 
 int main() {
-    std::string text = "abracadabra alakazam";
-    std::map<char, long> freq; for (char c : text) freq[c]++;
-    std::vector<std::unique_ptr<Node>> pool;
-    std::priority_queue<Node*, std::vector<Node*>, Cmp> pq;
-    for (auto& kv : freq) { pool.push_back(std::make_unique<Node>(Node{kv.first, kv.second, nullptr, nullptr})); pq.push(pool.back().get()); }
-    std::unique_ptr<Node> root;
-    while (pq.size() > 1) {
-        auto a = pq.top(); pq.pop(); auto b = pq.top(); pq.pop();
-        auto parent = std::make_unique<Node>(Node{0, a->f + b->f, nullptr, nullptr});
-        for (auto& p : pool) { if (p.get() == a) parent->l = std::move(p); }
-        for (auto& p : pool) { if (p.get() == b) parent->r = std::move(p); }
-        pool.push_back(std::move(parent)); pq.push(pool.back().get());
+    // ① 예제 문장
+    std::string text = "abracadabra alakazam"; std::vector<long> freq(256, 0); for (unsigned char c : text) freq[c]++;
+    std::vector<int> len = huffmanLengths(freq); std::vector<std::string> code = canonicalCodes(len);
+    assert(weightedLength(freq, len) == 55 && twoQueueCost(std::vector<long>{9, 2, 2, 1, 1, 1, 1, 1, 1, 1}) == 55);       // 55 는 파이썬 heapq 로 따로 구한 값
+    std::string bits; for (unsigned char c : text) bits += code[c];
+    assert(bits.size() == 55);
+    std::vector<int> dec = CanonicalDecoder(len).decode(bits, text.size()), dec2 = treeDecode(code, bits, text.size());
+    assert(dec == dec2 && dec.size() == text.size()); for (size_t i = 0; i < text.size(); i++) assert(dec[i] == (unsigned char)text[i]);
+    // ② 최적성: 전수 탐색 + 투 큐
+    std::mt19937 rng(21); long checked = 0;
+    for (int it = 0; it < 1500; ++it) {
+        int s = 2 + (int)(rng() % 5); std::vector<long> f(s); for (long& x : f) x = 1 + (long)(rng() % 20);
+        std::vector<int> l = huffmanLengths(f); assert(weightedLength(f, l) == bruteOptimum(f)); ++checked;
     }
-    const Node* top = pq.top();
-    std::map<char, std::string> code; assign(top, "", code);
-    std::string bits; for (char c : text) bits += code[c];
-    // 복호: 접두사 부호이므로 모호함 없이 비트를 따라 내려가면 된다
-    std::string decoded; const Node* cur = top;
-    for (char b : bits) { cur = (b == '0') ? cur->l.get() : cur->r.get(); if (!cur->l && !cur->r) { decoded += cur->c; cur = top; } }
-    assert(decoded == text);
-    for (auto& a : code) for (auto& b : code) if (a.first != b.first) assert(b.second.compare(0, a.second.size(), a.second) != 0);   // 접두사 부호
-    double entropy = 0; for (auto& kv : freq) { double p = double(kv.second) / text.size(); entropy -= p * std::log2(p); }
-    double avg = double(bits.size()) / text.size();
-    assert(avg >= entropy - 1e-9 && avg < entropy + 1);
-    assert(bits.size() < text.size() * 8);
-    std::cout << "Huffman: " << text.size() * 8 << " bits -> " << bits.size() << " bits (entropy " << entropy << ", avg " << avg << ")" << std::endl;
+    for (int it = 0; it < 300; ++it) {
+        int s = 2 + (int)(rng() % 199); std::vector<long> f(s); for (long& x : f) x = 1 + (long)(rng() % 1000000);
+        if (it % 3 == 0) for (long& x : f) x = 1 + (long)(rng() % 4);                  // 동점이 많은 경우
+        assert(weightedLength(f, huffmanLengths(f)) == twoQueueCost(f)); ++checked;
+    }
+    // ③ 접두사 부호성과 복호 (무작위 치우친 분포)
+    for (int it = 0; it < 300; ++it) {
+        int s = 1 + (int)(rng() % 40); std::vector<long> f(s, 0); std::string msg; int n = (int)(rng() % 400);
+        for (int i = 0; i < n; ++i) { int sym = (int)std::min<unsigned>(rng() % s, rng() % s); msg += (char)sym; f[sym]++; }     // 작은 번호가 더 자주 나오도록 치우침
+        std::vector<int> l = huffmanLengths(f); std::vector<std::string> c = canonicalCodes(l);
+        int used = 0, maxL = 0; for (int x : l) { used += x > 0; maxL = std::max(maxL, x); }
+        if (used >= 2) { unsigned long long kraft = 0; for (int x : l) if (x > 0) kraft += 1ULL << (maxL - x); assert(kraft == 1ULL << maxL); }           // 크래프트 합 = 1 (가득 찬 트리)
+        for (int a = 0; a < s; a++) for (int b = 0; b < s; b++) if (a != b && !c[a].empty() && !c[b].empty()) assert(c[b].compare(0, c[a].size(), c[a]) != 0);   // 접두사 부호
+        std::string enc; for (char ch : msg) enc += c[(unsigned char)ch];
+        std::vector<uint8_t> bytes; assert(packedBits(enc, bytes) == enc);
+        if (n > 0) {
+            std::vector<int> d1 = CanonicalDecoder(l).decode(enc, msg.size()), d2 = treeDecode(c, enc, msg.size());
+            assert(d1 == d2 && d1.size() == msg.size()); for (size_t i = 0; i < msg.size(); i++) assert(d1[i] == (unsigned char)msg[i]);
+        }
+        if (n > 0 && used >= 2) { std::map<char, long> cnt; for (char ch : msg) cnt[ch]++; double H = 0; for (auto& kv : cnt) { double p = double(kv.second) / n; H -= p * std::log2(p); } double avg = double(enc.size()) / n; assert(avg >= H - 1e-9 && avg < H + 1); }     // ④ 엔트로피 한계
+    }
+    // ④ 특수한 분포
+    std::vector<long> dyadic = {8, 4, 2, 1, 1}; std::vector<int> dl = huffmanLengths(dyadic);        // 확률 1/2, 1/4, 1/8, 1/16, 1/16 -> 길이 1,2,3,4,4
+    assert((dl == std::vector<int>{1, 2, 3, 4, 4}));
+    double H = 0, avg = 0; for (size_t i = 0; i < dyadic.size(); i++) { double p = dyadic[i] / 16.0; H -= p * std::log2(p); avg += p * dl[i]; } assert(std::fabs(avg - H) < 1e-12);       // 평균 = 엔트로피
+    std::vector<long> fib = {1, 1}; while (fib.size() < 15) fib.push_back(fib[fib.size() - 1] + fib[fib.size() - 2]);
+    std::vector<int> fl = huffmanLengths(fib); assert(*std::max_element(fl.begin(), fl.end()) == 14);  // 피보나치 빈도: 가장 깊은 트리 (σ - 1)
+    assert((huffmanLengths({0, 5, 0}) == std::vector<int>{0, 1, 0}) && (huffmanLengths({0, 0}) == std::vector<int>{0, 0}) && huffmanLengths({}).empty());                  // 경계: 글자 하나, 빈 빈도
+    assert((canonicalCodes({0, 1, 0})[1] == "0") && (huffmanLengths({3, 3}) == std::vector<int>{1, 1}));
+    std::cout << "Huffman: " << text.size() * 8 << " bits -> " << bits.size() << " bits; " << checked << " random frequency tables matched the exhaustive / two-queue optimum, canonical and tree decoders agreed" << std::endl;
     return 0;
 }
 // Time Complexity: O(n + σ log σ)
@@ -2680,20 +3254,33 @@ int main() {
 ## DamerauLevenshtein()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
+#include <iostream>
 #include <map>
+#include <queue>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 다메라우-레벤슈타인: 인접한 두 글자의 맞바꿈(transposition)도 비용 1.  오타("teh" -> "the") 교정에 적합
 // - 제한형(OSA): 한 부분 문자열을 두 번 편집하지 못한다  /  - 완전형: 제한 없음 (Lowrance-Wagner).  예: "CA" -> "ABC" 는 OSA 3, 완전형 2
+// 검증: ① 손으로 고른 값  ② {a,b,c} 위의 길이 ≤ 4 문자열 121 개의 *모든 쌍* 에서
+//        (가) 완전형 = 삽입·삭제·치환·인접 맞바꿈 4 연산 그래프의 BFS 최단 거리(길이 ≤ 7 의 중간 문자열), (나) OSA = 접미사 쌍에 대한 하향식 재귀(점화식 방향이 다른 독립 구현),
+//        (다) |길이 차| ≤ 완전형 ≤ OSA ≤ 레벤슈타인 ≤ max(n, m), 대칭성, 거리 0 <=> 같은 문자열
+//        ③ 삼각 부등식: 완전형은 모든 삼중쌍(40³)에서 성립하고, OSA 는 깨지는 삼중쌍이 실제로 있다  ④ 무작위 편집 k 번으로 만든 오타의 거리 ≤ k (알파벳 26, 길이 ≤ 30)
+int levenshtein(const std::string& a, const std::string& b) {
+    std::vector<std::vector<int>> d(a.size() + 1, std::vector<int>(b.size() + 1));
+    for (size_t i = 0; i <= a.size(); i++) d[i][0] = (int)i;
+    for (size_t j = 0; j <= b.size(); j++) d[0][j] = (int)j;
+    for (size_t i = 1; i <= a.size(); i++) for (size_t j = 1; j <= b.size(); j++) d[i][j] = std::min({d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a[i-1] != b[j-1])});
+    return d[a.size()][b.size()];
+}
 int osa(const std::string& a, const std::string& b) {
     size_t n = a.size(), m = b.size();
     std::vector<std::vector<int>> d(n + 1, std::vector<int>(m + 1));
-    for (size_t i = 0; i <= n; i++) d[i][0] = i;
-    for (size_t j = 0; j <= m; j++) d[0][j] = j;
+    for (size_t i = 0; i <= n; i++) d[i][0] = (int)i;
+    for (size_t j = 0; j <= m; j++) d[0][j] = (int)j;
     for (size_t i = 1; i <= n; i++) for (size_t j = 1; j <= m; j++) {
         d[i][j] = std::min({d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a[i-1] != b[j-1])});
         if (i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1]) d[i][j] = std::min(d[i][j], d[i-2][j-2] + 1);
@@ -2701,22 +3288,43 @@ int osa(const std::string& a, const std::string& b) {
     return d[n][m];
 }
 int damerau(const std::string& a, const std::string& b) {
-    size_t n = a.size(), m = b.size(); int maxd = n + m;
+    size_t n = a.size(), m = b.size(); int maxd = (int)(n + m);
     std::map<char, int> da;
     std::vector<std::vector<int>> d(n + 2, std::vector<int>(m + 2));
     d[0][0] = maxd;
-    for (size_t i = 0; i <= n; i++) { d[i+1][0] = maxd; d[i+1][1] = i; }
-    for (size_t j = 0; j <= m; j++) { d[0][j+1] = maxd; d[1][j+1] = j; }
+    for (size_t i = 0; i <= n; i++) { d[i+1][0] = maxd; d[i+1][1] = (int)i; }
+    for (size_t j = 0; j <= m; j++) { d[0][j+1] = maxd; d[1][j+1] = (int)j; }
     for (size_t i = 1; i <= n; i++) {
         int db = 0;
         for (size_t j = 1; j <= m; j++) {
             int k = da.count(b[j-1]) ? da[b[j-1]] : 0, l = db, cost = 1;
-            if (a[i-1] == b[j-1]) { cost = 0; db = j; }
+            if (a[i-1] == b[j-1]) { cost = 0; db = (int)j; }
             d[i+1][j+1] = std::min({d[i][j] + cost, d[i+1][j] + 1, d[i][j+1] + 1, d[k][l] + (int)(i - k - 1) + 1 + (int)(j - l - 1)});
         }
-        da[a[i-1]] = i;
+        da[a[i-1]] = (int)i;
     }
     return d[n+1][m+1];
+}
+int osaTopDown(const std::string& a, size_t i, const std::string& b, size_t j, std::vector<std::vector<int>>& memo) {   // 접미사 a[i..], b[j..] 의 OSA 거리
+    if (i == a.size()) return (int)(b.size() - j);
+    if (j == b.size()) return (int)(a.size() - i);
+    int& r = memo[i][j]; if (r >= 0) return r;
+    r = std::min({osaTopDown(a, i + 1, b, j, memo) + 1, osaTopDown(a, i, b, j + 1, memo) + 1, osaTopDown(a, i + 1, b, j + 1, memo) + (a[i] != b[j])});
+    if (i + 1 < a.size() && j + 1 < b.size() && a[i] == b[j + 1] && a[i + 1] == b[j]) r = std::min(r, 1 + osaTopDown(a, i + 2, b, j + 2, memo));
+    return r;
+}
+int osaOracle(const std::string& a, const std::string& b) { std::vector<std::vector<int>> memo(a.size() + 1, std::vector<int>(b.size() + 1, -1)); return osaTopDown(a, 0, b, 0, memo); }
+std::vector<std::string> neighbours(const std::string& s, int maxLen) {                 // 한 번의 연산으로 닿는 문자열 (알파벳 a,b,c)
+    std::vector<std::string> r;
+    for (size_t i = 0; i < s.size(); i++) { r.push_back(s.substr(0, i) + s.substr(i + 1)); for (char c = 'a'; c <= 'c'; c++) if (c != s[i]) { std::string t = s; t[i] = c; r.push_back(t); } }
+    for (size_t i = 0; i + 1 < s.size(); i++) if (s[i] != s[i + 1]) { std::string t = s; std::swap(t[i], t[i + 1]); r.push_back(t); }
+    if ((int)s.size() < maxLen) for (size_t i = 0; i <= s.size(); i++) for (char c = 'a'; c <= 'c'; c++) r.push_back(s.substr(0, i) + c + s.substr(i));
+    return r;
+}
+std::map<std::string, int> bfs(const std::string& src, int maxLen) {
+    std::map<std::string, int> dist{{src, 0}}; std::queue<std::string> q; q.push(src);
+    while (!q.empty()) { std::string u = q.front(); q.pop(); for (const std::string& v : neighbours(u, maxLen)) if (!dist.count(v)) { dist[v] = dist[u] + 1; q.push(v); } }
+    return dist;
 }
 
 int main() {
@@ -2724,7 +3332,42 @@ int main() {
     assert(osa("ca", "ac") == 1);
     assert(osa("CA", "ABC") == 3 && damerau("CA", "ABC") == 2);      // 완전형이 더 작다
     assert(damerau("kitten", "sitting") == 3 && damerau("", "ab") == 2);
-    std::cout << "OSA(CA,ABC)=" << osa("CA", "ABC") << " Damerau(CA,ABC)=" << damerau("CA", "ABC") << std::endl;
+    assert(damerau("", "") == 0 && osa("", "") == 0 && osa("abc", "") == 3 && damerau("abc", "") == 3 && damerau("abc", "abc") == 0);          // 경계: 빈 문자열
+    std::vector<std::string> all{std::string()};
+    for (size_t i = 0; i < all.size(); ++i) if (all[i].size() < 4) for (char c = 'a'; c <= 'c'; c++) all.push_back(all[i] + c);
+    assert(all.size() == 121);
+    long pairs = 0, osaGap = 0, damGap = 0;
+    for (const std::string& a : all) {
+        std::map<std::string, int> dist = bfs(a, 7);
+        for (const std::string& b : all) {
+            int dd = damerau(a, b), oo = osa(a, b), ll = levenshtein(a, b), diff = (int)(a.size() > b.size() ? a.size() - b.size() : b.size() - a.size()), mx = (int)std::max(a.size(), b.size());
+            assert(dd == dist.at(b));                                 // (가) 완전형 = 4 연산 그래프의 최단 거리
+            assert(oo == osaOracle(a, b));                            // (나) 독립 구현
+            assert(diff <= dd && dd <= oo && oo <= ll && ll <= mx);   // (다) 순서 관계
+            assert(dd == damerau(b, a) && oo == osa(b, a) && (dd == 0) == (a == b));
+            osaGap += oo > dd; damGap += ll > dd; ++pairs;
+        }
+    }
+    assert(pairs == 121 * 121 && osaGap > 50 && damGap > 500);       // OSA 가 완전형보다 큰 쌍이 실제로 있다
+    // ③ 삼각 부등식 (길이 ≤ 3 인 40 개 문자열의 모든 삼중쌍)
+    std::vector<std::string> small; for (const std::string& s : all) if (s.size() <= 3) small.push_back(s);
+    assert(small.size() == 40);
+    long osaViolations = 0, damViolations = 0;
+    for (const std::string& x : small) for (const std::string& y : small) for (const std::string& z : small) { damViolations += damerau(x, z) > damerau(x, y) + damerau(y, z); osaViolations += osa(x, z) > osa(x, y) + osa(y, z); }
+    assert(damViolations == 0 && osaViolations > 0);                  // 완전형은 거리 함수, OSA 는 아니다 (CA, AC, ABC)
+    assert(osa("ca", "abc") > osa("ca", "ac") + osa("ac", "abc"));
+    // ④ 오타: 무작위 편집 k 번으로 만든 문자열과의 거리는 k 이하
+    std::mt19937 rng(17); long within = 0;
+    for (int it = 0; it < 2000; ++it) {
+        std::string w; for (int i = 0, n = 1 + (int)(rng() % 30); i < n; ++i) w += (char)('a' + rng() % 26);
+        std::string t = w; int k = (int)(rng() % 6);
+        for (int e = 0; e < k; ++e) {
+            int op = (int)(rng() % 4); size_t p = t.empty() ? 0 : rng() % t.size();
+            if (op == 0 && !t.empty()) t.erase(p, 1); else if (op == 1) t.insert(rng() % (t.size() + 1), 1, (char)('a' + rng() % 26)); else if (op == 2 && !t.empty()) t[p] = (char)('a' + rng() % 26); else if (t.size() > 1) std::swap(t[p % (t.size() - 1)], t[p % (t.size() - 1) + 1]);
+        }
+        assert(damerau(w, t) <= k && osa(w, t) <= levenshtein(w, t)); ++within;
+    }
+    std::cout << "OSA(CA,ABC)=" << osa("CA", "ABC") << " Damerau(CA,ABC)=" << damerau("CA", "ABC") << "; all " << pairs << " string pairs matched the BFS and top-down oracles, OSA exceeded the true distance on " << osaGap << " pairs and broke the triangle inequality " << osaViolations << " times" << std::endl;
     return 0;
 }
 // Time Complexity: O(n·m)
@@ -2886,20 +3529,38 @@ int main() {
 ## RegexNFA()
 ### 대표코드
 ```cpp
+#include <cassert>
 #include <iostream>
+#include <memory>
+#include <random>
 #include <set>
 #include <stack>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 톰프슨 구성: 정규식 -> 후위 표기 -> NFA.  연산자: | (선택)  * + ? (반복)  . (임의 한 글자)  ( ) (묶기)  연결은 암묵적
 // 시뮬레이션은 "현재 상태 집합"을 글자마다 갱신하므로 백트래킹과 달리 항상 O(n·m) (지수 폭발 없음)
+// 잘못된 식(괄호 불균형, 빈 가지, 맨 앞 반복 기호)은 예외로 거부한다
+// 검증: ① 손으로 고른 식  ② 무작위 정규식 400 개(식 트리를 만들어 문자열로 찍음: 연산자 우선순위·중첩 반복 포함)를 *브르조조프스키 도함수* — 톰프슨 NFA 와 전혀 다른 알고리즘 — 로 같은 식 트리에서 판정한 결과와
+//        {a,b,c} 위의 길이 ≤ 5 문자열 364 개 전부에서 비교  ③ 상태 집합 삽입 횟수 ≤ (n + 1)·상태 수 (선형 시간 증거), 상태 수 ≤ 2·|식| + 2  ④ 지수 폭발 입력과 잘못된 식 거부
 const int SPLIT = 256, MATCH = 257, ANY = 258;
 struct State { int c; int out = -1, out1 = -1; };
 struct Patch { int s; int which; };
 struct Frag { int start; std::vector<Patch> outs; };
 
+bool wellFormed(const std::string& re) {
+    if (re.empty()) return true;                                // 빈 식은 허용
+    int depth = 0; char prev = '|';                                // prev = 직전 글자 ('|' 로 시작해 맨 앞 반복 기호를 거른다)
+    for (char c : re) {
+        if (c == '(') { ++depth; }
+        else if (c == ')') { if (--depth < 0 || prev == '(' || prev == '|') return false; }
+        else if (c == '|') { if (prev == '(' || prev == '|') return false; }
+        else if (c == '*' || c == '+' || c == '?') { if (prev == '(' || prev == '|') return false; }
+        prev = c;
+    }
+    return depth == 0 && prev != '|';
+}
 std::string toPostfix(const std::string& re) {
     std::string out; std::stack<char> ops;
     auto prec = [](char c) { return c == '|' ? 1 : c == '\x01' ? 2 : 3; };
@@ -2926,9 +3587,12 @@ std::string toPostfix(const std::string& re) {
 
 struct NFA {
     std::vector<State> st; int start;
+    mutable long inserts = 0;                                    // 상태 집합에 실제로 넣은 횟수 (분석용)
     void patch(const std::vector<Patch>& l, int target) { for (auto& p : l) (p.which ? st[p.s].out1 : st[p.s].out) = target; }
-    int add(int c) { st.push_back({c}); return st.size() - 1; }
+    int add(int c) { st.push_back({c}); return (int)st.size() - 1; }
     explicit NFA(const std::string& re) {
+        if (!wellFormed(re)) throw std::invalid_argument("malformed regex");
+        if (re.empty()) { start = add(MATCH); return; }          // 빈 식은 빈 문자열만 받아들인다
         std::string post = toPostfix(re); std::stack<Frag> f;
         for (char ch : post) {
             if (ch == '\x01') { Frag b = f.top(); f.pop(); Frag a = f.top(); f.pop(); patch(a.outs, b.start); f.push({a.start, b.outs}); }
@@ -2943,7 +3607,7 @@ struct NFA {
     }
     void addState(std::set<int>& S, int s) const {
         if (s < 0 || S.count(s)) return;
-        S.insert(s);
+        S.insert(s); ++inserts;
         if (st[s].c == SPLIT) { addState(S, st[s].out); addState(S, st[s].out1); }
     }
     bool matches(const std::string& text) const {
@@ -2958,15 +3622,83 @@ struct NFA {
     }
 };
 
+// ---- 오라클: 식 트리 + 브르조조프스키 도함수 (NFA 와 공유하는 코드가 없다) ----
+enum Kind { NONE, EPS, CHR, ANYC, CAT, ALT, STAR, PLUS, OPT };
+struct Re; typedef std::shared_ptr<Re> P;
+struct Re { Kind k; char c; P a, b; };
+P mk(Kind k, char c = 0, P a = nullptr, P b = nullptr) { return std::make_shared<Re>(Re{k, c, a, b}); }
+P cat(P a, P b) { if (a->k == NONE || b->k == NONE) return mk(NONE); if (a->k == EPS) return b; if (b->k == EPS) return a; return mk(CAT, 0, a, b); }
+P alt(P a, P b) { if (a->k == NONE) return b; if (b->k == NONE) return a; return mk(ALT, 0, a, b); }
+bool nullable(const P& r) {
+    switch (r->k) { case EPS: case STAR: case OPT: return true; case CAT: return nullable(r->a) && nullable(r->b); case ALT: return nullable(r->a) || nullable(r->b); case PLUS: return nullable(r->a); default: return false; }
+}
+P deriv(const P& r, char ch) {
+    switch (r->k) {
+        case CHR: return r->c == ch ? mk(EPS) : mk(NONE);
+        case ANYC: return mk(EPS);
+        case CAT: { P d = cat(deriv(r->a, ch), r->b); return nullable(r->a) ? alt(d, deriv(r->b, ch)) : d; }
+        case ALT: return alt(deriv(r->a, ch), deriv(r->b, ch));
+        case STAR: return cat(deriv(r->a, ch), r);
+        case PLUS: return cat(deriv(r->a, ch), mk(STAR, 0, r->a));
+        case OPT: return deriv(r->a, ch);
+        default: return mk(NONE);
+    }
+}
+bool oracleMatch(P r, const std::string& s) { for (char ch : s) r = deriv(r, ch); return nullable(r); }
+// 식 트리 -> 문자열: 우선순위(| < 연결 < 반복)에 필요한 곳에만 괄호
+std::string show(const P& r, int ctx) {                              // ctx: 0 = 최상위/선택의 가지, 1 = 연결의 항, 2 = 반복의 대상
+    std::string s; int mine;
+    switch (r->k) {
+        case CHR: return std::string(1, r->c);
+        case ANYC: return ".";
+        case CAT: s = show(r->a, 1) + show(r->b, 1); mine = 1; break;
+        case ALT: s = show(r->a, 0) + "|" + show(r->b, 0); mine = 0; break;
+        default: { s = show(r->a, 2) + (r->k == STAR ? "*" : r->k == PLUS ? "+" : "?"); mine = 3; }          // 반복 위의 반복 (a*)* 은 괄호로 감싼다
+    }
+    bool paren = (r->k == ALT && ctx >= 1) || (r->k == CAT && ctx >= 2) || (mine == 3 && ctx >= 2);
+    return paren ? "(" + s + ")" : s;
+}
+P gen(std::mt19937& rng, int depth) {
+    int r = (int)(rng() % 10);
+    if (depth == 0 || r < 3) return rng() % 6 == 0 ? mk(ANYC) : mk(CHR, (char)('a' + rng() % 3));
+    if (r < 5) return mk(CAT, 0, gen(rng, depth - 1), gen(rng, depth - 1));
+    if (r < 7) return mk(ALT, 0, gen(rng, depth - 1), gen(rng, depth - 1));
+    return mk(r == 7 ? STAR : r == 8 ? PLUS : OPT, 0, gen(rng, depth - 1));
+}
+int countNodes(const P& r) { return r ? 1 + countNodes(r->a) + countNodes(r->b) : 0; }
+
 int main() {
     assert(NFA("a(b|c)*d").matches("abcbcd") && NFA("a(b|c)*d").matches("ad") && !NFA("a(b|c)*d").matches("abxd"));
     assert(NFA("colou?r").matches("color") && NFA("colou?r").matches("colour") && !NFA("colou?r").matches("colouur"));
     assert(NFA("(ab)+").matches("ababab") && !NFA("(ab)+").matches("") && !NFA("(ab)+").matches("aba"));
     assert(NFA("a.c").matches("abc") && !NFA("a.c").matches("ac"));
     assert(NFA("a*").matches("") && NFA("(a|b)*abb").matches("babaabb"));
+    assert(NFA("ab|cd").matches("ab") && NFA("ab|cd").matches("cd") && !NFA("ab|cd").matches("abcd") && !NFA("ab|cd").matches("ad"));    // | 는 연결보다 약하다
+    assert(NFA("ab*").matches("abbb") && !NFA("ab*").matches("abab") && NFA("(ab)*").matches("abab"));                                    // 반복은 직전 항에만
+    assert(NFA("").matches("") && !NFA("").matches("a"));                                                                                 // 경계: 빈 식
     // 백트래킹 엔진이 지수 시간이 걸리는 (a*)*b 류의 입력도 선형 시간에 끝난다
-    assert(!NFA("(a*)*b").matches(std::string(2000, 'a')));
-    std::cout << "RegexNFA verified." << std::endl;
+    assert(!NFA("(a*)*b").matches(std::string(2000, 'a')) && NFA("(a*)*b").matches(std::string(2000, 'a') + "b"));
+    NFA expo("(a|aa)+b"); assert(!expo.matches(std::string(3000, 'a')) && expo.inserts <= 3001L * (long)expo.st.size());
+    // ④ 잘못된 식은 예외
+    for (std::string bad : {"(", ")", "(a", "a)", "*a", "+", "a||b", "|a", "a|", "()", "(|a)", "(a|)", "a(*)"}) { bool threw = false; try { NFA n(bad); } catch (const std::invalid_argument&) { threw = true; } assert(threw); }
+    for (std::string good : {"a", "a|b", "(a)", "((a))", "a**", "(a*)*", "a?+", ".", "a.b*"}) assert(wellFormed(good));
+
+    // ② 무작위 식 400 개 × 길이 ≤ 5 문자열 364 개
+    std::vector<std::string> strs{std::string()};
+    for (size_t i = 0; i < strs.size(); ++i) if (strs[i].size() < 5) for (char c = 'a'; c <= 'c'; c++) strs.push_back(strs[i] + c);
+    assert(strs.size() == 364);
+    std::mt19937 rng(515); long accepted = 0, rejected = 0, maxStates = 0;
+    for (int it = 0; it < 400; ++it) {
+        P tree = gen(rng, 1 + (int)(rng() % 4)); std::string re = show(tree, 0); NFA nfa(re);
+        assert(nfa.st.size() <= 2 * re.size() + 2); maxStates = std::max<long>(maxStates, (long)nfa.st.size());           // ③ 상태 수는 식 길이에 선형
+        for (const std::string& s : strs) {
+            nfa.inserts = 0; bool got = nfa.matches(s); assert(got == oracleMatch(tree, s));
+            assert(nfa.inserts <= (long)(s.size() + 1) * (long)nfa.st.size());                                          // 글자마다 상태 집합에 상태는 많아야 한 번씩만
+            (got ? accepted : rejected)++;
+        }
+    }
+    assert(accepted > 5000 && rejected > 50000 && maxStates > 15);
+    std::cout << "RegexNFA: 400 random regexes x 364 strings agreed with the derivative-based oracle (" << accepted << " accepted, " << rejected << " rejected); state-set work stayed within (n+1)*states; 13 malformed patterns rejected" << std::endl;
     return 0;
 }
 // Time Complexity: 매칭 O(n·m) (n = 텍스트, m = 정규식 크기)
@@ -3075,28 +3807,40 @@ int main() {
 ## RecursiveDescentParser()
 ### 대표코드
 ```cpp
-#include <iostream>
-#include <cmath>
+#include <algorithm>
+#include <cassert>
 #include <cctype>
+#include <cmath>
+#include <iostream>
 #include <map>
+#include <random>
 #include <stdexcept>
 #include <string>
-#include <cassert>
+#include <vector>
 
 // 재귀 하강 파서: 문법 규칙 하나가 함수 하나.  연산자 우선순위는 문법의 계층(expr > term > factor)으로 표현된다
 //   expr   := term   (('+' | '-') term)*
 //   term   := factor (('*' | '/') factor)*
-//   factor := NUMBER | IDENT | '(' expr ')' | '-' factor
+//   factor := NUMBER | IDENT | '(' expr ')' | '-' factor          NUMBER := 숫자+ ('.' 숫자+)?
+// 반복(*)으로 쓴 expr/term 은 왼쪽 결합을 만든다.  오류는 모두 std::runtime_error 로 알린다 (너무 깊은 중첩, 큰 수, 0 으로 나눔 포함 — 스택 오버플로·다른 예외는 없다)
+// 검증: ① 손으로 고른 식과 오류 표  ② 무작위 식 트리 6 000 개를 *우선순위·결합 규칙이 요구하는 최소 괄호* 와 불필요한 괄호·공백을 섞어 문자열로 찍고, 파서 결과를 식 트리를 직접 계산한 값과 비교
+//        (0 으로 나누는 식은 둘 다 예외)  ③ 유효한 식을 한 글자씩 망가뜨린 변형 20 000 개: 값을 내거나 runtime_error 를 던질 뿐 다른 일은 일어나지 않는다  ④ 중첩 150 단계는 성공, 5 000 단계는 깔끔히 거부
 class Parser {
-    std::string s; size_t i = 0; const std::map<std::string, double>& vars;
+    std::string s; size_t i = 0; int depth = 0; const std::map<std::string, double>& vars;
     void ws() { while (i < s.size() && std::isspace((unsigned char)s[i])) i++; }
     bool eat(char c) { ws(); if (i < s.size() && s[i] == c) { i++; return true; } return false; }
+    struct Guard { int& d; explicit Guard(int& x) : d(x) { if (++d > 200) { --d; throw std::runtime_error("too deep"); } } ~Guard() { --d; } };
     double factor() {
-        ws();
+        Guard g(depth); ws();
         if (eat('-')) return -factor();
         if (eat('(')) { double v = expr(); if (!eat(')')) throw std::runtime_error("expected )"); return v; }
         size_t j = i;
-        if (j < s.size() && std::isdigit((unsigned char)s[j])) { while (j < s.size() && (std::isdigit((unsigned char)s[j]) || s[j] == '.')) j++; double v = std::stod(s.substr(i, j - i)); i = j; return v; }
+        if (j < s.size() && std::isdigit((unsigned char)s[j])) {
+            while (j < s.size() && std::isdigit((unsigned char)s[j])) j++;
+            if (j < s.size() && s[j] == '.') { j++; if (j >= s.size() || !std::isdigit((unsigned char)s[j])) throw std::runtime_error("bad number"); while (j < s.size() && std::isdigit((unsigned char)s[j])) j++; }
+            double v; try { v = std::stod(s.substr(i, j - i)); } catch (const std::out_of_range&) { throw std::runtime_error("number out of range"); }
+            i = j; return v;
+        }
         if (j < s.size() && std::isalpha((unsigned char)s[j])) { while (j < s.size() && std::isalnum((unsigned char)s[j])) j++; std::string name = s.substr(i, j - i); i = j; auto it = vars.find(name); if (it == vars.end()) throw std::runtime_error("unknown variable " + name); return it->second; }
         throw std::runtime_error("unexpected input");
     }
@@ -3108,15 +3852,74 @@ public:
 };
 double eval(const std::string& src, const std::map<std::string, double>& v = {}) { return Parser(src, v).parse(); }
 
+// ---- 오라클: 식 트리 ----
+struct Ex { char op; double val; std::string name; int a, b; };            // op: n 수, v 변수, + - * /, ~ 단항 마이너스
+std::vector<Ex> pool;
+int mkN(const std::string& t) { pool.push_back({'n', std::stod(t), t, -1, -1}); return (int)pool.size() - 1; }
+int mkV(const std::string& t) { pool.push_back({'v', 0, t, -1, -1}); return (int)pool.size() - 1; }
+int mkB(char op, int a, int b) { pool.push_back({op, 0, "", a, b}); return (int)pool.size() - 1; }
+int mkU(int a) { pool.push_back({'~', 0, "", a, -1}); return (int)pool.size() - 1; }
+const std::map<std::string, double> VARS = {{"x", 3}, {"y", -2}, {"z", 0.5}, {"w1", 7}};
+double evalTree(int e) {
+    const Ex& n = pool[e];
+    switch (n.op) {
+        case 'n': return n.val; case 'v': return VARS.at(n.name); case '~': return -evalTree(n.a);
+        case '+': { double l = evalTree(n.a); return l + evalTree(n.b); } case '-': { double l = evalTree(n.a); return l - evalTree(n.b); }
+        case '*': { double l = evalTree(n.a); return l * evalTree(n.b); }
+        default: { double l = evalTree(n.a), r = evalTree(n.b); if (r == 0) throw std::runtime_error("division by zero"); return l / r; }
+    }
+}
+int prec(const Ex& n) { return n.op == '+' || n.op == '-' ? 1 : n.op == '*' || n.op == '/' ? 2 : n.op == '~' ? 3 : 4; }
+std::mt19937 rng(606);
+std::string sp() { return rng() % 3 == 0 ? " " : ""; }
+std::string show(int e, int need) {                                         // need: 이 자리에서 괄호 없이 쓸 수 있는 최소 우선순위
+    const Ex& n = pool[e]; std::string s;
+    if (n.op == 'n' || n.op == 'v') s = n.name;
+    else if (n.op == '~') s = "-" + sp() + show(n.a, 3);
+    else { int p = prec(n); s = show(n.a, p) + sp() + n.op + sp() + show(n.b, p + 1); }      // 왼쪽 결합: 오른쪽 자식은 한 단계 높아야 괄호가 없다
+    bool paren = prec(n) < need || (prec(n) >= 4 ? false : rng() % 8 == 0);                  // 필요한 괄호 + 가끔 불필요한 괄호
+    return paren ? "(" + sp() + s + sp() + ")" : s;
+}
+int gen(int depth) {
+    int r = (int)(rng() % 10);
+    if (depth == 0 || r < 3) { static const char* nums[] = {"0", "1", "2", "3", "7", "9", "0.5", "2.5", "1.75", "12"}; static const char* vs[] = {"x", "y", "z", "w1"}; return rng() % 4 == 0 ? mkV(vs[rng() % 4]) : mkN(nums[rng() % 10]); }
+    if (r == 3) return mkU(gen(depth - 1));
+    return mkB("+-*/"[rng() % 4], gen(depth - 1), gen(depth - 1));
+}
+
 int main() {
     assert(eval("2 + 3 * 4") == 14);                             // 곱셈이 먼저
     assert(eval("(2 + 3) * 4") == 20);
     assert(eval("-(2 + 3)") == -5 && eval("2 * -3") == -6);
     assert(eval("10 / 4") == 2.5 && eval("2*3+4*5") == 26 && eval("8 - 3 - 2") == 3);   // 뺄셈은 왼쪽 결합
+    assert(eval("64 / 4 / 2") == 8 && eval("2 - -3") == 5 && eval("---4") == -4 && eval("  7  ") == 7);
     assert(std::fabs(eval("x * (y + 1)", {{"x", 2.5}, {"y", 3}}) - 10) < 1e-12);
-    bool threw = false; try { eval("1 / 0"); } catch (const std::runtime_error&) { threw = true; } assert(threw);
-    threw = false; try { eval("(1 + 2"); } catch (const std::runtime_error&) { threw = true; } assert(threw);
-    std::cout << "RecursiveDescentParser: 2 + 3 * 4 = " << eval("2 + 3 * 4") << std::endl;
+    for (std::string bad : {"", "   ", "+", "1 +", "(", ")", "(1 + 2", "1 + 2)", "1 2", "1 + * 2", "2 ** 3", "x", "1 / 0", "1 / (2 - 2)", "1..2", "1.", "2x", "(1)(2)", "-", "- -", "1 +* 3", "3 $ 4"}) {
+        bool threw = false; try { eval(bad); } catch (const std::runtime_error&) { threw = true; } assert(threw);
+    }
+    // ② 무작위 식 트리
+    long ok = 0, divZero = 0, parens = 0;
+    for (int it = 0; it < 6000; ++it) {
+        pool.clear(); int root = gen(1 + (int)(rng() % 5)); std::string text = show(root, 0); parens += (long)std::count(text.begin(), text.end(), '(');
+        double want = 0; bool wantThrow = false; try { want = evalTree(root); } catch (const std::runtime_error&) { wantThrow = true; }
+        try { double got = eval(text, VARS); assert(!wantThrow && got == want); ++ok; } catch (const std::runtime_error&) { assert(wantThrow); ++divZero; }
+    }
+    assert(ok > 4000 && divZero > 100 && parens > 5000);
+    // ③ 망가뜨린 변형: 어떤 일이 일어나도 값 또는 runtime_error 뿐
+    long mutantsOk = 0, mutantsErr = 0; const std::string junk = "+-*/(). x1w";
+    for (int it = 0; it < 20000; ++it) {
+        pool.clear(); std::string t = show(gen(3), 0); size_t p = rng() % (t.size() + 1);
+        switch (rng() % 3) { case 0: if (!t.empty()) t.erase(p % t.size(), 1); break; case 1: t.insert(p, 1, junk[rng() % junk.size()]); break; default: if (t.size() > 1) std::swap(t[p % (t.size() - 1)], t[p % (t.size() - 1) + 1]); }
+        try { eval(t, VARS); ++mutantsOk; } catch (const std::runtime_error&) { ++mutantsErr; }
+    }
+    assert(mutantsOk > 1000 && mutantsErr > 5000);
+    // ④ 깊이와 큰 입력
+    assert(eval(std::string(150, '(') + "1" + std::string(150, ')')) == 1);
+    for (int depth : {5000, 100000}) { bool threw = false; try { eval(std::string(depth, '(') + "1" + std::string(depth, ')')); } catch (const std::runtime_error&) { threw = true; } assert(threw); }
+    { bool threw = false; try { eval(std::string(5000, '-') + "1"); } catch (const std::runtime_error&) { threw = true; } assert(threw); }
+    { bool threw = false; try { eval(std::string(400, '9')); } catch (const std::runtime_error&) { threw = true; } assert(threw); }          // 수가 너무 크다
+    std::string longSum = "1"; for (int i = 0; i < 20000; ++i) longSum += "+1"; assert(eval(longSum) == 20001);                                // 반복은 재귀하지 않는다
+    std::cout << "RecursiveDescentParser: 2 + 3 * 4 = " << eval("2 + 3 * 4") << "; " << ok << " random expressions matched direct tree evaluation (" << divZero << " division-by-zero cases threw), " << mutantsOk + mutantsErr << " corrupted inputs never misbehaved" << std::endl;
     return 0;
 }
 // Time Complexity: O(n)
@@ -3126,37 +3929,83 @@ int main() {
 ## InvertedIndex()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
 #include <cctype>
+#include <iostream>
 #include <map>
-#include <sstream>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // 역색인(inverted index): 단어 -> 그 단어가 나오는 문서 번호 목록(포스팅 리스트, 정렬됨).  검색엔진의 핵심 자료구조
-// AND 질의 = 정렬된 두 리스트의 교집합(병합식 O(a+b)),  OR = 합집합
+// AND 질의 = 정렬된 두 리스트의 교집합(병합식 O(a+b), 길이 차이가 크면 짧은 쪽 원소마다 긴 쪽을 *갤로핑* 탐색해 O(a log(b/a))),  OR = 합집합,  NOT = 차집합
+// 위치까지 저장하므로 구절(phrase) 질의 "quick brown" 도 된다.  문서를 다시 넣으면 이전 내용을 지우고 갈아 끼운다 (문서 번호가 순서대로 들어오지 않아도 된다)
+// 검증: ① 손으로 짠 예  ② 갤로핑 교집합을 std::set_intersection 과 대조(길이 0~300 의 무작위 정렬 리스트 2 000 쌍)하고, 5 개 vs 100 000 개의 비교 횟수가 선형 병합보다 훨씬 적음을 확인
+//        ③ 문서 추가·교체·삭제 3 000 번을 섞으며 40 번 점검: 단일 단어·AND(2~3 단어)·OR·NOT·구절 질의를 문서별 토큰 열을 직접 훑는 오라클과 대조
+long cmpSteps = 0;                                                    // 갤로핑이 한 비교 횟수 (분석용)
+std::vector<int> intersect(const std::vector<int>& x, const std::vector<int>& y) {
+    const std::vector<int>& a = x.size() <= y.size() ? x : y; const std::vector<int>& b = x.size() <= y.size() ? y : x;    // a: 짧은 쪽
+    std::vector<int> r; size_t lo = 0;
+    for (int v : a) {
+        size_t step = 1, hi = lo;
+        while (hi < b.size() && b[hi] < v) { ++cmpSteps; lo = hi + 1; hi += step; step <<= 1; }                              // 지수적으로 앞서 뛴다
+        size_t l = lo, h = std::min(hi + 1, b.size());
+        while (l < h) { ++cmpSteps; size_t m = (l + h) / 2; if (b[m] < v) l = m + 1; else h = m; }                           // 구간 안에서 이분 탐색
+        lo = l;
+        if (lo < b.size() && b[lo] == v) { r.push_back(v); ++lo; }
+        if (lo >= b.size()) break;
+    }
+    return r;
+}
 class Index {
-    std::map<std::string, std::vector<int>> post;
+    std::map<std::string, std::map<int, std::vector<int>>> post;        // 단어 -> 문서 -> 위치 목록(오름차순)
+    std::map<int, std::vector<std::string>> docs;                       // 문서 -> 토큰 열 (삭제·교체용)
     static std::vector<std::string> tokenize(const std::string& s) {
         std::vector<std::string> out; std::string w;
-        for (unsigned char c : s) { if (std::isalnum(c)) w += std::tolower(c); else if (!w.empty()) { out.push_back(w); w.clear(); } }
+        for (unsigned char c : s) { if (std::isalnum(c)) w += (char)std::tolower(c); else if (!w.empty()) { out.push_back(w); w.clear(); } }
         if (!w.empty()) out.push_back(w);
         return out;
     }
 public:
-    void add(int doc, const std::string& text) { for (auto& w : tokenize(text)) { auto& v = post[w]; if (v.empty() || v.back() != doc) v.push_back(doc); } }
-    const std::vector<int>& postings(const std::string& w) const { static const std::vector<int> none; auto it = post.find(w); return it == post.end() ? none : it->second; }
-    std::vector<int> andQuery(const std::string& a, const std::string& b) const {
-        const auto &x = postings(a), &y = postings(b); std::vector<int> r;
-        for (size_t i = 0, j = 0; i < x.size() && j < y.size();) { if (x[i] == y[j]) { r.push_back(x[i]); i++; j++; } else if (x[i] < y[j]) i++; else j++; }
+    void remove(int doc) {
+        auto it = docs.find(doc); if (it == docs.end()) return;
+        for (const std::string& w : it->second) { auto p = post.find(w); if (p == post.end()) continue; p->second.erase(doc); if (p->second.empty()) post.erase(p); }
+        docs.erase(it);
+    }
+    void add(int doc, const std::string& text) {
+        remove(doc); std::vector<std::string> toks = tokenize(text);
+        for (size_t pos = 0; pos < toks.size(); pos++) post[toks[pos]][doc].push_back((int)pos);
+        docs[doc] = toks;
+    }
+    std::vector<int> postings(const std::string& w) const { std::vector<int> r; auto it = post.find(w); if (it != post.end()) for (auto& kv : it->second) r.push_back(kv.first); return r; }
+    std::vector<int> andQuery(std::vector<std::string> terms) const {   // 가장 짧은 목록부터 차례로 교집합
+        if (terms.empty()) return {};
+        std::vector<std::vector<int>> lists; for (auto& t : terms) lists.push_back(postings(t));
+        std::sort(lists.begin(), lists.end(), [](const std::vector<int>& p, const std::vector<int>& q) { return p.size() < q.size(); });
+        std::vector<int> r = lists[0]; for (size_t k = 1; k < lists.size() && !r.empty(); k++) r = intersect(r, lists[k]);
         return r;
     }
+    std::vector<int> andQuery(const std::string& a, const std::string& b) const { return andQuery(std::vector<std::string>{a, b}); }
     std::vector<int> orQuery(const std::string& a, const std::string& b) const {
-        std::vector<int> r; const auto &x = postings(a), &y = postings(b);
+        std::vector<int> r; const auto x = postings(a), y = postings(b);
         std::set_union(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(r)); return r;
     }
+    std::vector<int> notQuery(const std::string& a, const std::string& b) const {          // a 는 있고 b 는 없는 문서
+        std::vector<int> r; const auto x = postings(a), y = postings(b);
+        std::set_difference(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(r)); return r;
+    }
+    std::vector<int> phrase(const std::vector<std::string>& terms) const {                  // 단어들이 연속해서 나오는 문서
+        std::vector<int> r; if (terms.empty()) return r;
+        for (int d : andQuery(terms)) {
+            const std::vector<int>& first = post.at(terms[0]).at(d);
+            for (int p : first) { bool all = true; for (size_t k = 1; k < terms.size() && all; k++) { const std::vector<int>& pk = post.at(terms[k]).at(d); all = std::binary_search(pk.begin(), pk.end(), p + (int)k); } if (all) { r.push_back(d); break; } }
+        }
+        return r;
+    }
+    size_t vocabulary() const { return post.size(); }
+    size_t docCount() const { return docs.size(); }
 };
 
 int main() {
@@ -3169,45 +4018,119 @@ int main() {
     assert((ix.andQuery("quick", "dog") == std::vector<int>{3}));
     assert((ix.orQuery("fox", "dog") == std::vector<int>{1, 2, 3}));
     assert(ix.postings("zebra").empty());
-    std::cout << "InvertedIndex verified." << std::endl;
+    assert((ix.notQuery("quick", "fox") == std::vector<int>{3}) && (ix.phrase({"quick", "brown"}) == std::vector<int>{1, 3}) && ix.phrase({"brown", "quick"}).empty() && (ix.phrase({"brown", "fox"}) == std::vector<int>{1}));
+    ix.add(3, "Completely different text");                                                      // 문서 교체: 이전 단어의 포스팅에서 사라진다
+    assert(ix.postings("barks").empty() && (ix.postings("quick") == std::vector<int>{1}) && ix.docCount() == 4);
+    ix.remove(1); ix.remove(99); assert(ix.postings("fox").empty() && ix.docCount() == 3);
+    Index emptyIx; assert(emptyIx.andQuery(std::vector<std::string>{}).empty() && emptyIx.postings("a").empty() && emptyIx.phrase({"a"}).empty() && emptyIx.vocabulary() == 0);
+
+    // ② 갤로핑 교집합
+    std::mt19937 rng(64); long checked = 0;
+    for (int it = 0; it < 2000; ++it) {
+        std::set<int> sa, sb; int na = (int)(rng() % 301), nb = (int)(rng() % 301), range = 1 + (int)(rng() % 600);
+        for (int i = 0; i < na; ++i) sa.insert((int)(rng() % range)); for (int i = 0; i < nb; ++i) sb.insert((int)(rng() % range));
+        std::vector<int> a(sa.begin(), sa.end()), b(sb.begin(), sb.end()), want; std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(want));
+        assert(intersect(a, b) == want && intersect(b, a) == want); ++checked;
+    }
+    std::vector<int> small = {7, 40000, 77777, 99998, 100001}, big; for (int i = 0; i < 100000; ++i) big.push_back(i * 2 + 1);          // 큰 쪽은 홀수 100 000 개
+    cmpSteps = 0; std::vector<int> r = intersect(small, big);
+    long bigSteps = cmpSteps; assert((r == std::vector<int>{7, 77777, 100001}) && bigSteps < 5 * 40);              // 선형 병합이면 약 10 만 번, 갤로핑은 원소당 O(log) 번
+    // ③ 모델 대조
+    const char* vocab[] = {"apple", "banana", "cherry", "date", "elder", "fig", "grape", "honey", "iris", "jade"}; const char* seps[] = {" ", ", ", ". ", "  ", "-", "! "};
+    std::map<int, std::vector<std::string>> model; Index idx; long queries = 0, nonEmpty = 0;
+    for (int step = 0; step < 3000; ++step) {
+        int doc = (int)(rng() % 40), op = (int)(rng() % 10);
+        if (op < 7) { std::vector<std::string> toks; std::string text; for (int k = 0, n = (int)(rng() % 13); k < n; ++k) { std::string w = vocab[rng() % 10]; toks.push_back(w); if (rng() % 3 == 0) w[0] = (char)std::toupper(w[0]); text += w; text += seps[rng() % 6]; } idx.add(doc, text); model[doc] = toks; }
+        else { idx.remove(doc); model.erase(doc); }
+        if (step % 75 != 0) continue;
+        assert(idx.docCount() == model.size());
+        for (int q = 0; q < 12; ++q) {
+            std::vector<std::string> terms; for (int k = 0, n = 1 + (int)(rng() % 3); k < n; ++k) terms.push_back(vocab[rng() % 10]);
+            std::vector<int> wantAnd, wantOr, wantNot, wantPhrase, wantTerm;
+            for (auto& kv : model) {
+                auto has = [&](const std::string& w) { return std::find(kv.second.begin(), kv.second.end(), w) != kv.second.end(); };
+                bool all = true, any = false; for (auto& t : terms) { all = all && has(t); any = any || has(t); }
+                if (all) wantAnd.push_back(kv.first); if (any) wantOr.push_back(kv.first);
+                if (has(terms[0]) && !has(terms.back())) wantNot.push_back(kv.first); if (has(terms[0])) wantTerm.push_back(kv.first);
+                for (size_t p = 0; p + terms.size() <= kv.second.size(); p++) { bool m = true; for (size_t k = 0; k < terms.size(); k++) m = m && kv.second[p + k] == terms[k]; if (m) { wantPhrase.push_back(kv.first); break; } }
+            }
+            std::vector<int> gotOr; { std::set<int> u; for (auto& t : terms) for (int d : idx.postings(t)) u.insert(d); gotOr.assign(u.begin(), u.end()); }
+            assert(idx.postings(terms[0]) == wantTerm && idx.andQuery(terms) == wantAnd && gotOr == wantOr && idx.notQuery(terms[0], terms.back()) == wantNot && idx.phrase(terms) == wantPhrase);
+            if (terms.size() == 2) { assert(idx.orQuery(terms[0], terms[1]) == wantOr && idx.andQuery(terms[0], terms[1]) == wantAnd); }
+            ++queries; nonEmpty += !wantAnd.empty() + !wantPhrase.empty();
+        }
+    }
+    assert(queries == 480 && nonEmpty > 100 && checked == 2000);
+    std::cout << "InvertedIndex: " << checked << " galloping intersections matched set_intersection (5 vs 100000 took " << bigSteps << " comparisons); " << queries << " mixed queries over 3000 adds/replacements/removals matched the brute-force oracle" << std::endl;
     return 0;
 }
-// Time Complexity: 색인 O(총 토큰 수 log V), AND 질의 O(|a| + |b|)
+// Time Complexity: 색인 O(총 토큰 수 log V), AND 질의 O(|짧은 목록| · log(|긴 목록| / |짧은 목록|))
 // Space Complexity: O(총 토큰 수)
 ```
 ## NGramIndex()
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
+#include <cassert>
+#include <iostream>
 #include <map>
+#include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// n-gram 색인(여기서는 bigram): 단어를 글자 n 개 조각으로 나눠 색인하면 철자 오류가 있는 질의도 찾는다 (자동 교정, "이것을 찾으셨나요?").
-// 질의와 후보의 n-gram 집합의 자카드 유사도 |A∩B| / |A∪B| 가 높은 단어를 고른다
-std::set<std::string> grams(const std::string& w, int n = 2) {
-    std::string p = "$" + w + "$"; std::set<std::string> g;
+// n-gram 색인(bigram, trigram …): 단어를 글자 n 개 조각으로 나눠 색인하면 철자 오류가 있는 질의도 찾는다 (자동 교정, "이것을 찾으셨나요?").
+// 질의와 후보의 n-gram 집합의 자카드 유사도 |A∩B| / |A∪B| 가 높은 단어를 고른다.  앞뒤에 '$' 를 n-1 개씩 붙여 첫·끝 글자도 n 개의 조각에 들어가게 한다
+// 색인을 쓰면 질의와 조각을 하나라도 공유하는 후보만 본다 — 사전 전체를 훑을 필요가 없다
+// 검증: ① 손으로 고른 예  ② 사전 전체를 훑는 브루트포스(집합 연산으로 자카드를 직접 계산)와 결과 *벡터가 정확히 같음* — n = 2, 3, 단어 중복 추가, 질의 3 000 개
+//        ③ 사전 400 단어에서 한 글자 오타(치환·삭제·삽입·맞바꿈) 질의의 1 위가 원래 단어인 비율(n = 2 와 3 비교)과 검사한 후보 수가 사전 크기보다 훨씬 적음
+std::set<std::string> grams(const std::string& w, int n) {
+    std::string p = std::string(n - 1, '$') + w + std::string(n - 1, '$'); std::set<std::string> g;
     for (size_t i = 0; i + n <= p.size(); i++) g.insert(p.substr(i, n));
     return g;
 }
 class NGramIndex {
-    std::map<std::string, std::vector<std::string>> idx; std::vector<std::string> words;
+    int n; std::map<std::string, std::vector<int>> idx; std::vector<std::string> words; std::set<std::string> seen;
 public:
-    void add(const std::string& w) { words.push_back(w); for (auto& g : grams(w)) idx[g].push_back(w); }
+    mutable size_t candidates = 0;                                     // 마지막 질의에서 검사한 후보 수 (분석용)
+    explicit NGramIndex(int n = 2) : n(n) {}
+    void add(const std::string& w) {
+        if (!seen.insert(w).second) return;                            // 같은 단어를 두 번 넣어도 한 번만
+        int id = (int)words.size(); words.push_back(w); for (auto& g : grams(w, n)) idx[g].push_back(id);
+    }
     std::vector<std::pair<double, std::string>> search(const std::string& q, double minSim = 0.3) const {
-        std::map<std::string, int> common; auto qg = grams(q);
-        for (auto& g : qg) { auto it = idx.find(g); if (it != idx.end()) for (auto& w : it->second) common[w]++; }   // 공통 조각 수만 센다
+        assert(minSim > 0);                                            // 조각을 하나도 공유하지 않는 단어(유사도 0)는 색인으로 찾을 수 없다
+        std::map<int, int> common; auto qg = grams(q, n);
+        for (auto& g : qg) { auto it = idx.find(g); if (it != idx.end()) for (int id : it->second) common[id]++; }   // 공통 조각 수만 센다
+        candidates = common.size();
         std::vector<std::pair<double, std::string>> r;
         for (auto& kv : common) {
-            double sim = double(kv.second) / (qg.size() + grams(kv.first).size() - kv.second);
-            if (sim >= minSim) r.push_back({sim, kv.first});
+            double sim = double(kv.second) / (qg.size() + grams(words[kv.first], n).size() - kv.second);
+            if (sim >= minSim) r.push_back({sim, words[kv.first]});
         }
         std::sort(r.rbegin(), r.rend()); return r;
     }
+    size_t size() const { return words.size(); }
 };
+std::vector<std::pair<double, std::string>> bruteForce(const std::vector<std::string>& dict, const std::string& q, int n, double minSim) {
+    std::set<std::string> uniq(dict.begin(), dict.end()); auto qg = grams(q, n); std::vector<std::pair<double, std::string>> r;
+    for (const std::string& w : uniq) {
+        auto g = grams(w, n); std::vector<std::string> inter, uni; std::set_intersection(qg.begin(), qg.end(), g.begin(), g.end(), std::back_inserter(inter)); std::set_union(qg.begin(), qg.end(), g.begin(), g.end(), std::back_inserter(uni));
+        double sim = double(inter.size()) / uni.size(); if (inter.size() > 0 && sim >= minSim) r.push_back({sim, w});
+    }
+    std::sort(r.rbegin(), r.rend()); return r;
+}
+std::string typo(const std::string& w, std::mt19937& rng) {              // 한 글자 오타 하나
+    std::string t = w; size_t p = rng() % t.size();
+    switch (rng() % 4) {
+        case 0: { char c; do c = (char)('a' + rng() % 26); while (c == t[p]); t[p] = c; break; }
+        case 1: t.erase(p, 1); break;
+        case 2: t.insert(rng() % (t.size() + 1), 1, (char)('a' + rng() % 26)); break;
+        default: { size_t q = p % (t.size() - 1); if (t[q] != t[q + 1]) std::swap(t[q], t[q + 1]); else t[q] = (char)('a' + (t[q] - 'a' + 1) % 26); }
+    }
+    return t;
+}
 
 int main() {
     NGramIndex ix;
@@ -3216,7 +4139,36 @@ int main() {
     assert(!r.empty() && r[0].second == "receive");
     auto none = ix.search("zzzz");
     assert(none.empty());
-    std::cout << "NGramIndex: 'recieve' -> " << r[0].second << " (similarity " << r[0].first << ")" << std::endl;
+    assert(grams("ab", 2) == (std::set<std::string>{"$a", "ab", "b$"}) && grams("ab", 3) == (std::set<std::string>{"$$a", "$ab", "ab$", "b$$"}) && grams("", 2) == (std::set<std::string>{"$$"}));      // 경계: 조각 구성, 빈 단어
+    ix.add("receive"); assert(ix.size() == 6 && ix.search("receive")[0].first == 1.0);                                       // 중복 추가는 무시, 완전 일치는 유사도 1
+
+    // ② 브루트포스 대조
+    std::mt19937 rng(88); std::vector<std::string> dict;
+    for (int i = 0; i < 400; ++i) { std::string w; for (int k = 0, len = 4 + (int)(rng() % 7); k < len; ++k) w += (char)('a' + rng() % 26); dict.push_back(w); }
+    for (int i = 0; i < 40; ++i) dict.push_back(dict[rng() % 400]);                                                      // 중복 단어
+    long compared = 0;
+    for (int n : {2, 3}) {
+        NGramIndex big(n); for (auto& w : dict) big.add(w);
+        for (int q = 0; q < 1500; ++q) {
+            std::string query = q % 3 == 0 ? typo(dict[rng() % 400], rng) : q % 3 == 1 ? dict[rng() % 400] : std::string(3 + rng() % 5, 'a') + (char)('a' + rng() % 26);
+            double minSim = q % 2 ? 0.2 : 0.35;
+            auto got = big.search(query, minSim), want = bruteForce(dict, query, n, minSim); assert(got == want); ++compared;
+        }
+    }
+    // ③ 오타 교정 정확도와 후보 수
+    double hits[2] = {0, 0}, cands[2] = {0, 0}; int trials = 1000;
+    for (int k = 0; k < 2; ++k) {
+        int n = k + 2; NGramIndex big(n); std::vector<std::string> uniq(dict.begin(), dict.begin() + 400); for (auto& w : uniq) big.add(w);
+        std::mt19937 trng(5); int counted = 0;
+        for (int t = 0; t < trials; ++t) {
+            const std::string& w = uniq[trng() % 400]; if (w.size() < 5) continue; std::string q = typo(w, trng);
+            auto res = big.search(q, 0.01); ++counted; cands[k] += (double)big.candidates;
+            if (!res.empty() && res[0].second == w) hits[k] += 1;
+        }
+        hits[k] /= counted; cands[k] /= counted;
+    }
+    assert(hits[0] > 0.85 && hits[1] > 0.85 && cands[0] < 400 / 3.0 && cands[1] < cands[0]);        // 3-gram 은 후보가 더 적다
+    std::cout << "NGramIndex: 'recieve' -> " << r[0].second << " (similarity " << r[0].first << "); " << compared << " queries matched brute force; top-1 recovery of one-letter typos " << hits[0] << " (bigram, " << cands[0] << " candidates of 400) vs " << hits[1] << " (trigram, " << cands[1] << ")" << std::endl;
     return 0;
 }
 // Time Complexity: 질의 O(|q| · 평균 포스팅 길이)
@@ -3290,36 +4242,135 @@ int main() {
 ## 문자열 알고리즘의 생물정보학 활용
 ### 대표코드
 ```cpp
-#include <iostream>
 #include <algorithm>
-#include <map>
-#include <string>
-#include <vector>
 #include <cassert>
+#include <iostream>
+#include <map>
+#include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
-// DNA 는 알파벳 {A, C, G, T} 의 문자열이다. 기본 연산: 역상보 서열, GC 함량, k-mer 개수 세기, 제한효소 인식 부위(모티프) 찾기
+// DNA 는 알파벳 {A, C, G, T} 의 문자열이다(N 은 미확정 염기). 기본 연산: 역상보 서열, GC 함량, k-mer 개수 세기, 제한효소 인식 부위(모티프) 찾기·절단, 단백질 번역과 ORF 찾기
+// 역상보: 반대 가닥은 서열을 뒤집고 A<->T, C<->G 를 바꾼 것.  제한효소 부위는 대개 역상보와 같은 회문형(GAATTC)
+// 검증: ① 손으로 고른 값(EcoRI 부위 5·23, 번역 MAIVMGR*KGAR*)  ② 무작위 서열에서 k-mer 세기를 map 판과 2 비트 롤링 판이 일치(k 1~8, N 포함), 정규(canonical) k-mer 개수는 서열과 그 역상보에서 같음
+//        ③ 역상보 회문 부위(길이 4~12)를 중심 확장으로 찾은 결과 = 모든 부분 문자열 전수 검사  ④ 효소 절단 조각을 이어 붙이면 원래 서열  ⑤ 코돈 표의 축퇴도(L·S·R 6, 정지 3, M·W 1 …)와 6 개 읽기틀 ORF 찾기를 독립 구현(ATG 마다 거꾸로 훑기)과 대조
 std::string reverseComplement(const std::string& dna) {
     std::string r(dna.rbegin(), dna.rend());
-    for (char& c : r) c = c == 'A' ? 'T' : c == 'T' ? 'A' : c == 'C' ? 'G' : 'C';
+    for (char& c : r) switch (c) { case 'A': c = 'T'; break; case 'T': c = 'A'; break; case 'C': c = 'G'; break; case 'G': c = 'C'; break; default: assert(c == 'N'); }
     return r;
 }
-double gcContent(const std::string& dna) { return double(std::count(dna.begin(), dna.end(), 'G') + std::count(dna.begin(), dna.end(), 'C')) / dna.size(); }
-std::map<std::string, int> kmers(const std::string& dna, int k) { std::map<std::string, int> m; for (size_t i = 0; i + k <= dna.size(); i++) m[dna.substr(i, k)]++; return m; }
+double gcContent(const std::string& dna) { return dna.empty() ? 0.0 : double(std::count(dna.begin(), dna.end(), 'G') + std::count(dna.begin(), dna.end(), 'C')) / dna.size(); }
+bool acgt(const std::string& s) { return s.find_first_not_of("ACGT") == std::string::npos; }
+std::map<std::string, int> kmers(const std::string& dna, int k) { std::map<std::string, int> m; for (size_t i = 0; i + k <= dna.size(); i++) { std::string w = dna.substr(i, k); if (acgt(w)) m[w]++; } return m; }
+int baseVal(char c) { return c == 'A' ? 0 : c == 'C' ? 1 : c == 'G' ? 2 : c == 'T' ? 3 : -1; }
+std::map<std::string, int> kmersRolling(const std::string& dna, int k) {      // 2 비트 롤링: 새 글자를 밀어 넣어 O(1) 갱신, N 을 만나면 창을 비운다
+    std::vector<int> cnt(1u << (2 * k), 0); unsigned code = 0, mask = (1u << (2 * k)) - 1; int run = 0;
+    for (char c : dna) { int v = baseVal(c); if (v < 0) { run = 0; code = 0; continue; } code = ((code << 2) | (unsigned)v) & mask; if (++run >= k) cnt[code]++; }
+    std::map<std::string, int> m;
+    for (unsigned c = 0; c < cnt.size(); c++) if (cnt[c]) { std::string w; for (int b = k - 1; b >= 0; b--) w += "ACGT"[(c >> (2 * b)) & 3]; m[w] = cnt[c]; }
+    return m;
+}
+std::map<std::string, int> canonicalKmers(const std::string& dna, int k) { std::map<std::string, int> m; for (auto& kv : kmers(dna, k)) m[std::min(kv.first, reverseComplement(kv.first))] += kv.second; return m; }
+std::vector<std::pair<size_t, size_t>> reversePalindromes(const std::string& dna, size_t minLen, size_t maxLen) {    // (시작, 길이): 부분 문자열 = 그 역상보
+    std::vector<std::pair<size_t, size_t>> r;
+    for (size_t c = 1; c < dna.size(); c++)                                // 중심은 c-1 과 c 사이
+        for (size_t t = 0; c >= t + 1 && c + t < dna.size(); t++) {
+            char a = dna[c - 1 - t], b = dna[c + t]; int va = baseVal(a), vb = baseVal(b);
+            if (va < 0 || vb < 0 || va + vb != 3) break;                   // 서로 상보(A-T, C-G) 가 아니면 더 못 넓힌다
+            size_t len = 2 * (t + 1); if (len > maxLen) break; if (len >= minLen) r.push_back({c - 1 - t, len});
+        }
+    std::sort(r.begin(), r.end()); return r;
+}
+std::vector<std::string> digest(const std::string& dna, const std::string& site, size_t cutAfter) {   // site 안에서 cutAfter 글자 뒤를 자른다 (EcoRI: G^AATTC -> 1)
+    std::vector<size_t> cuts;
+    for (size_t p = dna.find(site); p != std::string::npos; p = dna.find(site, p + 1)) cuts.push_back(p + cutAfter);
+    std::vector<std::string> frags; size_t prev = 0;
+    for (size_t c : cuts) { frags.push_back(dna.substr(prev, c - prev)); prev = c; }
+    frags.push_back(dna.substr(prev)); return frags;
+}
+const char* CODONS = "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG";       // 표준 유전 암호, 순서 T C A G
+int tcag(char c) { return c == 'T' ? 0 : c == 'C' ? 1 : c == 'A' ? 2 : 3; }
+char aminoAcid(const std::string& s, size_t i) { return CODONS[16 * tcag(s[i]) + 4 * tcag(s[i + 1]) + tcag(s[i + 2])]; }
+std::string translate(const std::string& dna) { std::string p; for (size_t i = 0; i + 3 <= dna.size(); i += 3) p += acgt(dna.substr(i, 3)) ? aminoAcid(dna, i) : 'X'; return p; }
+struct ORF { int strand; size_t start, nt; std::string protein; bool operator<(const ORF& o) const { return std::tie(strand, start, nt) < std::tie(o.strand, o.start, o.nt); } bool operator==(const ORF& o) const { return strand == o.strand && start == o.start && nt == o.nt && protein == o.protein; } };
+std::vector<ORF> findOrfs(const std::string& dna) {                          // 6 개 읽기틀: 틀마다 전체를 번역한 뒤 '*' 사이에서 첫 'M' 부터 정지 코돈까지
+    std::vector<ORF> r;
+    for (int strand : {1, -1}) {
+        std::string s = strand == 1 ? dna : reverseComplement(dna);
+        for (size_t f = 0; f < 3 && f < s.size(); f++) {
+            std::string prot = translate(s.substr(f)); size_t i = 0;
+            while (i < prot.size()) {
+                size_t m = prot.find('M', i); if (m == std::string::npos) break;
+                size_t e = prot.find_first_of("*X", m); if (e == std::string::npos) break;  // 정지 코돈이 없는 미완성 ORF 는 버린다
+                if (prot[e] == '*') r.push_back({strand, f + 3 * m, 3 * (e - m + 1), prot.substr(m, e - m)});          // 'X'(N 이 낀 코돈)를 만나면 그 ORF 는 확정할 수 없어 버린다
+                i = e + 1;
+            }
+        }
+    }
+    std::sort(r.begin(), r.end()); return r;
+}
+std::vector<ORF> findOrfsBrute(const std::string& dna) {                       // 독립 구현: ATG 위치마다 정지 코돈까지 훑고, 같은 틀에서 그 앞에 ATG 가 없을 때만 보고
+    std::vector<ORF> r;
+    for (int strand : {1, -1}) {
+        std::string s = strand == 1 ? dna : reverseComplement(dna);
+        for (size_t p = 0; p + 3 <= s.size(); p++) {
+            if (s.compare(p, 3, "ATG") != 0) continue;
+            size_t q = p; while (q + 3 <= s.size() && aminoAcid(s, q) != '*' && acgt(s.substr(q, 3))) q += 3;
+            if (q + 3 > s.size() || aminoAcid(s, q) != '*' || !acgt(s.substr(q, 3))) continue;
+            bool firstInSegment = true;                                            // 거꾸로 올라가며 정지 코돈 전에 ATG 가 있는지 본다
+            for (size_t b = p; b >= 3; ) { b -= 3; if (!acgt(s.substr(b, 3)) || aminoAcid(s, b) == '*') break; if (s.compare(b, 3, "ATG") == 0) { firstInSegment = false; break; } }
+            if (firstInSegment) r.push_back({strand, p, q + 3 - p, translate(s.substr(p, q - p))});
+        }
+    }
+    std::sort(r.begin(), r.end()); return r;
+}
+std::string randomDna(std::mt19937& rng, size_t n, bool withN) { std::string s(n, 'A'); for (char& c : s) c = withN && rng() % 20 == 0 ? 'N' : "ACGT"[rng() % 4]; return s; }
 
 int main() {
     std::string dna = "AGCTTGAATTCGGATCCAAGCTTGAATTC";
     assert(reverseComplement("ATGC") == "GCAT");
     assert(reverseComplement(reverseComplement(dna)) == dna);        // 역상보의 역상보는 원래 서열
     assert(reverseComplement("GAATTC") == "GAATTC");                 // 제한효소 EcoRI 부위는 회문형 (역상보와 같다)
+    assert(reverseComplement("") == "" && reverseComplement("ANT") == "ANT" && gcContent("") == 0.0);
     assert(std::abs(gcContent("GGCC") - 1.0) < 1e-12 && std::abs(gcContent("ATGC") - 0.5) < 1e-12);
     auto k = kmers(dna, 6);
     assert(k["GAATTC"] == 2);                                        // EcoRI 인식 부위가 두 번
     std::vector<size_t> sites; for (size_t p = dna.find("GAATTC"); p != std::string::npos; p = dna.find("GAATTC", p + 1)) sites.push_back(p);
     assert((sites == std::vector<size_t>{5, 23}));
-    std::cout << "EcoRI sites at positions " << sites[0] << " and " << sites[1] << ", GC=" << gcContent(dna) << std::endl;
+    std::vector<std::string> frags = digest(dna, "GAATTC", 1); assert((frags == std::vector<std::string>{"AGCTTG", "AATTCGGATCCAAGCTTG", "AATTC"}));          // G^AATTC
+    assert(translate("ATGGCCATTGTAATGGGCCGCTGAAAGGGTGCCCGATAG") == "MAIVMGR*KGAR*");
+    std::map<char, int> degeneracy; for (int i = 0; i < 64; i++) degeneracy[CODONS[i]]++;
+    assert(degeneracy['L'] == 6 && degeneracy['S'] == 6 && degeneracy['R'] == 6 && degeneracy['*'] == 3 && degeneracy['I'] == 3 && degeneracy['M'] == 1 && degeneracy['W'] == 1 && degeneracy['A'] == 4 && degeneracy.size() == 21);
+    assert(aminoAcid("ATG", 0) == 'M' && aminoAcid("TAA", 0) == '*' && aminoAcid("TAG", 0) == '*' && aminoAcid("TGA", 0) == '*' && aminoAcid("TGG", 0) == 'W' && aminoAcid("GGG", 0) == 'G' && aminoAcid("TTT", 0) == 'F');
+    // ② k-mer 세기
+    std::mt19937 rng(2025); long kmerChecks = 0;
+    for (int it = 0; it < 300; ++it) {
+        std::string s = randomDna(rng, rng() % 400, it % 2 == 0); int kk = 1 + (int)(rng() % 8);
+        auto a = kmers(s, kk), b = kmersRolling(s, kk); assert(a == b); ++kmerChecks;
+        long total = 0; for (auto& kv : a) total += kv.second; long windows = 0; for (size_t i = 0; i + kk <= s.size(); i++) windows += acgt(s.substr(i, kk)); assert(total == windows);
+        std::string rc = reverseComplement(s); assert(canonicalKmers(s, kk) == canonicalKmers(rc, kk));          // 두 가닥에서 같은 정규 k-mer 개수
+        auto mk = kmers(rc, kk); for (auto& kv : a) { auto it2 = mk.find(reverseComplement(kv.first)); assert(it2 != mk.end() && it2->second == kv.second); }
+    }
+    // ③ 회문 부위 ④ 절단
+    long palTotal = 0, fragChecks = 0;
+    for (int it = 0; it < 300; ++it) {
+        std::string s = randomDna(rng, 20 + rng() % 120, it % 3 == 0); auto got = reversePalindromes(s, 4, 12); palTotal += (long)got.size();
+        std::vector<std::pair<size_t, size_t>> want; for (size_t len = 4; len <= 12; len += 2) for (size_t i = 0; i + len <= s.size(); i++) { std::string w = s.substr(i, len); if (acgt(w) && w == reverseComplement(w)) want.push_back({i, len}); }
+        std::sort(want.begin(), want.end()); assert(got == want);
+        for (const char* site : {"GAATTC", "GGATCC", "AAGCTT"}) { auto f = digest(s + site + s, site, 1); std::string joined; for (auto& x : f) joined += x; assert(joined == s + site + s && f.size() >= 2); ++fragChecks; }
+    }
+    assert(palTotal > 300 && reversePalindromes("GAATTC", 4, 12).size() == 2);                              // GAATTC 와 그 안의 AATT
+    // ⑤ ORF
+    std::string planted = "CC" + std::string("ATGGCCATTGTAATGGGCCGCTGA") + "TT"; auto orfs = findOrfs(planted);
+    assert(std::find(orfs.begin(), orfs.end(), ORF{1, 2, 24, "MAIVMGR"}) != orfs.end());                    // 안쪽의 두 번째 ATG 는 같은 ORF 에 포함되어 따로 보고하지 않는다
+    long orfTotal = 0;
+    for (int it = 0; it < 400; ++it) { std::string s = randomDna(rng, 30 + rng() % 400, it % 4 == 0); auto a = findOrfs(s), b = findOrfsBrute(s); assert(a == b); orfTotal += (long)a.size(); }
+    assert(orfTotal > 300 && findOrfs("").empty() && findOrfs("AT").empty());
+    std::cout << "EcoRI sites at positions " << sites[0] << " and " << sites[1] << ", GC=" << gcContent(dna) << "; " << kmerChecks << " k-mer tables matched across two counters, " << palTotal << " palindromic sites and " << orfTotal << " ORFs matched their brute-force oracles" << std::endl;
     return 0;
 }
-// Time Complexity: O(n) (k-mer 세기 O(n·k))
+// Time Complexity: O(n) (k-mer 세기 O(n·k), 롤링은 O(n))
 // Space Complexity: O(고유 k-mer 수)
 ```
 ## NeedlemanWunsch()
@@ -3451,21 +4502,31 @@ int main() {
 ## BytePairEncoding()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
 #include <iostream>
 #include <map>
-#include <sstream>
+#include <random>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
 // BPE: 글자 단위에서 시작해 "가장 자주 붙어 나오는 인접 쌍"을 하나의 새 토큰으로 합치는 일을 반복해 어휘를 학습한다 (GPT 계열).
-// 추론은 학습된 병합을 "학습된 순서대로" 적용한다.  단어 끝 표식 </w> 로 단어 경계를 보존
+// 추론은 학습된 병합을 "학습된 순서대로" 적용한다.  단어 끝 표식 </w> 로 단어 경계를 보존.  동률은 사전순으로 앞선 쌍
+// 같은 결과를 내는 두 번째 추론: "지금 이웃한 쌍 중 순위(병합 순번)가 가장 낮은 것을 먼저 합친다" (GPT-2 방식, 병합 목록을 한 번씩 다 훑지 않아도 된다)
+// 검증: ① Sennrich 외(2016)의 예 12 병합 전체 (파이썬으로 따로 계산한 값)  ② 병합마다 코퍼스의 총 토큰 수가 *엄격히* 줄고 그 감소량은 1 이상 병합된 쌍의 빈도 이하
+//        ③ 무작위 코퍼스 300 개: 문자열 기반 학습기와 *정수 ID 기반* 독립 학습기의 병합 목록이 같고, 학습 단어를 다시 인코딩하면 학습 마지막의 분할과 같으며,
+//        순서대로 적용한 추론 = 순위 우선 추론, 처음 보는 단어도 이어 붙이면 원문(+</w>)  ④ 경계: 빈 코퍼스, 병합 수 0, 한 글자 단어
 typedef std::vector<std::string> Seq;
 typedef std::pair<std::string, std::string> Pair;
 
-std::vector<Pair> train(const std::map<std::string, int>& wordFreq, int numMerges) {
+std::vector<Pair> train(const std::map<std::string, int>& wordFreq, int numMerges, std::vector<long>* totals = nullptr, std::vector<long>* chosen = nullptr, std::map<std::string, Seq>* finalSeg = nullptr) {
     std::map<Seq, int> vocab;
-    for (auto& kv : wordFreq) { Seq s; for (char c : kv.first) s.push_back(std::string(1, c)); s.push_back("</w>"); vocab[s] = kv.second; }
+    for (auto& kv : wordFreq) { Seq s; for (char c : kv.first) s.push_back(std::string(1, c)); s.push_back("</w>"); vocab[s] += kv.second; }
+    auto total = [&]() { long t = 0; for (auto& kv : vocab) t += (long)kv.first.size() * kv.second; return t; };
+    if (totals) totals->push_back(total());
     std::vector<Pair> merges;
     for (int it = 0; it < numMerges; it++) {
         std::map<Pair, int> cnt;
@@ -3473,7 +4534,7 @@ std::vector<Pair> train(const std::map<std::string, int>& wordFreq, int numMerge
         if (cnt.empty()) break;
         Pair best; int bc = 0;
         for (auto& kv : cnt) if (kv.second > bc) { bc = kv.second; best = kv.first; }     // 빈도 최대, 동률이면 사전순 앞쪽
-        merges.push_back(best);
+        merges.push_back(best); if (chosen) chosen->push_back(bc);
         std::map<Seq, int> next;
         for (auto& kv : vocab) {
             Seq s; for (size_t i = 0; i < kv.first.size(); i++) {
@@ -3483,6 +4544,12 @@ std::vector<Pair> train(const std::map<std::string, int>& wordFreq, int numMerge
             next[s] += kv.second;
         }
         vocab.swap(next);
+        if (totals) totals->push_back(total());
+    }
+    if (finalSeg) for (auto& kv : wordFreq) {                                            // 학습 마지막의 분할: 단어를 병합 목록으로 다시 계산하지 않고 vocab 에서 찾기 위해 한 번 더 적용
+        Seq s; for (char c : kv.first) s.push_back(std::string(1, c)); s.push_back("</w>");
+        for (auto& m : merges) { Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == m.first && s[i + 1] == m.second) { t.push_back(m.first + m.second); i++; } else t.push_back(s[i]); } s.swap(t); }
+        (*finalSeg)[kv.first] = s;
     }
     return merges;
 }
@@ -3496,11 +4563,46 @@ Seq encode(const std::string& word, const std::vector<Pair>& merges) {
     }
     return s;
 }
+Seq encodeRank(const std::string& word, const std::map<Pair, int>& rank) {            // 순위가 가장 낮은 이웃 쌍을 (모든 위치에서) 합치기를 더 합칠 것이 없을 때까지
+    Seq s; for (char c : word) s.push_back(std::string(1, c)); s.push_back("</w>");
+    for (;;) {
+        int best = INT_MAX; Pair bp;
+        for (size_t i = 0; i + 1 < s.size(); i++) { auto it = rank.find({s[i], s[i + 1]}); if (it != rank.end() && it->second < best) { best = it->second; bp = it->first; } }
+        if (best == INT_MAX) return s;
+        Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == bp.first && s[i + 1] == bp.second) { t.push_back(bp.first + bp.second); i++; } else t.push_back(s[i]); }
+        s.swap(t);
+    }
+}
+std::vector<Pair> trainIds(const std::map<std::string, int>& wf, int numMerges) {     // 독립 구현: 토큰을 정수 ID 로 바꿔 쌍 개수를 센다 (동률 규칙은 ID 가 아니라 *문자열 쌍* 의 사전순)
+    std::vector<std::string> tok; std::map<std::string, int> id;
+    auto intern = [&](const std::string& s) { auto it = id.find(s); if (it != id.end()) return it->second; tok.push_back(s); return id[s] = (int)tok.size() - 1; };
+    std::vector<std::vector<int>> words; std::vector<long> fr;
+    for (auto& kv : wf) { std::vector<int> w; for (char c : kv.first) w.push_back(intern(std::string(1, c))); w.push_back(intern("</w>")); words.push_back(w); fr.push_back(kv.second); }
+    std::vector<Pair> merges;
+    for (int it = 0; it < numMerges; it++) {
+        std::map<std::pair<int, int>, long> cnt;
+        for (size_t w = 0; w < words.size(); w++) for (size_t i = 0; i + 1 < words[w].size(); i++) cnt[{words[w][i], words[w][i + 1]}] += fr[w];
+        if (cnt.empty()) break;
+        std::pair<int, int> best{-1, -1}; long bc = 0;
+        for (auto& kv : cnt) {
+            bool better = kv.second > bc || (kv.second == bc && Pair{tok[kv.first.first], tok[kv.first.second]} < Pair{tok[best.first], tok[best.second]});
+            if (better) { bc = kv.second; best = kv.first; }
+        }
+        merges.push_back({tok[best.first], tok[best.second]});
+        int nid = intern(tok[best.first] + tok[best.second]);
+        for (auto& w : words) { std::vector<int> t; for (size_t i = 0; i < w.size(); i++) { if (i + 1 < w.size() && w[i] == best.first && w[i + 1] == best.second) { t.push_back(nid); i++; } else t.push_back(w[i]); } w.swap(t); }
+    }
+    return merges;
+}
 
 int main() {
     std::map<std::string, int> corpus = {{"low", 5}, {"lower", 2}, {"newest", 6}, {"widest", 3}};     // Sennrich et al. (2016) 의 예
-    auto merges = train(corpus, 10);
+    std::vector<long> totals, counts; std::map<std::string, Seq> finalSeg;
+    auto merges = train(corpus, 12, &totals, &counts, &finalSeg);
     assert((merges[0] == Pair{"e", "s"}) && (merges[1] == Pair{"es", "t"}) && (merges[2] == Pair{"est", "</w>"}));   // 빈도 9 인 쌍부터
+    const std::vector<Pair> golden = {{"e", "s"}, {"es", "t"}, {"est", "</w>"}, {"l", "o"}, {"lo", "w"}, {"e", "w"}, {"ew", "est</w>"}, {"n", "ewest</w>"}, {"low", "</w>"}, {"d", "est</w>"}, {"i", "dest</w>"}, {"w", "idest</w>"}};
+    assert(merges == golden && trainIds(corpus, 12) == golden);                              // 문자열 기반, ID 기반 학습기, 파이썬 참조값이 모두 같다
+    assert((counts == std::vector<long>{9, 9, 9, 7, 7, 6, 6, 6, 5, 3, 3, 3}));
     Seq e = encode("newest", merges);
     auto endsWithEst = [](const std::string& s) { return s.size() >= 7 && s.compare(s.size() - 7, 7, "est</w>") == 0; };
     assert(endsWithEst(e.back()));                                     // "newest" 는 est</w> 로 끝나는 (더 큰) 토큰으로 끝난다
@@ -3508,7 +4610,33 @@ int main() {
     assert(endsWithEst(u.back()) && u.size() >= 2);
     std::string joined; for (auto& t : u) joined += t;
     assert(joined == "lowest</w>");                                    // 이어 붙이면 원문 (+ 단어 끝 표식)
-    std::cout << "BPE merges: "; for (int i = 0; i < 5; i++) std::cout << merges[i].first << "+" << merges[i].second << " "; std::cout << std::endl;
+    for (auto& kv : corpus) assert(encode(kv.first, merges) == finalSeg[kv.first]);
+    // ② 병합마다 총 토큰 수 감소
+    for (size_t i = 0; i < counts.size(); i++) { long dec = totals[i] - totals[i + 1]; assert(dec >= 1 && dec <= counts[i]); }
+
+    // ③ 무작위 코퍼스
+    std::mt19937 rng(41); long corpora = 0, mergesTotal = 0, strict = 0;
+    for (int it = 0; it < 300; ++it) {
+        std::map<std::string, int> wf; int sigma = 2 + (int)(rng() % 3);
+        for (int w = 0, n = 1 + (int)(rng() % 12); w < n; ++w) { std::string s; for (int k = 0, len = 1 + (int)(rng() % 8); k < len; ++k) s += (char)('a' + rng() % sigma); wf[s] += 1 + (int)(rng() % 5); }
+        int M = (int)(rng() % 25); std::vector<long> tot, cnt; std::map<std::string, Seq> fin;
+        auto m1 = train(wf, M, &tot, &cnt, &fin), m2 = trainIds(wf, M); assert(m1 == m2);
+        std::map<Pair, int> rank; for (size_t i = 0; i < m1.size(); i++) rank.emplace(m1[i], (int)i);          // 같은 쌍이 두 번 나올 수는 없다 (한 번 합치면 그 쌍은 사라진다)
+        assert(rank.size() == m1.size());
+        for (size_t i = 0; i < cnt.size(); i++) { long dec = tot[i] - tot[i + 1]; assert(dec >= 1 && dec <= cnt[i]); strict += dec == cnt[i]; if (i) assert(cnt[i] <= cnt[i - 1]); }
+        for (auto& kv : wf) assert(encode(kv.first, m1) == fin[kv.first] && encodeRank(kv.first, rank) == fin[kv.first]);   // 학습 단어: 학습 마지막의 분할과 같다
+        for (int q = 0; q < 10; ++q) {                                                                   // 처음 보는 단어(알파벳 밖 글자 포함)
+            std::string w; for (int k = 0, len = 1 + (int)(rng() % 10); k < len; ++k) w += (char)('a' + rng() % (sigma + 1));
+            Seq a = encode(w, m1), b = encodeRank(w, rank); assert(a == b);
+            std::string j; for (auto& t : a) j += t; assert(j == w + "</w>");
+        }
+        ++corpora; mergesTotal += (long)m1.size();
+    }
+    assert(corpora == 300 && mergesTotal > 2000 && strict > 1000);
+    // ④ 경계
+    assert(train({}, 5).empty() && train(corpus, 0).empty() && trainIds({}, 5).empty());
+    auto single = train({{"a", 3}}, 5); assert((single == std::vector<Pair>{{"a", "</w>"}}) && encode("a", single) == Seq{"a</w>"} && encode("", single) == Seq{"</w>"});
+    std::cout << "BPE merges: "; for (int i = 0; i < 5; i++) std::cout << merges[i].first << "+" << merges[i].second << " "; std::cout << "(" << corpora << " random corpora, " << mergesTotal << " merges: two independent trainers and two inference orders agreed)" << std::endl;
     return 0;
 }
 // Time Complexity: 학습 O(병합 수 · 코퍼스 크기), 추론 O(병합 수 · 단어 길이)
@@ -3517,16 +4645,26 @@ int main() {
 ## WordPiece()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <iostream>
 #include <map>
+#include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
 // WordPiece(BERT): 추론은 "가장 긴 일치 우선(MaxMatch)" 탐욕 방식이다. 단어 중간 조각에는 "##" 접두사를 붙인다.
 // 학습은 BPE 와 달리 빈도가 아니라 점수 score(a, b) = freq(ab) / (freq(a) · freq(b)) 가 가장 큰 쌍을 합친다
 //  -> 서로 자주 같이 나오지만 각자는 드문 쌍을 선호 (우도 기반)
+// 탐욕 추론은 되돌아가지 않으므로 분할이 존재해도 [UNK] 를 낼 수 있다: 어휘 {a, ##bc, ab} 에서 "abc" 는 ab 를 먼저 잡아 ##c 가 없어 실패, a + ##bc 는 가능
+// 검증: ① 손으로 고른 예와 위 반례  ② 무작위 어휘(알파벳 {a,b,c}, 조각 길이 ≤ 3) 3 000 개 × 단어 20 개를 DP 오라클과 대조: 탐욕이 낸 분할은 항상 유효(조각이 어휘에 있고 이어 붙이면 원문),
+//        탐욕이 성공이면 DP 도 가능하고 조각 수 ≥ 최소 조각 수, 탐욕이 [UNK] 인데 DP 로는 가능한 경우가 실제로 있다
+//        ③ 학습: 병합마다 고른 쌍이 점수의 최댓값(처음부터 다시 센 double 점수 기준), 점수 동률은 사전순, 학습 후 모든 학습 단어가 [UNK] 없이 분해되어 이어 붙이면 원문이고 조각 수가 글자 수보다 적음
+//        ④ 빈도가 아니라 점수를 쓰면 BPE 와 다른 쌍을 고르는 코퍼스가 있다
+typedef std::pair<std::string, std::string> Pair;
 std::vector<std::string> wordpiece(const std::string& word, const std::set<std::string>& vocab) {
     std::vector<std::string> out; size_t start = 0;
     while (start < word.size()) {
@@ -3542,14 +4680,44 @@ std::vector<std::string> wordpiece(const std::string& word, const std::set<std::
     }
     return out;
 }
-std::pair<std::string, std::string> bestPairByScore(const std::map<std::pair<std::string, std::string>, int>& pairFreq, const std::map<std::string, int>& unitFreq) {
-    double best = -1; std::pair<std::string, std::string> arg;
-    for (auto& kv : pairFreq) {
-        double sc = double(kv.second) / (unitFreq.at(kv.first.first) * double(unitFreq.at(kv.first.second)));
-        if (sc > best) { best = sc; arg = kv.first; }
+int minPieces(const std::string& word, const std::set<std::string>& vocab) {   // 오라클: 되돌아가는 DP — 가능한 분할의 최소 조각 수, 없으면 -1
+    size_t n = word.size(); std::vector<int> best(n + 1, -1); best[0] = 0;
+    for (size_t i = 0; i < n; i++) if (best[i] >= 0) for (size_t j = i + 1; j <= n; j++) {
+        std::string sub = word.substr(i, j - i); if (i > 0) sub = "##" + sub;
+        if (vocab.count(sub) && (best[j] < 0 || best[i] + 1 < best[j])) best[j] = best[i] + 1;
     }
-    return arg;
+    return best[n];
 }
+std::string strip(const std::string& piece) { return piece.compare(0, 2, "##") == 0 ? piece.substr(2) : piece; }
+
+// ---- 학습 ----
+typedef std::vector<std::string> Seq;
+struct Trained { std::set<std::string> vocab; std::vector<Pair> merges; std::vector<std::vector<std::pair<Seq, long>>> history; };   // history[k] = k 번째 병합 직전의 분할
+long ipairScoreCompare(long fp, long fa, long fb, long fq, long fc, long fd) { long l = fp * fc * fd, r = fq * fa * fb; return l > r ? 1 : l < r ? -1 : 0; }     // fp/(fa·fb) 와 fq/(fc·fd) 를 정수 교차 곱으로 비교 (빈도 합이 200 만 미만일 때 안전)
+Trained trainWordPiece(const std::map<std::string, int>& wordFreq, int numMerges) {
+    Trained T; std::vector<std::pair<Seq, long>> words;
+    for (auto& kv : wordFreq) { Seq s; for (size_t i = 0; i < kv.first.size(); i++) s.push_back(i == 0 ? std::string(1, kv.first[i]) : "##" + std::string(1, kv.first[i])); words.push_back({s, kv.second}); for (auto& u : s) T.vocab.insert(u); }
+    for (int it = 0; it < numMerges; it++) {
+        std::map<std::string, long> unit; std::map<Pair, long> pairs;
+        for (auto& w : words) { for (auto& u : w.first) unit[u] += w.second; for (size_t i = 0; i + 1 < w.first.size(); i++) pairs[{w.first[i], w.first[i + 1]}] += w.second; }
+        if (pairs.empty()) break;
+        T.history.push_back(words);
+        bool have = false; Pair best; long bf = 0;
+        for (auto& kv : pairs) {                                          // 점수가 같으면 사전순으로 앞선 쌍 (map 순회 순서) — 엄격히 클 때만 교체
+            if (!have || ipairScoreCompare(kv.second, unit[kv.first.first], unit[kv.first.second], bf, unit[best.first], unit[best.second]) > 0) { have = true; best = kv.first; bf = kv.second; }
+        }
+        std::string merged = best.first + strip(best.second); T.merges.push_back(best); T.vocab.insert(merged);
+        for (auto& w : words) { Seq t; for (size_t i = 0; i < w.first.size(); i++) { if (i + 1 < w.first.size() && w.first[i] == best.first && w.first[i + 1] == best.second) { t.push_back(merged); i++; } else t.push_back(w.first[i]); } w.first.swap(t); }
+    }
+    return T;
+}
+std::map<Pair, double> scoresFromScratch(const std::vector<std::pair<Seq, long>>& words) {       // 오라클: 같은 점수를 double 로 처음부터 계산
+    std::map<std::string, double> unit; std::map<Pair, double> pairs, score;
+    for (auto& w : words) { for (auto& u : w.first) unit[u] += (double)w.second; for (size_t i = 0; i + 1 < w.first.size(); i++) pairs[{w.first[i], w.first[i + 1]}] += (double)w.second; }
+    for (auto& kv : pairs) score[kv.first] = kv.second / (unit[kv.first.first] * unit[kv.first.second]);
+    return score;
+}
+std::map<Pair, long> bpeCounts(const std::vector<std::pair<Seq, long>>& words) { std::map<Pair, long> c; for (auto& w : words) for (size_t i = 0; i + 1 < w.first.size(); i++) c[{w.first[i], w.first[i + 1]}] += w.second; return c; }
 
 int main() {
     std::set<std::string> vocab = {"un", "##aff", "##able", "play", "##ing", "##ed", "a", "##b"};
@@ -3557,11 +4725,43 @@ int main() {
     assert((wordpiece("unaffable", vocab) == V{"un", "##aff", "##able"}));
     assert((wordpiece("playing", vocab) == V{"play", "##ing"}));
     assert((wordpiece("zzz", vocab) == V{"[UNK]"}));
-    // 학습 점수: ("q","u") 는 q 가 항상 u 와 함께 나오므로, 흔한 글자끼리의 쌍보다 점수가 높다
-    std::map<std::pair<std::string, std::string>, int> pf = {{{"q", "u"}, 10}, {{"e", "r"}, 30}};
-    std::map<std::string, int> uf = {{"q", 10}, {"u", 50}, {"e", 200}, {"r", 100}};
-    assert((bestPairByScore(pf, uf) == std::make_pair(std::string("q"), std::string("u"))));
-    std::cout << "WordPiece: unaffable -> un ##aff ##able" << std::endl;
+    assert((wordpiece("", vocab).empty()) && minPieces("", vocab) == 0);                       // 경계: 빈 단어
+    std::set<std::string> trap = {"a", "##bc", "ab"};                                          // 탐욕이 실패하는 어휘
+    assert((wordpiece("abc", trap) == V{"[UNK]"}) && minPieces("abc", trap) == 2);
+    // ② 무작위 어휘 대 DP
+    std::mt19937 rng(7); long greedyOk = 0, greedyUnkButPossible = 0, greedyLonger = 0, impossible = 0;
+    for (int it = 0; it < 3000; ++it) {
+        std::set<std::string> vc; std::vector<std::string> all;
+        for (int len = 1; len <= 3; ++len) { std::vector<std::string> cur{""}; for (int k = 0; k < len; ++k) { std::vector<std::string> nx; for (auto& s : cur) for (char c = 'a'; c <= 'c'; c++) nx.push_back(s + c); cur = nx; } for (auto& s : cur) all.push_back(s); }
+        for (auto& s : all) { if (rng() % 100 < 35) vc.insert(s); if (rng() % 100 < 35) vc.insert("##" + s); }
+        for (int q = 0; q < 20; ++q) {
+            std::string w; for (int k = 0, len = 1 + (int)(rng() % 7); k < len; ++k) w += (char)('a' + rng() % 3);
+            V g = wordpiece(w, vc); int best = minPieces(w, vc);
+            if (g == V{"[UNK]"}) { if (best >= 0) ++greedyUnkButPossible; else ++impossible; continue; }
+            std::string j; for (size_t i = 0; i < g.size(); i++) { assert(vc.count(g[i]) && (i == 0) == (g[i].compare(0, 2, "##") != 0)); j += strip(g[i]); }
+            assert(j == w && best >= 0 && (int)g.size() >= best); ++greedyOk; greedyLonger += (int)g.size() > best;
+        }
+    }
+    assert(greedyOk > 10000 && greedyUnkButPossible > 100 && impossible > 5000 && greedyLonger > 50);
+    // ③ 학습
+    std::map<std::string, int> corpus = {{"hugging", 10}, {"hug", 12}, {"huge", 3}, {"face", 9}, {"faces", 4}, {"hugs", 5}, {"pug", 8}, {"pugs", 3}, {"bug", 2}, {"bus", 2}, {"quit", 6}, {"quiz", 5}};
+    Trained T = trainWordPiece(corpus, 14);
+    assert(T.merges.size() == 14 && T.history.size() == 14);
+    for (size_t k = 0; k < T.merges.size(); k++) {
+        auto sc = scoresFromScratch(T.history[k]); double mx = 0; for (auto& kv : sc) mx = std::max(mx, kv.second);
+        assert(sc.at(T.merges[k]) >= mx * (1 - 1e-12));                                          // 고른 쌍은 점수 최댓값
+        for (auto& kv : sc) if (std::fabs(kv.second - mx) <= mx * 1e-12) { assert(!(kv.first < T.merges[k]) || kv.first == T.merges[k]); }   // 동률이면 사전순으로 가장 앞선 쌍
+    }
+    long chars = 0, pieces = 0;
+    for (auto& kv : corpus) { V p = wordpiece(kv.first, T.vocab); assert(p != V{"[UNK]"}); std::string j; for (auto& x : p) j += strip(x); assert(j == kv.first); chars += (long)kv.first.size() * kv.second; pieces += (long)p.size() * kv.second; }
+    assert(pieces < chars && wordpiece("hugging", T.vocab).size() < 7);
+    assert((wordpiece("hugx", T.vocab) == V{"[UNK]"}));                                        // 코퍼스에 없던 글자 x 는 어떤 조각에도 없으므로 단어 전체가 [UNK]
+    // ④ 빈도(BPE) 기준 대 점수(WordPiece) 기준
+    std::map<std::string, int> differ = {{"quit", 10}, {"quiz", 10}, {"ever", 100}, {"very", 100}, {"here", 100}};
+    Trained D = trainWordPiece(differ, 1);
+    auto cnt = bpeCounts(D.history[0]); Pair bpeChoice; long bc = 0; for (auto& kv : cnt) if (kv.second > bc) { bc = kv.second; bpeChoice = kv.first; }     // BPE 는 빈도 최대 (동률 사전순)
+    assert(D.merges[0] != bpeChoice);
+    std::cout << "WordPiece: unaffable -> un ##aff ##able; greedy matching failed on " << greedyUnkButPossible << " words that a backtracking DP could split; trained " << T.merges.size() << " merges (" << chars << " chars -> " << pieces << " pieces); first merge " << D.merges[0].first << "+" << D.merges[0].second << " vs BPE " << bpeChoice.first << "+" << bpeChoice.second << std::endl;
     return 0;
 }
 // Time Complexity: 추론 O(L²) (L = 단어 길이), 학습 O(병합 수 · 코퍼스)
@@ -3570,102 +4770,315 @@ int main() {
 ## SentencePiece()
 ### 대표코드
 ```cpp
-#include <iostream>
+#include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <iostream>
+#include <limits>
 #include <map>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
-#include <cassert>
 
 // SentencePiece(LLaMA, T5): 공백을 일반 기호 "▁"(U+2581)로 바꿔 원문을 그대로 토큰화하므로 언어별 전처리(단어 분리)가 필요 없다.
-// Unigram 모델은 조각마다 로그 확률을 두고, 문장 전체 확률이 최대인 분할을 Viterbi DP 로 찾는다
+// Unigram 모델은 조각마다 확률을 두고, 문장 확률 = (선택한 조각들의 확률의 곱).  가장 확률이 큰 분할은 Viterbi DP 로, 상위 k 개는 k-최선 DP 로 구한다
+// 어휘에 없는 글자는 작은 확률의 <unk> 조각으로 처리하므로 어떤 문장도 분할되고, 조각을 이어 붙이면 항상 원문이다.  학습은 EM: 분할을 숨은 변수로 보고
+// 정방향·역방향 DP 로 조각의 기대 횟수를 계산해 확률을 다시 정규화한다 — 로그 우도는 반복마다 줄지 않는다
+// 검증: ① 손으로 고른 예(한국어 포함)  ② 무작위 어휘(알파벳 {a,b,c,d}, 어휘 밖 글자 e 포함)와 길이 ≤ 11 의 문자열 3 000 개를 *모든 분할 전수 열거* 와 대조: Viterbi 최적 점수, k-최선(k=6)의 점수열
+//        ③ 정방향 알고리즘의 주변 확률 = 전수 열거한 확률의 합  ④ EM 15 회 동안 코퍼스 로그 우도가 단조 비감소하고 확률 합이 1, 학습 후 Viterbi 분할의 조각 수가 글자 수보다 적음
+typedef std::map<std::string, double> Vocab;                           // 조각 -> 로그 확률
 std::vector<std::string> utf8Chars(const std::string& s) {
     std::vector<std::string> v;
     for (size_t i = 0; i < s.size();) { unsigned char c = s[i]; size_t len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; v.push_back(s.substr(i, len)); i += len; }
     return v;
 }
-std::vector<std::string> viterbi(const std::string& text, const std::map<std::string, double>& logp) {
+const double NEG = -std::numeric_limits<double>::infinity();
+double pieceScore(const std::string& piece, size_t nChars, const Vocab& lp, double unk) {          // 어휘에 있으면 로그 확률, 한 글자짜리 미등록 조각은 <unk>
+    auto it = lp.find(piece); if (it != lp.end()) return it->second; return nChars == 1 ? unk : NEG;
+}
+struct Seg { std::vector<std::string> pieces; double logp; };
+Seg viterbi(const std::string& text, const Vocab& lp, double unk = -20.0, size_t maxLen = 8) {
     auto ch = utf8Chars(text); size_t n = ch.size();
-    std::vector<double> best(n + 1, -1e18); std::vector<int> from(n + 1, -1);
-    best[0] = 0;
+    std::vector<double> best(n + 1, NEG); std::vector<int> from(n + 1, -1); best[0] = 0;
     for (size_t i = 0; i < n; i++) {
-        if (best[i] <= -1e17) continue;
+        if (best[i] == NEG) continue;
         std::string piece;
-        for (size_t j = i; j < n && j - i < 8; j++) {
-            piece += ch[j];
-            auto it = logp.find(piece);
-            if (it != logp.end() && best[i] + it->second > best[j + 1]) { best[j + 1] = best[i] + it->second; from[j + 1] = i; }
+        for (size_t j = i; j < n && j - i < maxLen; j++) {
+            piece += ch[j]; double s = pieceScore(piece, j - i + 1, lp, unk);
+            if (s != NEG && best[i] + s > best[j + 1]) { best[j + 1] = best[i] + s; from[j + 1] = (int)i; }
         }
     }
-    std::vector<std::string> out;
-    for (int j = n; j > 0 && from[j] >= 0; j = from[j]) { std::string p; for (int k = from[j]; k < j; k++) p += ch[k]; out.insert(out.begin(), p); }
+    Seg out{{}, n ? best[n] : 0.0};
+    for (int j = (int)n; j > 0; j = from[j]) { std::string p; for (int k = from[j]; k < j; k++) p += ch[k]; out.pieces.insert(out.pieces.begin(), p); }
     return out;
+}
+std::vector<Seg> kBest(const std::string& text, const Vocab& lp, size_t k, double unk = -20.0, size_t maxLen = 8) {     // 위치마다 상위 k 개 (점수, 이전 위치, 그 위치에서의 순위)
+    auto ch = utf8Chars(text); size_t n = ch.size();
+    struct Cand { double s; int from, rank; };
+    std::vector<std::vector<Cand>> L(n + 1); L[0].push_back({0.0, -1, -1});
+    for (size_t j = 1; j <= n; j++) {
+        std::vector<Cand> c;
+        for (size_t i = (j > maxLen ? j - maxLen : 0); i < j; i++) {
+            std::string piece; for (size_t t = i; t < j; t++) piece += ch[t];
+            double s = pieceScore(piece, j - i, lp, unk); if (s == NEG) continue;
+            for (size_t r = 0; r < L[i].size(); r++) c.push_back({L[i][r].s + s, (int)i, (int)r});
+        }
+        std::sort(c.begin(), c.end(), [](const Cand& a, const Cand& b) { return a.s > b.s; });
+        if (c.size() > k) c.resize(k);
+        L[j] = c;
+    }
+    std::vector<Seg> res;
+    for (size_t r = 0; r < L[n].size(); r++) {
+        Seg sg{{}, L[n][r].s}; int j = (int)n, rr = (int)r;
+        while (j > 0) { const Cand& c = L[j][rr]; std::string p; for (int t = c.from; t < j; t++) p += ch[t]; sg.pieces.insert(sg.pieces.begin(), p); rr = c.rank; j = c.from; }
+        res.push_back(sg);
+    }
+    return res;
+}
+void enumerate(const std::vector<std::string>& ch, size_t pos, std::vector<std::string>& cur, double score, const Vocab& lp, double unk, size_t maxLen, std::vector<Seg>& all) {    // 오라클: 모든 분할
+    if (pos == ch.size()) { all.push_back({cur, score}); return; }
+    std::string piece;
+    for (size_t j = pos; j < ch.size() && j - pos < maxLen; j++) {
+        piece += ch[j]; double s = pieceScore(piece, j - pos + 1, lp, unk); if (s == NEG) continue;
+        cur.push_back(piece); enumerate(ch, j + 1, cur, score + s, lp, unk, maxLen, all); cur.pop_back();
+    }
+}
+double logMarginal(const std::string& text, const std::map<std::string, double>& p, size_t maxLen, std::vector<double>* alphaOut = nullptr, std::vector<double>* betaOut = nullptr) {      // 정방향 알고리즘: Σ_분할 Π 확률
+    auto ch = utf8Chars(text); size_t n = ch.size(); std::vector<double> a(n + 1, 0.0), b(n + 1, 0.0); a[0] = 1;
+    for (size_t j = 1; j <= n; j++) { std::string piece; for (size_t i = j; i-- > 0 && j - i <= maxLen;) { piece = ch[i] + piece; auto it = p.find(piece); if (it != p.end()) a[j] += a[i] * it->second; } }
+    b[n] = 1;
+    for (size_t i = n; i-- > 0;) { std::string piece; for (size_t j = i; j < n && j - i < maxLen; j++) { piece += ch[j]; auto it = p.find(piece); if (it != p.end()) b[i] += it->second * b[j + 1]; } }
+    if (alphaOut) *alphaOut = a; if (betaOut) *betaOut = b;
+    return a[n] > 0 ? std::log(a[n]) : NEG;
+}
+std::map<std::string, double> emStep(const std::vector<std::string>& corpus, const std::map<std::string, double>& p, size_t maxLen) {     // E: 기대 횟수, M: 정규화
+    std::map<std::string, double> c;
+    for (const std::string& s : corpus) {
+        std::vector<double> a, b; logMarginal(s, p, maxLen, &a, &b); auto ch = utf8Chars(s); size_t n = ch.size(); double Z = a[n]; if (Z <= 0) continue;
+        for (size_t i = 0; i < n; i++) { std::string piece; for (size_t j = i; j < n && j - i < maxLen; j++) { piece += ch[j]; auto it = p.find(piece); if (it != p.end()) c[piece] += a[i] * it->second * b[j + 1] / Z; } }
+    }
+    double tot = 0; for (auto& kv : c) tot += kv.second;
+    std::map<std::string, double> q; for (auto& kv : c) if (kv.second > 1e-12) q[kv.first] = kv.second / tot;
+    return q;
 }
 
 int main() {
-    std::map<std::string, double> lp = {
-        {"▁hello", std::log(0.05)}, {"▁world", std::log(0.04)}, {"▁hell", std::log(0.01)}, {"o", std::log(0.03)},
+    Vocab lp = {{"▁hello", std::log(0.05)}, {"▁world", std::log(0.04)}, {"▁hell", std::log(0.01)}, {"o", std::log(0.03)},
         {"▁", std::log(0.1)}, {"h", std::log(0.02)}, {"e", std::log(0.05)}, {"l", std::log(0.04)}, {"w", std::log(0.02)},
         {"r", std::log(0.04)}, {"d", std::log(0.03)}, {"▁w", std::log(0.005)}, {"orld", std::log(0.002)}};
     using V = std::vector<std::string>;
-    assert((viterbi("▁hello▁world", lp) == V{"▁hello", "▁world"}));         // 긴 조각 하나가 짧은 조각 여러 개의 곱보다 확률이 높다
-    assert((viterbi("▁hello", lp) == V{"▁hello"}));
-    assert((viterbi("▁world", {{"▁", std::log(0.1)}, {"w", std::log(0.02)}, {"o", std::log(0.03)}, {"r", std::log(0.04)}, {"l", std::log(0.04)}, {"d", std::log(0.03)}}) == V{"▁", "w", "o", "r", "l", "d"}));   // 큰 조각이 없으면 글자 단위
-    std::cout << "SentencePiece unigram segmentation verified." << std::endl;
+    assert((viterbi("▁hello▁world", lp).pieces == V{"▁hello", "▁world"}));         // 긴 조각 하나가 짧은 조각 여러 개의 곱보다 확률이 높다
+    assert((viterbi("▁hello", lp).pieces == V{"▁hello"}));
+    Vocab chars = {{"▁", std::log(0.1)}, {"w", std::log(0.02)}, {"o", std::log(0.03)}, {"r", std::log(0.04)}, {"l", std::log(0.04)}, {"d", std::log(0.03)}};
+    assert((viterbi("▁world", chars).pieces == V{"▁", "w", "o", "r", "l", "d"}));   // 큰 조각이 없으면 글자 단위
+    Vocab ko = {{"▁안녕", std::log(0.03)}, {"▁하세요", std::log(0.02)}, {"▁", std::log(0.1)}, {"안", std::log(0.01)}, {"녕", std::log(0.01)}, {"하", std::log(0.02)}, {"세", std::log(0.01)}, {"요", std::log(0.02)}};
+    assert((viterbi("▁안녕▁하세요", ko).pieces == V{"▁안녕", "▁하세요"}));                      // 한국어도 같은 방식 (한 글자 = UTF-8 3 바이트)
+    Seg unkSeg = viterbi("▁hello🙂", lp); assert(unkSeg.pieces.size() == 2 && unkSeg.pieces[1] == "🙂" && std::fabs(unkSeg.logp - (std::log(0.05) - 20.0)) < 1e-9);       // 어휘 밖 글자는 <unk> 로 한 글자씩
+    assert(viterbi("", lp).pieces.empty() && viterbi("", lp).logp == 0.0 && kBest("", lp, 3).size() == 1);                       // 경계: 빈 문장은 빈 분할 하나
+    // ② 전수 열거와 대조
+    std::mt19937 rng(100); long checked = 0, ties = 0, multi = 0;
+    for (int it = 0; it < 3000; ++it) {
+        Vocab v; std::vector<std::string> all; const char* al = "abcd";
+        for (int len = 1; len <= 3; ++len) { std::vector<std::string> cur{""}; for (int t = 0; t < len; ++t) { std::vector<std::string> nx; for (auto& s : cur) for (int c = 0; c < 4; ++c) nx.push_back(s + al[c]); cur = nx; } for (auto& s : cur) all.push_back(s); }
+        for (auto& s : all) if (rng() % 100 < 40) v[s] = std::log((double)(1 + rng() % 100) / 1000.0);
+        std::string text; for (int t = 0, n = (int)(rng() % 12); t < n; ++t) text += "abcde"[rng() % 5];          // e 는 어휘 밖 글자
+        std::vector<Seg> every; std::vector<std::string> cur; enumerate(utf8Chars(text), 0, cur, 0.0, v, -20.0, 8, every);
+        std::sort(every.begin(), every.end(), [](const Seg& a, const Seg& b) { return a.logp > b.logp; });
+        Seg vt = viterbi(text, v); std::string j; for (auto& p : vt.pieces) j += p; assert(j == text);              // 이어 붙이면 원문
+        assert(!every.empty() && std::fabs(vt.logp - every[0].logp) < 1e-9);                                      // 최적 점수
+        double rescored = 0; for (auto& p : vt.pieces) rescored += pieceScore(p, utf8Chars(p).size(), v, -20.0); assert(std::fabs(rescored - vt.logp) < 1e-9);
+        std::vector<Seg> kb = kBest(text, v, 6);
+        assert(kb.size() == std::min<size_t>(6, every.size()));
+        std::set<std::vector<std::string>> distinct;
+        for (size_t r = 0; r < kb.size(); r++) { assert(std::fabs(kb[r].logp - every[r].logp) < 1e-9); distinct.insert(kb[r].pieces); std::string jj; for (auto& p : kb[r].pieces) jj += p; assert(jj == text); }
+        assert(distinct.size() == kb.size());
+        if (every.size() > 1 && std::fabs(every[0].logp - every[1].logp) < 1e-12) ++ties; multi += every.size() > 1; ++checked;
+    }
+    assert(checked == 3000 && multi > 1500 && ties > 5);
+    // ③ 주변 확률 = 전수 열거한 합
+    long margChecks = 0;
+    for (int it = 0; it < 500; ++it) {
+        std::map<std::string, double> p; double tot = 0; std::vector<std::string> pieces;
+        for (int len = 1; len <= 3; ++len) { std::vector<std::string> cur{""}; for (int t = 0; t < len; ++t) { std::vector<std::string> nx; for (auto& s : cur) for (char c = 'a'; c <= 'c'; c++) nx.push_back(s + c); cur = nx; } for (auto& s : cur) pieces.push_back(s); }
+        for (auto& s : pieces) if (rng() % 100 < 50 || s.size() == 1) { p[s] = 0.001 + (rng() % 100); tot += p[s]; }
+        for (auto& kv : p) kv.second /= tot;
+        std::string text; for (int t = 0, n = (int)(rng() % 11); t < n; ++t) text += (char)('a' + rng() % 3);
+        Vocab asLog; for (auto& kv : p) asLog[kv.first] = std::log(kv.second);
+        std::vector<Seg> every; std::vector<std::string> cur; enumerate(utf8Chars(text), 0, cur, 0.0, asLog, NEG, 3, every);
+        double sum = 0; for (auto& sg : every) sum += std::exp(sg.logp);
+        assert(std::fabs(std::exp(logMarginal(text, p, 3)) - sum) < 1e-12 * std::max(1.0, sum) + 1e-300); ++margChecks;
+    }
+    // ④ EM
+    std::vector<std::string> corpus = {"▁the▁cat▁sat", "▁the▁cat▁ate", "▁the▁rat▁sat", "▁that▁cat▁sat", "▁the▁hat", "▁the▁cat▁the▁rat", "▁that▁is▁that"};
+    std::map<std::string, double> p; std::set<std::string> cand;
+    for (auto& s : corpus) { auto ch = utf8Chars(s); for (size_t i = 0; i < ch.size(); i++) { std::string piece; for (size_t j = i; j < ch.size() && j - i < 5; j++) { piece += ch[j]; cand.insert(piece); } } }
+    for (auto& s : cand) p[s] = 1.0 / (double)cand.size();
+    auto loglik = [&](const std::map<std::string, double>& q) { double t = 0; for (auto& s : corpus) t += logMarginal(s, q, 5); return t; };
+    double prev = loglik(p), first = prev; long increases = 0;
+    for (int iter = 0; iter < 15; ++iter) {
+        p = emStep(corpus, p, 5); double cur = loglik(p), sum = 0; for (auto& kv : p) sum += kv.second;
+        assert(cur >= prev - 1e-9 && std::fabs(sum - 1.0) < 1e-9); increases += cur > prev + 1e-9; prev = cur;           // EM: 로그 우도 단조 비감소
+    }
+    assert(increases >= 10 && prev > first + 10);
+    Vocab trainedLog; for (auto& kv : p) trainedLog[kv.first] = std::log(kv.second);
+    long chs = 0, pcs = 0; for (auto& s : corpus) { Seg sg = viterbi(s, trainedLog, -20.0, 5); std::string j; for (auto& x : sg.pieces) j += x; assert(j == s); chs += (long)utf8Chars(s).size(); pcs += (long)sg.pieces.size(); }
+    assert(pcs < chs);
+    std::cout << "SentencePiece: " << checked << " random strings matched exhaustive enumeration (" << multi << " with several segmentations); forward-algorithm marginals matched on " << margChecks << " strings; EM raised the corpus log-likelihood from " << first << " to " << prev << " and tokenized " << chs << " chars into " << pcs << " pieces" << std::endl;
     return 0;
 }
-// Time Complexity: O(n · 최대 조각 길이)
+// Time Complexity: Viterbi O(n · 최대 조각 길이), k-최선 O(n · L · k log k), EM 한 번은 O(코퍼스 · L)
 // Space Complexity: O(n)
 ```
 ## TokenizeLLM()
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <climits>
+#include <cstring>
 #include <iostream>
 #include <map>
+#include <random>
 #include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
-// LLM 에 프롬프트가 들어가는 경로: 텍스트 -> (사전 토큰화: 공백 앞붙은 단어) -> BPE 병합 -> 토큰 -> 정수 ID -> [BOS, ..., EOS]
-// GPT-2 계열은 공백을 "Ġ" 로 표시해 단어 앞에 붙인다.  병합 순서(순위)가 곧 우선순위
+// LLM 에 프롬프트가 들어가는 경로: 텍스트 -> (사전 토큰화) -> 바이트 BPE 병합 -> 토큰 -> 정수 ID -> [BOS, ..., EOS]
+// GPT-2 계열은 모든 바이트를 보이는 유니코드 글자로 바꿔 BPE 를 돌린다 — 그래서 어떤 바이트열도 <unk> 없이 표현된다.  표의 규칙: 눈에 보이는 바이트(33~126, 161~172, 174~255)는 자기 자신,
+// 나머지 68 바이트는 256 + (순번) 번 코드 포인트로 보낸다.  공백(32)은 U+0120 "Ġ", 줄바꿈(10)은 U+010A "Ċ".  병합 순서(순위)가 곧 우선순위
+// 사전 토큰화(GPT-2 정규식의 ASCII 판): 축약형('s 't 're 've 'm 'll 'd) | [공백]글자들 | [공백]숫자들 | [공백]기호들 | 뒤에 비공백이 오면 마지막 하나를 남긴 공백 덩어리 | 공백 덩어리 (바이트 ≥ 0x80 은 글자로 취급)
+// 검증: ① 바이트 표(전단사, 알려진 값)와 사전 토큰화의 파이썬 정규식 결과 8 개  ② 직접 만든 병합으로 "hello world" -> [BOS, hello, Ġworld, EOS]  ③ 학습한 병합으로 *임의 바이트열* 1 500 개(잘못된 UTF-8, NUL 포함)가
+//        왕복 복원되고, 사전 토큰화 조각은 이어 붙이면 원문이며 모양이 규칙대로이고, 토큰 수 ≤ 바이트 수, 병합이 조각 경계를 넘지 않음, 순서대로 적용한 병합 = 순위 우선 병합  ④ 공백 유무로 다른 토큰, 조각 경계 때문에 encode(a)+encode(b) ≠ encode(a+b)
 typedef std::vector<std::string> Seq;
-const std::string G = "Ġ";                                           // U+0120, 공백 대신 쓰는 가시 문자
-Seq preTokenize(const std::string& text) {
-    Seq words; std::string cur;
-    for (size_t i = 0; i < text.size(); i++) {
-        if (text[i] == ' ') { if (!cur.empty()) words.push_back(cur); cur = G; }       // 공백은 다음 단어의 접두로
-        else cur += text[i];
-    }
-    if (!cur.empty()) words.push_back(cur);
-    return words;
+typedef std::pair<std::string, std::string> Pair;
+std::vector<unsigned> byteToCp() {
+    std::vector<unsigned> t(256); std::vector<bool> keep(256, false);
+    for (int b = 33; b <= 126; b++) keep[b] = true; for (int b = 161; b <= 172; b++) keep[b] = true; for (int b = 174; b <= 255; b++) keep[b] = true;
+    unsigned n = 0; for (int b = 0; b < 256; b++) t[b] = keep[b] ? (unsigned)b : 256 + n++;
+    return t;
 }
-Seq bpe(const std::string& word, const std::vector<std::pair<std::string, std::string>>& merges) {
-    Seq s; for (size_t i = 0; i < word.size();) { size_t len = (unsigned char)word[i] >= 0xC0 ? 2 : 1; s.push_back(word.substr(i, len)); i += len; }
-    for (auto& m : merges) {
-        Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == m.first && s[i + 1] == m.second) { t.push_back(m.first + m.second); i++; } else t.push_back(s[i]); }
+std::string cpToUtf8(unsigned cp) { std::string s; if (cp < 0x80) s += (char)cp; else { s += (char)(0xC0 | (cp >> 6)); s += (char)(0x80 | (cp & 0x3F)); } return s; }       // 표의 코드 포인트는 모두 < 0x800
+const std::vector<unsigned> CP = byteToCp();
+std::string byteTok(unsigned char b) { return cpToUtf8(CP[b]); }
+std::string toMapped(const std::string& bytes) { std::string s; for (unsigned char b : bytes) s += byteTok(b); return s; }
+Seq mappedChars(const std::string& mapped) { Seq v; for (size_t i = 0; i < mapped.size();) { size_t len = (unsigned char)mapped[i] >= 0xC0 ? 2 : 1; v.push_back(mapped.substr(i, len)); i += len; }  return v; }
+enum Cls { LETTER, DIGIT, SPACE, PUNCT };
+Cls cls(unsigned char c) {
+    if (c >= 0x80 || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return LETTER;
+    if (c >= '0' && c <= '9') return DIGIT;
+    if (c == ' ' || (c >= 9 && c <= 13)) return SPACE;
+    return PUNCT;
+}
+std::vector<std::string> preTokenize(const std::string& s) {
+    std::vector<std::string> out; size_t i = 0, n = s.size();
+    while (i < n) {
+        bool done = false;
+        if (s[i] == '\'') for (const char* c : {"s", "t", "re", "ve", "m", "ll", "d"}) { size_t L = std::strlen(c); if (s.compare(i + 1, L, c) == 0) { out.push_back(s.substr(i, 1 + L)); i += 1 + L; done = true; break; } }
+        if (done) continue;
+        size_t j = i + (s[i] == ' ' && i + 1 < n ? 1 : 0);                                                          // [공백] 접두
+        Cls c = cls(s[j]);
+        if (c != SPACE) { size_t k = j; while (k < n && cls(s[k]) == c) k++; out.push_back(s.substr(i, k - i)); i = k; continue; }
+        size_t k = i; while (k < n && cls(s[k]) == SPACE) k++;                                                      // 공백 덩어리
+        if (k < n && k - i >= 2) k--;                                                                              // 뒤에 비공백이 오면 마지막 하나는 다음 조각에 남긴다
+        else if (k < n) k = i + 1;
+        out.push_back(s.substr(i, k - i)); i = k;
+    }
+    return out;
+}
+Seq bpeRank(const std::string& word, const std::map<Pair, int>& rank) {                // 바이트 -> 매핑된 글자 -> 순위 낮은 쌍부터 합치기
+    Seq s = mappedChars(toMapped(word));
+    for (;;) {
+        int best = INT_MAX; Pair bp;
+        for (size_t i = 0; i + 1 < s.size(); i++) { auto it = rank.find({s[i], s[i + 1]}); if (it != rank.end() && it->second < best) { best = it->second; bp = it->first; } }
+        if (best == INT_MAX) return s;
+        Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == bp.first && s[i + 1] == bp.second) { t.push_back(bp.first + bp.second); i++; } else t.push_back(s[i]); }
         s.swap(t);
     }
+}
+Seq bpeSequential(const std::string& word, const std::vector<Pair>& merges) {
+    Seq s = mappedChars(toMapped(word));
+    for (auto& m : merges) { Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == m.first && s[i + 1] == m.second) { t.push_back(m.first + m.second); i++; } else t.push_back(s[i]); } s.swap(t); }
     return s;
 }
+std::vector<Pair> trainMerges(const std::string& corpus, int numMerges) {
+    std::map<std::string, long> freq; for (auto& w : preTokenize(corpus)) freq[w]++;
+    std::vector<std::pair<Seq, long>> words; for (auto& kv : freq) words.push_back({mappedChars(toMapped(kv.first)), kv.second});
+    std::vector<Pair> merges;
+    for (int it = 0; it < numMerges; it++) {
+        std::map<Pair, long> cnt; for (auto& w : words) for (size_t i = 0; i + 1 < w.first.size(); i++) cnt[{w.first[i], w.first[i + 1]}] += w.second;
+        Pair best; long bc = 0; for (auto& kv : cnt) if (kv.second > bc) { bc = kv.second; best = kv.first; }
+        if (bc < 2) break; merges.push_back(best);
+        for (auto& w : words) { Seq t; for (size_t i = 0; i < w.first.size(); i++) { if (i + 1 < w.first.size() && w.first[i] == best.first && w.first[i + 1] == best.second) { t.push_back(best.first + best.second); i++; } else t.push_back(w.first[i]); } w.first.swap(t); }
+    }
+    return merges;
+}
+struct Tokenizer {
+    std::vector<Pair> merges; std::map<Pair, int> rank; std::vector<std::string> vocab; std::map<std::string, int> id; int bos, eos;
+    explicit Tokenizer(const std::vector<Pair>& m) : merges(m) {
+        for (int b = 0; b < 256; b++) vocab.push_back(byteTok((unsigned char)b));                                   // 0..255: 바이트 토큰
+        for (size_t i = 0; i < merges.size(); i++) { rank.emplace(merges[i], (int)i); vocab.push_back(merges[i].first + merges[i].second); }
+        bos = (int)vocab.size(); vocab.push_back("<bos>"); eos = (int)vocab.size(); vocab.push_back("<eos>");
+        for (size_t i = 0; i < vocab.size(); i++) id.emplace(vocab[i], (int)i);                                    // 같은 문자열이 두 병합에서 나오면 앞 ID 를 쓴다
+    }
+    std::vector<int> encode(const std::string& text, bool special = true) const {
+        std::vector<int> ids; if (special) ids.push_back(bos);
+        for (auto& w : preTokenize(text)) for (auto& t : bpeRank(w, rank)) ids.push_back(id.at(t));
+        if (special) ids.push_back(eos); return ids;
+    }
+    std::string decode(const std::vector<int>& ids) const {
+        std::map<std::string, int> back; for (int b = 0; b < 256; b++) back[byteTok((unsigned char)b)] = b;
+        std::string out;
+        for (int x : ids) { if (x == bos || x == eos) continue; for (auto& ch : mappedChars(vocab[x])) out += (char)back.at(ch); }
+        return out;
+    }
+};
 
 int main() {
-    std::vector<std::pair<std::string, std::string>> merges = {{"h", "e"}, {"he", "l"}, {"hel", "l"}, {"hell", "o"}, {G, "hello"}, {"w", "o"}, {"wo", "r"}, {"wor", "l"}, {"worl", "d"}, {G, "world"}};
-    std::vector<std::string> vocabList = {"<bos>", "<eos>", "h", "e", "l", "o", "w", "r", "d", ",", "!", G};
-    for (auto& m : merges) vocabList.push_back(m.first + m.second);
-    std::map<std::string, int> id; for (size_t i = 0; i < vocabList.size(); i++) id[vocabList[i]] = i;
-
-    auto encode = [&](const std::string& text) {
-        std::vector<int> ids = {id["<bos>"]};
-        for (auto& w : preTokenize(text)) for (auto& t : bpe(w, merges)) ids.push_back(id.at(t));
-        ids.push_back(id["<eos>"]);
-        return ids;
-    };
-    auto ids = encode("hello world");
-    assert((ids == std::vector<int>{id["<bos>"], id["hello"], id[G + "world"], id["<eos>"]}));
+    // ① 바이트 표
+    assert(CP[32] == 0x120 && CP[10] == 0x10A && CP['A'] == 'A' && CP[0] == 0x100 && CP[127] == 0x121 && CP[160] == 0x142 && CP[173] == 0x143 && CP[255] == 255);
+    { std::map<unsigned, int> seen; for (int b = 0; b < 256; b++) { assert(seen.emplace(CP[b], b).second); assert(CP[b] < 0x144); } assert(seen.size() == 256 && byteTok(32) == "Ġ" && byteTok(10) == "Ċ"); }
+    using V = std::vector<std::string>;
+    assert((preTokenize("Hello world!  Don't 123") == V{"Hello", " world", "!", " ", " Don", "'t", " 123"}));           // 파이썬 정규식의 결과
+    assert((preTokenize("  leading") == V{" ", " leading"}) && (preTokenize("trail  ") == V{"trail", "  "}) && (preTokenize("a\n\nb") == V{"a", "\n", "\n", "b"}));
+    assert((preTokenize("x=1+2;") == V{"x", "=", "1", "+", "2", ";"}) && (preTokenize("한글 😀 ok") == V{"한글", " 😀", " ok"}) && (preTokenize("it's we've") == V{"it", "'s", " we", "'ve"}));
+    assert((preTokenize("   ") == V{"   "}) && preTokenize("").empty());
+    // ② 직접 만든 병합: "hello world" -> [BOS, hello, Ġworld, EOS]
+    std::string G = byteTok(' ');
+    std::vector<Pair> hand = {{"h", "e"}, {"he", "l"}, {"hel", "l"}, {"hell", "o"}, {G, "w"}, {G + "w", "o"}, {G + "wo", "r"}, {G + "wor", "l"}, {G + "worl", "d"}};
+    Tokenizer th(hand); auto ids = th.encode("hello world");
+    assert((ids == std::vector<int>{th.bos, th.id.at("hello"), th.id.at(G + "world"), th.eos}));
     assert(ids.size() == 4);                                           // 11글자가 토큰 2개(+특수 토큰 2개)로 줄어든다
-    auto ids2 = encode("hello hello");
-    assert(ids2[1] == id["hello"] && ids2[2] == id[G + "hello"]);      // 같은 단어라도 앞에 공백이 있으면 다른 토큰
-    std::cout << "TokenizeLLM: 'hello world' ->"; for (int i : ids) std::cout << " " << i; std::cout << std::endl;
+    auto ids2 = th.encode("hello hello");
+    assert(ids2[1] == th.id.at("hello") && ids2[2] != th.id.at("hello") && ids2[2] == th.id.at(G) && ids2[3] == th.id.at("hello"));   // 같은 단어라도 앞에 공백이 있으면 다른 토큰 (여기서는 Ġ + hello)
+    assert(th.decode(ids) == "hello world" && th.decode(th.encode("")) == "" && th.encode("", false).empty());
+    assert(th.encode("hell", false).size() == 1 && th.encode("o", false).size() == 1 && th.encode("hello", false).size() == 1 && th.encode("hell", false)[0] != th.encode("hello", false)[0]);   // ④ 조각 경계: encode(a)+encode(b) ≠ encode(a+b)
+
+    // ③ 학습한 병합과 임의 바이트열
+    std::string corpus; for (int i = 0; i < 30; ++i) corpus += "The quick brown fox jumps over the lazy dog. It's 2024 and we've tested 123 cases!\n한글 토크나이저 테스트입니다. 😀 hello world, hello there.\n";
+    std::vector<Pair> merges = trainMerges(corpus, 100); Tokenizer tk(merges);
+    assert(merges.size() == 100 && tk.vocab.size() == 256 + 100 + 2);
+    std::mt19937 rng(2024); long bytesTotal = 0, tokensTotal = 0, crossings = 0;
+    std::vector<std::string> pieces = {"hello", " world", "한글", "😀", " ", "\n", "'s", "123", "!", "the", " the", "\xFF\xFE", std::string("\0", 1), "\xC3", "\x80", " fox"};
+    for (int it = 0; it < 1500; ++it) {
+        std::string s; for (int k = 0, n = (int)(rng() % 12); k < n; ++k) { if (rng() % 3 == 0) { int len = 1 + (int)(rng() % 3); for (int q = 0; q < len; ++q) s += (char)rng(); } else s += pieces[rng() % pieces.size()]; }
+        auto pre = preTokenize(s); std::string cat; for (auto& p : pre) { cat += p; assert(!p.empty()); } assert(cat == s);                                  // 사전 토큰화는 원문의 분할
+        for (auto& p : pre) {                                                                                                  // 조각의 모양
+            bool spaces = true, contraction = p[0] == '\'' && p.size() >= 2 && (p == "'s" || p == "'t" || p == "'re" || p == "'ve" || p == "'m" || p == "'ll" || p == "'d");
+            for (unsigned char c : p) spaces = spaces && cls(c) == SPACE;
+            std::string body = p[0] == ' ' && p.size() > 1 && cls(p[1]) != SPACE ? p.substr(1) : p; bool uniform = true; for (unsigned char c : body) uniform = uniform && cls(c) == cls(body[0]);
+            assert(spaces || contraction || uniform);
+        }
+        auto ids3 = tk.encode(s); assert(tk.decode(ids3) == s);                                                               // 임의 바이트열 왕복
+        assert(ids3.front() == tk.bos && ids3.back() == tk.eos && ids3.size() - 2 <= s.size());                                // 토큰은 바이트마다 많아야 하나
+        size_t sum = 0; for (auto& p : pre) sum += tk.encode(p, false).size(); assert(sum == ids3.size() - 2);               // 병합이 조각 경계를 넘지 않는다
+        for (auto& p : pre) { Seq a = bpeSequential(p, merges), b = bpeRank(p, tk.rank); assert(a == b); }
+        bytesTotal += (long)s.size(); tokensTotal += (long)ids3.size() - 2; crossings += pre.size();
+        for (int x : ids3) assert(x >= 0 && x < (int)tk.vocab.size());
+    }
+    std::string sample = "The quick brown fox jumps over the lazy dog. It's 2024!\n"; auto sid = tk.encode(sample, false);
+    assert(tk.decode(sid) == sample && sid.size() * 10 < sample.size() * 6);                                                   // 학습한 문장은 바이트 수의 60 % 미만의 토큰으로
+    std::cout << "TokenizeLLM: 'hello world' ->"; for (int i : ids) std::cout << " " << i; std::cout << " ; 1500 arbitrary byte strings round-tripped (" << bytesTotal << " bytes -> " << tokensTotal << " tokens, " << crossings << " pre-tokens), trained text compressed to " << sid.size() << " tokens for " << sample.size() << " bytes" << std::endl;
     return 0;
 }
 // Time Complexity: O(병합 수 · 단어 길이) (실제 구현은 우선순위 큐로 O(n log n))
@@ -3714,51 +5127,144 @@ int main() {
 ## Detokenize()
 ### 대표코드
 ```cpp
+#include <cassert>
 #include <iostream>
+#include <map>
+#include <random>
 #include <string>
 #include <vector>
-#include <cassert>
 
-// 역토큰화(detokenize): 생성된 토큰 ID -> 문자열.  (1) 토큰을 이어 붙이고 (2) "Ġ" 를 공백으로 바꾸고 (3) 특수 토큰은 제거한다.
+// 역토큰화(detokenize): 생성된 토큰 ID -> 문자열.  (1) 토큰을 이어 붙이고 (2) 바이트 BPE 의 글자를 원래 바이트로 되돌리고(Ġ -> 공백) (3) 특수 토큰은 제거한다.
 // 바이트 수준 BPE 에서는 한 글자(UTF-8 여러 바이트)가 토큰 여러 개에 걸쳐 나올 수 있으므로,
-// 스트리밍 출력은 "아직 완성되지 않은 바이트"를 버퍼에 두었다가 코드 포인트가 완성될 때만 내보내야 한다
-const std::string G = "Ġ";
-std::string detokenize(const std::vector<std::string>& tokens) {
+// 스트리밍 출력은 "아직 완성되지 않은 바이트"를 버퍼에 두었다가 코드 포인트가 완성될 때만 내보내야 한다.  모델이 잘못된 바이트열을 내도 안전하도록 규칙을 둔다:
+// 유니코드 권장대로 "잘못된 시퀀스의 가장 긴 부분(maximal subpart)" 하나를 U+FFFD 로 바꾸고 문제의 바이트부터 다시 읽는다.  끝에서 미완성이면 flush() 가 U+FFFD 하나를 낸다
+// 검증: ① 손으로 고른 예와 파이썬 bytes.decode('utf-8', 'replace') 의 결과 12 개  ② 짧은 바이트열 111 110 개(경계 바이트 10 종, 길이 ≤ 5)를 *모든 청크 분할 방식* 으로 스트리밍한 결과가
+//        한 번에 디코딩한 기준 구현(앞으로 훑어 보는 방식)과 같고, 출력은 항상 올바른 UTF-8 이며, 올바른 입력은 그대로 나온다  ③ 무작위 긴 입력 2 000 개와 토큰 단위 스트리밍
+std::vector<unsigned> byteToCp() {
+    std::vector<unsigned> t(256); std::vector<bool> keep(256, false);
+    for (int b = 33; b <= 126; b++) keep[b] = true; for (int b = 161; b <= 172; b++) keep[b] = true; for (int b = 174; b <= 255; b++) keep[b] = true;
+    unsigned n = 0; for (int b = 0; b < 256; b++) t[b] = keep[b] ? (unsigned)b : 256 + n++;
+    return t;
+}
+const std::vector<unsigned> CP = byteToCp();
+std::string cpToUtf8(unsigned cp) { std::string s; if (cp < 0x80) s += (char)cp; else { s += (char)(0xC0 | (cp >> 6)); s += (char)(0x80 | (cp & 0x3F)); } return s; }
+const std::string G = cpToUtf8(CP[32]);                                // "Ġ"
+const std::string FFFD = "\xEF\xBF\xBD";
+
+std::string detokenizeBytes(const std::vector<std::string>& tokens) {  // GPT-2 방식: 매핑된 글자 -> 바이트 (Ġ -> 공백), 특수 토큰 제외
+    std::map<unsigned, int> back; for (int b = 0; b < 256; b++) back[CP[b]] = b;
     std::string out;
     for (auto& t : tokens) {
         if (t == "<bos>" || t == "<eos>") continue;
-        std::string s = t;
-        for (size_t p = s.find(G); p != std::string::npos; p = s.find(G, p + 1)) s.replace(p, G.size(), " ");
-        out += s;
+        for (size_t i = 0; i < t.size();) {
+            unsigned char c = t[i]; unsigned cp = c < 0x80 ? c : ((c & 0x1F) << 6) | (t[i + 1] & 0x3F); i += c < 0x80 ? 1 : 2;
+            out += (char)back.at(cp);
+        }
     }
-    if (!out.empty() && out[0] == ' ') out.erase(0, 1);                 // 맨 앞 공백 제거
     return out;
 }
-class StreamDecoder {
-    std::string pending;
-    static size_t need(unsigned char c) { return c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; }
-public:
-    std::string feed(const std::string& bytes) {
-        pending += bytes; std::string out;
-        while (!pending.empty()) {
-            size_t n = need(pending[0]);
-            if (pending.size() < n) break;                               // 아직 덜 도착한 글자
-            out += pending.substr(0, n); pending.erase(0, n);
-        }
-        return out;
+std::string detokenizeSP(const std::vector<std::string>& tokens) {     // SentencePiece 방식: ▁ -> 공백, 맨 앞 공백 하나 제거
+    const std::string U = "\xE2\x96\x81"; std::string out;
+    for (auto& t : tokens) { if (t == "<s>" || t == "</s>") continue; std::string s = t; for (size_t p = s.find(U); p != std::string::npos; p = s.find(U, p + 1)) s.replace(p, U.size(), " "); out += s; }
+    if (!out.empty() && out[0] == ' ') out.erase(0, 1);
+    return out;
+}
+class StreamDecoder {                                                   // 바이트 단위 상태 기계
+    std::string seq; int remaining = 0; unsigned char lo = 0x80, hi = 0xBF;
+    void start(unsigned char b, int rem, unsigned char l, unsigned char h, std::string& out) { (void)out; seq.assign(1, (char)b); remaining = rem; lo = l; hi = h; }
+    void one(unsigned char b, std::string& out) {
+        if (remaining == 0) {
+            if (b < 0x80) out += (char)b;
+            else if (b >= 0xC2 && b <= 0xDF) start(b, 1, 0x80, 0xBF, out);
+            else if (b == 0xE0) start(b, 2, 0xA0, 0xBF, out);
+            else if (b == 0xED) start(b, 2, 0x80, 0x9F, out);
+            else if (b >= 0xE1 && b <= 0xEF) start(b, 2, 0x80, 0xBF, out);
+            else if (b == 0xF0) start(b, 3, 0x90, 0xBF, out);
+            else if (b == 0xF4) start(b, 3, 0x80, 0x8F, out);
+            else if (b >= 0xF1 && b <= 0xF3) start(b, 3, 0x80, 0xBF, out);
+            else out += FFFD;                                           // 80..C1, F5..FF 는 어떤 문자의 시작도 될 수 없다
+        } else if (b >= lo && b <= hi) {
+            seq += (char)b; if (--remaining == 0) { out += seq; seq.clear(); } lo = 0x80; hi = 0xBF;
+        } else { out += FFFD; seq.clear(); remaining = 0; one(b, out); }  // 끊긴 시퀀스는 U+FFFD 하나, 이 바이트는 처음부터 다시
     }
-    bool hasPending() const { return !pending.empty(); }
+public:
+    std::string feed(const std::string& bytes) { std::string out; for (unsigned char b : bytes) one(b, out); return out; }
+    std::string flush() { std::string out; if (remaining > 0) out += FFFD; seq.clear(); remaining = 0; lo = 0x80; hi = 0xBF; return out; }
+    bool hasPending() const { return remaining > 0; }
 };
+std::string decodeAll(const std::string& s) {                           // 기준 구현: 한 번에, 앞으로 훑어 보며 "가능한 가장 긴 접두" 길이를 센다
+    std::string out; size_t i = 0, n = s.size();
+    while (i < n) {
+        unsigned char b = s[i]; int need; unsigned char lo1 = 0x80, hi1 = 0xBF;
+        if (b < 0x80) { out += s[i++]; continue; }
+        else if (b >= 0xC2 && b <= 0xDF) need = 2;
+        else if (b >= 0xE0 && b <= 0xEF) { need = 3; if (b == 0xE0) lo1 = 0xA0; if (b == 0xED) hi1 = 0x9F; }
+        else if (b >= 0xF0 && b <= 0xF4) { need = 4; if (b == 0xF0) lo1 = 0x90; if (b == 0xF4) hi1 = 0x8F; }
+        else { out += FFFD; i++; continue; }
+        int k = 1;
+        while (k < need && i + k < n) { unsigned char c = s[i + k]; unsigned char l = k == 1 ? lo1 : 0x80, h = k == 1 ? hi1 : 0xBF; if (c < l || c > h) break; k++; }
+        if (k == need) out += s.substr(i, need); else out += FFFD;
+        i += k;
+    }
+    return out;
+}
+bool validUtf8(const std::string& s) {                                   // 출력 검증용 (유니코드 표 3-7)
+    size_t i = 0, n = s.size();
+    auto in = [&](size_t k, int lo, int hi) { return k < n && (unsigned char)s[k] >= lo && (unsigned char)s[k] <= hi; };
+    while (i < n) {
+        unsigned char c = s[i];
+        if (c < 0x80) i++;
+        else if (c >= 0xC2 && c <= 0xDF && in(i + 1, 0x80, 0xBF)) i += 2;
+        else if ((c == 0xE0 && in(i + 1, 0xA0, 0xBF) && in(i + 2, 0x80, 0xBF)) || (((c >= 0xE1 && c <= 0xEC) || c == 0xEE || c == 0xEF) && in(i + 1, 0x80, 0xBF) && in(i + 2, 0x80, 0xBF)) || (c == 0xED && in(i + 1, 0x80, 0x9F) && in(i + 2, 0x80, 0xBF))) i += 3;
+        else if ((c == 0xF0 && in(i + 1, 0x90, 0xBF) && in(i + 2, 0x80, 0xBF) && in(i + 3, 0x80, 0xBF)) || (c >= 0xF1 && c <= 0xF3 && in(i + 1, 0x80, 0xBF) && in(i + 2, 0x80, 0xBF) && in(i + 3, 0x80, 0xBF)) || (c == 0xF4 && in(i + 1, 0x80, 0x8F) && in(i + 2, 0x80, 0xBF) && in(i + 3, 0x80, 0xBF))) i += 4;
+        else return false;
+    }
+    return true;
+}
+std::string streamed(const std::string& s, const std::vector<size_t>& cuts) {   // cuts 에서 나눈 조각들을 차례로 feed 하고 마지막에 flush
+    StreamDecoder d; std::string out; size_t prev = 0;
+    for (size_t c : cuts) { out += d.feed(s.substr(prev, c - prev)); prev = c; }
+    out += d.feed(s.substr(prev)); out += d.flush(); return out;
+}
 
 int main() {
-    assert(detokenize({"<bos>", "hello", G + "world", "!", "<eos>"}) == "hello world!");
-    assert(detokenize({G + "a", G + "b"}) == "a b");
+    assert(detokenizeBytes({"<bos>", "hello", G + "world", "!", "<eos>"}) == "hello world!");
+    assert(detokenizeBytes({G + "a", G + "b"}) == " a b" && detokenizeBytes({cpToUtf8(CP[10]), "x"}) == "\nx");        // GPT-2 방식은 맨 앞 공백을 지우지 않는다
+    assert(detokenizeSP({"<s>", "\xE2\x96\x81Hello", "\xE2\x96\x81world", "</s>"}) == "Hello world" && detokenizeSP({"a", "b"}) == "ab" && detokenizeSP({}).empty());
     StreamDecoder d;                                                     // "한" = ED 95 9C 이 토큰 셋으로 쪼개져 도착
     assert(d.feed("\xED") == "" && d.hasPending());
     assert(d.feed("\x95") == "" && d.hasPending());
     assert(d.feed("\x9C") == "한" && !d.hasPending());
-    assert(d.feed("ab") == "ab");
-    std::cout << "Detokenize verified." << std::endl;
+    assert(d.feed("ab") == "ab" && d.flush().empty());
+    // ① 파이썬 bytes.decode('utf-8', 'replace') 의 결과
+    struct Gold { std::string in, out; };
+    std::vector<Gold> gold = {
+        {"\xE2\x82" "A", FFFD + "A"}, {"\xFF\xFE", FFFD + FFFD}, {"\xF0\x9F\x98", FFFD}, {"\xC0\x80", FFFD + FFFD}, {"\xED\xA0\x80", FFFD + FFFD + FFFD}, {"\xF4\x90\x80\x80", FFFD + FFFD + FFFD + FFFD},
+        {"A\x80" "B", "A" + FFFD + "B"}, {"\xE2\x82\xAC\xE2", "\xE2\x82\xAC" + FFFD}, {"\xF0\x80\x80\x80", FFFD + FFFD + FFFD + FFFD}, {"\xE0\x80\x80", FFFD + FFFD + FFFD}, {"ok\xC3", "ok" + FFFD}, {"\xC3\xA9\xC3", "\xC3\xA9" + FFFD}};
+    for (auto& g : gold) { assert(decodeAll(g.in) == g.out && streamed(g.in, {}) == g.out); for (size_t c = 1; c < g.in.size(); c++) assert(streamed(g.in, {c}) == g.out); }
+    // ② 짧은 바이트열 전수 × 모든 청크 분할
+    const unsigned char alpha[] = {0x41, 0x80, 0xBF, 0xC2, 0xE0, 0xED, 0xF0, 0xF4, 0xA0, 0x9F};
+    std::vector<std::string> all{std::string()};
+    for (size_t i = 0; i < all.size(); ++i) if (all[i].size() < 5) for (unsigned char a : alpha) all.push_back(all[i] + (char)a);
+    assert(all.size() == 111111);
+    long valid = 0, withRepl = 0, splits = 0;
+    for (const std::string& s : all) {
+        std::string ref = decodeAll(s); assert(validUtf8(ref));                                                       // 출력은 항상 올바른 UTF-8
+        if (validUtf8(s)) { assert(ref == s); ++valid; } else { assert(ref.find(FFFD) != std::string::npos); ++withRepl; }          // 올바른 입력은 그대로, 아니면 대체 문자가 있다
+        int n = (int)s.size();
+        for (int mask = 0; mask < (1 << (n > 0 ? n - 1 : 0)); ++mask) { std::vector<size_t> cuts; for (int b = 0; b + 1 < n; ++b) if (mask >> b & 1) cuts.push_back((size_t)b + 1); assert(streamed(s, cuts) == ref); ++splits; }     // 청크 분할과 무관
+    }
+    assert(valid > 100 && withRepl > 100000 && splits > 1000000);
+    // ③ 무작위 긴 입력과 토큰 단위 스트리밍
+    std::mt19937 rng(321); std::vector<std::string> bits = {"hello", " 한글", "😀", "\xFF", "\xC3", "\x80", "é", "\n", "\xF0\x9F", "\xE2\x82\xAC"};
+    for (int it = 0; it < 2000; ++it) {
+        std::string s; for (int k = 0, n = (int)(rng() % 15); k < n; ++k) s += bits[rng() % bits.size()];
+        std::string ref = decodeAll(s); assert(validUtf8(ref));
+        std::vector<size_t> cuts; for (size_t p = 1; p < s.size(); p++) if (rng() % 4 == 0) cuts.push_back(p);
+        assert(streamed(s, cuts) == ref);
+        if (validUtf8(s)) { StreamDecoder sd; std::string acc; size_t prev = 0; for (size_t c : cuts) { std::string part = sd.feed(s.substr(prev, c - prev)); assert(validUtf8(part)); acc += part; prev = c; } acc += sd.feed(s.substr(prev)); assert(!sd.hasPending() && acc == s); }     // 완성된 글자만 나온다
+    }
+    std::cout << "Detokenize: " << all.size() << " short byte strings x every chunking (" << splits << " streams) matched the one-shot decoder; " << valid << " valid inputs passed through unchanged, " << withRepl << " invalid ones were repaired with U+FFFD and the output was always valid UTF-8" << std::endl;
     return 0;
 }
 // Time Complexity: O(총 길이)
@@ -3767,50 +5273,104 @@ int main() {
 ## LLM 토크나이저는 왜 필요한가?
 ### 대표코드
 ```cpp
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <iostream>
 #include <map>
+#include <random>
 #include <set>
-#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
-#include <cassert>
 
 // 모델은 정수만 다룬다.  텍스트를 어떤 단위로 쪼갤지는 어휘 크기와 시퀀스 길이의 교환이다:
 //   글자 단위: 어휘 작음, 시퀀스 매우 김   /   단어 단위: 시퀀스 짧음, 어휘 거대 + 처음 보는 단어(OOV)를 표현할 수 없음
 //   서브워드(BPE): 둘의 중간, OOV 없음 (최악에도 글자 단위로 분해)
+// 실험: 24 개 음절로 만든 1 500 단어의 사전(지프 분포로 등장)에서 학습 문장 30 000 단어를 뽑아 BPE 를 학습하고, 새로 뽑은 8 000 단어 + 사전에 없던 합성어 300 개로 시험한다
+// 검증: ① 어휘 크기 V 가 커질수록 BPE 의 총 토큰 수가 줄어든다(비증가, 처음에는 엄격히 감소)  ② BPE 는 어떤 시험 단어도 OOV 없이 표현하고 이어 붙이면 원문  ③ 단어 단위는 어휘 V 개로 OOV 가 생기며 V 가 커질수록 줄어듦
+//        ④ 같은 어휘 크기에서 BPE 의 토큰 수는 글자 단위보다 훨씬 짧고, 단어 단위(OOV 를 한 토큰으로 칠 때)보다 길지만 OOV 가 없다.  정수 ID 학습기와 단순 학습기의 병합 목록이 일치
 typedef std::vector<std::string> Seq;
 typedef std::pair<std::string, std::string> Pair;
-std::vector<Pair> trainBPE(const std::vector<std::string>& words, int merges) {
-    std::vector<Seq> seqs; for (auto& w : words) { Seq s; for (char c : w) s.push_back(std::string(1, c)); seqs.push_back(s); }
+std::vector<Pair> trainBPE(const std::map<std::string, long>& wordFreq, int merges) {            // 정수 ID 기반: 병합마다 쌍 빈도를 다시 센다 (동률은 문자열 쌍의 사전순)
+    std::vector<std::string> tok; std::map<std::string, int> id;
+    auto intern = [&](const std::string& s) { auto it = id.find(s); if (it != id.end()) return it->second; tok.push_back(s); return id[s] = (int)tok.size() - 1; };
+    std::vector<std::vector<int>> words; std::vector<long> fr;
+    for (auto& kv : wordFreq) { std::vector<int> w; for (char c : kv.first) w.push_back(intern(std::string(1, c))); words.push_back(w); fr.push_back(kv.second); }
     std::vector<Pair> out;
     for (int it = 0; it < merges; it++) {
-        std::map<Pair, int> cnt; for (auto& s : seqs) for (size_t i = 0; i + 1 < s.size(); i++) cnt[{s[i], s[i + 1]}]++;
-        Pair best; int bc = 1; for (auto& kv : cnt) if (kv.second > bc) { bc = kv.second; best = kv.first; }
-        if (bc <= 1) break;
-        out.push_back(best);
-        for (auto& s : seqs) { Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == best.first && s[i + 1] == best.second) { t.push_back(best.first + best.second); i++; } else t.push_back(s[i]); } s.swap(t); }
+        std::map<std::pair<int, int>, long> cnt; for (size_t w = 0; w < words.size(); w++) for (size_t i = 0; i + 1 < words[w].size(); i++) cnt[{words[w][i], words[w][i + 1]}] += fr[w];
+        std::pair<int, int> best{-1, -1}; long bc = 1;
+        for (auto& kv : cnt) if (kv.second > bc || (kv.second == bc && best.first >= 0 && Pair{tok[kv.first.first], tok[kv.first.second]} < Pair{tok[best.first], tok[best.second]})) { bc = kv.second; best = kv.first; }
+        if (best.first < 0) break;
+        out.push_back({tok[best.first], tok[best.second]}); int nid = intern(tok[best.first] + tok[best.second]);
+        for (auto& w : words) { std::vector<int> t; for (size_t i = 0; i < w.size(); i++) { if (i + 1 < w.size() && w[i] == best.first && w[i + 1] == best.second) { t.push_back(nid); i++; } else t.push_back(w[i]); } w.swap(t); }
     }
     return out;
 }
-size_t bpeLength(const std::string& w, const std::vector<Pair>& merges) {
+std::vector<Pair> trainSimple(const std::map<std::string, long>& wordFreq, int merges) {          // 문자열 Seq 로 직접 (느리지만 단순): 독립 구현
+    std::vector<std::pair<Seq, long>> seqs; for (auto& kv : wordFreq) { Seq s; for (char c : kv.first) s.push_back(std::string(1, c)); seqs.push_back({s, kv.second}); }
+    std::vector<Pair> out;
+    for (int it = 0; it < merges; it++) {
+        std::map<Pair, long> cnt; for (auto& s : seqs) for (size_t i = 0; i + 1 < s.first.size(); i++) cnt[{s.first[i], s.first[i + 1]}] += s.second;
+        Pair best; long bc = 1; bool have = false; for (auto& kv : cnt) if (kv.second > bc) { bc = kv.second; best = kv.first; have = true; }
+        if (!have) break; out.push_back(best);
+        for (auto& s : seqs) { Seq t; for (size_t i = 0; i < s.first.size(); i++) { if (i + 1 < s.first.size() && s.first[i] == best.first && s.first[i + 1] == best.second) { t.push_back(best.first + best.second); i++; } else t.push_back(s.first[i]); } s.first.swap(t); }
+    }
+    return out;
+}
+Seq encode(const std::string& w, const std::map<Pair, int>& rank, size_t maxRank) {                // 순위가 maxRank 미만인 병합만 사용 (작은 어휘 = 병합 목록의 앞부분)
     Seq s; for (char c : w) s.push_back(std::string(1, c));
-    for (auto& m : merges) { Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == m.first && s[i + 1] == m.second) { t.push_back(m.first + m.second); i++; } else t.push_back(s[i]); } s.swap(t); }
-    return s.size();
+    for (;;) {
+        int best = (int)maxRank; Pair bp; bool have = false;
+        for (size_t i = 0; i + 1 < s.size(); i++) { auto it = rank.find({s[i], s[i + 1]}); if (it != rank.end() && it->second < best) { best = it->second; bp = it->first; have = true; } }
+        if (!have) return s;
+        Seq t; for (size_t i = 0; i < s.size(); i++) { if (i + 1 < s.size() && s[i] == bp.first && s[i + 1] == bp.second) { t.push_back(bp.first + bp.second); i++; } else t.push_back(s[i]); }
+        s.swap(t);
+    }
 }
 
 int main() {
-    std::string train = "the cat sat on the mat the cat ate the rat the rat sat on the cat that is that";
-    std::vector<std::string> trainWords; { std::istringstream in(train); std::string w; while (in >> w) trainWords.push_back(w); }
-    auto merges = trainBPE(trainWords, 20);
-    std::set<std::string> wordVocab(trainWords.begin(), trainWords.end());
-    std::string test = "the cat sat on the hat";                        // "hat" 은 학습에 없던 단어
-    std::vector<std::string> testWords; { std::istringstream in(test); std::string w; while (in >> w) testWords.push_back(w); }
-    size_t charTokens = 0, bpeTokens = 0, wordTokens = testWords.size(), oov = 0;
-    for (auto& w : testWords) { charTokens += w.size(); bpeTokens += bpeLength(w, merges); if (!wordVocab.count(w)) oov++; }
-    assert(oov == 1);                                                   // 단어 단위는 "hat" 을 표현하지 못한다
-    assert(wordTokens < bpeTokens && bpeTokens < charTokens);           // 길이: 단어 < BPE < 글자
-    assert(bpeLength("hat", merges) >= 1);                              // BPE 는 처음 보는 단어도 조각으로 표현한다
-    std::cout << "tokens for '" << test << "': word=" << wordTokens << " (OOV " << oov << ") bpe=" << bpeTokens << " char=" << charTokens << std::endl;
+    const char* syl[] = {"ka", "ro", "mi", "ta", "ne", "su", "lo", "pa", "di", "ve", "gu", "ho", "bi", "ra", "nu", "se", "to", "li", "ma", "fo", "ke", "za", "wi", "yu"};
+    std::mt19937 rng(12345);
+    std::set<std::string> lexSet; std::vector<std::string> lex;
+    while (lex.size() < 1500) { std::string w; for (int k = 0, n = 2 + (int)(rng() % 3); k < n; ++k) w += syl[rng() % 24]; if (lexSet.insert(w).second) lex.push_back(w); }
+    std::vector<double> cum; { double s = 0; for (size_t r = 0; r < lex.size(); r++) { s += 1.0 / (double)(r + 1); cum.push_back(s); } }          // 지프 분포 (순위 r 의 가중치 1/r)
+    auto draw = [&]() { double u = std::uniform_real_distribution<double>(0, cum.back())(rng); return lex[std::lower_bound(cum.begin(), cum.end(), u) - cum.begin()]; };
+    std::map<std::string, long> trainFreq; for (int i = 0; i < 30000; ++i) trainFreq[draw()]++;
+    std::vector<std::string> test; for (int i = 0; i < 8000; ++i) test.push_back(draw());
+    size_t novel = 0; while (novel < 300) { std::string w; for (int k = 0, n = 2 + (int)(rng() % 3); k < n; ++k) w += syl[rng() % 24]; if (!lexSet.count(w)) { test.push_back(w); ++novel; } }       // 사전에 없던 합성어
+    std::set<char> alphabet; for (auto& kv : trainFreq) for (char c : kv.first) alphabet.insert(c); int B = (int)alphabet.size();
+    const int MAXM = 800; std::vector<Pair> merges = trainBPE(trainFreq, MAXM);
+    { std::map<std::string, long> small; int k = 0; for (auto& kv : trainFreq) { if (k++ >= 120) break; small[kv.first] = kv.second; } assert(trainBPE(small, 40) == trainSimple(small, 40)); }       // 독립 구현과 일치
+    std::map<Pair, int> rank; for (size_t i = 0; i < merges.size(); i++) rank.emplace(merges[i], (int)i);
+    long charTokens = 0; for (auto& w : test) charTokens += (long)w.size();
+    std::map<std::string, long> byFreq = trainFreq; std::vector<std::pair<long, std::string>> rankedWords; for (auto& kv : trainFreq) rankedWords.push_back({kv.second, kv.first}); std::sort(rankedWords.rbegin(), rankedWords.rend());
+    std::cout << "alphabet " << B << ", " << merges.size() << " merges learned; test words " << test.size() << " (" << charTokens << " characters)" << std::endl;
+    std::vector<long> bpeTotals, oovCounts; std::vector<int> sizes = {B, 50, 100, 200, 400, 800};
+    for (int V : sizes) {
+        size_t m = V <= B ? 0 : std::min<size_t>(merges.size(), (size_t)(V - B)); long total = 0;
+        std::map<std::string, Seq> cache;
+        for (auto& w : test) {
+            auto it = cache.find(w); if (it == cache.end()) it = cache.emplace(w, encode(w, rank, m)).first;
+            std::string j; for (auto& t : it->second) j += t; assert(j == w); total += (long)it->second.size();             // ② OOV 없이 원문 복원 (합성어 포함)
+        }
+        bpeTotals.push_back(total);
+        std::set<std::string> wv; for (int i = 0; i < V && i < (int)rankedWords.size(); i++) wv.insert(rankedWords[i].second);          // 단어 단위: 빈도 상위 V 개 단어만 어휘
+        long oov = 0; for (auto& w : test) oov += !wv.count(w); oovCounts.push_back(oov);
+        std::cout << "V=" << V << ": BPE " << total << " tokens (" << (double)total / test.size() << "/word), word-level OOV " << oov << " (" << 100.0 * oov / test.size() << "%)" << std::endl;
+    }
+    // ① 토큰 수는 어휘가 커질수록 줄어든다
+    assert(bpeTotals[0] == charTokens);                                                                                    // 병합 0 개 = 글자 단위
+    for (size_t i = 1; i < bpeTotals.size(); i++) assert(bpeTotals[i] <= bpeTotals[i - 1]);
+    assert(bpeTotals[1] < bpeTotals[0] && bpeTotals[2] < bpeTotals[1] && bpeTotals[3] < bpeTotals[2] && bpeTotals[4] < bpeTotals[3]);
+    // ③ 단어 단위 OOV 는 V 가 커질수록 줄어든다 (하지만 사전에 없던 합성어 300 개는 영영 OOV)
+    for (size_t i = 1; i < oovCounts.size(); i++) assert(oovCounts[i] <= oovCounts[i - 1]);
+    assert(oovCounts.back() >= (long)novel && oovCounts[1] > (long)test.size() / 10 && oovCounts[0] > (long)test.size() / 3);       // 어휘 50 개면 시험 단어의 10 % 이상이 OOV, 합성어는 어떤 V 에서도 OOV
+    // ④ 길이와 어휘의 교환: 어휘 400 에서 BPE 는 글자 단위의 절반 이하 길이, 단어 단위(어휘 1500 개 전부)보다는 길다
+    double bpePerWord = (double)bpeTotals[4] / test.size(), charPerWord = (double)charTokens / test.size();
+    assert(bpePerWord < 0.5 * charPerWord && bpePerWord > 1.0 && bpeTotals[4] > (long)test.size() && (int)lex.size() > 3 * 400);
+    std::cout << "tokens per word: char=" << charPerWord << " bpe(V=400)=" << bpePerWord << " word=1 (needs " << lex.size() << " vocabulary entries and fails on " << novel << " novel words)" << std::endl;
     return 0;
 }
 // Time Complexity: O(병합 수 · 코퍼스)

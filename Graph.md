@@ -9733,7 +9733,7 @@ int main() {
     for (; steps < 600; ++steps) {
         std::vector<OpNode> net = {{IN, -1, -1}, {IN, -1, -1}};          // 0: w, 1: b
         std::vector<int> sqs;
-        for (double x : xs) {
+        for (size_t qi = 0; qi < sizeof(xs) / sizeof(xs[0]); ++qi) {
             int cx = (int)net.size(); net.push_back({IN, -1, -1});         // 데이터 x 는 상수 입력, y 도 상수 입력
             int cy = (int)net.size(); net.push_back({IN, -1, -1});
             int m = (int)net.size(); net.push_back({MUL, 0, cx}); net.push_back({ADD, m, 1}); net.push_back({TANH, m + 1, -1}); net.push_back({SUB, m + 2, cy}); net.push_back({MUL, m + 3, m + 3});
