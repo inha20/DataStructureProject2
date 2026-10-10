@@ -116,7 +116,7 @@ int main() {
 // "길이"는 단위에 따라 다르다: 바이트 수 ≠ 코드 포인트 수 ≠ UTF-16 코드 유닛 수 ≠ (눈에 보이는) 글자 수(grapheme cluster).
 //  · 길이를 저장하면 바이트 길이는 O(1), strlen 은 O(n).  코드 포인트 수는 UTF-8 이 올바를 때 "연속 바이트(10xxxxxx)가 아닌 바이트의 수" — 잘못된 입력에서는 틀릴 수 있으니 먼저 검증한다.
 //  · 검증기를 RFC 3629 / Unicode 표 3-7 의 표 구동 방식으로 독립 구현해 모든 코드 포인트(U+0000..U+10FFFF, 서러게이트 제외)의 부호화·복호화를 전수 확인하고, 무작위 바이트열에서 두 검증기가 일치하는지 본다.
-//  · 글자 수: 결합 문자(é = e + U+0301)와 한글 자모 조합(한 = ㅎ+ㅏ+ㄴ)은 코드 포인트가 여럿이어도 글자 하나. 한글 음절 11172 개의 분해·조합을 전수 확인한다.
+//  · 글자 수: 결합 문자(é = e + U+0301)와 한글 자모 조합(한 = ㅎ+ㅏ+ㄴ)은 코드 포인트가 여럿이어도 글자 하나. 한글 음절 11172 개의 분해·조합을 전수 확인하고, 조합 범위(L 19·V 21·T 27)와 글자 군집 규칙(UAX #29 GB6~GB8 의 6x6 표, 자모·음절·결합 표지 구간의 양 끝 코드 포인트)을 경계값으로 확인한다.
 typedef std::uint32_t u32;
 void encode(u32 cp, std::string& out) {
     if (cp < 0x80) out += (char)cp;
@@ -193,9 +193,32 @@ int main() {
     // 무작위 한글 문장: 조합형/분해형의 코드 포인트 수는 다르지만 글자 수는 같다
     long precomposed = 0, decomposed = 0;
     for (int it = 0; it < 2000; ++it) { std::vector<u32> sy, dec; size_t n = 1 + rng() % 30; for (size_t i = 0; i < n; ++i) { u32 s = SBase + rng() % SCount; sy.push_back(s); for (u32 x : decomposeHangul(s)) dec.push_back(x); } assert(composeHangul(dec) == sy && graphemeCount(sy) == n && graphemeCount(dec) == n && dec.size() >= sy.size()); precomposed += sy.size(); decomposed += dec.size(); }
-    // ⑤ 비용: 저장된 길이는 O(1), strlen 은 100 만 번의 스캔
+    // ⑤ 경계 코드 포인트: 한글 조합 범위, 글자 군집 규칙(6x6 표), 구간의 양 끝
+    long boundaryCases = 0;
+    {   auto comp = [](std::vector<u32> v) { return composeHangul(v); }; auto one = [](u32 x) { return std::vector<u32>{x}; };
+        assert(comp({LBase + 18, VBase + 20}) == one(SBase + (18 * VCount + 20) * TCount) && comp({LBase, VBase}) == one(SBase));                                   // 첫/마지막 L, V 는 합쳐진다
+        assert(comp({LBase + 19, VBase}).size() == 2 && comp({LBase - 1, VBase}).size() == 2 && comp({LBase, VBase + 21}).size() == 2 && comp({LBase, VBase - 1}).size() == 2);   // 범위 밖: U+1113 은 현대 한글의 초성이 아니다
+        assert(comp({SBase, TBase + 1}) == one(SBase + 1) && comp({SBase, TBase + 27}) == one(SBase + 27) && comp({SBase, TBase}).size() == 2 && comp({SBase, TBase + 28}).size() == 2);   // T 는 1..27 (TBase 자체는 "받침 없음")
+        assert(comp({SBase + 1, TBase + 1}).size() == 2 && comp({SBase + SCount, TBase + 1}).size() == 2 && comp({SBase - 1, TBase + 1}).size() == 2);                 // LVT 에는 T 를 더 붙이지 않고, 음절 구간 밖은 음절이 아니다
+        boundaryCases += 11;
+        const u32 rep[6] = {LBase, VBase, TBase + 1, SBase, SBase + 1, 'a'};                                    // 종류: L V T LV LVT 기타
+        const int joinTable[6][6] = {{1, 1, 0, 1, 1, 0}, {0, 1, 1, 0, 0, 0}, {0, 0, 1, 0, 0, 0}, {0, 1, 1, 0, 0, 0}, {0, 0, 1, 0, 0, 0}, {0, 0, 0, 0, 0, 0}};     // UAX #29: L×(L|V|LV|LVT), (LV|V)×(V|T), (LVT|T)×T 만 붙는다
+        for (int p = 0; p < 6; ++p) for (int q = 0; q < 6; ++q) { assert(graphemeCount({rep[p], rep[q]}) == (size_t)(joinTable[p][q] ? 1 : 2)); ++boundaryCases; }
+        auto g2 = [](u32 a, u32 b) { return graphemeCount({a, b}); };
+        struct Pair { u32 a, b; size_t want; };
+        const Pair pairs[] = {{0x1100, 0x10FF, 2}, {0x1100, 0x1100, 1}, {0x1100, 0x115F, 1}, {0x1100, 0x1160, 1}, {0x1100, 0x11A7, 1}, {0x1100, 0x11A8, 2},                       // 앞이 L
+                              {0x1161, 0x115F, 2}, {0x1161, 0x1160, 1}, {0x1161, 0x11A7, 1}, {0x1161, 0x11A8, 1}, {0x1161, 0x11FF, 1}, {0x1161, 0x1200, 2},                   // 앞이 V
+                              {0x11A8, 0x11A7, 2}, {0x11A8, 0x11A8, 1}, {0x11A8, 0x11FF, 1}, {0x11A8, 0x1200, 2},                                                              // 앞이 T
+                              {0x1100, SBase - 1, 2}, {0x1100, SBase, 1}, {0x1100, SBase + SCount - 1, 1}, {0x1100, SBase + SCount, 2},                                         // L 뒤의 음절 구간 양 끝
+                              {SBase - 1, 0x1161, 2}, {SBase, 0x1161, 1}, {SBase + SCount - 1, 0x11A8, 1}, {SBase + SCount - 1, 0x1161, 2}, {SBase + SCount, 0x11A8, 2}};       // 음절 구간 양 끝이 앞일 때
+        for (const Pair& pr : pairs) { assert(g2(pr.a, pr.b) == pr.want); ++boundaryCases; }
+        const u32 ext[5][2] = {{0x300, 0x36F}, {0x1AB0, 0x1AFF}, {0x1DC0, 0x1DFF}, {0x20D0, 0x20FF}, {0xFE20, 0xFE2F}};          // 결합 표지 5 구간의 양 끝과 바로 바깥
+        for (const auto& r : ext) { assert(g2('e', r[0] - 1) == 2 && g2('e', r[0]) == 1 && g2('e', r[1]) == 1 && g2('e', r[1] + 1) == 2); boundaryCases += 4; }
+        assert(graphemeCount({0x300}) == 1 && graphemeCount({'e', 0x301, 0x302}) == 1 && graphemeCount({0x301, 'e'}) == 2); boundaryCases += 3;                      // 맨 앞의 결합 표지는 혼자 한 글자, 표지는 여러 개도 붙는다
+    }
+    // ⑥ 비용: 저장된 길이는 O(1), strlen 은 100 만 번의 스캔
     { std::string big(1000000, 'x'); long steps = 0; for (const char* p = big.c_str(); *p; ++p) ++steps; assert(steps == 1000000 && big.size() == 1000000); }
-    std::cout << "Length: all 1112064 scalar values round-tripped; two UTF-8 validators agreed on 3*10^6 random byte strings (" << valid << " valid, and for " << invalidButCounted << " invalid ones the lead-byte count was meaningless); " << SCount << " Hangul syllables decompose/compose exactly; random Hangul text had " << precomposed << " precomposed vs " << decomposed << " decomposed code points but identical grapheme counts" << std::endl;
+    std::cout << "Length: all 1112064 scalar values round-tripped; two UTF-8 validators agreed on 3*10^6 random byte strings (" << valid << " valid; " << invalidButCounted << " invalid strings had at least one non-continuation byte, so a lead-byte count would give them a number although they have no code-point count); " << SCount << " Hangul syllables decompose/compose exactly; random Hangul text had " << precomposed << " precomposed vs " << decomposed << " decomposed code points but identical grapheme counts; " << boundaryCases << " Hangul-composition / grapheme boundary cases checked" << std::endl;
     return 0;
 }
 // Time Complexity: 바이트 길이 O(1) (저장), 코드 포인트·글자 수 O(n)
@@ -279,12 +302,15 @@ int main() {
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 // substr 은 새 문자열을 만들어 복사(O(len))하고, 뷰는 원본을 가리키는 (포인터, 길이) 한 쌍이라 O(1) 이다. 대신 뷰는 원본보다 오래 살거나 원본이 바뀌면 *dangling* 이 된다.
 //  ① View: remove_prefix/suffix·substr·find·compare·starts_with 를 직접 구현하고 std::string_view 와 무작위 연산열로 대조.
 //  ② 비용: 재귀 회문 검사를 substr(복사)로 하면 복사한 바이트가 n²/4 에 가깝고, 뷰로 하면 0.  100 만 글자를 20 만 토큰으로 쪼갤 때도 복사 바이트가 전체 길이만큼 든다.
+//     뷰 쪽 0 은 "세지 않아서 0" 이 아니다: View 는 (포인터, 길이)만 가진 타입이라 static_assert 로 바이트를 소유하지 않음을 못박고, 바이트를 복사하는 유일한 함수 to_string() 이 g_viewCopied 에 더한다 (뷰 연산이 to_string 으로 복사하면 이 값이 0 이 아니게 된다).
 //  ③ CheckedView: 원본이 파괴되거나 수정(재할당)되면 접근 시 예외로 감지 — 디버그 빌드의 반복자 검사와 같은 원리. 소유권 있는 복사본(to_string)은 항상 안전.
+long g_viewCopied = 0;                                                   // View 가 복사한 바이트 수
 struct View {
     const char* p; size_t n;
     View(const char* s, size_t len) : p(s), n(len) {}
@@ -297,7 +323,7 @@ struct View {
     bool ends_with(View o) const { return n >= o.n && std::memcmp(p + n - o.n, o.p, o.n) == 0; }
     size_t find(View o, size_t from = 0) const { if (o.n == 0) return from <= n ? from : (size_t)-1; for (size_t i = from; i + o.n <= n; ++i) if (std::memcmp(p + i, o.p, o.n) == 0) return i; return (size_t)-1; }
     int compare(View o) const { int c = std::memcmp(p, o.p, std::min(n, o.n)); return c != 0 ? (c < 0 ? -1 : 1) : (n == o.n ? 0 : n < o.n ? -1 : 1); }
-    std::string to_string() const { return std::string(p, n); }          // 소유권 있는 복사본
+    std::string to_string() const { g_viewCopied += (long)n; return std::string(p, n); }          // 소유권 있는 복사본 (View 에서 바이트를 복사하는 유일한 곳이라 여기서만 센다)
 };
 long g_copied = 0;                                                       // 복사한 바이트 수
 std::string copySubstr(const std::string& s, size_t pos, size_t len) { std::string r = s.substr(pos, len); g_copied += (long)r.size(); return r; }
@@ -324,6 +350,7 @@ public:
 };
 
 int main() {
+    static_assert(std::is_trivially_copyable<View>::value && sizeof(View) == sizeof(const char*) + sizeof(size_t), "a View is just (pointer, length): it owns no bytes, so only to_string() can copy any");
     // ① View vs std::string_view: 무작위 연산열 (작은 알파벳이라 find/compare 가 자주 맞는다)
     std::mt19937 rng(31);
     for (int round = 0; round < 2000; ++round) {
@@ -333,18 +360,21 @@ int main() {
                 case 0: { size_t k = v.n ? rng() % (v.n + 1) : 0; v.remove_prefix(k); w.remove_prefix(k); break; }
                 case 1: { size_t k = v.n ? rng() % (v.n + 1) : 0; v.remove_suffix(k); w.remove_suffix(k); break; }
                 case 2: { size_t pos = rng() % (v.n + 2), len = rng() % 10; bool t1 = false, t2 = false; View a(nullptr, 0); std::string_view b; try { a = v.substr(pos, len); } catch (const std::out_of_range&) { t1 = true; } try { b = w.substr(pos, len); } catch (const std::out_of_range&) { t2 = true; } assert(t1 == t2); if (!t1) { v = a; w = b; } break; }
-                default: { std::string pat(rng() % 4, 'a'); for (char& c : pat) c = (char)('a' + rng() % 3); size_t from = rng() % (v.n + 1); size_t f1 = v.find(View(pat), from), f2 = w.find(pat, from); assert(f1 == f2 || (f1 == (size_t)-1 && f2 == std::string_view::npos));
+                default: { std::string pat(rng() % 4, 'a'); for (char& c : pat) c = (char)('a' + rng() % 3); size_t from = rng() % (v.n + 3); size_t f1 = v.find(View(pat), from), f2 = w.find(pat, from); assert(f1 == f2 || (f1 == (size_t)-1 && f2 == std::string_view::npos));
                           assert(v.starts_with(View(pat)) == (w.substr(0, pat.size()) == pat && w.size() >= pat.size())); assert(v.ends_with(View(pat)) == (w.size() >= pat.size() && w.substr(w.size() - pat.size()) == pat)); assert(v.compare(View(pat)) == (w.compare(pat) < 0 ? -1 : w.compare(pat) > 0 ? 1 : 0)); break; }
             }
             assert(v.n == w.size() && std::memcmp(v.p, w.data(), v.n) == 0);
         }
     }
+    {   View e("abc", 3); assert(e.find(View(""), 0) == 0 && e.find(View(""), 3) == 3 && e.find(View(""), 4) == (size_t)-1 && e.find(View("c"), 4) == (size_t)-1 && e.find(View("c"), 2) == 2);   // 빈 바늘과 from > n
+        assert(e.find(View(""), 2) == 2 && std::string_view("abc").find("", 4) == std::string_view::npos && std::string_view("abc").find("", 3) == 3); }
     // ② 비용: 재귀 회문 (복사) vs 뷰
     {   const size_t N = 2000; std::string s(N, 'x'); g_copied = 0; assert(palindromeCopy(s)); long expect = 0; for (size_t len = N; len >= 2; len -= 2) expect += (long)(len - 2); assert(g_copied == expect && expect == (long)(N / 2 - 1) * (long)(N / 2));   // Σ (n−2) + (n−4) + … = (n/2)(n/2 − 1)
-      assert(palindromeView(View(s)) && !palindromeView(View(s.replace(N / 2, 1, "y"))) );
+      long viewBefore = g_viewCopied; assert(palindromeView(View(s)) && !palindromeView(View(s.replace(N / 2, 1, "y"))) ); assert(g_viewCopied == viewBefore);        // 뷰 연산은 복사 0 바이트 (to_string 이 유일한 복사 지점이다)
+      { std::string probe(100, 'p'); View pv(probe); View q = pv.substr(10, 20); q.remove_prefix(1); q.remove_suffix(1); (void)q.find(View("p")); (void)q.compare(pv); assert(g_viewCopied == viewBefore); std::string own = q.to_string(); assert(own.size() == 18 && g_viewCopied == viewBefore + 18); }       // 반대로 to_string 은 센다
       std::string text; std::vector<std::pair<size_t, size_t>> toks; for (int i = 0; i < 200000; ++i) { size_t len = 1 + rng() % 8; toks.emplace_back(text.size(), len); text.append(len, (char)('a' + i % 26)); text += ' '; }
-      g_copied = 0; size_t viewBytes = 0; for (auto& t : toks) { std::string c = copySubstr(text, t.first, t.second); View v(text.data() + t.first, t.second); assert(v.to_string() == c); viewBytes += v.n; }
-      long tokenBytes = 0; for (auto& t : toks) tokenBytes += (long)t.second; assert(g_copied == tokenBytes && viewBytes == (size_t)tokenBytes && text.size() >= 1000000 / 2); std::cout << "Substring: recursive palindrome copied " << expect << " bytes with substr and 0 with views; tokenising " << text.size() << " characters copied " << g_copied << " bytes vs 0, "; }
+      g_copied = 0; size_t viewBytes = 0; for (auto& t : toks) { std::string c = copySubstr(text, t.first, t.second); View v(text.data() + t.first, t.second); assert(std::string_view(v.p, v.n) == c); viewBytes += v.n; }
+      long tokenBytes = 0; for (auto& t : toks) tokenBytes += (long)t.second; assert(g_copied == tokenBytes && viewBytes == (size_t)tokenBytes && g_viewCopied == viewBefore + 18 && text.size() >= 1000000 / 2); std::cout << "Substring: recursive palindrome copied " << expect << " bytes with substr and 0 with views; tokenising " << text.size() << " characters copied " << g_copied << " bytes vs " << g_viewCopied - viewBefore - 18 << " for views (only to_string copies, and it is counted), "; }
     // ③ 검사하는 뷰: 수정·파괴를 감지
     {   Owner* o = new Owner("the quick brown fox"); CheckedView v(*o, 4, 5); assert(v.valid() && v.at(0) == 'q' && v.to_string() == "quick"); std::string safe = v.to_string();
         o->append(" jumps"); assert(!v.valid()); bool threw = false; try { v.at(0); } catch (const std::runtime_error&) { threw = true; } assert(threw);       // 수정(재할당 가능) 뒤의 예전 뷰는 접근 불가
@@ -452,9 +482,9 @@ int main() {
 #include <vector>
 
 // 문자열 비교는 O(1) 이 아니다: 공통 접두사(LCP)만큼 걸린다 (같은 문자열이면 전체 길이 L).  그래서 정렬은 n log n *번의 비교* × LCP 만큼의 문자 검사가 든다.
-//  ① 문자 검사 횟수를 센다: std::sort(비교 기반) vs 멀티키 퀵정렬(Bentley–Sedgewick: 문자 단위 3-분할, 한 번 맞춘 접두사는 다시 안 본다) — 접두사가 긴 데이터에서 차이가 크다.
-//  ② 정렬된 이웃과의 LCP 합 D 는 어떤 알고리즘이든 *읽어야 하는* 최소 문자 수(구별 접두사): 멀티키 퀵정렬은 O(n log n + D) 이다.
-//  ③ 해시를 캐시해 두면 서로 다른 문자열의 동치 비교는 O(1) 로 걸러진다 (마지막 글자만 다른 최악의 경우도).
+//  ① 문자 검사 횟수를 센다: 비교 기반 정렬(병합 정렬 — 라이브러리 구현에 따라 숫자가 달라지지 않게 직접 구현) vs 멀티키 퀵정렬(Bentley–Sedgewick: 문자 단위 3-분할, 한 번 맞춘 접두사는 다시 안 본다) — 접두사가 긴 데이터에서 차이가 크다.
+//  ② 정렬된 이웃과의 LCP 합 D 는 어떤 알고리즘이든 *읽어야 하는* 최소 문자 수(구별 접두사): 멀티키 퀵정렬은 mkChars >= D 이고 기댓값 O(n log n + D) (무작위 피벗 — 최악은 아니다). 여기서는 고정 시드로 mkChars <= 1.25 (n⌈log2 n⌉ + D) 를 확인한다.
+//  ③ 해시를 한 번 계산해 캐시해 두면 서로 다른 문자열의 동치 비교는 O(1) 로 걸러진다 (마지막 글자만 다른 최악의 경우도): 해시를 만드는 O(L) 비용까지 문자 수로 센다.
 long g_chars = 0;                                                       // 검사한 문자 수
 int charAt(const std::string& s, size_t d) { ++g_chars; return d < s.size() ? (unsigned char)s[d] : -1; }
 bool countingLess(const std::string& a, const std::string& b) { size_t n = std::min(a.size(), b.size()), i = 0; for (; i < n; ++i) { ++g_chars; if (a[i] != b[i]) return (unsigned char)a[i] < (unsigned char)b[i]; } ++g_chars; return a.size() < b.size(); }
@@ -467,6 +497,13 @@ void mkqs(std::vector<const std::string*>& a, long lo, long hi, size_t d, std::m
         lo = lt; hi = gt; ++d;                                                                             // 같은 문자 묶음은 다음 문자로
     }
 }
+void mergeSortCounted(std::vector<const std::string*>& a, std::vector<const std::string*>& tmp, size_t lo, size_t hi) {   // 비교 기반 정렬의 대표: 병합 정렬 (비교 ≈ n log n 번, 비교마다 LCP 만큼의 문자 검사)
+    if (hi - lo < 2) return;
+    size_t mid = (lo + hi) / 2; mergeSortCounted(a, tmp, lo, mid); mergeSortCounted(a, tmp, mid, hi);
+    size_t i = lo, j = mid, k = lo; while (i < mid && j < hi) tmp[k++] = countingLess(*a[j], *a[i]) ? a[j++] : a[i++]; while (i < mid) tmp[k++] = a[i++]; while (j < hi) tmp[k++] = a[j++];
+    for (k = lo; k < hi; ++k) a[k] = tmp[k];
+}
+size_t fnvCounted(const std::string& s, long& chars) { size_t h = 1469598103934665603ULL; for (unsigned char c : s) { h = (h ^ c) * 1099511628211ULL; ++chars; } return h; }       // 해시를 만드는 데 읽은 문자 수도 센다
 size_t lcp(const std::string& a, const std::string& b) { size_t i = 0; while (i < a.size() && i < b.size() && a[i] == b[i]) ++i; return i; }
 
 int main() {
@@ -479,23 +516,29 @@ int main() {
     sets[3].name = "many duplicates"; for (int i = 0; i < n; ++i) sets[3].v.push_back(std::string(60, 'z') + std::to_string(rng() % 20));
     double ratio[4];
     for (int k = 0; k < 4; ++k) {
-        std::vector<std::string> a = sets[k].v; g_chars = 0; std::sort(a.begin(), a.end(), countingLess); long stdChars = g_chars;
+        std::vector<std::string> a = sets[k].v; std::sort(a.begin(), a.end());                                // 기준 정렬 결과 (이 정렬의 문자 수는 세지 않는다)
+        std::vector<const std::string*> q, tmp(a.size()); for (auto& s : sets[k].v) q.push_back(&s); g_chars = 0; mergeSortCounted(q, tmp, 0, q.size()); long cmpChars = g_chars; for (size_t i = 0; i < a.size(); ++i) assert(*q[i] == a[i]);
         std::vector<const std::string*> p; for (auto& s : sets[k].v) p.push_back(&s); g_chars = 0; mkqs(p, 0, (long)p.size(), 0, rng); long mkChars = g_chars;
         for (size_t i = 0; i < a.size(); ++i) assert(*p[i] == a[i]);                                          // 같은 정렬 결과
         long D = 0; for (size_t i = 0; i < a.size(); ++i) { size_t l = std::max(i ? lcp(a[i - 1], a[i]) : 0, i + 1 < a.size() ? lcp(a[i], a[i + 1]) : 0); D += (long)l + 1; }       // 구별 접두사의 합
-        assert(mkChars >= D / 2 && mkChars <= 12 * ((long)n * (long)std::ceil(std::log2((double)n)) + D));   // 멀티키 퀵정렬: Θ(n log n + D) 범위
-        ratio[k] = (double)stdChars / mkChars; std::cout << sets[k].name << ": std::sort inspected " << stdChars << " chars, multikey quicksort " << mkChars << " (distinguishing prefix D = " << D << ")\n";
+        long bound = (long)n * (long)std::ceil(std::log2((double)n)) + D; assert(mkChars >= D && 4 * mkChars <= 5 * bound);    // 모든 문자열은 구별 접두사를 읽어야 하고(>= D), 멀티키 퀵정렬은 n log n + D 의 1.25 배 이내 (고정 시드의 기댓값 범위)
+        ratio[k] = (double)cmpChars / mkChars; std::cout << sets[k].name << ": merge sort inspected " << cmpChars << " chars, multikey quicksort " << mkChars << " (distinguishing prefix D = " << D << ")\n";
     }
-    assert(ratio[1] > 8 && ratio[3] > 8 && ratio[0] < 3);                                                      // 긴 공통 접두사에서는 크게 이기고, 짧은 무작위 문자열에서는 비슷하다
+    assert(ratio[1] > 8 && ratio[3] > 8 && ratio[2] > 6 && ratio[0] > 0.8 && ratio[0] < 2.5);                  // 긴 공통 접두사에서는 크게 이기고, 짧은 무작위 문자열에서는 비슷하다 (두 정렬 모두 직접 구현이라 숫자가 구현에 따라 변하지 않는다)
     // ③ 해시 캐시 동치 비교: 길이 L 이 같고 마지막 글자만 다른 쌍
-    {   const size_t L = 100000; std::string x(L, 'x'), y = x; y.back() = 'y'; size_t hx = std::hash<std::string>()(x), hy = std::hash<std::string>()(y); long cheap = 0, full = 0;
-        auto eqCached = [&](const std::string& a, size_t ha, const std::string& b, size_t hb) { ++cheap; if (ha != hb) return false; return a == b; };
-        auto eqScan = [&](const std::string& a, const std::string& b) { for (size_t i = 0; i < a.size(); ++i) { ++full; if (a[i] != b[i]) return false; } return true; };
-        assert(!eqCached(x, hx, y, hy) && !eqScan(x, y) && cheap == 1 && full == (long)L && eqCached(x, hx, std::string(x), hx));
-        std::cout << "equality of two " << L << "-char strings differing in the last char: " << full << " chars scanned vs " << 1 << " hash comparison" << std::endl; }
+    {   const size_t L = 20000, K = 50; std::vector<std::string> pool(K, std::string(L, 'x')); for (size_t i = 0; i < K; ++i) { pool[i][L - 1 - i / 25] = 'y'; pool[i][L - 1 - 2 - i % 25] = 'z'; }       // 서로 다른 K 개, 끝 근처에서만 다르다 (정방향 비교는 거의 L 글자를 읽는다)
+        for (size_t i = 0; i < K; ++i) for (size_t j = i + 1; j < K; ++j) assert(pool[i] != pool[j]);
+        long hashChars = 0, cachedChars = 0, scanChars = 0, pairs = 0; std::vector<size_t> h(K); for (size_t i = 0; i < K; ++i) h[i] = fnvCounted(pool[i], hashChars);                     // 해시는 문자열마다 한 번씩만 (K·L 글자)
+        auto eqScan = [&](const std::string& a, const std::string& b, long& chars) { if (a.size() != b.size()) return false; for (size_t i = 0; i < a.size(); ++i) { ++chars; if (a[i] != b[i]) return false; } return true; };
+        auto eqCached = [&](size_t i, size_t j) { if (h[i] != h[j]) return false; return eqScan(pool[i], pool[j], cachedChars); };                                                         // 해시가 다르면 문자는 한 글자도 안 읽는다
+        for (size_t i = 0; i < K; ++i) for (size_t j = i + 1; j < K; ++j) { assert(!eqCached(i, j) && !eqScan(pool[i], pool[j], scanChars)); ++pairs; }
+        assert(pairs == (long)(K * (K - 1) / 2) && hashChars == (long)(K * L) && cachedChars == 0 && scanChars > (long)(pairs * (L - 60)));                                                 // 직접 비교: 쌍마다 거의 L 글자, 캐시: 해시 K·L 글자가 전부
+        std::string copy = pool[7]; long eqChars = 0; assert(fnvCounted(copy, eqChars) == h[7] && eqScan(copy, pool[7], eqChars) && eqChars == 2 * (long)L);                                    // 같은 내용이면 해시가 같고, 이때는 정말로 L 글자를 확인한다
+        assert(scanChars > 20 * (hashChars + cachedChars));
+        std::cout << "equality of " << pairs << " pairs of nearly identical " << L << "-char strings: " << scanChars << " chars scanned directly vs " << hashChars + cachedChars << " chars with cached hashes (hash built once per string)" << std::endl; }
     return 0;
 }
-// Time Complexity: 비교 O(LCP), 비교 기반 정렬 O(n log n · LCP), 멀티키 퀵정렬 O(n log n + D)
+// Time Complexity: 비교 O(LCP), 비교 기반 정렬 O(n log n · LCP), 멀티키 퀵정렬 기대 O(n log n + D) (무작위 피벗)
 // Space Complexity: O(n) (포인터 배열), 재귀 깊이 O(log n + 최대 길이)
 ```
 ## Reverse()
@@ -587,7 +630,8 @@ int main() {
 
 // 구분자로 나누기. string_view 를 돌려주면 복사 없이 O(n) 이고, 설계 선택(빈 토큰 유지 여부·최대 분할 수·여러 글자 구분자·따옴표)이 의미를 결정한다.
 //  성질: keepEmpty 면 join(split(s, d), d) == s 이고 토큰 수 = (d 의 개수) + 1.  Python 의 의미(split(d, maxsplit), 겹치는 구분자는 왼쪽부터 겹치지 않게)를 따른다.
-//  마지막에 RFC 4180 CSV: 따옴표 안의 쉼표·줄바꿈·"" 이스케이프를 파싱하고, 쓰기 → 읽기 왕복을 무작위 필드로 확인한다.
+//  마지막에 RFC 4180 식 CSV(느슨한 파서): 따옴표 안의 쉼표·줄바꿈·"" 이스케이프를 파싱하고, 따옴표 밖에서는 LF 와 CRLF 를 모두 레코드의 끝으로 본다(따옴표 안의 \r\n 은 내용). 쓰기 → 읽기 왕복을 무작위 필드로 확인한다.
+//  따옴표는 필드가 시작될 때만 따옴표 모드를 연다(a"b 는 그대로 a"b). 공백 분할은 ASCII 공백(스페이스 \t \n \r \v \f)만 다루며 istringstream 의 >> 와 같은 토큰을 낸다.
 typedef std::vector<std::string_view> Views;
 Views split(std::string_view s, char d, bool keepEmpty = true) {
     Views out; size_t start = 0;
@@ -604,8 +648,9 @@ Views splitStr(std::string_view s, std::string_view delim) {              // 여
     for (size_t pos; (pos = s.find(delim, start)) != std::string_view::npos; start = pos + delim.size()) out.push_back(s.substr(start, pos - start));
     out.push_back(s.substr(start)); return out;
 }
-Views splitWhitespace(std::string_view s) {                               // 연속 공백은 하나, 양 끝 공백 무시 (Python 의 s.split())
-    Views out; size_t i = 0; while (i < s.size()) { while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n')) ++i; size_t j = i; while (j < s.size() && !(s[j] == ' ' || s[j] == '\t' || s[j] == '\n')) ++j; if (j > i) out.push_back(s.substr(i, j - i)); i = j; }
+Views splitWhitespace(std::string_view s) {                               // 연속 공백은 하나, 양 끝 공백 무시. 공백 = ASCII 공백 6 가지 (Python 의 s.split() 의 ASCII 부분집합, 유니코드 공백은 다루지 않는다)
+    auto sp = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'; };
+    Views out; size_t i = 0; while (i < s.size()) { while (i < s.size() && sp(s[i])) ++i; size_t j = i; while (j < s.size() && !sp(s[j])) ++j; if (j > i) out.push_back(s.substr(i, j - i)); i = j; }
     return out;
 }
 std::string join(const Views& v, std::string_view d) { std::string r; for (size_t i = 0; i < v.size(); ++i) { if (i) r += d; r += v[i]; } return r; }
@@ -615,6 +660,7 @@ Rows csvParse(const std::string& t) {                                    // 줄(
     for (size_t i = 0; i < t.size(); ++i) { char c = t[i]; any = true;
         if (inQ) { if (c == '"') { if (i + 1 < t.size() && t[i + 1] == '"') { f += '"'; ++i; } else inQ = false; } else f += c; }
         else if (c == '"' && f.empty()) inQ = true;
+        else if (c == '\r' && i + 1 < t.size() && t[i + 1] == '\n') continue;     // CRLF: \r 은 버리고 \n 에서 레코드를 끝낸다 (홀로 있는 \r 은 내용)
         else if (c == ',') { row.push_back(f); f.clear(); }
         else if (c == '\n') { row.push_back(f); f.clear(); rows.push_back(row); row.clear(); any = false; }
         else f += c; }
@@ -631,7 +677,7 @@ int main() {
     Views t = split("a,,b,", ','); assert((t == Views{"a", "", "b", ""})); Views u = split("a,,b,", ',', false); assert((u == Views{"a", "b"}));
     assert(split("", ',').size() == 1 && split("", ',', false).empty() && split("no-delim", ',').size() == 1);
     std::mt19937 rng(41);
-    auto randomText = [&](size_t n) { std::string s(n, 'a'); for (char& c : s) c = "ab, \t"[rng() % 5]; return s; };
+    auto randomText = [&](size_t n) { std::string s(n, 'a'); for (char& c : s) c = "ab, \t\n\r\v\f"[rng() % 9]; return s; };
     for (int it = 0; it < 20000; ++it) {
         std::string s = randomText(rng() % 25); char d = ',';
         Views v = split(s, d); assert(join(v, ",") == s && v.size() == (size_t)std::count(s.begin(), s.end(), d) + 1);                       // join 왕복, 토큰 수
@@ -648,10 +694,17 @@ int main() {
     // CSV: 알려진 경우
     { Rows r = csvParse("a,\"b,c\",d\n\"he said \"\"hi\"\"\",x,\n\"line1\nline2\",,z\n"); assert(r.size() == 3 && r[0] == (std::vector<std::string>{"a", "b,c", "d"}) && r[1] == (std::vector<std::string>{"he said \"hi\"", "x", ""}) && r[2] == (std::vector<std::string>{"line1\nline2", "", "z"}));
       threw = false; try { csvParse("\"open"); } catch (const std::runtime_error&) { threw = true; } assert(threw); }
+    // CSV: CRLF 레코드, 따옴표 안의 CRLF, 홀로 있는 \r, 필드 중간의 따옴표
+    {   typedef std::vector<std::string> Row; Rows r = csvParse("a,b\r\nc,d\r\n"); assert(r.size() == 2 && r[0] == (Row{"a", "b"}) && r[1] == (Row{"c", "d"}));       // 마지막 필드에 \r 이 남지 않는다
+        r = csvParse("a,b\r\nc,d"); assert(r.size() == 2 && r[1] == (Row{"c", "d"}));
+        r = csvParse("\"a\r\nb\",c\r\n"); assert(r.size() == 1 && r[0] == (Row{"a\r\nb", "c"}));                                      // 따옴표 안의 CRLF 는 내용
+        r = csvParse("a\rb\n"); assert(r.size() == 1 && r[0] == (Row{"a\rb"}));                                                   // 홀로 있는 \r 은 내용
+        r = csvParse("a\"b,c\n"); assert(r.size() == 1 && r[0] == (Row{"a\"b", "c"}));                                            // 필드 중간의 따옴표는 따옴표 모드를 열지 않는다
+        assert(csvWrite(Rows{{"x\r"}}) == "\"x\r\"\n" && csvParse(csvWrite(Rows{{"x\r", "y"}, {"\r"}})) == (Rows{{"x\r", "y"}, {"\r"}})); }
     // CSV 쓰기 → 읽기 왕복 (필드에 쉼표·따옴표·줄바꿈·빈 문자열)
-    for (int it = 0; it < 20000; ++it) { Rows rows(rng() % 5); for (auto& r : rows) { r.resize(1 + rng() % 4); for (auto& f : r) { f.assign(rng() % 6, 'a'); for (char& c : f) c = ",\"\n\r ab"[rng() % 7]; } } assert(csvParse(csvWrite(rows)) == rows); }
-    // 큰 입력: 100 만 글자
-    { std::string big; for (int i = 0; i < 200000; ++i) big += "ab,c"; Views v = split(big, ','); assert(v.size() == 200001 && join(v, ",") == big); std::cout << "Split: " << v.size() << " tokens from a 10^6-character string; join round-trip, Python-style maxsplit/multi-character semantics and RFC 4180 CSV round-trips verified" << std::endl; }
+    for (int it = 0; it < 20000; ++it) { Rows rows(rng() % 5); for (auto& r : rows) { r.resize(1 + rng() % 4); for (auto& f : r) { f.assign(rng() % 6, 'a'); for (char& c : f) c = ",\"\n\r ab"[rng() % 7]; } } assert(csvParse(csvWrite(rows)) == rows); }       // 필드 끝의 \r 도 따옴표로 감싸야 CRLF 처리와 헷갈리지 않는다
+    // 큰 입력: 100 만 글자 (250000 x "ab,c")
+    { std::string big; for (int i = 0; i < 250000; ++i) big += "ab,c"; Views v = split(big, ','); assert(big.size() == 1000000 && v.size() == 250001 && join(v, ",") == big); std::cout << "Split: " << v.size() << " tokens from a 10^6-character string; join round-trip, Python-style maxsplit/multi-character semantics and RFC 4180-style CSV (LF and CRLF records, quotes, round trips) verified" << std::endl; }
     return 0;
 }
 // Time Complexity: O(n) (string_view 토큰, 복사 없음)
@@ -672,9 +725,9 @@ int main() {
 #include <vector>
 
 // 불변 문자열(Java String, Python str): 한 번 만들면 바뀌지 않는다.
-//  + 복사는 포인터 공유로 O(1), 여러 스레드가 락 없이 읽어도 안전, 해시를 한 번만 계산해 캐시, 해시맵 키로 안전.   + 인터닝하면 동치 비교가 포인터 비교 O(1).
+//  + 복사는 포인터 공유로 O(1), 여러 스레드가 락 없이 읽어도 안전, 해시를 (전체 문자열은) 한 번만 계산해 캐시, 해시맵 키로 안전.   + 인터닝하면 동치 비교가 포인터 비교 O(1).
 //  − 수정마다 새 문자열(연결 O(n+m)) → 가변 버퍼(StringBuilder)가 따로 필요.   − 조각(slice)이 버퍼를 공유하면 작은 조각이 큰 원본을 붙잡는다 (Java 6 의 substring 메모리 누수) → compact() 로 복사해 놓아 준다.
-//  아래 구현은 ① 공유·불변 확인 ② 인터닝 풀(약한 참조라 쓰이지 않으면 해제) ③ 8 스레드 동시 읽기(TSan) ④ 해시·비교 비용 계수 ⑤ slice 공유와 compact 를 한 번에 확인한다.
+//  아래 구현은 ① 공유·불변 확인 ② 인터닝 풀(약한 참조라 쓰이지 않으면 해제) ③ 8 스레드 동시 읽기(TSan) ④ 해시·비교 비용 계수 ⑤ slice 공유와 compact ⑥ slice 의 동일성(같은 버퍼라도 구간이 다르면 다른 객체)·내용 비교·해시(slice 는 캐시가 없어 매번 O(len) 로 계산하되 같은 내용의 문자열과 해시가 같다)를 한 번에 확인한다.
 static std::atomic<long> g_hashes{0}, g_cmpBytes{0};
 class IStr {
     friend class InternPool;
@@ -730,10 +783,17 @@ int main() {
     { std::weak_ptr<const void> watch; IStr small; { IStr big(std::string(1000000, 'B')); watch = big.observer(); small = big.slice(10, 8); assert(small.retainedBytes() == 1000000); }
       assert(!watch.expired() && small.size() == 8);                                                         // 큰 원본은 지역 변수가 사라져도 slice 때문에 살아 있다
       small = small.compact(); assert(watch.expired() && small.retainedBytes() == 8 && small.str() == std::string(8, 'B')); }
-    std::cout << "ImmutableString: sharing, interning (300 distinct words -> 300 objects, 0 byte comparisons), 8-thread reads without data races, hash cached once, slice retention and compact() verified" << std::endl;
+    // ⑥ slice 의 동일성·비교·해시: 같은 버퍼를 공유해도 구간이 다르면 다른 객체이고, 내용이 같으면 ==, 해시는 같은 내용의 독립 문자열과 같다
+    {   IStr w("abcabc"), a = w.slice(0, 3), b = w.slice(3, 3), c = w.slice(1, 3), whole = w.slice(0, 6);
+        assert(a.sameObject(w.slice(0, 3)) && !a.sameObject(b) && !a.sameObject(c) && !a.sameObject(w) && whole.sameObject(w));          // 버퍼 포인터만 같다고 같은 객체가 아니다
+        g_cmpBytes = 0; assert(a == b && g_cmpBytes == 3 && !(a == c) && c.str() == "bca" && a.str() == "abc" && b.str() == "abc");        // "abc" == "abc" (다른 구간), "abc" != "bca"
+        IStr plain("abc"); assert(a.hash() == plain.hash() && b.hash() == plain.hash() && c.hash() == IStr("bca").hash() && a.hash() != c.hash() && a.hash() != w.hash() && whole.hash() == w.hash());     // slice 해시 = 자기 내용의 해시 (원본 해시가 아니다)
+        assert(a == plain && plain == b && !(c == plain));
+    }
+    std::cout << "ImmutableString: sharing, interning (300 distinct words -> 300 objects, 0 byte comparisons), 8-thread reads without data races, hash cached once, slice retention and compact(), slice identity/equality/hash (equal content -> equal hash) verified" << std::endl;
     return 0;
 }
-// Time Complexity: 복사 O(1), 연결 O(n+m), 인터닝 평균 O(len), 해시 O(1) (캐시)
+// Time Complexity: 복사 O(1), 연결 O(n+m), 인터닝 평균 O(len), 해시 O(1) (전체 문자열은 캐시, slice 는 O(len))
 // Space Complexity: O(n) (slice 는 원본 버퍼를 공유)
 ```
 # Part 2. 기본 연산 응용
@@ -750,7 +810,8 @@ int main() {
 
 // 회문(palindrome) 여섯 가지를 각각 독립적인 참조 구현과 대조한다.
 //  ① 알파벳·숫자만 보고 대소문자를 무시하는 두 포인터 판별  ② 문자 하나를 지워서 회문이 되는가(그리디 한 번 건너뛰기)  ③ 가장 긴 회문 부분 문자열(중심 확장 O(n²)) — 인증서: 회문이고, 더 긴 회문 부분 문자열이 없다
-//  ④ 회문 부분 문자열의 개수(중심 확장 vs DP 표)  ⑤ 회문이 되도록 넣어야 하는 최소 글자 수 = n − (가장 긴 회문 부분 수열)  ⑥ 앞에 붙여 만드는 최단 회문(KMP 접두사 함수 한 번, 선형).
+//  ④ 회문 부분 문자열의 개수(중심 확장 vs DP 표)  ⑤ 회문이 되도록 넣어야 하는 최소 글자 수 = n − (가장 긴 회문 부분 수열)  ⑥ 앞에 붙여 만드는 최단 회문(KMP 접두사 함수 한 번, 선형 — 구분 문자 없이 s + reverse(s) 만 쓰므로 s 에 '#' 같은 글자가 있어도 맞다).
+//  ③ 은 길이가 같으면 가장 왼쪽 회문을 돌려주는 것까지 확인한다. 최단 회문은 접두사 함수의 비교 횟수를 세어 3·|s + reverse(s)| 이하임을 확인한다.
 bool isPalindrome(const std::string& s) {
     int i = 0, j = (int)s.size() - 1;
     while (i < j) { while (i < j && !std::isalnum((unsigned char)s[i])) ++i; while (i < j && !std::isalnum((unsigned char)s[j])) --j; if (std::tolower((unsigned char)s[i]) != std::tolower((unsigned char)s[j])) return false; ++i; --j; }
@@ -772,9 +833,12 @@ long countPal(const std::string& s) { int n = (int)s.size(); long cnt = 0; for (
 long countPalDP(const std::string& s) { int n = (int)s.size(); std::vector<std::vector<char>> d(n, std::vector<char>(n, 0)); long cnt = 0; for (int len = 1; len <= n; ++len) for (int i = 0; i + len <= n; ++i) { int j = i + len - 1; d[i][j] = s[i] == s[j] && (len <= 2 || d[i + 1][j - 1]); cnt += d[i][j]; } return cnt; }
 int minInsertions(const std::string& s) { int n = (int)s.size(); std::string r(s.rbegin(), s.rend()); std::vector<std::vector<int>> L(n + 1, std::vector<int>(n + 1, 0)); for (int i = 1; i <= n; ++i) for (int j = 1; j <= n; ++j) L[i][j] = s[i - 1] == r[j - 1] ? L[i - 1][j - 1] + 1 : std::max(L[i - 1][j], L[i][j - 1]); return n - L[n][n]; }
 int bruteInsertions(const std::string& s) { int n = (int)s.size(), best = 0; for (unsigned m = 1; m < (1u << n); ++m) { std::string t; for (int i = 0; i < n; ++i) if (m >> i & 1) t += s[i]; if (plain(t, 0, (int)t.size() - 1)) best = std::max(best, (int)t.size()); } return n - best; }
-std::string shortestPalindrome(const std::string& s) {                   // 앞에 붙여서: 가장 긴 회문 접두사를 찾는다 = (s + '#' + reverse(s)) 의 접두사 함수 마지막 값
-    std::string t = s + "#" + std::string(s.rbegin(), s.rend()); std::vector<int> pi(t.size(), 0); for (size_t i = 1; i < t.size(); ++i) { int k = pi[i - 1]; while (k && t[i] != t[k]) k = pi[k - 1]; if (t[i] == t[k]) ++k; pi[i] = k; }
-    int keep = pi.back(); std::string r(s.rbegin(), s.rend()); return r.substr(0, s.size() - keep) + s;
+std::string shortestPalindrome(const std::string& s, long* cmps = nullptr) {   // 앞에 붙여서: 가장 긴 회문 접두사 = t = s + reverse(s) 의 border(접두사이면서 접미사) 중 길이가 |s| 이하인 가장 긴 것.
+    // 길이 k <= |s| 인 border 는 s[0..k) == reverse(s[0..k)) 와 같은 말이다. 구분 문자를 끼우면 s 에 그 글자가 있을 때 border 가 |s| 를 넘어 틀리므로 끼우지 않고, 접두사 함수의 사슬을 따라 |s| 이하가 될 때까지 내려간다.
+    size_t n = s.size(); if (n == 0) return s; std::string r(s.rbegin(), s.rend()), t = s + r; std::vector<int> pi(t.size(), 0); long c = 0; auto eq = [&](size_t a, size_t b) { ++c; return t[a] == t[b]; };
+    for (size_t i = 1; i < t.size(); ++i) { int k = pi[i - 1]; while (k && !eq(i, k)) k = pi[k - 1]; if (eq(i, k)) ++k; pi[i] = k; }
+    size_t keep = pi.back(); while (keep > n) keep = pi[keep - 1];        // |s| 이하인 가장 긴 border
+    if (cmps) *cmps = c; return r.substr(0, n - keep) + s;
 }
 std::string bruteShortest(const std::string& s) { for (size_t k = s.size() + 1; k-- > 0;) if (plain(s, 0, (int)k - 1)) return std::string(s.rbegin(), s.rend() - k) + s; return s; }
 
@@ -783,13 +847,18 @@ int main() {
     std::mt19937 rng(77); const char alpha[] = "aAb1 ,.!B";
     for (int it = 0; it < 200000; ++it) { std::string s(rng() % 13, 'a'); for (char& c : s) c = alpha[rng() % 9]; assert(isPalindrome(s) == refPalindrome(s)); }              // ① 참조: 걸러 낸 뒤 뒤집어 비교
     for (int it = 0; it < 100000; ++it) { std::string s(rng() % 13, 'a'); for (char& c : s) c = (char)('a' + rng() % 3); assert(validPalindromeII(s) == bruteII(s)); }              // ②
-    for (int it = 0; it < 30000; ++it) { std::string s(rng() % 31, 'a'); for (char& c : s) c = (char)('a' + rng() % 2); std::string p = longestPalSub(s); assert(p.size() == bruteLongest(s) && plain(p, 0, (int)p.size() - 1) && s.find(p) != std::string::npos); assert(countPal(s) == countPalDP(s)); }          // ③ ④
+    for (int it = 0; it < 30000; ++it) { std::string s(rng() % 31, 'a'); for (char& c : s) c = (char)('a' + rng() % 2); std::string p = longestPalSub(s); size_t L = bruteLongest(s), first = 0; assert(p.size() == L && plain(p, 0, (int)p.size() - 1) && s.find(p) != std::string::npos); assert(countPal(s) == countPalDP(s));
+      if (L) { while (!plain(s, (int)first, (int)(first + L - 1))) ++first; assert(p == s.substr(first, L)); } }          // ③ ④ (길이가 같은 회문이 여럿이면 가장 왼쪽 것)
+    assert(longestPalSub("aabcc") == "aa" && longestPalSub("abcd") == "a" && longestPalSub("xabayzbcb") == "aba" && longestPalSub("").empty());
     { std::string s(1500, 'a'); for (char& c : s) c = (char)('a' + rng() % 2); std::string p = longestPalSub(s); int n = (int)s.size(); std::vector<std::vector<char>> d(n, std::vector<char>(n, 0)); size_t longest = 0;      // 인증서: 표로 모든 부분 문자열을 검사해도 더 긴 회문은 없다
       for (int len = 1; len <= n; ++len) for (int i = 0; i + len <= n; ++i) { int j = i + len - 1; d[i][j] = s[i] == s[j] && (len <= 2 || d[i + 1][j - 1]); if (d[i][j]) longest = len; } assert(p.size() == longest && countPal(s) == countPalDP(s)); }
     for (int it = 0; it < 3000; ++it) { std::string s(rng() % 13, 'a'); for (char& c : s) c = (char)('a' + rng() % 3); assert(minInsertions(s) == bruteInsertions(s)); }                    // ⑤
-    for (int it = 0; it < 50000; ++it) { std::string s(rng() % 11, 'a'); for (char& c : s) c = (char)('a' + rng() % 2); std::string r = shortestPalindrome(s); assert(r == bruteShortest(s) && plain(r, 0, (int)r.size() - 1) && r.size() >= s.size() && r.compare(r.size() - s.size(), s.size(), s) == 0); }   // ⑥
-    { std::string s(1000000, 'a'); s += 'b'; std::string r = shortestPalindrome(s); assert(r.size() == s.size() + 1 && r.front() == 'b' && r.back() == 'b' && plain(r, 0, (int)r.size() - 1));       // 100 만 글자: 선형 시간
-      std::cout << "Palindrome: all six algorithms matched their reference implementations on random inputs; shortest-palindrome on a 10^6-character string is linear" << std::endl; }
+    long withHash = 0;
+    for (int it = 0; it < 50000; ++it) { std::string s(rng() % 11, 'a'); for (char& c : s) c = "ab#"[rng() % (it & 1 ? 3 : 2)]; withHash += s.find('#') != std::string::npos; std::string r = shortestPalindrome(s); assert(r == bruteShortest(s) && plain(r, 0, (int)r.size() - 1) && r.size() >= s.size() && r.compare(r.size() - s.size(), s.size(), s) == 0); }   // ⑥ ('#' 가 들어 있는 입력 포함)
+    assert(withHash > 10000 && shortestPalindrome("#a") == "a#a" && shortestPalindrome("##") == "##" && shortestPalindrome("a#") == "#a#" && shortestPalindrome("").empty() && shortestPalindrome("aa") == "aa");
+    { std::string s(1000000, 'a'); s += 'b'; long cmps = 0; std::string r = shortestPalindrome(s, &cmps); assert(r.size() == s.size() + 1 && r.front() == 'b' && r.back() == 'b' && plain(r, 0, (int)r.size() - 1));
+      assert(cmps <= 3 * 2 * (long)s.size());                                       // 100 만 글자: 접두사 함수의 문자 비교는 3|t| 이하 (t = s + reverse(s), 비교 횟수 <= 입력 길이의 상수배)
+      std::cout << "Palindrome: all six algorithms matched their reference implementations on random inputs (" << withHash << " shortest-palindrome inputs contained '#'); on a 10^6-character string shortest-palindrome used " << cmps << " character comparisons (bound 3|t| = " << 3 * 2 * s.size() << ")" << std::endl; }
     return 0;
 }
 // Time Complexity: 판별 O(n), 가장 긴 회문 부분 문자열·개수 O(n²), 최소 삽입 O(n²), 최단 회문 O(n)
@@ -1614,7 +1683,7 @@ int main() {
 
 // 라빈-카프(롤링 해시 관점의 요약, 정본은 Hash.md Part 5): 패턴의 해시와 텍스트의 길이 m 윈도 해시를 비교하고, 같을 때만 실제 문자열을 비교한다. 윈도를 밀 때 해시를 O(1) 로 갱신한다.
 //  ① 모듈러스 세 가지 — 2^61−1(무작위 밑), 작은 소수 101, 자연 오버플로 2^64 — 에서 가짜 일치(spurious hit) 수를 센다: 101 은 윈도당 1/101, 2^61−1 은 사실상 0, 2^64 는 Thue–Morse 문자열에 속아 대량 발생.
-//  ② 검증을 생략하면(해시만 믿으면) 틀린 답을 낸다.  ③ 같은 길이의 패턴 여러 개를 해시 맵 하나로 동시에 찾는다(무차별과 대조).  ④ 2차원 패턴 찾기: 행 해시를 다시 세로로 굴린다.
+//  ② 검증을 생략하면(해시만 믿으면) 틀린 답을 낸다.  ③ 같은 길이의 패턴 여러 개를 해시 맵 하나로 동시에 찾는다(무차별과 대조).  ④ 2차원 패턴 찾기: 행 해시를 다시 세로로 굴린다 (모듈러 2^61−1 로 1000x1000 격자 + 모듈러 101 로 무작위 격자를 무차별 탐색과 대조 — 가짜 일치가 실제로 나와도 직접 비교가 걸러 낸다).
 typedef std::uint64_t u64; __extension__ typedef unsigned __int128 u128;
 const u64 P61 = (1ULL << 61) - 1;
 struct M61 { static u64 add(u64 a, u64 b) { u64 r = a + b; return r >= P61 ? r - P61 : r; } static u64 sub(u64 a, u64 b) { return a >= b ? a - b : a + P61 - b; }
@@ -1633,6 +1702,15 @@ template <class M> std::vector<size_t> rabinKarp(const std::string& t, const std
 }
 std::vector<size_t> findAll(const std::string& t, const std::string& p) { std::vector<size_t> r; if (p.empty()) return r; for (size_t i = t.find(p); i != std::string::npos; i = t.find(p, i + 1)) r.push_back(i); return r; }
 std::string thueMorse(int len, bool flip) { std::string s(len, 'a'); for (int i = 0; i < len; ++i) s[i] = (__builtin_popcount(i) & 1) != flip ? 'b' : 'a'; return s; }
+
+template <class M> std::vector<std::pair<size_t, size_t>> findGrid(const std::vector<std::string>& g, const std::vector<std::string>& pat, u64 B1, u64 B2, long* spurious = nullptr) {   // 모듈러 M, 행/열 밑 B1/B2. 해시가 같은데 실제로 다르면 *spurious 를 센다
+    size_t R = g.size(), C = g[0].size(), r = pat.size(), c = pat[0].size(); std::vector<std::pair<size_t, size_t>> res; if (r > R || c > C) return res; u64 pw1 = 1, pw2 = 1; for (size_t i = 1; i < c; ++i) pw1 = M::mul(pw1, B1); for (size_t i = 1; i < r; ++i) pw2 = M::mul(pw2, B2);
+    auto rowHash = [&](const std::string& s, size_t col) { u64 h = 0; for (size_t k = 0; k < c; ++k) h = M::add(M::mul(h, B1), (unsigned char)s[col + k]); return h; };
+    u64 hp = 0; for (size_t i = 0; i < r; ++i) hp = M::add(M::mul(hp, B2), rowHash(pat[i], 0));
+    std::vector<std::vector<u64>> H(R, std::vector<u64>(C - c + 1)); for (size_t i = 0; i < R; ++i) { H[i][0] = rowHash(g[i], 0); for (size_t j = 1; j + c <= C; ++j) H[i][j] = M::add(M::mul(M::sub(H[i][j - 1], M::mul((unsigned char)g[i][j - 1], pw1)), B1), (unsigned char)g[i][j + c - 1]); }
+    for (size_t j = 0; j + c <= C; ++j) { u64 v = 0; for (size_t i = 0; i < r; ++i) v = M::add(M::mul(v, B2), H[i][j]);
+        for (size_t i = 0; i + r <= R; ++i) { if (v == hp) { bool ok = true; for (size_t k = 0; k < r && ok; ++k) ok = g[i + k].compare(j, c, pat[k]) == 0; if (ok) res.emplace_back(i, j); else if (spurious) ++*spurious; } if (i + r < R) v = M::add(M::mul(M::sub(v, M::mul(H[i][j], pw2)), B2), H[i + r][j]); } }
+    std::sort(res.begin(), res.end()); return res; }
 
 int main() {
     Stats st; assert((rabinKarp<M61>("abracadabra", "abra", 911382323ULL, true, st) == std::vector<size_t>{0, 7}) && rabinKarp<M61>("hello", "world", 131, true, st).empty() && rabinKarp<M61>("abc", "abcd", 131, true, st).empty());
@@ -1656,18 +1734,16 @@ int main() {
       std::vector<std::pair<size_t, int>> want; for (int id = 0; id < (int)pats.size(); ++id) for (size_t pos : findAll(t, pats[id])) want.emplace_back(pos, id); std::sort(got.begin(), got.end()); std::sort(want.begin(), want.end()); assert(got == want && got.size() > 1000);
       std::cout << "200 patterns found " << got.size() << " matches in one pass; "; }
     // ④ 2 차원: R×C 격자에서 r×c 패턴. 행 윈도 해시(밑 B1) → 열 방향으로 다시 롤링(밑 B2)
-    auto findGrid = [&](const std::vector<std::string>& g, const std::vector<std::string>& pat) {
-        size_t R = g.size(), C = g[0].size(), r = pat.size(), c = pat[0].size(); std::vector<std::pair<size_t, size_t>> res; if (r > R || c > C) return res; const u64 B1 = 1000003, B2 = 998244353; u64 pw1 = 1, pw2 = 1; for (size_t i = 1; i < c; ++i) pw1 = M61::mul(pw1, B1); for (size_t i = 1; i < r; ++i) pw2 = M61::mul(pw2, B2);
-        auto rowHash = [&](const std::string& s, size_t col) { u64 h = 0; for (size_t k = 0; k < c; ++k) h = M61::add(M61::mul(h, B1), (unsigned char)s[col + k]); return h; };
-        u64 hp = 0; for (size_t i = 0; i < r; ++i) hp = M61::add(M61::mul(hp, B2), rowHash(pat[i], 0));
-        std::vector<std::vector<u64>> H(R, std::vector<u64>(C - c + 1)); for (size_t i = 0; i < R; ++i) { H[i][0] = rowHash(g[i], 0); for (size_t j = 1; j + c <= C; ++j) H[i][j] = M61::add(M61::mul(M61::sub(H[i][j - 1], M61::mul((unsigned char)g[i][j - 1], pw1)), B1), (unsigned char)g[i][j + c - 1]); }
-        for (size_t j = 0; j + c <= C; ++j) { u64 v = 0; for (size_t i = 0; i < r; ++i) v = M61::add(M61::mul(v, B2), H[i][j]);
-            for (size_t i = 0; i + r <= R; ++i) { if (v == hp) { bool ok = true; for (size_t k = 0; k < r && ok; ++k) ok = g[i + k].compare(j, c, pat[k]) == 0; if (ok) res.emplace_back(i, j); } if (i + r < R) v = M61::add(M61::mul(M61::sub(v, M61::mul(H[i][j], pw2)), B2), H[i + r][j]); } }
-        std::sort(res.begin(), res.end()); return res; };
     for (int it = 0; it < 3000; ++it) { size_t R = 1 + rng() % 8, C = 1 + rng() % 8, r = 1 + rng() % 3, c = 1 + rng() % 3; std::vector<std::string> g(R, std::string(C, 'a')), pat(r, std::string(c, 'a')); for (auto& row : g) for (char& ch : row) ch = (char)('a' + rng() % 2); for (auto& row : pat) for (char& ch : row) ch = (char)('a' + rng() % 2);
-        std::vector<std::pair<size_t, size_t>> want; for (size_t i = 0; i + r <= R; ++i) for (size_t j = 0; j + c <= C; ++j) { bool ok = true; for (size_t k = 0; k < r && ok; ++k) ok = g[i + k].compare(j, c, pat[k]) == 0; if (ok) want.emplace_back(i, j); } assert(findGrid(g, pat) == want); }
+        std::vector<std::pair<size_t, size_t>> want; for (size_t i = 0; i + r <= R; ++i) for (size_t j = 0; j + c <= C; ++j) { bool ok = true; for (size_t k = 0; k < r && ok; ++k) ok = g[i + k].compare(j, c, pat[k]) == 0; if (ok) want.emplace_back(i, j); } assert(findGrid<M61>(g, pat, 1000003, 998244353) == want); }
+    {   // 충돌 처리: 2 차원 검색을 일부러 아주 작은 모듈러(101)로 돌려도 가짜 일치를 직접 비교로 걸러 내 정답과 같다 (검증을 빼면 틀린다)
+        long spur = 0, found = 0; for (int it = 0; it < 4000; ++it) { size_t R = 4 + rng() % 12, C = 4 + rng() % 12, r = 1 + rng() % 4, c = 1 + rng() % 4; std::vector<std::string> g(R, std::string(C, 'a')), pat(r, std::string(c, 'a')); for (auto& row : g) for (char& ch : row) ch = (char)('a' + rng() % 3); for (auto& row : pat) for (char& ch : row) ch = (char)('a' + rng() % 3);
+            std::vector<std::pair<size_t, size_t>> want; for (size_t i = 0; i + r <= R; ++i) for (size_t j = 0; j + c <= C; ++j) { bool ok = true; for (size_t k = 0; k < r && ok; ++k) ok = g[i + k].compare(j, c, pat[k]) == 0; if (ok) want.emplace_back(i, j); }
+            assert(findGrid<M101>(g, pat, 131, 257, &spur) == want); found += (long)want.size(); }
+        assert(spur >= 600 && found > 100);                                                          // 가짜 일치가 실제로 일어났다 (모듈러 101)
+        std::cout << "2D search with modulus 101 rejected " << spur << " spurious hits and still matched brute force; "; }
     { const size_t N = 1000, k = 20; std::vector<std::string> g(N, std::string(N, 'a')); for (auto& row : g) for (char& ch : row) ch = (char)('a' + rng() % 26); std::vector<std::string> pat(k); for (size_t i = 0; i < k; ++i) pat[i] = g[100 + i].substr(300, k);
-      std::vector<std::pair<size_t, size_t>> want = {{100, 300}}; for (std::pair<size_t, size_t> at : {std::pair<size_t, size_t>{0, 0}, {500, 500}, {979, 979}, {250, 700}}) { for (size_t i = 0; i < k; ++i) g[at.first + i].replace(at.second, k, pat[i]); want.push_back(at); } std::sort(want.begin(), want.end()); assert(findGrid(g, pat) == want);
+      std::vector<std::pair<size_t, size_t>> want = {{100, 300}}; for (std::pair<size_t, size_t> at : {std::pair<size_t, size_t>{0, 0}, {500, 500}, {979, 979}, {250, 700}}) { for (size_t i = 0; i < k; ++i) g[at.first + i].replace(at.second, k, pat[i]); want.push_back(at); } std::sort(want.begin(), want.end()); assert(findGrid<M61>(g, pat, 1000003, 998244353) == want);
       std::cout << "a 20x20 pattern was located at all 5 positions of a 1000x1000 grid" << std::endl; }
     return 0;
 }
@@ -1947,6 +2023,7 @@ int main() {
 
 // 마나커: 가장 긴 회문 부분 문자열을 O(n)에 구한다. 사이사이에 '#'을 끼워 홀수·짝수 길이를 한꺼번에 처리하고,
 // 지금까지 구한 가장 오른쪽 회문의 [center, right] 대칭 정보를 재사용한다
+// 검증: 직접 쓴 3 개 문자열, 무작위 문자열(알파벳 1~3 글자, '#' 가 들어 있는 경우 포함, 길이 0~40)에서 완전탐색과 같은 문자열(= 길이와 위치가 모두 같다: 길이가 같으면 가장 왼쪽), 결과가 회문이고 s 의 부분 문자열인지 직접 확인, 'a' 만 3000 개인 입력.
 std::string longestPalindrome(const std::string& s) {
     std::string t = "#";
     for (char c : s) { t += c; t += '#'; }
@@ -1973,12 +2050,16 @@ int main() {
     assert(longestPalindrome("babad").size() == 3);
     assert(longestPalindrome("cbbd") == "bb");
     assert(longestPalindrome("forgeeksskeegfor") == "geeksskeeg");
-    std::mt19937 rng(4);
-    for (int iter = 0; iter < 2000; iter++) {
-        std::string s; int n = rng() % 30 + 1; for (int i = 0; i < n; i++) s += "ab"[rng() % 2];
-        assert(longestPalindrome(s).size() == brute(s).size());
+    std::mt19937 rng(4); long hashCases = 0;
+    for (int iter = 0; iter < 3000; iter++) {
+        const char* alpha = (iter & 1) ? "abc" : "#ab"; int sigma = 1 + (iter / 2) % 3;       // 알파벳 1~3 글자 (짝수 번째는 '#' 를 글자로 쓴다 — 마나커의 구분자와 같은 글자)
+        std::string s; int n = rng() % 41; for (int i = 0; i < n; i++) s += alpha[rng() % sigma];
+        std::string got = longestPalindrome(s), want = brute(s); bool pal = true; for (size_t a = 0, b = got.size(); b > 0 && a < b - 1; a++, b--) pal = pal && got[a] == got[b - 1];
+        assert(got == want && pal && (got.empty() || s.find(got) != std::string::npos));       // 같은 문자열(길이·위치 모두), 회문, s 안에 있다
+        hashCases += (iter & 1) == 0 && s.find('#') != std::string::npos;
     }
-    std::cout << "Manacher matches brute force on 2000 random strings." << std::endl;
+    assert(hashCases > 500 && longestPalindrome(std::string(3000, 'a')) == std::string(3000, 'a') && longestPalindrome("").empty() && longestPalindrome("#").size() == 1 && longestPalindrome("x#y") == "x");
+    std::cout << "Manacher matches brute force (same string, hence same leftmost position) on 3000 random strings, " << hashCases << " of them containing '#'." << std::endl;
     return 0;
 }
 // Time Complexity: O(n)
@@ -2308,13 +2389,16 @@ int main() {
 #include <iostream>
 #include <algorithm>
 #include <numeric>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
 #include <cassert>
 
 // LCP 배열(Kasai): lcp[i] = SA 에서 이웃한 두 접미사 SA[i-1], SA[i] 의 최장 공통 접두사 길이.
-// 접미사 i 의 LCP 는 접미사 i+1 의 LCP 보다 1 이상 작지 않다는 성질로 전체를 O(n)에 구한다
+// 원문 순서로 h[i] = (접미사 i 와 SA 에서 바로 앞 접미사의 LCP) 라 하면 h[i+1] >= h[i] - 1 이다 (banana: h[0..5] = 0 3 2 1 0 0). 그래서 h 를 다음 접미사로 넘길 때 1 만 줄여 이어 가면 Kasai 단계 전체가 O(n).
+// 주의: 아래 suffixArray 는 s.substr 로 비교하는 정렬이라 O(n² log n) 이다. O(n) 은 SA 가 주어졌을 때의 Kasai 단계만의 비용이다.
+// 검증: banana 의 정확한 값, 무작위 문자열(알파벳 1~3 글자, '\0' 포함, 길이 0~40)에서 이웃 접미사를 글자별로 비교한 LCP 와 일치, 서로 다른 부분 문자열 수 = 집합 크기, 가장 긴 반복 부분 문자열 = max(lcp).
 std::vector<int> suffixArray(const std::string& s) {
     std::vector<int> sa(s.size()); std::iota(sa.begin(), sa.end(), 0);
     std::sort(sa.begin(), sa.end(), [&](int a, int b) { return s.substr(a) < s.substr(b); });
@@ -2329,7 +2413,7 @@ std::vector<int> kasai(const std::string& s, const std::vector<int>& sa) {
             while (i + h < n && j + h < n && s[i + h] == s[j + h]) h++;
             lcp[rank[i]] = h;
             if (h > 0) h--;                                           // 다음 접미사에서는 최소 h-1 은 이미 일치
-        } else h = 0;
+        } else h = 0;                                             // SA 맨 앞 접미사는 앞 이웃이 없다. 이때 h 는 이미 0 이라 (h[i-1] <= 1 임을 보일 수 있다) 이 줄은 불변식을 명시할 뿐 결과를 바꾸지 않는다
     }
     return lcp;
 }
@@ -2346,10 +2430,23 @@ int main() {
     assert(distinct == 15 && distinct == (long)brute.size());
     // 응용: 가장 긴 반복 부분 문자열 = max(lcp)
     assert(*std::max_element(lcp.begin(), lcp.end()) == 3);           // "ana"
-    std::cout << "LCP(banana) = 0 1 3 0 0 2, distinct substrings = " << distinct << std::endl;
+    // 무작위: 알파벳 크기 1~3 (마지막 글자는 '\0' — std::string 은 NUL 도 내용이라 j + h < n 경계가 필요하다), 길이 0~40
+    std::mt19937 rng(8); long cases = 0, maxH = 0;
+    for (int it = 0; it < 3000; ++it) {
+        int sigma = 1 + it % 3, len = (int)(rng() % 41); std::string r; for (int i = 0; i < len; ++i) { int c = (int)(rng() % sigma); r += c == 2 ? '\0' : (char)('a' + c); }
+        std::vector<int> sar = suffixArray(r), lr = kasai(r, sar); assert(lr.size() == r.size());
+        for (size_t i = 0; i < r.size(); ++i) {
+            size_t want = 0; if (i > 0) { size_t a = (size_t)sar[i - 1], b = (size_t)sar[i]; while (a + want < r.size() && b + want < r.size() && r[a + want] == r[b + want]) ++want; }   // 이웃 접미사의 LCP (순진하게)
+            assert((size_t)lr[i] == want); maxH = std::max<long>(maxH, lr[i]);
+        }
+        std::set<std::string> subs; for (size_t i = 0; i < r.size(); i++) for (size_t l = 1; i + l <= r.size(); l++) subs.insert(r.substr(i, l));
+        assert((long)subs.size() == (long)r.size() * ((long)r.size() + 1) / 2 - std::accumulate(lr.begin(), lr.end(), 0L)); ++cases;
+    }
+    assert(cases == 3000 && maxH >= 20);                                     // 알파벳 1 글자("aaa...")에서는 LCP 가 길게 나온다
+    std::cout << "LCP(banana) = 0 1 3 0 0 2, distinct substrings = " << distinct << "; Kasai matched pairwise LCP on " << cases << " random strings (max LCP " << maxH << ")" << std::endl;
     return 0;
 }
-// Time Complexity: O(n)
+// Time Complexity: Kasai 단계 O(n) (이 코드의 접미사 배열 정렬은 O(n² log n))
 // Space Complexity: O(n)
 ```
 ## SuffixAutomaton()
@@ -2520,7 +2617,9 @@ int main() {
 
 // 다항 롤링 해시(문자열 관점의 요약, 정본은 Hash.md Part 5): H(s[l..r)) = P[r] − P[l]·B^(r−l).  접두사 해시를 한 번 만들어 두면 임의 부분 문자열의 해시를 O(1) 에 구한다.
 //  여기서는 mod 2^61−1 과 무작위 밑을 쓰고 ① 같은 부분 문자열 ↔ 같은 해시를 직접 비교와 대조  ② 해시로 LCP 를 이분 탐색(O(log n))해 두 접미사를 사전순으로 비교 — std::string 비교와 일치
-//  ③ 팰린드롬 판정(정방향 해시 = 역방향 해시)  ④ 모듈러가 작으면(10^9+7) 생일 역설로 서로 다른 문자열 20 만 개에서 충돌이 실제로 나타난다.
+//  ③ 팰린드롬 판정(정방향 해시 = 역방향 해시)  ④ 모듈러가 작으면(10^9+7) 생일 역설로 서로 다른 문자열 20 만 개에서 충돌이 실제로 나타난다 (PRH 클래스가 아니라 mod 10^9+7 의 단순 해시 h·131+c 를 따로 돌려서 센다).
+//  ⑤ 밑이 2 의 거듭제곱(256)이면 mod 2^61−1 에서 2^61 ≡ 1 이라 거리 23 인 두 위치의 변화가 서로 상쇄되어 서로 다른 문자열이 반드시 충돌한다 → 밑은 무작위로 골라야 한다.
+//  ①~③ 은 바이트 0x80~0xFF 가 든 문자열(부호 없는 바이트로 취급)과 기본이 아닌 밑(131)에서도 돌린다.
 typedef std::uint64_t u64; __extension__ typedef unsigned __int128 u128;
 const u64 P = (1ULL << 61) - 1;
 u64 mulmod(u64 a, u64 b) { u128 t = (u128)a * b; u64 r = (u64)(t & P) + (u64)(t >> 61); if (r >= P) r -= P; if (r >= P) r -= P; return r; }
@@ -2533,17 +2632,23 @@ size_t lcpByHash(const PRH& h, size_t n, size_t i, size_t j) { size_t lo = 0, hi
 int compareSuffix(const std::string& s, const PRH& h, size_t i, size_t j) { size_t l = lcpByHash(h, s.size(), i, j); if (i + l == s.size() || j + l == s.size()) return i == j ? 0 : (i + l == s.size() ? -1 : 1); return (unsigned char)s[i + l] < (unsigned char)s[j + l] ? -1 : 1; }
 
 int main() {
-    std::mt19937_64 rng(13); u64 B = 256 + rng() % (P - 256);
+    std::mt19937_64 rng(13); u64 B = 256 + rng() % (P - 256); const char highAlpha[4] = {'a', (char)0x80, (char)0xFF, (char)0x7F}; long highSeen = 0;
     { PRH h("abcabcabc", B); assert(h.get(0, 3) == h.get(3, 6) && h.get(3, 6) == h.get(6, 9) && h.get(0, 3) != h.get(1, 4) && h.get(2, 2) == 0); }
     for (int it = 0; it < 2000; ++it) {                                                          // ① 모든 부분 문자열 쌍: 같음 ↔ 해시 같음
-        std::string s(1 + rng() % 25, 'a'); for (char& c : s) c = (char)('a' + rng() % 2); PRH h(s, B); size_t n = s.size();
+        std::string s(1 + rng() % 25, 'a'); for (char& c : s) c = (it & 1) ? highAlpha[rng() % 4] : (char)('a' + rng() % 2); PRH h(s, it % 3 == 0 ? 131 : B); size_t n = s.size(); highSeen += (it & 1) && s.find_first_of(std::string("\x80\xFF", 2)) != std::string::npos;
         for (size_t l1 = 0; l1 < n; ++l1) for (size_t l2 = 0; l2 < n; ++l2) { size_t len = 1 + rng() % std::min(n - l1, n - l2); assert((h.get(l1, l1 + len) == h.get(l2, l2 + len)) == (s.compare(l1, len, s, l2, len) == 0)); }
         for (size_t i = 0; i < n; ++i) for (size_t j = 0; j < n; ++j) { size_t l = lcpByHash(h, n, i, j), t = 0; while (i + t < n && j + t < n && s[i + t] == s[j + t]) ++t; assert(l == t);          // ② LCP 와 사전순 비교
             int want = s.compare(i, std::string::npos, s, j, std::string::npos); assert(compareSuffix(s, h, i, j) == (want < 0 ? -1 : want > 0 ? 1 : 0)); }
     }
     for (int it = 0; it < 3000; ++it) {                                                          // ③ 팰린드롬: s[l..r) 이 회문 ↔ 정방향 해시 == 역방향 해시
-        std::string s(1 + rng() % 30, 'a'); for (char& c : s) c = (char)('a' + rng() % 2); std::string r(s.rbegin(), s.rend()); PRH f(s, B), b(r, B); size_t n = s.size();
+        std::string s(1 + rng() % 30, 'a'); for (char& c : s) c = (it & 1) ? highAlpha[rng() % 3] : (char)('a' + rng() % 2); std::string r(s.rbegin(), s.rend()); PRH f(s, B), b(r, B); size_t n = s.size();
         for (size_t l = 0; l < n; ++l) for (size_t e = l + 1; e <= n; ++e) { bool pal = true; for (size_t k = 0; k < (e - l) / 2; ++k) pal = pal && s[l + k] == s[e - 1 - k]; assert((f.get(l, e) == b.get(n - e, n - l)) == pal); }
+    }
+    assert(highSeen > 500);                                                                    // 높은 바이트가 실제로 들어간 문자열이 충분히 있었다
+    {   // ⑤ 밑이 256 이면 (2^61 ≡ 1 mod P 이므로) 인덱스 0 과 23 의 글자를 (+1, −2) 만큼 바꾸는 변화가 상쇄된다: s1 = "b"+22x+"a"+6y, s2 = "a"+22x+"c"+6y
+        std::string s1 = "b" + std::string(22, 'x') + "a" + std::string(6, 'y'), s2 = "a" + std::string(22, 'x') + "c" + std::string(6, 'y'); size_t n = s1.size();
+        assert(s1 != s2 && s1.size() == s2.size() && PRH(s1, 256).get(0, n) == PRH(s2, 256).get(0, n));      // 고정된 밑 256: 서로 다른 문자열이 충돌한다
+        assert(PRH(s1, B).get(0, n) != PRH(s2, B).get(0, n) && PRH(s1, 131).get(0, n) != PRH(s2, 131).get(0, n));       // 무작위 밑(또는 256 이 아닌 밑)에서는 충돌하지 않는다
     }
     // ④ 작은 모듈러(10^9+7) vs 2^61−1: 길이 12 의 서로 다른 무작위 문자열 20 만 개 (생일 역설: 기대 충돌 ≈ n²/2M ≈ 20)
     { std::set<std::string> distinct; while (distinct.size() < 200000) { std::string s(12, 'a'); for (char& c : s) c = (char)('a' + rng() % 26); distinct.insert(s); }
@@ -2551,7 +2656,7 @@ int main() {
       assert(collSmall >= 5 && collBig == 0);
       // 큰 입력: 100 만 글자에서 무작위 부분 문자열 쌍 10 만 개
       std::string text(1000000, 'a'); for (char& c : text) c = "ab"[rng() % 2]; PRH h(text, B); for (int q = 0; q < 100000; ++q) { size_t len = 1 + rng() % 50, l1 = rng() % (text.size() - len), l2 = q % 2 ? (l1 + len * 5) % (text.size() - len) : rng() % (text.size() - len); assert((h.get(l1, l1 + len) == h.get(l2, l2 + len)) == (text.compare(l1, len, text, l2, len) == 0)); }
-      std::cout << "PolynomialRollingHash: substring equality, hash-LCP suffix comparison and palindrome tests matched direct comparison; 200000 distinct 12-letter strings collided " << collSmall << " times under mod 10^9+7 and " << collBig << " under 2^61-1" << std::endl; }
+      std::cout << "PolynomialRollingHash: substring equality, hash-LCP suffix comparison and palindrome tests matched direct comparison; strings with bytes >= 0x80 and a non-default base were covered; a fixed base 256 collides on a constructed pair while the random base does not; 200000 distinct 12-letter strings collided " << collSmall << " times under a separate plain (h*131+c) mod 10^9+7 hash (not the PRH class) and " << collBig << " times with PRH under 2^61-1" << std::endl; }
     return 0;
 }
 // Time Complexity: 전처리 O(n), 부분 문자열 해시 O(1), 해시 LCP O(log n)
@@ -3389,7 +3494,7 @@ int main() {
 #include <string>
 #include <vector>
 
-// 최장 공통 부분 문자열(연속) DP: dp[i][j] = a[i−1] == b[j−1] 이면 dp[i−1][j−1] + 1, 아니면 0.  최댓값이 답. 행 두 개만 쓰면 O(min) 공간.
+// 최장 공통 부분 문자열(연속) DP: dp[i][j] = a[i−1] == b[j−1] 이면 dp[i−1][j−1] + 1, 아니면 0.  최댓값이 답. 행 두 개만 쓰면 공간 O(m) (m = b 의 길이; 이 코드는 b 를 열로 쓴다 — 짧은 쪽을 b 로 넘기면 O(min(n, m))).
 //  ① 모든 부분 문자열을 모으는 무차별과 대조  ② 전혀 다른 알고리즘(두 문자열을 구분자로 이어 접미사 배열을 만들고, 서로 다른 문자열에서 온 인접 접미사의 LCP 최댓값)과 대조  ③ 칸 수 정확히 n·m, 같은 문자열이면 답은 n.
 long g_cells = 0;
 std::string lcsubstringDP(const std::string& a, const std::string& b) {

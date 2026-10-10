@@ -878,10 +878,10 @@
 | `Concat` | 1 | 분할상환 O(1)/문자(곱셈 성장), 왼쪽 결합 O(k²L), join O(kL) | O(n) |
 | `Substring` | 1 | substr 복사 O(len), 뷰 O(1) | substr 복사 O(len), 뷰 O(1) (포인터 + 길이) |
 | `Compare` | 1 | O(min(\|a\|, \|b\|)) | O(1) |
-| `문자열 비교의 시간복잡도` | 1 | 비교 O(LCP), 비교 기반 정렬 O(n log n · LCP), 멀티키 퀵정렬 O(n log n + D) | O(n) (포인터 배열), 재귀 깊이 O(log n + 최대 길이) |
+| `문자열 비교의 시간복잡도` | 1 | 비교 O(LCP), 비교 기반 정렬 O(n log n · LCP), 멀티키 퀵정렬 기대 O(n log n + D) (무작위 피벗) | O(n) (포인터 배열), 재귀 깊이 O(log n + 최대 길이) |
 | `Reverse` | 1 | O(n) | 바이트·코드 포인트 뒤집기 O(1), 글자 뒤집기 O(n) |
 | `Split` | 1 | O(n) (string_view 토큰, 복사 없음) | O(토큰 수) |
-| `Immutable String` | 1 | 복사 O(1), 연결 O(n+m), 인터닝 평균 O(len), 해시 O(1) (캐시) | O(n) (slice 는 원본 버퍼를 공유) |
+| `Immutable String` | 1 | 복사 O(1), 연결 O(n+m), 인터닝 평균 O(len), 해시 O(1) (전체 문자열은 캐시, slice 는 O(len)) | O(n) (slice 는 원본 버퍼를 공유) |
 | `Palindrome` | 2 | 판별 O(n), 가장 긴 회문 부분 문자열·개수 O(n²), 최소 삽입 O(n²), 최단 회문 O(n) | 판별 O(1), 최소 삽입 O(n²), 최단 회문 O(n) |
 | `Anagram` | 2 | 판별 O(n), 윈도 탐색 O(\|text\| + \|pattern\|), 그룹핑 O(총 길이) (서명·해시) / O(총 길이 · log 길이) (정렬) | O(알파벳) (판별), O(총 길이) (그룹핑) |
 | `RunLengthEncoding` | 2 | O(n) | O(n) |
@@ -904,7 +904,7 @@
 | `AhoCorasick` | 8 | O(n + Σ\|패턴\| + z)  (z = 출현 횟수) | O(Σ\|패턴\| · σ) |
 | `SuffixArray` | 9 | 구성 O(n log² n) (배가법) / O(n² log n) 최악 (순진), LCP O(n), 검색 O(m log n) | O(n) |
 | `BuildSuffixArray` | 9 | O(n log² n)  (기수 정렬을 쓰면 O(n log n), SA-IS 는 O(n)) | O(n) |
-| `LCPArray` | 9 | O(n) | O(n) |
+| `LCPArray` | 9 | Kasai 단계 O(n) (이 코드의 접미사 배열 정렬은 O(n² log n)) | O(n) |
 | `SuffixAutomaton` | 9 | 구성 O(n log σ), 질의 O(m log σ) | O(n) |
 | `FMIndex` | 9 | count O(\|P\|·Occ 비용), locate O(s·Occ 비용), 구성 O(n log n) (이 구현의 정렬 기반) | BWT n 문자 + Occ 체크포인트 + SA 표본 n/s 개 (BWT 를 압축하면 n H_k 비트) |
 | `PalindromicTree` | 9 | O(n log σ) | O(n) |
@@ -1030,7 +1030,7 @@
 | `KDTree` | 11 | 구성 O(n log n), 최근접 평균 O(log n) | O(n) |
 | `QuadTree` | 11 | 삽입 O(깊이), 범위 질의 평균 O(log n + k) | O(n) |
 | `Octree` | 11 | 삽입 O(깊이), 반경 질의 평균 O(log n + k) | O(n) |
-| `BSPTree` | 11 | 구성 O(n²) 최악 (좋은 분할선을 고르면 O(n log n) 기대), 순회 O(조각 수) | O(조각 수) (분할로 최대 O(n²)) |
+| `BSPTree` | 11 | 구성 — 첫 선분을 고르면 노드마다 O(m) 분류라 균형이면 O(n log n), 최악 O(n²) (분할로 조각이 늘면 그 이상);  여기 쓴 최소 절단 선택기는 노드마다 O(m²) 라 루트에서만  | O(조각 수) (분할로 최대 O(n²)) |
 | `RangeQuery` | 12 | 전처리 O(n log n), 질의 O(1) | O(n log n) |
 | `LazyPropagation` | 12 | 갱신·질의 O(log n) | O(n) |
 | `RangeUpdate` | 12 | O(log n) | O(n) |
@@ -1045,7 +1045,7 @@
 | `OrderStatisticTree` | 13 | select·rank·삽입·삭제 기대 O(log N) | O(N) (노드당 크기 필드 하나) |
 | `WeightBalancedTree` | 13 | O(log N) | O(N) |
 | `ZipTree` | 13 | 기대 O(log N) | O(N) (랭크는 작은 정수) |
-| `WAVLTree` | 13 | 삽입 O(log N), 회전 최대 2번 | O(N) (랭크는 작은 정수; 랭크 차를 2비트로 저장 가능) |
+| `WAVLTree` | 13 | 삽입·삭제 O(log N) (승급·강등이 위로 전파되어도 경로 길이만큼), 연산당 회전 최대 2번 | O(N) (랭크는 작은 정수; 랭크 차를 2비트로 저장 가능), 재귀 깊이 O(log N) |
 | `PersistentTree` | 14 | 갱신·질의 O(log N) | 버전당 O(log N) |
 | `ImmutableTree` | 14 | 삽입 기대 O(log N) (인터닝 조회 포함 O(log² N)) | 버전당 O(log N), 같은 서브트리는 공유 |
 | `FingerTree` | 14 | 양 끝 push/pop 분할상환 O(1), at(i) O(log min(i, N − i)) | O(N), 영속 버전은 구조 공유 |
@@ -1062,7 +1062,7 @@
 | `SyntaxTree` | 16 | 구문 분석 O(N), 실행은 프로그램에 따라 다름 | O(N) |
 | `ParseTree` | 16 | 재귀 하강 파싱 O(N), 모호한 문법의 트리 수 세기 O(N^3) | O(N) |
 | `DecisionTree` | 16 | ID3 O(속성 수 × N × 깊이), CART 노드당 O(속성 수 × N log N) | O(N) |
-| `MerkleTree` | 16 | 루트 계산 O(N) 해시, 감사 경로 생성·검증 O(log N) (경로 생성은 부분 트리 해시 재계산 포함 O(N)) | 증명 O(log N) |
+| `MerkleTree` | 16 | 루트 계산 O(N) 해시, 검증 O(log N) 해시, 감사 경로 *생성* O(N) 해시 (형제 부분 트리의 해시를 매번 다시 계산한다; 노드 해시를 저장해 두면 O(log N)) | 증명 O(log N) |
 | `IntervalTree` | 16 | 삽입·삭제 O(log N) 기대, 겹침 하나 O(log N), 겹침 k 개 모두 O(k log N) 이내 | O(N) |
 | `RopeTree` | 16 | 색인·분할·삽입·삭제·붙이기 O(log N) | O(N), 편집마다 O(log N) 새 노드 |
 | `RTree` | 16 | 삽입 O(M log_m N), 검색은 겹침 정도에 따라 O(log N) ~ O(N) | O(N) |
