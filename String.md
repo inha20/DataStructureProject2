@@ -14,7 +14,7 @@
 
 // 문자열의 표현 세 가지: ① C 문자열(끝에 '\0'), ② 길이를 따로 저장(std::string 방식 — 중간에 '\0' 이 있어도 되고 길이가 O(1)), ③ 짧은 문자열 최적화(SSO):
 // 15 글자 이하는 객체 안의 버퍼에 두어 힙 할당이 아예 없다. 여기서는 ③ 을 직접 구현(MiniString)하고 std::string 과 무작위 연산열로 대조한다.
-//  불변식: c_str()[size()] == '\0' · size() ≤ capacity() · 힙을 쓰는 것은 capacity() > 15 일 때뿐 · 이동하면 원본은 비지만 유효 · 자기 자신에 붙이기(s.append(s)) 도 안전 · 할당/해제 횟수가 같다(누수 없음).
+//  불변식: c_str()[size()] == '\0' · size() ≤ capacity() · 힙을 쓰는 것은 capacity() > 15 일 때뿐 · 이동하면 원본은 비지만 유효 · 자기 자신에 붙이기(s.append(s)) 도 안전 · 할당/해제 횟수가 같다(누수 없음) · push_back 을 N 번 하면 힙 할당은 O(log N) 번뿐(기하급수 성장 → 분할상환 O(1)).
 static long g_allocs = 0, g_frees = 0;
 char* heapAlloc(size_t n) { ++g_allocs; return static_cast<char*>(std::malloc(n)); }
 void heapFree(char* p) { ++g_frees; std::free(p); }
@@ -57,6 +57,7 @@ public:
 };
 
 int main() {
+    long growAllocs = 0;
     // ① C 문자열 vs 길이 저장: 중간 '\0'
     char c[] = "hello"; assert(sizeof(c) == 6 && std::strlen(c) == 5);
     MiniString m("a\0b", 3); std::string t("a\0b", 3); assert(m.size() == 3 && t.size() == 3 && std::strlen(m.c_str()) == 1 && m.equals(t));       // 길이를 알면 '\0' 도 내용, C 함수는 첫 '\0' 에서 멈춘다
@@ -91,8 +92,11 @@ int main() {
     assert(g_allocs == g_frees);                                                                                // 누수 없음
     // ④ 연산 횟수: strlen 은 O(n) 스캔, 길이 저장은 O(1)
     {   std::string big(1000000, 'x'); MiniString s(big.c_str()); long steps = 0; for (const char* p = s.c_str(); *p; ++p) ++steps; assert(steps == 1000000 && s.size() == 1000000); }
+    {   // ⑤ 기하급수 성장: push_back 100000 번에 힙 할당은 log2(100000) ≈ 16.6 → 17 번 이하 (capacity+1 씩 늘리면 10만 번에 가깝다)
+        long before = g_allocs; MiniString g; for (int i = 0; i < 100000; ++i) g.push_back('z'); growAllocs = g_allocs - before; assert(g.size() == 100000 && growAllocs >= 1 && growAllocs <= 17);
+    }
     assert(g_allocs == g_frees);
-    std::cout << "CreateString: MiniString matched std::string over 60000 random operations (" << g_allocs << " heap allocations, all freed); strings up to 15 chars never touched the heap" << std::endl;
+    std::cout << "CreateString: MiniString matched std::string over 60000 random operations (" << g_allocs << " heap allocations, all freed); strings up to 15 chars never touched the heap; 100000 push_backs took only " << growAllocs << " allocations (geometric growth)" << std::endl;
     return 0;
 }
 // Time Complexity: append 분할상환 O(1), insert/erase O(n), 길이 O(1)
@@ -3492,18 +3496,19 @@ int main() {
 #include <cassert>
 
 // 문자열 매칭 오토마톤: 패턴의 각 접두사 길이를 상태로 하는 DFA 를 미리 만들면 텍스트를 한 번 훑는 것만으로 매칭이 끝난다.
-// 텍스트 글자마다 O(1) 전이 (KMP 의 실패 함수를 완전한 전이표로 펼친 것)
+// 텍스트 글자마다 O(1) 전이 (KMP 의 실패 함수를 완전한 전이표로 펼친 것).
+// 검증: 무작위 이진 문자열에서 순진한 탐색과 같은 위치 목록, 빈 텍스트(n=0), 빈 패턴(m=0 → 결과 없음, Horspool/RabinKarp 와 같은 약속).
 struct Matcher {
     std::vector<std::vector<int>> delta; int m;
     explicit Matcher(const std::string& p) : delta(p.size() + 1, std::vector<int>(256, 0)), m(p.size()) {
-        delta[0][(unsigned char)p[0]] = 1;
+        if (m > 0) delta[0][(unsigned char)p[0]] = 1;
         for (int state = 1, x = 0; state <= m; state++) {             // x = 상태 state 의 "실패 상태"
             for (int c = 0; c < 256; c++) delta[state][c] = delta[x][c];
             if (state < m) { delta[state][(unsigned char)p[state]] = state + 1; x = delta[x][(unsigned char)p[state]]; }
         }
     }
     std::vector<size_t> search(const std::string& t) const {
-        std::vector<size_t> res; int s = 0;
+        std::vector<size_t> res; int s = 0; if (m == 0) return res;           // 빈 패턴은 결과 없음 (이게 없으면 모든 위치 1..n 이 나온다)
         for (size_t i = 0; i < t.size(); i++) { s = delta[s][(unsigned char)t[i]]; if (s == m) res.push_back(i + 1 - m); }
         return res;
     }
@@ -3513,14 +3518,15 @@ int main() {
     Matcher a("abab");
     assert((a.search("ababababc") == std::vector<size_t>{0, 2, 4}));
     assert(Matcher("x").search("abc").empty());
+    assert(Matcher("").search("abc").empty() && Matcher("").search("").empty() && Matcher("ab").search("").empty());        // 경계: 빈 패턴, 빈 텍스트
     std::mt19937 rng(6);
     for (int it = 0; it < 1000; it++) {
-        std::string t, p; int n = rng() % 40 + 1, m = rng() % 5 + 1;
+        std::string t, p; int n = rng() % 40, m = rng() % 6;                  // n, m 모두 0 부터 (빈 텍스트, 빈 패턴 포함)
         for (int i = 0; i < n; i++) t += "ab"[rng() % 2]; for (int i = 0; i < m; i++) p += "ab"[rng() % 2];
-        std::vector<size_t> expect; for (size_t i = 0; i + p.size() <= t.size(); i++) if (t.compare(i, p.size(), p) == 0) expect.push_back(i);
+        std::vector<size_t> expect; if (!p.empty()) for (size_t i = 0; i + p.size() <= t.size(); i++) if (t.compare(i, p.size(), p) == 0) expect.push_back(i);
         assert(Matcher(p).search(t) == expect);
     }
-    std::cout << "FiniteAutomaton matches naive on 1000 random cases." << std::endl;
+    std::cout << "FiniteAutomaton matches naive on 1000 random cases (including empty text and empty pattern)." << std::endl;
     return 0;
 }
 // Time Complexity: 구성 O(m·σ), 검색 O(n)

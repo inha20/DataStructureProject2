@@ -2174,7 +2174,8 @@ int main() {
 // 제거-백오프 스택(Hendler–Shavit–Yerushalmi 2004): 락프리 스택은 모든 스레드가 하나의 top 포인터를 CAS 하므로 경쟁이 심하면 병목이 된다. 그런데 동시에 도착한 push 와 pop 은 서로 상쇄될 수 있다 — push(x) 와 pop() 이 만나면 x 를 스택에 넣었다 꺼낸 것과 결과가 같으므로 스택을 거치지 않고 둘이 바로 값을 주고받으면 된다("제거"). 이 교환은 top 이 아닌 여러 개의 슬롯(제거 배열)에서 이뤄지므로 경쟁이 분산되고 오히려 처리량이 스레드 수에 따라 늘어난다.
 // 알고리즘: push/pop 은 먼저 중앙 스택(Treiber)에 CAS 를 한 번 시도한다. 실패(경쟁)하면 제거 배열의 무작위 슬롯에서 상대를 찾아 교환을 시도하고, 실패하면 중앙 스택부터 다시 한다. 교환 슬롯의 프로토콜: 슬롯은 {EMPTY, PUSH_WAIT(값), POP_WAIT, TAKEN, DELIVERED(값)} 상태를 가진다. push 는 EMPTY 에 PUSH_WAIT 을 걸고 기다리며 pop 이 PUSH_WAIT 을 TAKEN 으로 바꿔 값을 가져가면 완료, 거꾸로 pop 이 POP_WAIT 을 걸어 두면 push 가 DELIVERED(값)로 바꿔 전달한다. 모든 전이는 슬롯 워드 전체(태그 포함)에 대한 CAS 이고 태그가 전이마다 올라가 ABA 가 없다.
 // 선형화 가능성: 제거된 쌍은 "push 직후 pop" 이라는 순간에 선형화된다 — 두 연산의 구간이 겹치므로 유효한 순서다. 따라서 스택 의미(LIFO)는 유지된다.
-// 검증: ① 교환기 단위 시험: push 쪽과 pop 쪽 스레드가 같은 슬롯에서 값을 정확히 주고받음 ② 6 스레드(push 3 · pop 3 혼합) 스트레스: 값의 합과 개수 보존, 중복 없음, 풀 무누수 ③ 제거로 처리된 쌍의 수(참고 출력) ④ TSan 통과
+// 검증: ① 교환기 단위 시험: push 쪽과 pop 쪽 스레드가 같은 슬롯에서 값을 정확히 주고받음 ② 스택 수준의 결정적 랑데부(스레드·타이밍 없음): 시험용 스위치로 중앙 스택 CAS 를 실패한 것으로 만들고 슬롯마다 상대를 미리 세워 두면, push 는 기다리던 pop 에게 값을 전달하고(pop 이 먼저 온 역할) pop 은 기다리던 push 의 값을 가져가며(push 가 먼저 온 역할) 둘 다 중앙 스택을 건드리지 않고 제거 횟수가 정확히 오른다
+//  ③ 경쟁 없는 단일 스레드 열 2 만 번을 std::vector 모형과 대조(LIFO 순서, 풀 크기 32 에서의 거절, 노드 수 보존, 제거는 0 번) ④ 6 스레드(push 3 · pop 3) 스트레스: 30 만 개의 값이 각각 정확히 한 번씩 꺼내졌는지 값별 표로 확인(중복·누락·범위 밖 0), 꺼낸 수 + 남은 수 == 넣은 수, 풀 무누수; 모든 대기에 횟수 상한이 있어 값이 사라지면 멈추지 않고 단언이 실패한다 ⑤ 스트레스의 제거 횟수는 참고 출력일 뿐 단언하지 않는다(코어 수·부하에 따라 0 일 수 있다) ⑥ TSan 통과
 const uint32_t NIL = 0xFFFFFFFFu;
 enum State : uint64_t { EMPTY = 0, PUSH_WAIT = 1, TAKEN = 2, POP_WAIT = 3, DELIVERED = 4 };
 inline uint64_t pack(uint64_t tag, State s, uint32_t v) { return (tag << 40) | ((uint64_t)s << 32) | v; } inline State st(uint64_t w) { return (State)((w >> 32) & 0xFF); } inline uint64_t tg(uint64_t w) { return w >> 40; } inline uint32_t val(uint64_t w) { return (uint32_t)w; }
@@ -2200,40 +2201,62 @@ struct Exchanger {
     }
 };
 class EliminationStack {
-    static const int SLOTS = 4;
-    std::unique_ptr<std::atomic<uint32_t>[]> nextIdx; std::unique_ptr<std::atomic<uint32_t>[]> value; std::atomic<uint64_t> top{NIL}, freeTop{0}; Exchanger ex[SLOTS]; std::atomic<long> eliminated{0};
+    static const int SLOTS = 4; uint32_t cap_;
+    std::unique_ptr<std::atomic<uint32_t>[]> nextIdx; std::unique_ptr<std::atomic<uint32_t>[]> value; std::atomic<uint64_t> top{NIL}, freeTop{0}; Exchanger ex[SLOTS]; std::atomic<long> eliminated{0}; std::atomic<int> force{0};
+    bool consumeForce() { int f = force.load(); while (f > 0) { if (force.compare_exchange_weak(f, f - 1)) return true; } return false; }                      // 시험용: 앞으로 f 번의 중앙 스택 CAS 를 실패한 것으로 친다
     static bool casPush(std::atomic<uint64_t>& head, std::atomic<uint32_t>* nx, uint32_t i) { uint64_t h = head.load(); nx[i].store((uint32_t)h); return head.compare_exchange_strong(h, (((h >> 32) + 1) << 32) | i); }          // CAS 한 번만 시도
     static uint32_t casPop(std::atomic<uint64_t>& head, std::atomic<uint32_t>* nx, bool& contended) { uint64_t h = head.load(); uint32_t i = (uint32_t)h; if (i == NIL) { contended = false; return NIL; } uint32_t n = nx[i].load(); if (head.compare_exchange_strong(h, (((h >> 32) + 1) << 32) | n)) { contended = false; return i; } contended = true; return NIL; }
     static void pushLoop(std::atomic<uint64_t>& head, std::atomic<uint32_t>* nx, uint32_t i) { while (!casPush(head, nx, i)) {} }
     uint32_t popLoop(std::atomic<uint64_t>& head) { bool c; for (;;) { uint32_t i = casPop(head, nextIdx.get(), c); if (!c) return i; } }
 public:
-    explicit EliminationStack(uint32_t cap) : nextIdx(new std::atomic<uint32_t>[cap]), value(new std::atomic<uint32_t>[cap]) { for (uint32_t i = 0; i < cap; i++) { nextIdx[i] = i + 1 < cap ? i + 1 : NIL; value[i] = 0; } freeTop = cap ? 0 : NIL; }
-    Exchanger& exchanger(int i) { return ex[i]; }
+    explicit EliminationStack(uint32_t cap) : cap_(cap), nextIdx(new std::atomic<uint32_t>[cap]), value(new std::atomic<uint32_t>[cap]) { for (uint32_t i = 0; i < cap; i++) { nextIdx[i] = i + 1 < cap ? i + 1 : NIL; value[i] = 0; } freeTop = cap ? 0 : NIL; }
+    Exchanger& exchanger(int i) { return ex[i]; } static int slots() { return SLOTS; } void forceContention(int attempts) { force = attempts; }
     bool push(uint32_t v, std::mt19937& rng) {
         uint32_t n = popLoop(freeTop); if (n == NIL) return false; value[n].store(v);
-        for (;;) { if (casPush(top, nextIdx.get(), n)) return true;                                                          // 중앙 스택: CAS 한 번
+        for (;;) { if (!consumeForce() && casPush(top, nextIdx.get(), n)) return true;                                                          // 중앙 스택: CAS 한 번
             if (ex[rng() % SLOTS].offerPush(v, 20)) { eliminated++; pushLoop(freeTop, nextIdx.get(), n); return true; } }          // 경쟁하면 제거 배열에서 상대를 찾는다 (성공하면 노드는 풀로)
     }
     bool pop(uint32_t& out, std::mt19937& rng) {
-        for (;;) { bool contended; uint32_t i = casPop(top, nextIdx.get(), contended);
+        for (;;) { bool contended = true; uint32_t i = NIL; if (!consumeForce()) i = casPop(top, nextIdx.get(), contended);
             if (!contended) { if (i == NIL) return false; out = value[i].load(); pushLoop(freeTop, nextIdx.get(), i); return true; }
             if (ex[rng() % SLOTS].offerPop(out, 20)) { eliminated++; return true; } }
     }
     long eliminatedPairs() const { return eliminated.load(); }
-    long countFree() const { long c = 0; for (uint32_t i = (uint32_t)freeTop.load(); i != NIL; i = nextIdx[i].load()) c++; return c; }
-    long countData() const { long c = 0; for (uint32_t i = (uint32_t)top.load(); i != NIL; i = nextIdx[i].load()) c++; return c; }
+    long countFree() const { long c = 0; for (uint32_t i = (uint32_t)freeTop.load(); i != NIL && c <= (long)cap_; i = nextIdx[i].load()) c++; return c; }                // 사슬이 깨져 고리가 되어도 cap_+1 에서 멈춘다
+    long countData() const { long c = 0; for (uint32_t i = (uint32_t)top.load(); i != NIL && c <= (long)cap_; i = nextIdx[i].load()) c++; return c; }
 };
 int main() {
     { Exchanger e; std::atomic<bool> got{false}; uint32_t received = 0; std::thread popper([&] { uint32_t v; for (long tries = 0; tries < 50000000 && !got; tries++) if (e.offerPop(v, 1000)) { received = v; got = true; } });
       for (long tries = 0; tries < 50000000 && !got; tries++) { if (e.offerPush(4242, 1000)) { while (!got) std::this_thread::yield(); } } popper.join(); assert(got && received == 4242 && st(e.slot.load()) == EMPTY); }       // ① 교환기: 값이 정확히 전달되고 슬롯이 EMPTY 로 복귀
-    { const int PUSHERS = 3, POPPERS = 3, OPS = 100000; EliminationStack s(64); std::atomic<long long> pushedSum{0}, poppedSum{0}; std::atomic<long> pushedCount{0}, poppedCount{0}; std::vector<std::thread> ts;
-      for (int t = 0; t < PUSHERS; t++) ts.emplace_back([&, t] { std::mt19937 rng(100 + t); for (int i = 1; i <= OPS; i++) { uint32_t v = (uint32_t)(t * OPS + i); while (!s.push(v, rng)) std::this_thread::yield(); pushedSum += v; pushedCount++; } });
-      std::atomic<bool> producersDone{false};
-      for (int t = 0; t < POPPERS; t++) ts.emplace_back([&, t] { std::mt19937 rng(200 + t); uint32_t v; while (!producersDone || poppedCount < pushedCount) { if (s.pop(v, rng)) { poppedSum += v; poppedCount++; } else std::this_thread::yield(); } });
-      for (int t = 0; t < PUSHERS; t++) ts[t].join(); producersDone = true; for (int t = PUSHERS; t < PUSHERS + POPPERS; t++) ts[t].join();
-      std::mt19937 rng(1); uint32_t v; long long left = 0; while (s.pop(v, rng)) left += v;
-      assert(pushedCount == PUSHERS * OPS && poppedSum + left == pushedSum && s.countFree() == 64 && s.countData() == 0);                                                                                              // ② 보존, 풀 무누수
-      std::cout << "EliminationBackoffStack: " << pushedCount << " items exchanged by 3 pushers and 3 poppers with sums conserved; pairs eliminated without touching the central stack: " << s.eliminatedPairs() << std::endl; }
+    {   EliminationStack s(8); std::mt19937 rng(7); const int K = EliminationStack::slots();                                                                                                  // ② 결정적 랑데부 (스레드 없음)
+        for (int k = 0; k < K; k++) s.exchanger(k).slot.store(pack(1, POP_WAIT, 0));                                                                                              // 역할 1: pop 이 먼저 와서 모든 슬롯에서 기다리는 중
+        s.forceContention(8); bool pushed = s.push(555, rng); int delivered = 0; uint32_t sent = 0;
+        for (int k = 0; k < K; k++) { uint64_t w = s.exchanger(k).slot.load(); if (st(w) == DELIVERED) { delivered++; sent = val(w); } else assert(st(w) == POP_WAIT); }
+        assert(pushed && delivered == 1 && sent == 555 && s.eliminatedPairs() == 1 && s.countData() == 0 && s.countFree() == 8);                                                 // 값은 슬롯으로 갔고 중앙 스택·풀은 그대로
+        for (int k = 0; k < K; k++) s.exchanger(k).slot.store(pack(9, PUSH_WAIT, 900 + k));                                                                                       // 역할 2: push 가 먼저 와서 모든 슬롯에서 기다리는 중
+        s.forceContention(8); uint32_t out = 0; bool popped = s.pop(out, rng); int taken = 0, which = -1;
+        for (int k = 0; k < K; k++) { uint64_t w = s.exchanger(k).slot.load(); if (st(w) == TAKEN) { taken++; which = k; } else assert(st(w) == PUSH_WAIT && val(w) == 900u + k); }
+        assert(popped && taken == 1 && which >= 0 && out == 900u + which && s.eliminatedPairs() == 2 && s.countData() == 0 && s.countFree() == 8); }
+    {   EliminationStack s(32); std::mt19937 rng(5), gen(9); std::vector<uint32_t> model;                                                                                              // ③ 경쟁 없는 단일 스레드: LIFO + 풀 크기
+        for (int step = 0; step < 20000; step++) {
+            if (gen() % 5 < 3) { uint32_t v = gen() % 100000; bool ok = s.push(v, rng); assert(ok == (model.size() < 32)); if (ok) model.push_back(v); }
+            else { uint32_t v = 0; bool ok = s.pop(v, rng); assert(ok == !model.empty()); if (ok) { assert(v == model.back()); model.pop_back(); } }
+            assert(s.countData() == (long)model.size() && s.countFree() == 32 - (long)model.size()); }
+        assert(s.eliminatedPairs() == 0); }
+    {   const int PUSHERS = 3, POPPERS = 3, OPS = 100000, CAP = 64; const long LIMIT = 5000000; EliminationStack s(CAP);                                                           // ④ 스트레스
+        std::atomic<long> pushedCount{0}; std::atomic<bool> producersDone{false}, bail{false}; std::vector<std::vector<uint32_t>> got(POPPERS); std::vector<std::thread> ts;
+        for (int t = 0; t < PUSHERS; t++) ts.emplace_back([&, t] { std::mt19937 rng(100 + t); for (int i = 1; i <= OPS && !bail; i++) { uint32_t v = (uint32_t)(t * OPS + i); long spins = 0;
+            while (!s.push(v, rng)) { if (++spins > LIMIT) { bail = true; return; } std::this_thread::yield(); } pushedCount++; } });                                         // 풀이 비어 한없이 기다리지 않는다
+        for (int t = 0; t < POPPERS; t++) ts.emplace_back([&, t] { std::mt19937 rng(200 + t); uint32_t v;
+            for (;;) { bool done = producersDone; if (s.pop(v, rng)) got[t].push_back(v); else if (done || bail) break; else std::this_thread::yield(); } });                  // 생산이 끝난 뒤 비어 있으면 끝 (개수를 기다리지 않는다)
+        for (int t = 0; t < PUSHERS; t++) ts[t].join(); producersDone = true; for (int t = PUSHERS; t < PUSHERS + POPPERS; t++) ts[t].join();
+        std::mt19937 rng(1); std::vector<uint32_t> left; uint32_t v; while ((int)left.size() <= CAP && s.pop(v, rng)) left.push_back(v);                                           // 남은 것 (풀 크기를 넘으면 사슬이 망가진 것)
+        std::vector<unsigned char> seen(PUSHERS * OPS + 1, 0); long total = 0, dup = 0, bad = 0, poppedCount = 0;
+        auto mark = [&](uint32_t x) { if (x < 1 || x >= seen.size()) bad++; else if (seen[x]) dup++; else { seen[x] = 1; total++; } };
+        for (auto& g : got) { poppedCount += (long)g.size(); for (uint32_t x : g) mark(x); } for (uint32_t x : left) mark(x);
+        assert(!bail && pushedCount == PUSHERS * OPS);
+        assert(dup == 0 && bad == 0 && total == pushedCount && poppedCount + (long)left.size() == pushedCount && (int)left.size() <= CAP && s.countFree() == CAP && s.countData() == 0);     // 값마다 정확히 한 번, 풀 무누수
+        std::cout << "EliminationBackoffStack: a forced rendezvous eliminated one push and one pop in both roles without touching the central stack; " << pushedCount << " items exchanged by 3 pushers and 3 poppers were each delivered exactly once; pairs eliminated in the stress run (informational): " << s.eliminatedPairs() << std::endl; }
     return 0;
 }
 // Time Complexity: 경쟁이 없으면 O(1); 경쟁이 있으면 교환 성공 시 중앙 스택을 거치지 않음
