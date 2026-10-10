@@ -192,7 +192,7 @@ def applicable(mode, code):
 
 
 def job_key(mode, code, repeat):
-    return hashlib.sha1(f"{mode}|{MODES[mode]}|{repeat}|{TIME_SCALE}|{code}".encode()).hexdigest()
+    return hashlib.sha1(f"{mode}|{MODES[mode]}|{repeat}{'r2' if repeat > 1 else ''}|{TIME_SCALE}|{code}".encode()).hexdigest()   # 'r2': --repeat also repeats in strict mode since the fix, so older repeat results are not trusted
 
 
 def compile_one(job):
@@ -212,7 +212,7 @@ def compile_one(job):
             w = [x for x in r.stderr.splitlines() if "warning:" in x]
             return key, ("warn", f"{len(w)} warning(s): {w[0].split('warning:')[1].strip()[:150]}", 0.0)
         times = []
-        n = repeat if THREAD_RE.search(code) and mode in ("std", "san", "tsan") else 1
+        n = repeat if THREAD_RE.search(code) and mode in ("std", "strict", "san", "tsan") else 1
         env = dict(os.environ, ASAN_OPTIONS="detect_leaks=1:abort_on_error=0", UBSAN_OPTIONS="print_stacktrace=1", TSAN_OPTIONS="halt_on_error=1")
         for _ in range(n):
             t0 = time.time()

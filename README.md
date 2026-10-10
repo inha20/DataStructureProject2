@@ -5,7 +5,7 @@
 
 - 책 11권, Part 167개, 항목 1015개 (실행되는 C++ 코드 블록 1014개, 그중 링크형 요약 85개).
 - 모든 코드 블록은 `main` 과 `assert` 를 가진 완전한 프로그램이며 `tools/audit.py` 로 컴파일·실행을 검증한다.
-- 마지막 전체 감사: 2026-10-09 — 1014개 블록, 모드 strict, san, tsan, clang, cxx20, 실패 0.
+- 마지막 전체 감사: 2026-10-10 — 1014개 블록, 모드 strict, san, tsan, clang, cxx20, 실패 0.
 - 목차와 이식성 표는 [INDEX.md](INDEX.md), 복잡도 모음은 [COMPLEXITY.md](COMPLEXITY.md).
 <!-- status:end -->
 

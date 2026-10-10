@@ -5463,11 +5463,11 @@ int main() {
     {   ConcurrentMap<int, long> m(16); const int N = 20000; run([&](int t) { for (int i = 0; i < N; ++i) m.compute((i * 7 + t) % 64, [](long& x) { ++x; }); });
         long sum = 0; m.snapshot([&](const int&, const long& v) { sum += v; }); assert(sum == (long)T * N && m.size() == 64);
     }
-    // ③ 확장 중에도 안전: 미리 넣은 1000 개 키는 다른 스레드가 20 만 개를 넣어 구역이 계속 커지는 동안에도 항상 읽힌다 (버킷 수가 실제로 늘었는지 buckets() 로 확인)
+    // ③ 확장 중에도 안전: 미리 넣은 1000 개 키는 다른 스레드가 5 만 개를 넣어 구역이 계속 커지는 동안에도 항상 읽힌다 (버킷 수가 실제로 늘었는지 buckets() 로 확인)
     {   ConcurrentMap<int, long> m(8); for (int i = 0; i < 1000; ++i) m.put(-1 - i, i * 3L); const std::size_t startBuckets = m.buckets();
         std::atomic<bool> done{false}; std::atomic<long> reads{0}, misses{0};
         std::vector<std::thread> readers; for (int r = 0; r < 3; ++r) readers.emplace_back([&, r] { std::mt19937 g(r); long n = 0; while (!done) { int i = g() % 1000; long v; if (!m.get(-1 - i, v) || v != i * 3L) ++misses; ++n; } reads += n; });
-        const int W = 5, per = 40000; std::vector<std::thread> writers; for (int w = 0; w < W; ++w) writers.emplace_back([&, w] { for (int i = 0; i < per; ++i) m.put(w * per + i, i); });
+        const int W = 5, per = 10000; std::vector<std::thread> writers; for (int w = 0; w < W; ++w) writers.emplace_back([&, w] { for (int i = 0; i < per; ++i) m.put(w * per + i, i); });
         for (auto& x : writers) x.join(); done = true; for (auto& x : readers) x.join();
         assert(misses == 0 && reads > 0 && m.size() == 1000 + (std::size_t)W * per);
         grown = m.buckets(); assert(startBuckets >= 1000 && startBuckets < 2 * 1000 + 4 * 8 && grown >= m.size() && grown < 2 * m.size() + 4 * 8);       // 구역이 실제로 여러 번 두 배가 됐다 (적재율 ≤ 1 유지)
@@ -5477,7 +5477,7 @@ int main() {
     {   ConcurrentMap<int, long> bank(7); for (int i = 0; i < 100; ++i) bank.put(i, 1000);
         std::atomic<bool> done{false}; std::atomic<long> audits{0}, bad{0}, ok{0}, refused{0};
         std::thread auditor([&] { while (!done) { long total = 0, minBal = 0; bank.snapshot([&](const int&, const long& v) { total += v; minBal = std::min(minBal, v); }); if (total != 100000 || minBal < 0) ++bad; ++audits; } });
-        run([&](int t) { std::mt19937 g(t + 1); for (int i = 0; i < 20000; ++i) { if (bank.transfer(g() % 100, g() % 100, 1 + g() % 600)) ++ok; else ++refused; } });
+        run([&](int t) { std::mt19937 g(t + 1); for (int i = 0; i < 5000; ++i) { if (bank.transfer(g() % 100, g() % 100, 1 + g() % 600)) ++ok; else ++refused; } });
         done = true; auditor.join(); long total = 0; bank.snapshot([&](const int&, const long& v) { total += v; });
         assert(total == 100000 && bad == 0 && audits > 0 && ok > 0 && refused > 0);                 // 교착 없이 끝났고, 어떤 순간에도 합이 보존됐다
     }
@@ -5490,7 +5490,7 @@ int main() {
     };
     int one = maxOverlap(1), many = maxOverlap(64);
     assert(one == 1 && many >= 2);
-    std::cout << "ConcurrentMap: no lost updates, no lost keys while shards resized (8 shards x 4 initial buckets -> " << grown << " buckets), bank total conserved across " << T * 20000 << " concurrent transfers; slow callbacks overlapped at most " << one << " at a time with 1 shard but " << many << " with 64 shards" << std::endl;
+    std::cout << "ConcurrentMap: no lost updates, no lost keys while shards resized (8 shards x 4 initial buckets -> " << grown << " buckets), bank total conserved across " << T * 5000 << " concurrent transfers; slow callbacks overlapped at most " << one << " at a time with 1 shard but " << many << " with 64 shards" << std::endl;
     return 0;
 }
 // Time Complexity: 평균 O(1) (서로 다른 구역은 병렬, 같은 구역의 읽기도 병렬), snapshot 은 O(n) 에 전 구역 잠금

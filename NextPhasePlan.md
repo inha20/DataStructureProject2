@@ -1,4 +1,4 @@
-﻿# Data Structure Project 2: Next Iterations Plan (4차 개정판)
+﻿# Data Structure Project 2: Next Iterations Plan (6차 개정판 · 완료 보고)
 
 이 계획서는 2차 개정판을 **2026-10-08 기준 저장소 실측**(커밋 `2b166e7`)으로 갱신한 것입니다. 2차 개정판의 체크리스트 중 이미 처리된 것은 완료로 옮기고, 이번 점검에서 새로 발견된 문제(파일 손상, 번호 중복, 자리표시 코드 비율)와 추가 후보를 반영했습니다.
 
@@ -10,6 +10,80 @@
 
 우선순위: **Phase 0 (손상 복구) → Phase A (누락 복구) → Phase B (자리표시 코드 실구현) → Phase C (추가 후보) → Phase D (품질/문서화) → Phase E (완성도 향상)**
 
+> **2026-10-10 6차 개정 — 이 계획서의 모든 Phase(0 → A → B → C → D → E)가 끝났다.** 아래 "🏁 최종 상태"가 증거와 함께 현재 상태를 요약한다. 그 뒤의 섹션 1~3과 Phase별 상세는 작업 당시의 계획·실측을 **이력으로 보존**한 것이라 수치가 현재와 다를 수 있고, 체크박스는 완료 여부를 반영해 갱신했다.
+
+---
+
+## 🏁 최종 상태 (2026-10-10) [실측]
+
+### 한눈에
+| 지표 | 값 | 확인 방법 |
+|------|----|-----------|
+| 책 / Part / 항목 | 11권 / 167개 / 1015개 | `README.md` 현황 블록 (`tools/gen_index.py` 가 생성) |
+| 실행되는 C++ 코드 블록 | 1014개 (그중 링크형 요약 85개) | `tools/audit.py` |
+| 자리표시 · STL 래퍼 · 얕은 항목 · 약한 항목 | 0 · 0 · 0 · 0 | `python3 -I tools/audit.py --list-thin --list-shallow --list-weak` |
+| 전체 감사 | 2026-10-10 — 1014개 블록, 모드 strict, san, tsan, clang, cxx20, **실패 0** | `python3 -I tools/audit.py --strict --san --tsan --portable --stamp` → `tools/last_audit.json` |
+| 스레드 블록 반복 검사 | 3회 반복 통과 (타이밍 의존 단언 제거) | `--repeat 3` |
+| 빠른 관문 | 통과 (도구 자체 테스트 23개, 구조·링크·복잡도 표기·드리프트·생성 문서) | `python3 -I tools/check_all.py` |
+| 시각화(ASCII 그림 + 골든 단언) | 45개 항목 추가 (Tree 11, Graph 10, List 5, Stack 2, Queue 3, PathFinding 5, Set 5, Memory 3, ADS 1) 외에 Hash·String·Tree 의 기존 그림 | E-9 |
+| Tier 3 추가 후보 | 30개 항목 (요약표 11행 전부) | E-10 |
+
+### Phase별 결과
+| Phase | 결과 |
+|-------|------|
+| 0 손상 복구 | Set.md 한글 재작성, Tree BOM 제거, Graph·Hash·Memory 의 Part 번호 정리, `process.py` → `archive/` (실행 차단) |
+| A 누락 복구 | Hash Part 2~15, String Part 2~17, Graph Part 14~16, Tree·Memory 누락 항목 전부 |
+| B 자리표시 실구현 | 시작 시점의 자리표시 약 420개 → **0개**. 모든 항목이 `main`·`assert` 를 가진 완전한 프로그램 |
+| C 추가 후보 | Tier 1·Tier 2 전부 존재 확인 (아래 한계 1: Soft Heap 만 의도적으로 제외), Dancing Links 포함 |
+| D 품질·문서 | 복잡도 표기 점검(`complexity_lint.py`), 정본/링크형 요약 점검(`linkcheck.py`, `drift.py`), `INDEX.md`·`COMPLEXITY.md`·README 현황 자동 생성, `audit_result.txt` 폐기 |
+| E-1 위생 | `-Wall -Wextra` 경고 0, ASan/UBSan/LSan/TSan 통과 (의도적 메모리 실험은 `// audit: no-sanitize` 표식으로 공개) |
+| E-2 깊이 | 래퍼·얕은·약한 항목을 직접 구현 + 차분/불변식 검사로 교체 (`--list-thin`, `--list-shallow`, `--list-weak` 모두 0) |
+| E-3 이식성 | `clang++ -std=c++17` 와 `g++ -std=c++20 -pedantic` 통과, 이식성 표(INDEX), POSIX 헤더는 `#if` 가드 밖에 없음을 `audit.py` 가 검사 |
+| E-4 결정성 | 난수는 전부 고정 시드(`random_device`·시각 시드 사용을 `audit.py` 가 거부), 단언은 시간이 아니라 횟수·불변식 |
+| E-5~E-8, E-11 도구·CI | `.github/workflows/audit.yml`(빠른 관문 · 컴파일 · 호스트 의존 항목 별도 작업 · 주간 심층 검사; 푸시당 실행 1회, 아래 "CI 실패 메일 폭주" 참조), 도구 자체 테스트, 링크·드리프트·복잡도 린트, 생성 문서, `.gitignore`·`tools/README.md` |
+| E-9 시각화 | 위 표 참조 (Mermaid 는 만들지 않기로 한 방침 유지: 해설 본문은 사람이 쓴다) |
+| E-10 Tier 3 | HAMT, RRBVector, BitmapIndex, MisraGries, SpaceSaving, CountSketch, ReservoirSampling, DCEL, QuadEdge, DisjointSparseTable, SqrtTree, CSBPlusTree, BwTree, Masstree, MerklePatriciaTrie, ChaseLevDeque, Disruptor, RCU, Seqlock, EpochBasedReclamation (이상 ADS), TimingWheel, CalendarQueue, RadixHeap (Queue), DialAlgorithm (Graph), SkewHeap, IntervalHeap, LoserTree, EulerTourTree (Tree), BiMap (Hash), Multiset (Set) |
+| E-12 인수 검사 | 전체 감사 통과 · 빠른 관문 통과 · 생성 문서 최신 · 책별 15개 무작위 표본(고정 시드)의 독립 검토와 그 지적의 수정(아래 "독립 검토 결과") · 한계 공개 |
+
+### CI 실패 메일 폭주 — 원인과 조치 (2026-10-09)
+**증상**: 푸시할 때마다 실패 메일이 두 통씩, 하루에 수십 통.
+**원인** (GitHub Actions 기록 50회 실행 전부 실패로 확인):
+1. **이중 실행** — `on: push` 와 `on: pull_request` 가 함께 켜져 있어 열린 PR(#1)이 있는 브랜치에 푸시하면 같은 커밋에 실행이 두 번 돌고 메일도 두 통이었다.
+2. **실패 자체** — 초기(실행 21~36)는 `fast` 가 오래된 생성 문서(INDEX/COMPLEXITY)를 잡아 12초 만에 실패, 이후(실행 37~50)는 `compile` 이 Memory.md 의 5개 항목(DataSegment, StackOverflow, PageFault, MemoryMapping, MemoryProtection)에서 실패했다. 이들은 THP·코어 덤프 도우미·스택 한도 처리 같은 **호스트 커널 설정을 직접 재서** 작업 환경에서는 통과해도 러너에서 깨졌다. 부하가 큰 2코어에서는 락스텝 스레드 시험 몇 개(MemoryBarrier, SequentialConsistency, LockFreeQueue 등)가 시간 초과했고, TransactionalMemory 는 "충돌이 한 번이라도 났다"(`aborts > 0`)는 스케줄링 의존 단언 때문에 실패할 수 있었다.
+**조치**:
+- 워크플로: 푸시당 실행 1회(`pull_request` 는 포크 PR 만), 같은 브랜치의 이전 실행 취소, 작업별 `timeout-minutes`, 최소 권한(`contents: read`).
+- 호스트 의존 5개 항목: THP 끄기(`madvise(MADV_NOHUGEPAGE)`), 일부러 죽는 자식의 코어 덤프 차단(`RLIMIT_CORE`·`PR_SET_DUMPABLE`), 스택 시험은 부모가 깊이 재귀하기 전에 자식을 만들도록 순서 변경, 실패 시 실측값을 stderr 로 보고. `// audit: host-dependent` 표지로 막는 `compile` 작업에서는 빼고(`AUDIT_SKIP_HOST=1`), 막지 않는 `host` 작업(`continue-on-error`)이 러너 환경 보고와 함께 따로 돌린다.
+- 스케줄링에 기대던 단언 제거: TransactionalMemory 는 두 스레드가 같은 계좌를 읽은 뒤에야 쓰게 하는 핸드셰이크로 충돌을 결정적으로 만들었다. 락스텝 시험의 판 수를 줄였다(보장 검사 `== 0` 의 검증력은 판 수와 무관).
+- 느린 러너 대비: `AUDIT_TIME_SCALE=3`(캐시 키에 포함), 병렬 실행 중 시간 초과한 블록은 혼자 한 번 더 실행(`settle`, 결과에 `NOTE` 표시), 가장 무거운 세 항목(BST vs AVL vs Red-Black, EppsteinAlgorithm, DistributedHashTable)의 부하 감축(6.7 s/5.6 s/4.6 s → 1 s 안팎).
+- 재현·검증: 2코어(`taskset -c 0,1`) + THP=always + 병렬 4 에서 전체 `--strict` 통과(실패 0, 재시도 필요 0).
+
+### 독립 검토 결과 (E-12, 2026-10-09~10)
+11권 × 15개 = **165개 항목**을 무작위(시드 20261009)로 뽑아, 코드를 쓰지 않은 독립 검토자가 각 항목을 (1) 정말 그 자료구조·알고리즘인지, (2) 단언이 틀린 구현을 잡는지 — 구현의 핵심 줄을 일부러 망가뜨린 **변이 시험 약 1,000회**로, (3) 주석·출력·복잡도 주장이 코드가 실제로 하는 일과 맞는지 점검했다. 변이가 살아남으면 약한 시험으로 보고했다.
+- **결과**: 항목의 약 85%에서 지적이 나왔다. 대부분은 *약한 오라클*(변이가 살아남음)과 *코드보다 센 주장*이었다. 모두 고쳤고, 새·강화한 단언마다 해당 줄을 다시 망가뜨려 실패하는지 확인했다.
+- **실제 버그 7건** (표본 안에서 발견): ConflictBasedSearch(도달 불가 목표에서 미정의 동작), NavigationMesh(`visible()` 이 막힌 외곽선을 따라가는 선분을 허용), Palindrome(`#` 구분자가 입력에 있으면 오답), FiniteAutomaton(빈 패턴 미처리), OpenAddressing(`ShiftTable::erase` 가 가득 찬 표에서 종료하지 않음), Union(`unionMany` 값 전달로 O(k·N)), StackFrame(g++ -O3 에서 클론 때문에 실패).
+- **거짓·과장 주장 바로잡음**: 복잡도(CoverTree, GreedyBestFirstSearch, CSR 구성, SuccinctTrie 의 "succinct"), 수치("5000개 질의" → 110개, "수백 배" → 68배, 10^6 → 8·10^5), 모델링 범위(Redis 딕셔너리는 특정 버전의 정책, Java HashMap 의 untreeify 규칙, WAVL 트리는 삽입만이라 AVL 과 같았음 → 삭제를 구현해 std::set 과 대조, CHERI 항목은 태그 무결성만 모델링).
+- **같은 유형의 구조적 결함**: `assert(...)` 안의 부작용 호출 — `-DNDEBUG` 로 빌드하면 시험이 사라지거나 멈춘다. Stack·Queue 의 해당 항목을 모두 고쳤다(표본 밖에도 남은 곳은 아래 한계).
+- 표본 밖 항목에는 같은 검토를 하지 않았다. 표본에서 나온 결함 유형(약한 오라클, 센 주장)이 다른 항목에도 있을 수 있다.
+
+### 알려진 한계 (정직한 기록)
+1. **Soft Heap 은 의도적으로 제외**했다. ε-손상(corruption) 보장을 구현하고 단언으로 검증하기 어려워, 검증되지 않은 주장을 쓰느니 넣지 않기로 했다.
+2. **단순화한 구현**은 코드 머리 주석에 밝혀 두었다. 주요한 것: `TangoTree`(보조 트리를 레드-블랙이 아니라 트립으로 만들어 최악이 아니라 기대 O(log log N), 키 집합은 정적), `FusionTree`(스케치 추출을 곱셈 요령 대신 비트 루프로), `BwTree`(내부 노드는 뿌리 한 층, 해제는 에포크 회수 대신 종료 시 일괄), `Masstree`(층 인덱스를 `std::map` 으로, 동시성 제어 생략), `RRBVector`(이음매만 다시 포장 — 탐색 단계 불변식 미적용), `CSBPlusTree`(게으른 삭제, 잎 연결 없음), `MerklePatriciaTrie`(RLP/Keccak 이 아니라 자체 직렬화 + SHA-256, 노드 인라인 없음), `GPU*`·`RDMA`·`NUMAMemory` 류(CPU 에서의 시뮬레이션·모델), PathFinding 의 네트워크 라우팅(OSPF·RIP·BGP)은 축약 시뮬레이션.
+3. **검증의 성격**: 단언은 표준 라이브러리·완전 탐색·독립 구현과의 차분 검사와 불변식이며 형식 증명이 아니다. 동시성 항목은 스케줄링에 따라 횟수가 달라지므로 보존 법칙(모든 작업이 정확히 한 번)만 단언하고, 변이(mutation) 시험으로 단언이 실제로 잘못된 구현을 잡는지 일부 확인했다(RCU 의 `synchronize` 제거 → use-after-free, Seqlock 의 재검증 제거 → 찢어진 읽기, EBR 의 시대 검사 제거 → use-after-free, Chase–Lev 의 CAS 제거 → 중복 실행, Disruptor 의 gating 제거 → 소비자 정지).
+4. **이식성**: GCC/Clang 가정(`__builtin_*` 등은 INDEX 의 `[gcc]` 표지). **MSVC 는 지원하지 않는다** (Windows 는 MinGW-w64 또는 WSL). 일부 Memory 항목은 Linux 전용 경로(`/proc`)를 `#if` 로 가드했다.
+5. **사람의 몫으로 남긴 것**: `###` 해설 본문, README 가 말한 파이썬 대응 코드, `LICENSE`, ADS 의 영어/한글 Part 제목 혼용(현상 유지), 원본 목차가 발견될 경우의 Part 구성 조정.
+6. 커밋 `a65ea38` 의 메시지는 Tier 3 항목 수를 33개로 적었으나 실제는 30개다.
+7. **표본 검토의 범위**: 독립 검토는 책별 15개(전체의 약 16%)뿐이다. Queue 에서는 표본 밖 `assert` 부작용이 약 60곳(21개 항목) 남아 있다 — `-DNDEBUG` 에서도 종료 코드 0 이지만 시험이 빠진다. 같은 검토를 나머지 항목에도 돌리는 것이 다음 단계다.
+8. **호스트 의존 항목 5개**(Memory.md: DataSegment, StackOverflow, PageFault, MemoryMapping, MemoryProtection)는 실행 환경의 커널 설정에 따라 결과가 달라질 수 있어 CI 의 막는 작업에서 제외했다. 작업 환경(THP 끔/켬, 2코어 부하)에서는 모두 통과하며 `host` 작업이 러너에서의 결과를 따로 보고한다.
+
+### 재현 방법
+```
+python3 -I tools/check_all.py                                          # 몇 초: 구조·링크·복잡도·생성 문서·도구 테스트
+python3 -I tools/audit.py --strict --san --tsan --portable --stamp     # 전체 컴파일·실행 검증 (캐시가 있으면 변경분만)
+python3 -I tools/audit.py --strict --repeat 3                          # 스레드 블록 반복(간헐 실패 탐지)
+```
+
+---
+
 ---
 
 ## 0. 점검 방법과 한계
@@ -18,11 +92,11 @@
 - 자리표시 코드의 기준: `assert(true)` 또는 `assert(1 == 1)`와 출력문만 있고 실행 로직이 없는 ` ```cpp ` 블록(코드 8줄 이하).
 - 한계 1: 원본 목차 `*(2).md`는 저장소에 없고 사용자도 내용을 기억하지 못합니다. "원래 있어야 했던 항목"은 `audit_result.txt`와 2차 계획서에 적힌 것까지만 확인할 수 있으며, 그 밖의 Part 구성은 이 계획서의 제안 목차를 작업 기준으로 삼습니다.
 - 한계 2: 사용자 로컬 폴더 `DataStructureProject2-main`은 비교하지 못했습니다(클라우드 세션에서 접근 불가). Set.md 정상본도 없는 것으로 확인됐습니다.
-- 한계 3: 코드가 실제로 컴파일·실행되는지는 확인하지 않았습니다(Phase D-3에서 다룸).
+- 한계 3: 코드가 실제로 컴파일·실행되는지는 확인하지 않았습니다(Phase D-3에서 다룸). → 이후 `tools/audit.py` 로 해소됨(최종 상태 참조).
 
 ---
 
-## 1. 전체 파일 현황 [실측]
+## 1. 전체 파일 현황 [실측, 2026-10-08 시점 — 이력]
 
 | 파일 | 현재 Part | 코드 블록 | 자리표시 코드 | 상태 | 긴급도 |
 |------|-----------|-----------|---------------|------|--------|
@@ -118,8 +192,8 @@
   - `##` 헤딩 중 한글 제목이 깨진 항목 9개 (`BitSet은 언제 사용하는가?` 류의 부록 해설 등), 그 외 Part 제목 16개도 깨짐
   - 코드 블록 안의 한글 주석도 깨짐 (예: `// C++ ?쒖? ?댁떆 湲곕컲 吏묓빀`)
 - **정상본 없음 [확정]** → 재작성한다.
-- [ ] ASCII 메서드명과 코드 로직은 그대로 보존하고, 한글 Part 제목·부록 제목·코드 주석·설명만 재작성
-- [ ] Part 제목은 깨진 문자열을 역변환(CP949 → UTF-8)해 아래와 같이 **추정 복원** [판단]. 손실된 글자는 문맥으로 보완한 것이라 확정 전에 한 번 읽어볼 것.
+- [x] ASCII 메서드명과 코드 로직은 그대로 보존하고, 한글 Part 제목·부록 제목·코드 주석·설명만 재작성
+- [x] Part 제목은 깨진 문자열을 역변환(CP949 → UTF-8)해 아래와 같이 **추정 복원** [판단]. 손실된 글자는 문맥으로 보완한 것이라 확정 전에 한 번 읽어볼 것.
 
   | Part | 추정 제목 | Part | 추정 제목 |
   |------|-----------|------|-----------|
@@ -132,20 +206,20 @@
   | 7 | 서로소 집합 | 15 | 병렬 집합 |
   | 8 | 조합론 | 16 | 연구 주제 |
 
-- [ ] 부록 제목도 같은 방법으로 복원: `BitSet은 언제 사용하는가?`, `Union-Find가 거의 O(1)인 이유`, `집합과 그래프의 연결`, `집합과 관계(Relation)`, `집합과 함수(Function)`, `SQL은 왜 집합 이론 위에서 동작하는가?`, `AI에서 Label Set과 Vocabulary Set의 의미`는 비교적 확실하고, `비트마스크와 집합의 ?? 관계`, `부분집합 ?거 최적화`는 글자 손실이 있어 문맥으로 보완
-- [ ] 병합된 헤딩 4곳 분리, `### 대표코드`와 ` ```cpp ` 줄 분리
-- [ ] `union()` 설명 두 줄을 `#`에서 본문으로 변경
-- [ ] [판단] 복구 후 다른 파일에도 같은 손상이 있는지 검사(깨진 한자 연속, U+FFFD) — 현재 Set.md 외에는 발견되지 않음
+- [x] 부록 제목도 같은 방법으로 복원: `BitSet은 언제 사용하는가?`, `Union-Find가 거의 O(1)인 이유`, `집합과 그래프의 연결`, `집합과 관계(Relation)`, `집합과 함수(Function)`, `SQL은 왜 집합 이론 위에서 동작하는가?`, `AI에서 Label Set과 Vocabulary Set의 의미`는 비교적 확실하고, `비트마스크와 집합의 ?? 관계`, `부분집합 ?거 최적화`는 글자 손실이 있어 문맥으로 보완
+- [x] 병합된 헤딩 4곳 분리, `### 대표코드`와 ` ```cpp ` 줄 분리
+- [x] `union()` 설명 두 줄을 `#`에서 본문으로 변경
+- [x] [판단] 복구 후 다른 파일에도 같은 손상이 있는지 검사(깨진 한자 연속, U+FFFD) — 현재 Set.md 외에는 발견되지 않음
 
 ### 0-2. Tree.md BOM 제거 [실측]
 - Tree.md 1069행(Part 6), 1206행(Part 7) 헤딩 앞에 U+FEFF가 끼어 있어 헤딩이 렌더링되지 않을 수 있음 (여러 파일을 합칠 때 들어간 것으로 추정).
-- [ ] 두 곳의 BOM 제거 (Set.md, NextPhasePlan.md의 파일 맨 앞 BOM은 정상 범위)
+- [x] 두 곳의 BOM 제거 (Set.md, NextPhasePlan.md의 파일 맨 앞 BOM은 정상 범위)
 
 ### 0-3. Part 번호·헤딩 구조 정리 [실측 + 판단]
-- [ ] **Graph.md**: "(보완)" 블록(Part 7~13)을 원래 Part로 병합. Part 11, 12는 접미사 없이 같은 제목이 두 번 나옴. 병합 후 Part 번호 중복이 없어야 함.
-- [ ] **Graph.md**: 부록에 있는 `IsTree`, `IsForest`, `IsBiconnected`를 Part 5(사이클)로 이동. [판단] 부록은 비교·해설(`BFS vs DFS` 등)만 남김.
-- [ ] **Hash.md**: "Part 16"이 2개. `Visualizations Placeholder` 항목 삭제 후 하나로 합침.
-- [ ] **Memory.md**: Part 3, 5, 6 결번. 원본 목차를 알 수 없으므로 다음 구성으로 **확정** [판단 → 확정]:
+- [x] **Graph.md**: "(보완)" 블록(Part 7~13)을 원래 Part로 병합. Part 11, 12는 접미사 없이 같은 제목이 두 번 나옴. 병합 후 Part 번호 중복이 없어야 함.
+- [x] **Graph.md**: 부록에 있는 `IsTree`, `IsForest`, `IsBiconnected`를 Part 5(사이클)로 이동. [판단] 부록은 비교·해설(`BFS vs DFS` 등)만 남김.
+- [x] **Hash.md**: "Part 16"이 2개. `Visualizations Placeholder` 항목 삭제 후 하나로 합침.
+- [x] **Memory.md**: Part 3, 5, 6 결번. 원본 목차를 알 수 없으므로 다음 구성으로 **확정** [판단 → 확정]:
   - Part 3 스택 메모리: 현재 Part 2에 섞인 `PopFrame/CallFunction/ReturnFunction/LocalVariable/StackFrame/StackOverflow/TailCallOptimization`을 분리하고 `PushFrame()` 추가 (`StackFrame/StackOverflow`는 Stack.md가 정본이므로 링크형 요약)
   - Part 5 포인터와 참조: 신규. `Pointer`, `Reference`, `SmartPointer`(unique/shared/weak), `Aliasing` (현재 부록에 `Pointer vs Reference`, `Shared Pointer의 순환 참조` 해설만 있음)
   - Part 6 메모리 할당기: 2차 계획서의 "Part 6 = 할당기"에 따라 현재 Part 4에 섞인 `SlabAllocator/BuddyAllocator/ArenaAllocator/ObjectPool/FreeList`를 분리하고 `MemoryPool()` 추가
@@ -160,22 +234,22 @@
 ## 🚨 Phase A: 목차에서 누락된 항목 복구
 
 ### A-1. Graph.md [실측]
-- [ ] **Part 5**: `DetectCycle()` — 현재 DFS/BFS/UnionFind 3개 변형만 있음. [판단] 래퍼 함수보다 Part 서두 개요 설명 항목으로 대체 권장.
-- [ ] **Part 7**: `MinimumSpanningTree()` (Kruskal/Prim/Boruvka를 고르는 통합 인터페이스)
-- [ ] **Part 8**: `UnionSet()`
-- [ ] **Part 14 특수 그래프** (현재 `BipartiteGraph`, `DirectedGraph`만 있음): `UndirectedGraph()`, `WeightedGraph()`, `UnweightedGraph()`, `CompleteGraph()`, `SparseGraph()`, `DenseGraph()`, `PlanarGraph()`
-- [ ] **Part 15 그래프 모델** (현재 `PageRank`만 있음): `RandomGraph()`, `GridGraph()`, `TreeGraph()`, `HypercubeGraph()`, `ScaleFreeGraph()`, `SmallWorldGraph()`
-- [ ] **Part 16 응용 (Part 전체 없음)**: `DependencyGraph()`, `KnowledgeGraph()`, `SocialNetworkGraph()`, `CallGraph()`, `StateTransitionGraph()`, `ControlFlowGraph()`, `DataFlowGraph()`, `BayesianNetwork()`, `NeuralGraph()`
-- [ ] [판단] `PageRank()`는 모델이 아니라 알고리즘이므로 Part 15에서 Part 16(응용)으로 이동
-- [ ] **부록**: `Dijkstra vs A*` 비교 설명 (미작성)
+- [x] **Part 5**: `DetectCycle()` — 현재 DFS/BFS/UnionFind 3개 변형만 있음. [판단] 래퍼 함수보다 Part 서두 개요 설명 항목으로 대체 권장.
+- [x] **Part 7**: `MinimumSpanningTree()` (Kruskal/Prim/Boruvka를 고르는 통합 인터페이스)
+- [x] **Part 8**: `UnionSet()`
+- [x] **Part 14 특수 그래프** (현재 `BipartiteGraph`, `DirectedGraph`만 있음): `UndirectedGraph()`, `WeightedGraph()`, `UnweightedGraph()`, `CompleteGraph()`, `SparseGraph()`, `DenseGraph()`, `PlanarGraph()`
+- [x] **Part 15 그래프 모델** (현재 `PageRank`만 있음): `RandomGraph()`, `GridGraph()`, `TreeGraph()`, `HypercubeGraph()`, `ScaleFreeGraph()`, `SmallWorldGraph()`
+- [x] **Part 16 응용 (Part 전체 없음)**: `DependencyGraph()`, `KnowledgeGraph()`, `SocialNetworkGraph()`, `CallGraph()`, `StateTransitionGraph()`, `ControlFlowGraph()`, `DataFlowGraph()`, `BayesianNetwork()`, `NeuralGraph()`
+- [x] [판단] `PageRank()`는 모델이 아니라 알고리즘이므로 Part 15에서 Part 16(응용)으로 이동
+- [x] **부록**: `Dijkstra vs A*` 비교 설명 (미작성)
 
 ### A-2. Tree.md [실측 + 판단]
-- [ ] **Part 7**: `Recolor()`, `DoubleBlack()` — 독립 항목 없음 (현재 `RBInsert/RBDelete/FixViolation`만 있음, 그나마 `RBDelete`와 `FixViolation`은 자리표시)
-- [ ] **Part 8 힙**: 현재 `BinaryHeap()` 하나에 `heapifyDown`이 들어 있을 뿐, `HeapInsert()`, `HeapDelete()`, `Heapify()`, `BuildHeap()`, `HeapSort()` 독립 항목 없음. [확정] Queue.md Part 5에 `PushHeap/PopHeap/Heapify/BuildHeap/HeapSort`가 이미 구현돼 있으므로 정본은 Queue.md. Tree.md의 5개 항목은 "완전이진트리의 배열 표현" 관점의 링크형 요약으로 쓴다(섹션 3 정책). 힙 변형(Phase C의 Fibonacci·Binomial·Pairing 등)은 Tree.md Part 8의 정본 항목으로 추가.
-- [ ] **Part 9**: `GeneralTree()`, `NaryTree()` (Part 9가 Trie 계열만 있음)
-- [ ] **Part 10**: `SuffixArray()` — 정본은 String.md Part 9이므로 Tree.md에는 링크형 요약으로 추가 (현재 AdvancedDataStructures.md에만 있음)
-- [ ] **Part 13**: `BTree()` 독립 항목 (현재 `BPlusTree()`만 있음). 2차 계획서는 "BTree 존재"라고 했으나 Tree.md에서는 확인되지 않음.
-- [ ] **부록**: `BST vs AVL vs Red-Black` 비교 설명
+- [x] **Part 7**: `Recolor()`, `DoubleBlack()` — 독립 항목 없음 (현재 `RBInsert/RBDelete/FixViolation`만 있음, 그나마 `RBDelete`와 `FixViolation`은 자리표시)
+- [x] **Part 8 힙**: 현재 `BinaryHeap()` 하나에 `heapifyDown`이 들어 있을 뿐, `HeapInsert()`, `HeapDelete()`, `Heapify()`, `BuildHeap()`, `HeapSort()` 독립 항목 없음. [확정] Queue.md Part 5에 `PushHeap/PopHeap/Heapify/BuildHeap/HeapSort`가 이미 구현돼 있으므로 정본은 Queue.md. Tree.md의 5개 항목은 "완전이진트리의 배열 표현" 관점의 링크형 요약으로 쓴다(섹션 3 정책). 힙 변형(Phase C의 Fibonacci·Binomial·Pairing 등)은 Tree.md Part 8의 정본 항목으로 추가.
+- [x] **Part 9**: `GeneralTree()`, `NaryTree()` (Part 9가 Trie 계열만 있음)
+- [x] **Part 10**: `SuffixArray()` — 정본은 String.md Part 9이므로 Tree.md에는 링크형 요약으로 추가 (현재 AdvancedDataStructures.md에만 있음)
+- [x] **Part 13**: `BTree()` 독립 항목 (현재 `BPlusTree()`만 있음). 2차 계획서는 "BTree 존재"라고 했으나 Tree.md에서는 확인되지 않음.
+- [x] **부록**: `BST vs AVL vs Red-Black` 비교 설명
 
 ### A-3. Hash.md — Part 2~15 신규 작성 [실측 + 판단]
 현재 Part 1(8개 항목)과 Part 16만 존재. 원본 목차를 알 수 없으므로(사용자도 기억하지 못함) **아래 표를 작업 기준으로 확정**하고, 원본을 찾으면 그때 조정합니다. "계획서" 표시는 2차 계획서·audit에 근거가 있는 항목입니다.
@@ -199,7 +273,7 @@
 | 15 최신 연구 | `SwissTable`, `LearnedHash` | [판단] |
 | 16 시각화 | 현재 10개 보유 (Phase 0-3에서 중복 제거) | 실측 |
 
-- [ ] 현재 Part 1의 해설형 항목(`왜 Java HashMap은 TreeBin으로 바뀌는가?` 등)은 구현 항목이 아니므로 [판단] Part 10 또는 부록으로 이전
+- [x] 현재 Part 1의 해설형 항목(`왜 Java HashMap은 TreeBin으로 바뀌는가?` 등)은 구현 항목이 아니므로 [판단] Part 10 또는 부록으로 이전
 
 ### A-4. String.md — Part 2~17 신규 작성 [실측 + 판단]
 현재 Part 1(14개 항목)만 존재하고 그중 상당수가 해설형 제목입니다.
@@ -220,10 +294,10 @@
 | 부록 | `KMP는 왜 O(n)인가?`, `Trie vs HashMap`, `Suffix Array vs Suffix Tree` | 현재 Part 1에 있는 해설을 부록으로 이동 |
 
 ### A-5. Memory.md [실측]
-- [ ] `MemoryPool()` — 저장소 전체에 없음 (2차 계획서 Part 6)
-- [ ] `PushFrame()` — `PopFrame()`만 있고 짝이 없음 (Part 2)
-- [ ] `CompareAndSwap()`, `MemoryBarrier()` — Memory.md에 없음 (Part 11, `CompareAndSwap`은 AdvancedDataStructures.md에만 있음)
-- [ ] Part 3, 5, 6 결번 처리: Part 3 스택 메모리 / Part 5 포인터와 참조 / Part 6 할당기로 확정 (Phase 0-3). `Pointer`, `Reference`, `SmartPointer`, `Aliasing`은 Part 5 신규 항목
+- [x] `MemoryPool()` — 저장소 전체에 없음 (2차 계획서 Part 6)
+- [x] `PushFrame()` — `PopFrame()`만 있고 짝이 없음 (Part 2)
+- [x] `CompareAndSwap()`, `MemoryBarrier()` — Memory.md에 없음 (Part 11, `CompareAndSwap`은 AdvancedDataStructures.md에만 있음)
+- [x] Part 3, 5, 6 결번 처리: Part 3 스택 메모리 / Part 5 포인터와 참조 / Part 6 할당기로 확정 (Phase 0-3). `Pointer`, `Reference`, `SmartPointer`, `Aliasing`은 Part 5 신규 항목
 
 ---
 
@@ -236,42 +310,42 @@
 
 ### B-2. Memory.md (104/104, 100%) [판단: 이 저장소에서 우선 구현 가치가 가장 높음]
 - README 특색: "메모리 상태 변화를 단계별로 시각화"가 이 파일의 차별점인데 현재는 시각화에 쓸 구현이 전혀 없음.
-- [ ] 1순위: `malloc()`, `FreeList()`, `SlabAllocator()`, `BuddyAllocator()`, `ArenaAllocator()`, `ObjectPool()`, `MemoryPool()` (할당·해제 후 힙 상태를 출력하는 시뮬레이션)
-- [ ] 2순위: `MarkSweep()`, `CopyingGC()`, `GenerationalGC()`, `PageTable()`, `TLBLookup()`, `AddressTranslation()`
-- [ ] 3순위: `AtomicOperation()`, `CompareAndSwap()`, `MemoryBarrier()`, `ZGC()`, `EscapeAnalysis()`, `TransactionalMemory()` (2차 계획서 B-3)
+- [x] 1순위: `malloc()`, `FreeList()`, `SlabAllocator()`, `BuddyAllocator()`, `ArenaAllocator()`, `ObjectPool()`, `MemoryPool()` (할당·해제 후 힙 상태를 출력하는 시뮬레이션)
+- [x] 2순위: `MarkSweep()`, `CopyingGC()`, `GenerationalGC()`, `PageTable()`, `TLBLookup()`, `AddressTranslation()`
+- [x] 3순위: `AtomicOperation()`, `CompareAndSwap()`, `MemoryBarrier()`, `ZGC()`, `EscapeAnalysis()`, `TransactionalMemory()` (2차 계획서 B-3)
 
 ### B-3. AdvancedDataStructures.md (110/112, 98%)
-- [ ] 1순위 [판단]: README가 "책의 정체성"으로 꼽은 6개 — `HNSW()`, `FAISSIndex()`, `LSMTree()`, `AdaptiveRadixTree()`, `LearnedIndex()`, `CacheObliviousBTree()`
-- [ ] 2순위 (2차 계획서 B-5): `BitVector()`, `Rank()`, `Select()`, `WaveletTree()`, `FMIndex()`, `BallTree()`, `BVHTree()`, `IVFIndex()`, `ProductQuantization()`
-- [ ] 3순위 [판단]: 실무 빈도가 높은 `BloomFilter()`, `CountMinSketch()`, `HyperLogLog()`, `SkipList()`, `LockFreeQueue()`
+- [x] 1순위 [판단]: README가 "책의 정체성"으로 꼽은 6개 — `HNSW()`, `FAISSIndex()`, `LSMTree()`, `AdaptiveRadixTree()`, `LearnedIndex()`, `CacheObliviousBTree()`
+- [x] 2순위 (2차 계획서 B-5): `BitVector()`, `Rank()`, `Select()`, `WaveletTree()`, `FMIndex()`, `BallTree()`, `BVHTree()`, `IVFIndex()`, `ProductQuantization()`
+- [x] 3순위 [판단]: 실무 빈도가 높은 `BloomFilter()`, `CountMinSketch()`, `HyperLogLog()`, `SkipList()`, `LockFreeQueue()`
 
 ### B-4. PathFinding.md (89/102, 87%)
-- [ ] Part 5: `JumpPointSearch()`, `ThetaStar()`, `HierarchicalPathFinding()`
-- [ ] Part 6: `DStar()`, `DStarLite()`, `LifelongPlanningAStar()`
-- [ ] Part 7: `YenAlgorithm()`, `EppsteinAlgorithm()`
-- [ ] Part 11: `RapidlyExploringRandomTree()`, `RRTStar()`, `ProbabilisticRoadMap()`
-- [ ] Part 16: `MonteCarloTreeSearch()`, `AntColonyOptimization()`
-- [ ] [판단] Part 13(`OSPF`, `RIP`, `BGPPathSelection`) 등 외부 시스템 의존 항목은 실제 구현이 아니라 **축약 시뮬레이션**으로 충분
+- [x] Part 5: `JumpPointSearch()`, `ThetaStar()`, `HierarchicalPathFinding()`
+- [x] Part 6: `DStar()`, `DStarLite()`, `LifelongPlanningAStar()`
+- [x] Part 7: `YenAlgorithm()`, `EppsteinAlgorithm()`
+- [x] Part 11: `RapidlyExploringRandomTree()`, `RRTStar()`, `ProbabilisticRoadMap()`
+- [x] Part 16: `MonteCarloTreeSearch()`, `AntColonyOptimization()`
+- [x] [판단] Part 13(`OSPF`, `RIP`, `BGPPathSelection`) 등 외부 시스템 의존 항목은 실제 구현이 아니라 **축약 시뮬레이션**으로 충분
 
 ### B-5. Set.md (59/102, 57%) — Phase 0-1 완료 후 진행
 - 자리표시 항목: `IsSuperset`, `LinkedSet`, `UnionByRank`, `PathCompression`, `ConnectedComponents`, `CombinationWithReplacement`, `Backtracking`, `BitMaskEnumeration`, `MeetInTheMiddle`, `SubsetSum`, `KnapsackSubset`, `BinaryRelation`, `EquivalenceRelation`, `Partition`, `EquivalenceClass`, `QuotientSet`, `Distinct`, `Projection`, `Selection`, `Join`, `GroupBy`, `DuplicateElimination`, `PostingList`, `JaccardSimilarity`, `MinHash`, `LocalitySensitiveHashing`, `FeatureSet`, `VocabularySet`, `CandidateSet`, `ConstraintSet`, `BloomFilter`~`QuotientFilter`, `ConcurrentSet`~`LearnedSetIndex`, `DynamicConnectivity`, 부록 해설
-- [ ] [확정] `UnionByRank/PathCompression/ConnectedComponents`는 Graph.md Part 8이 정본(실구현 있음)이므로 Set.md는 집합 관점의 링크형 요약(15줄 이내 + `→ 정본`). `BloomFilter` 계열은 AdvancedDataStructures.md Part 3이 정본, `MinHash/LocalitySensitiveHashing`은 Hash.md Part 14가 정본, `SkipListSet`은 List.md Part 10이 정본. 나머지 자리표시 항목(`Join`, `GroupBy`, `SubsetSum` 등)은 Set.md에서 직접 구현.
+- [x] [확정] `UnionByRank/PathCompression/ConnectedComponents`는 Graph.md Part 8이 정본(실구현 있음)이므로 Set.md는 집합 관점의 링크형 요약(15줄 이내 + `→ 정본`). `BloomFilter` 계열은 AdvancedDataStructures.md Part 3이 정본, `MinHash/LocalitySensitiveHashing`은 Hash.md Part 14가 정본, `SkipListSet`은 List.md Part 10이 정본. 나머지 자리표시 항목(`Join`, `GroupBy`, `SubsetSum` 등)은 Set.md에서 직접 구현.
 
 ### B-6. Tree.md (38/91, 41%) — 대부분 Part 11~16
-- [ ] Part 7: `RBDelete()`, `FixViolation()`
-- [ ] Part 9~10: `RadixTree()`, `SuffixTree()`, `PatriciaTrie()`
-- [ ] Part 11~12: `KDTree()`, `QuadTree()`, `Octree()`, `BSPTree()`, `RangeQuery()`, `LazyPropagation()`, `RangeUpdate()`
-- [ ] Part 13: `BPlusTree()`, `SplayTree()`, `Treap()`, `CartesianTree()`, `ScapegoatTree()`
-- [ ] Part 14~16: `PersistentTree()`, `ImmutableTree()`, `FingerTree()`, `RootingTree()`, `TreeDP()`, `HeavyLightDecomposition()`, `CentroidDecomposition()`, `BinaryLifting()`, `EulerTourTechnique()`, `ExpressionTree()`, `SyntaxTree()`, `ParseTree()`, `DecisionTree()`, `MerkleTree()`, `IntervalTree()`, `RopeTree()`, `RTree()`, `VanEmdeBoasTree()`
-- [ ] 부록 3개 (`트리 순회의 재귀와 반복 구현`, `Binary Tree vs BST`, `Segment Tree vs Fenwick Tree`)
-- [ ] [확정] `HeavyLightDecomposition`, `CentroidDecomposition`, `EulerTour`는 Tree.md가 정본이고 Graph.md는 링크형 요약(`EulerTour`는 양쪽 모두 실구현이므로 유지하고 상호 링크). `RopeTree`는 String.md Part 4, `FingerTree/PersistentTree`는 AdvancedDataStructures.md Part 1·4가 정본이므로 Tree.md는 링크형 요약. 구간·공간·균형 트리는 Tree.md가 정본이고 AdvancedDataStructures.md가 링크형 요약(섹션 3 표).
+- [x] Part 7: `RBDelete()`, `FixViolation()`
+- [x] Part 9~10: `RadixTree()`, `SuffixTree()`, `PatriciaTrie()`
+- [x] Part 11~12: `KDTree()`, `QuadTree()`, `Octree()`, `BSPTree()`, `RangeQuery()`, `LazyPropagation()`, `RangeUpdate()`
+- [x] Part 13: `BPlusTree()`, `SplayTree()`, `Treap()`, `CartesianTree()`, `ScapegoatTree()`
+- [x] Part 14~16: `PersistentTree()`, `ImmutableTree()`, `FingerTree()`, `RootingTree()`, `TreeDP()`, `HeavyLightDecomposition()`, `CentroidDecomposition()`, `BinaryLifting()`, `EulerTourTechnique()`, `ExpressionTree()`, `SyntaxTree()`, `ParseTree()`, `DecisionTree()`, `MerkleTree()`, `IntervalTree()`, `RopeTree()`, `RTree()`, `VanEmdeBoasTree()`
+- [x] 부록 3개 (`트리 순회의 재귀와 반복 구현`, `Binary Tree vs BST`, `Segment Tree vs Fenwick Tree`)
+- [x] [확정] `HeavyLightDecomposition`, `CentroidDecomposition`, `EulerTour`는 Tree.md가 정본이고 Graph.md는 링크형 요약(`EulerTour`는 양쪽 모두 실구현이므로 유지하고 상호 링크). `RopeTree`는 String.md Part 4, `FingerTree/PersistentTree`는 AdvancedDataStructures.md Part 1·4가 정본이므로 Tree.md는 링크형 요약. 구간·공간·균형 트리는 Tree.md가 정본이고 AdvancedDataStructures.md가 링크형 요약(섹션 3 표).
 
 ### B-7. Graph.md (15/78), List.md (22/78), Queue.md (4/53)
-- [ ] **Graph.md**: `AStar()`, `JumpPointSearch()`, `Johnson()`, `GreedyBestFirstSearch()`, `ThetaStar()`, `PushRelabel()`, `MinCostMaxFlow()`, `BlossomAlgorithm()`, `Gabow()`, `HeavyLightDecomposition()`, `CentroidDecomposition()`, 해설 `BFS vs DFS`, `DAG가 중요한 이유`, `Prim vs Kruskal`, `Union-Find 시간복잡도`
-- [ ] **List.md**: `SentinelNode()`, `XORLinkedList()`, `Iterator()`, `Free()`, `Zip()`, `SkipList()`, `Rope()`, `UnrolledLinkedList()`, `GapBuffer()`, `PieceTable()`, `FingerTree()`, `PersistentList()`, `ImmutableList()`, 부록 해설 9개
-- [ ] **Queue.md**: `CircularBuffer()`, `MichaelScottQueue()`, `PersistentQueue()`, `ImmutableQueue()`
-- [ ] [확정] PathFinding.md ↔ Graph.md 겹침은 성격별로 나눔: 휴리스틱 탐색(`AStar/JumpPointSearch/ThetaStar/GreedyBestFirstSearch`)은 PathFinding.md가 정본, 최단 경로·일반 탐색(`Johnson`, `SPFA`, `BidirectionalSearch`, `IDAStar` 등)은 Graph.md가 정본. 비정본 쪽은 링크형 요약.
-- [ ] [확정] List.md의 `SkipList` 정본, `Rope/GapBuffer/PieceTable`은 String.md Part 4가 정본(List.md는 링크형 요약), `FingerTree/PersistentList/ImmutableList`는 AdvancedDataStructures.md가 정본(List.md는 링크형 요약)
+- [x] **Graph.md**: `AStar()`, `JumpPointSearch()`, `Johnson()`, `GreedyBestFirstSearch()`, `ThetaStar()`, `PushRelabel()`, `MinCostMaxFlow()`, `BlossomAlgorithm()`, `Gabow()`, `HeavyLightDecomposition()`, `CentroidDecomposition()`, 해설 `BFS vs DFS`, `DAG가 중요한 이유`, `Prim vs Kruskal`, `Union-Find 시간복잡도`
+- [x] **List.md**: `SentinelNode()`, `XORLinkedList()`, `Iterator()`, `Free()`, `Zip()`, `SkipList()`, `Rope()`, `UnrolledLinkedList()`, `GapBuffer()`, `PieceTable()`, `FingerTree()`, `PersistentList()`, `ImmutableList()`, 부록 해설 9개
+- [x] **Queue.md**: `CircularBuffer()`, `MichaelScottQueue()`, `PersistentQueue()`, `ImmutableQueue()`
+- [x] [확정] PathFinding.md ↔ Graph.md 겹침은 성격별로 나눔: 휴리스틱 탐색(`AStar/JumpPointSearch/ThetaStar/GreedyBestFirstSearch`)은 PathFinding.md가 정본, 최단 경로·일반 탐색(`Johnson`, `SPFA`, `BidirectionalSearch`, `IDAStar` 등)은 Graph.md가 정본. 비정본 쪽은 링크형 요약.
+- [x] [확정] List.md의 `SkipList` 정본, `Rope/GapBuffer/PieceTable`은 String.md Part 4가 정본(List.md는 링크형 요약), `FingerTree/PersistentList/ImmutableList`는 AdvancedDataStructures.md가 정본(List.md는 링크형 요약)
 
 ---
 
@@ -315,25 +389,25 @@
 ### D-1. 복잡도 표기 [실측]
 - Memory.md: 복잡도 표기 **0건**
 - AdvancedDataStructures.md(111/112), Hash.md(19/19), String.md(14/14), PathFinding.md(95/102): `// Time Complexity: O(1)` **템플릿 복사**로 보임. 실제 복잡도와 다르므로 오해를 부를 수 있음.
-- [ ] 실구현(Phase B) 시 실제 복잡도로 교체. 구현 전까지는 [판단] 틀린 값을 두기보다 `TBD`로 표시하는 편이 안전.
+- [x] 실구현(Phase B) 시 실제 복잡도로 교체. 구현 전까지는 [판단] 틀린 값을 두기보다 `TBD`로 표시하는 편이 안전.
 
 ### D-2. 문서화
-- [ ] 통합 README.md 구성: 전체 자료구조 카테고리별 Index 페이지 (현재 README는 저장소 철학과 특색 메모만 있음)
-- [ ] 상호 참조: 섹션 3의 정본 표에 있는 모든 "링크형 요약" 항목에 `→ 정본: X.md Part N` 문구 추가 (Graph.md ↔ PathFinding.md, Tree.md ↔ AdvancedDataStructures.md, Tree.md ↔ Queue.md(힙), Set.md ↔ Graph.md(Union-Find) ↔ AdvancedDataStructures.md(Bloom Filter) 등)
-- [ ] Mermaid 다이어그램: Red-Black Tree 회전, 해시 충돌 해결, 그래프 BFS/DFS 과정
+- [x] 통합 README.md 구성: 전체 자료구조 카테고리별 Index 페이지 (현재 README는 저장소 철학과 특색 메모만 있음)
+- [x] 상호 참조: 섹션 3의 정본 표에 있는 모든 "링크형 요약" 항목에 `→ 정본: X.md Part N` 문구 추가 (Graph.md ↔ PathFinding.md, Tree.md ↔ AdvancedDataStructures.md, Tree.md ↔ Queue.md(힙), Set.md ↔ Graph.md(Union-Find) ↔ AdvancedDataStructures.md(Bloom Filter) 등)
+- [x] (대체) Mermaid 대신 E-9 의 ASCII 그림 + 골든 단언(회전 전후, 해시 버킷, BFS 층, DFS 구간 막대 …)
 
 ### D-3. 자동 검증 [판단]
 `audit_result.txt`는 수동 스냅샷이라 이미 현재 상태와 어긋났으므로 스크립트로 대체합니다.
-- [ ] 점검 항목: 헤딩 계층(`#`/`##`/`###`), 빈 코드 블록, 자리표시 코드 비율, 중복 Part·중복 헤딩, 파일 중간 BOM, 인코딩 손상(깨진 한자 연속·U+FFFD)
-- [ ] 코드 블록을 추출해 `g++ -std=c++17`로 컴파일하고 실행해 `assert` 통과 여부 확인 (이번 점검에서는 하지 않음)
-- [ ] 양쪽 모두 실구현인 11개 중복(섹션 3)의 코드가 서로 어긋나지 않는지 비교
-- [ ] `audit_result.txt` 삭제 또는 "과거 스냅샷" 표기
+- [x] 점검 항목: 헤딩 계층(`#`/`##`/`###`), 빈 코드 블록, 자리표시 코드 비율, 중복 Part·중복 헤딩, 파일 중간 BOM, 인코딩 손상(깨진 한자 연속·U+FFFD)
+- [x] 코드 블록을 추출해 `g++ -std=c++17`로 컴파일하고 실행해 `assert` 통과 여부 확인 (이번 점검에서는 하지 않음)
+- [x] 양쪽 모두 실구현인 11개 중복(섹션 3)의 코드가 서로 어긋나지 않는지 비교
+- [x] `audit_result.txt` 삭제 또는 "과거 스냅샷" 표기
 
 ## 🌟 Phase E: 완성도 향상 (4차 개정에서 신규) [실측 + 판단]
 
 Phase B가 "자리표시를 없애는" 일이라면, Phase E는 "남은 코드가 **책의 목적(구조 해설)에 맞게 깊고, 깨끗하고, 어디서나 돌고, 서로 일관된가**"를 끌어올리는 일입니다. 아래 수치는 이번 세션에서 직접 잰 값입니다.
 
-### E-0. 현재 품질 스냅샷 [실측, 2026-10-08]
+### E-0. 품질 스냅샷 [실측, 2026-10-08 — 4차 개정 시점의 이력]
 
 | 지표 | 값 | 해석 |
 |------|----|------|
@@ -348,10 +422,10 @@ Phase B가 "자리표시를 없애는" 일이라면, Phase E는 "남은 코드�
 | 저장소 인프라 | CI 없음, LICENSE·`.gitignore` 없음, `audit_result.txt`는 낡은 수동 스냅샷 | E-5, E-11 |
 
 ### E-1. 위생 패스: 경고 0, 새니타이저 통과 [우선순위 높음]
-- [ ] `tools/audit.py`에 `--strict` 추가: `-Wall -Wextra`로 컴파일해 경고를 실패로 취급, `--san`: `-fsanitize=address,undefined`(+LeakSanitizer)로 실행. 결과는 기존 해시 캐시에 모드별로 저장.
-- [ ] 누수 51개(대부분 `new` 후 `delete` 없음)를 **트리 해제 함수 또는 `unique_ptr`** 로 정리. 새로 쓰는 코드는 처음부터 해제까지 포함(이미 그렇게 작성 중).
-- [ ] 경고 24블록 수정(`misleading-indentation`은 원본 한 줄 `if (...) a; b;` 패턴이라 줄바꿈만으로 해결).
-- [ ] 메모리 레이아웃을 일부러 들여다보는 Memory 항목(`new()`, `TextSegment`, `StackOverflow`, `MemoryLeak`, `ProcessMemory`)은 새니타이저 하에서 의미가 달라지므로 코드 주석에 `// audit: no-sanitize` 표식을 두고 `--san`에서 제외. `ConcurrentGC`는 일반 실행 시간을 재 보고 필요하면 반복 횟수를 줄임.
+- [x] `tools/audit.py`에 `--strict` 추가: `-Wall -Wextra`로 컴파일해 경고를 실패로 취급, `--san`: `-fsanitize=address,undefined`(+LeakSanitizer)로 실행. 결과는 기존 해시 캐시에 모드별로 저장.
+- [x] 누수 51개(대부분 `new` 후 `delete` 없음)를 **트리 해제 함수 또는 `unique_ptr`** 로 정리. 새로 쓰는 코드는 처음부터 해제까지 포함(이미 그렇게 작성 중).
+- [x] 경고 24블록 수정(`misleading-indentation`은 원본 한 줄 `if (...) a; b;` 패턴이라 줄바꿈만으로 해결).
+- [x] 메모리 레이아웃을 일부러 들여다보는 Memory 항목(`new()`, `TextSegment`, `StackOverflow`, `MemoryLeak`, `ProcessMemory`)은 새니타이저 하에서 의미가 달라지므로 코드 주석에 `// audit: no-sanitize` 표식을 두고 `--san`에서 제외. `ConcurrentGC`는 일반 실행 시간을 재 보고 필요하면 반복 횟수를 줄임.
 - 완료 기준: `audit --strict --san` 전 책 0 실패 (표식 제외 항목은 목록으로 공개).
 
 ### E-2. 깊이 보강: STL 래퍼 → 직접 구현 [우선순위 높음, 이번 라운드의 가장 큰 품질 격차]
@@ -362,42 +436,42 @@ Phase B가 "자리표시를 없애는" 일이라면, Phase E는 "남은 코드�
 - 완료 기준: 판별 휴리스틱에 걸리는 블록 0개(의도적으로 STL 사용법을 보이는 "STL 대응" 항목은 `// audit: stl-demo` 표식).
 
 ### E-3. 이식성 [판단]
-- [ ] `tools/audit.py --portable`: `clang++ -std=c++17`와 `g++ -std=c++20 -pedantic` 컴파일을 추가로 시도해 비교(실행은 g++ 기준으로 충분).
-- [ ] GCC 전용 구성요소(`__builtin_popcountll/clzll/ctzll`, `__int128`, `M_PI`, `cbrtl`)를 목록화하고, 이식성 표를 INDEX에 자동 생성. 새 코드에서는 `std::bitset::count`, `<cmath>`의 상수 정의 등 표준 대안이 있는 경우 우선 사용.
-- [ ] POSIX 전용(Memory)은 가드가 모두 있는지 기계 확인(가드 밖의 `sys/`·`unistd.h`·`fork`·`mmap`을 찾는 검사).
+- [x] `tools/audit.py --portable`: `clang++ -std=c++17`와 `g++ -std=c++20 -pedantic` 컴파일을 추가로 시도해 비교(실행은 g++ 기준으로 충분).
+- [x] GCC 전용 구성요소(`__builtin_popcountll/clzll/ctzll`, `__int128`, `M_PI`, `cbrtl`)를 목록화하고, 이식성 표를 INDEX에 자동 생성. 새 코드에서는 `std::bitset::count`, `<cmath>`의 상수 정의 등 표준 대안이 있는 경우 우선 사용.
+- [x] POSIX 전용(Memory)은 가드가 모두 있는지 기계 확인(가드 밖의 `sys/`·`unistd.h`·`fork`·`mmap`을 찾는 검사).
 - 결정 필요(열린 항목 3): **MSVC 지원 범위.** 기본안: GCC/Clang(Windows에서는 MinGW-w64/WSL) 지원을 명시하고, MSVC에서 안 되는 항목은 목록으로 공개.
 
 ### E-4. 결정성 · 시간 예산 · 플레이키 검사 [판단]
-- [ ] 블록당 실행 시간 상한 10초(현행) 유지 + `--time` 보고에서 3초 초과 블록 목록화 → 반복 횟수 조정.
-- [ ] `audit --repeat N`: 스레드를 쓰는 블록(Memory 17, Hash 2)을 N회 반복 실행해 간헐 실패(레이스·타이밍 의존 단언) 탐지. 타이밍 단언은 금지하고 횟수·불변식 단언만 허용.
-- [ ] 난수는 모두 고정 시드(현재 위반 0건)임을 린트 항목으로 고정.
+- [x] 블록당 실행 시간 상한 10초(현행) 유지 + `--time` 보고에서 3초 초과 블록 목록화 → 반복 횟수 조정.
+- [x] `audit --repeat N`: 스레드를 쓰는 블록(Memory 17, Hash 2)을 N회 반복 실행해 간헐 실패(레이스·타이밍 의존 단언) 탐지. 타이밍 단언은 금지하고 횟수·불변식 단언만 허용.
+- [x] 난수는 모두 고정 시드(현재 위반 0건)임을 린트 항목으로 고정.
 
 ### E-5. CI와 도구 [판단]
-- [ ] `.github/workflows/audit.yml`: ubuntu-latest, g++ 설치 상태에서 `python3 -I tools/audit.py --compile --strict`(PR·push), 주 1회 `--san --portable --repeat 3` 스케줄. 해시 캐시를 `actions/cache`로 보존해 변경된 블록만 다시 컴파일.
-- [ ] 도구 자체 테스트: `tools/test_tools.py`(mdedit의 각 지시어 왕복, audit의 파서·플레이스홀더 판정)로 도구가 책 파일을 망가뜨리지 않음을 보장.
-- [ ] 생성 문서의 최신성 검사(E-7)를 같은 워크플로에 포함: 책을 고치고 `INDEX.md`를 갱신하지 않으면 실패.
+- [x] `.github/workflows/audit.yml`: ubuntu-latest, g++ 설치 상태에서 `python3 -I tools/audit.py --compile --strict`(PR·push), 주 1회 `--san --portable --repeat 3` 스케줄. 해시 캐시를 `actions/cache`로 보존해 변경된 블록만 다시 컴파일.
+- [x] 도구 자체 테스트: `tools/test_tools.py`(mdedit의 각 지시어 왕복, audit의 파서·플레이스홀더 판정)로 도구가 책 파일을 망가뜨리지 않음을 보장.
+- [x] 생성 문서의 최신성 검사(E-7)를 같은 워크플로에 포함: 책을 고치고 `INDEX.md`를 갱신하지 않으면 실패.
 
 ### E-6. 링크·중복 무결성 `tools/linkcheck.py` [판단]
-- [ ] 링크형 항목의 `정본은 X.md Part N` 주석을 모두 파싱해 **대상 파일·Part·동명 항목이 실제로 존재하는지** 검사(현재 `where.py`가 수동 조회용).
-- [ ] 섹션 3의 정본 표를 데이터 파일(`tools/canonical.json`)로 옮겨, 비정본 위치에 있는 항목이 링크 주석을 갖추었는지 역방향 검사.
-- [ ] 동명 실구현 55개 중 일반 연산을 제외한 쌍은 `canonical.json`의 `allow-both`(양쪽 모두 실구현 허용: 예 Dijkstra Graph/PathFinding) 또는 `link`로 분류되도록 강제. 분류되지 않은 쌍이 있으면 실패.
-- [ ] 양쪽 실구현 쌍은 **같은 테스트 벡터**를 쓰도록 하고(예: Dijkstra 두 구현이 같은 그래프에서 같은 거리), 서로 다른 결과가 나오는지 `tools/drift.py`가 두 블록을 컴파일해 출력의 `assert`가 아닌 **표준 출력 한 줄**로 비교.
+- [x] 링크형 항목의 `정본은 X.md Part N` 주석을 모두 파싱해 **대상 파일·Part·동명 항목이 실제로 존재하는지** 검사(현재 `where.py`가 수동 조회용).
+- [x] 섹션 3의 정본 표를 데이터 파일(`tools/canonical.json`)로 옮겨, 비정본 위치에 있는 항목이 링크 주석을 갖추었는지 역방향 검사.
+- [x] 동명 실구현 55개 중 일반 연산을 제외한 쌍은 `canonical.json`의 `allow-both`(양쪽 모두 실구현 허용: 예 Dijkstra Graph/PathFinding) 또는 `link`로 분류되도록 강제. 분류되지 않은 쌍이 있으면 실패.
+- [x] 양쪽 실구현 쌍은 **같은 테스트 벡터**를 쓰도록 하고(예: Dijkstra 두 구현이 같은 그래프에서 같은 거리), 서로 다른 결과가 나오는지 `tools/drift.py`가 두 블록을 컴파일해 출력의 `assert`가 아닌 **표준 출력 한 줄**로 비교.
 
 ### E-7. 생성 문서: 색인과 복잡도 치트시트 [판단]
-- [ ] `tools/gen_index.py` → `INDEX.md`: 책별 Part 제목과 항목 목록(`##`), 항목 수, 정본/링크형 구분, 이식성 표시, 이 책에 속한 "동명 항목의 정본 위치". 종이책 목차의 기반이 된다.
-- [ ] 같은 스크립트가 각 블록 끝의 `// Time/Space Complexity` 주석을 모아 `COMPLEXITY.md`(자료구조·연산별 복잡도 표)를 생성.
-- [ ] README 상단에 짧은 "현황" 블록(책 11권, 항목 수, 자리표시 0, 검증 날짜)을 스크립트가 갱신. README의 기존 철학·특색 메모는 건드리지 않는다.
+- [x] `tools/gen_index.py` → `INDEX.md`: 책별 Part 제목과 항목 목록(`##`), 항목 수, 정본/링크형 구분, 이식성 표시, 이 책에 속한 "동명 항목의 정본 위치". 종이책 목차의 기반이 된다.
+- [x] 같은 스크립트가 각 블록 끝의 `// Time/Space Complexity` 주석을 모아 `COMPLEXITY.md`(자료구조·연산별 복잡도 표)를 생성.
+- [x] README 상단에 짧은 "현황" 블록(책 11권, 항목 수, 자리표시 0, 검증 날짜)을 스크립트가 갱신. README의 기존 철학·특색 메모는 건드리지 않는다.
 
 ### E-8. 복잡도 정확성 린트 [판단]
 - 배경: 자리표시에서 복사된 `O(1)` 템플릿과 원본 블록의 값이 실제와 다를 수 있다.
-- [ ] `tools/complexity_lint.py` 휴리스틱: 코드에 이중 반복문·재귀·정렬이 있는데 `Time: O(1)`이면 경고, `std::sort`가 있는데 `O(N)`이면 경고, 공간이 `O(1)`인데 컨테이너를 N개 채우면 경고 → 경고 목록을 사람이 검토해 수정(자동 수정 금지).
-- [ ] 새로 쓴 항목은 이미 구현 기준으로 적었으므로 우선 원본 블록 약 300개가 대상.
+- [x] `tools/complexity_lint.py` 휴리스틱: 코드에 이중 반복문·재귀·정렬이 있는데 `Time: O(1)`이면 경고, `std::sort`가 있는데 `O(N)`이면 경고, 공간이 `O(1)`인데 컨테이너를 N개 채우면 경고 → 경고 목록을 사람이 검토해 수정(자동 수정 금지).
+- [x] 새로 쓴 항목은 이미 구현 기준으로 적었으므로 우선 원본 블록 약 300개가 대상.
 
 ### E-9. 시각화 패스: 이 시리즈의 정체성 [판단]
 - 근거: README의 "구조를 눈으로 이해한다"는 방향. 이미 Hash(시각화 10편)·Memory(레이아웃 출력)는 갖췄지만 Tree·Graph·List·Stack·Queue·PathFinding·Set은 거의 숫자 단언뿐입니다.
-- [ ] 대표 항목 약 40개에 **ASCII 렌더러**를 붙여 단계별 상태를 출력하고, 출력 문자열을 **골든 단언**(`assert(out == "...")`)으로 고정: AVL/레드-블랙 회전 전후, 힙 배열↔트리 대응, B-트리 분할, 스킵 리스트 레벨, 연결 리스트 역방향 회전 단계, 유니온-파인드 숲, BFS 층, A* 격자 경로, 해시 체이닝 버킷 등.
-- [ ] 출력은 결정적이어야 하고(시드 고정, 포인터 값 금지) 폭 80열 이내.
-- [ ] (선택) 마크다운 Mermaid 그림은 해설 본문 몫이므로 이 저장소에서는 만들지 않는다 — README가 `###` 해설을 사람이 쓰도록 정해 둠.
+- [x] 대표 항목 약 40개에 **ASCII 렌더러**를 붙여 단계별 상태를 출력하고, 출력 문자열을 **골든 단언**(`assert(out == "...")`)으로 고정: AVL/레드-블랙 회전 전후, 힙 배열↔트리 대응, B-트리 분할, 스킵 리스트 레벨, 연결 리스트 역방향 회전 단계, 유니온-파인드 숲, BFS 층, A* 격자 경로, 해시 체이닝 버킷 등.
+- [x] 출력은 결정적이어야 하고(시드 고정, 포인터 값 금지) 폭 80열 이내.
+- [x] (선택) 마크다운 Mermaid 그림은 해설 본문 몫이므로 이 저장소에서는 만들지 않는다 — README가 `###` 해설을 사람이 쓰도록 정해 둠.
 
 ### E-10. Tier 3 추가 후보 (선택, Phase B~E 완료 후 예산이 남을 때) [판단]
 채택 기준(Phase C와 동일): ① 실무·교재에서 널리 쓰임 ② 기존 Part에 자연스럽게 들어감 ③ 정확성을 단언으로 검증 가능. 작성 직전에 `tools/where.py`로 중복을 확인한다(예: Tarjan·Kosaraju·HopcroftKarp는 이미 Graph에 있음).
@@ -417,9 +491,9 @@ Phase B가 "자리표시를 없애는" 일이라면, Phase E는 "남은 코드�
 | BiMap, Multiset/Multimap 직접 구현 | Set / Hash | 컨테이너 의미론 |
 
 ### E-11. 저장소 위생 [판단]
-- [ ] `.gitignore`(`*.out`, `a.out`, `__pycache__/`), `tools/README.md`(DSL·감사 사용법), `audit_result.txt`는 삭제하고 `audit` 결과를 `reports/` 대신 CI 아티팩트로 대체.
+- [x] `.gitignore`(`*.out`, `a.out`, `__pycache__/`), `tools/README.md`(DSL·감사 사용법), `audit_result.txt`는 삭제하고 `audit` 결과를 `reports/` 대신 CI 아티팩트로 대체.
 - [ ] LICENSE는 **사용자가 정할 일**이므로 임의로 추가하지 않는다(열린 항목 2).
-- [ ] 헤딩 규칙 유지 검사: Part=`# `, 항목=`## `, 첫 `###`=`대표코드`, 언어=C++ (이미 `audit.py`가 검사).
+- [x] 헤딩 규칙 유지 검사: Part=`# `, 항목=`## `, 첫 `###`=`대표코드`, 언어=C++ (이미 `audit.py`가 검사).
 
 ### E-12. 최종 인수 검사 체크리스트
 1. `python3 -I tools/audit.py --compile --strict --san --portable` 전 책 통과, 자리표시 0, 래퍼 0(표식 제외), 누수 0.
@@ -448,14 +522,15 @@ Phase B가 "자리표시를 없애는" 일이라면, Phase E는 "남은 코드�
 
 ## 📋 남은 열린 항목
 
-이전 판의 결정 필요 항목 5개는 모두 섹션 3에서 확정됐습니다. 남은 것은 다음 두 가지입니다.
+계획서가 다루던 항목은 모두 끝났고, 아래는 **저장소 소유자가 정할 일**이거나 계획 밖의 선택 사항이다.
 
-1. **제안 목차의 검토**: 원본 목차를 모르므로 A-3(Hash), A-4(String), A-5(Memory)의 [판단] 표시 Part는 작업하면서 읽어보고 조정. 원본 `*(2).md`가 발견되면 그 기준으로 교체.
-2. **Set.md 추정 복원 제목**: Phase 0-1의 Part 제목은 역변환으로 추정한 것이므로, 복구 후 한 번 확인.
-3. **MSVC 지원 범위 (Phase E-3)**: 기본안은 GCC/Clang(Windows는 MinGW-w64/WSL)이며 MSVC 비호환 항목은 목록 공개. MSVC까지 지원하려면 `__builtin_*`·`M_PI`·`__int128` 대체 코드를 항목마다 넣어야 해 코드가 길어집니다.
-4. **LICENSE**: 저장소 소유자가 정할 일이라 추가하지 않았습니다.
-5. **파이썬 대응 코드**: README의 최종 책 형태에 "파이썬 들여쓰기 부분을 포함하는 마무리 설명"이 있으나 이는 사람이 쓰는 해설 몫(`###`)으로 보고 자동으로 채우지 않습니다. 필요하면 핵심 항목 약 60개에 검증 가능한 ```python 블록을 추가할 수 있습니다(기본: 하지 않음).
-6. **Part 제목 언어**: ADS Part 1·2·5~15 일부가 영어 제목, 나머지는 한글입니다. 기본: 현상 유지(번역은 INDEX에서만 병기).
+1. **제안 목차의 검토**: 원본 목차를 모르므로 A-3(Hash), A-4(String), A-5(Memory)의 [판단] 표시 Part 는 작업하면서 읽어 본 구성이다. 원본 `*(2).md` 가 발견되면 그 기준으로 조정.
+2. **Set.md 추정 복원 제목**: Phase 0-1 의 Part 제목은 깨진 문자열을 역변환해 추정한 것이므로 한 번 읽어 확인.
+3. **MSVC 지원 범위 (E-3)**: 현재 방침은 GCC/Clang(Windows 는 MinGW-w64/WSL). MSVC 까지 지원하려면 `__builtin_*`·`M_PI`·`__int128` 대체 코드를 항목마다 넣어야 한다.
+4. **LICENSE**: 소유자가 정할 일이라 추가하지 않았다.
+5. **파이썬 대응 코드**: README 의 "파이썬 들여쓰기 부분을 포함하는 마무리 설명" 은 사람이 쓰는 해설 몫(`###`)으로 보고 채우지 않았다. 필요하면 핵심 항목 약 60개에 검증 가능한 ```python 블록을 추가할 수 있다.
+6. **Part 제목 언어**: ADS Part 일부가 영어 제목, 나머지는 한글. 현상 유지(번역은 INDEX 에서만 병기).
+7. **브랜치 정리**: 작업 브랜치(`claude/busy-mendel-mthsyr`)를 기본 브랜치로 합치는 방법과 오래된 브랜치 정리는 소유자가 정한다(PR 은 요청이 있을 때만 만든다).
 
 ---
 
