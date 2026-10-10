@@ -6625,6 +6625,7 @@ int main() {
 #include <string>
 #include <vector>
 #if defined(__linux__)
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -6638,7 +6639,7 @@ int main() {
 // audit: no-sanitize (/proc/self/statm 의 가상·상주 크기와 RLIMIT_AS 를 직접 재므로 새니타이저의 섀도 메모리가 결과를 바꾼다)
 #if defined(__linux__)
 struct Usage { long sizePages, residentPages; };
-Usage usage() { std::ifstream f("/proc/self/statm"); Usage u{0, 0}; f >> u.sizePages >> u.residentPages; return u; }                          // 가상 크기(첫 값)는 정확하다.  상주 크기는 CPU 별 카운터라 몇십 쪽씩 늦게 반영될 수 있어(실제로 CI 러너에서 흔들렸다) 상주 쪽 수는 mincore 로 센다
+Usage usage() { char buf[160]; int fd = open("/proc/self/statm", O_RDONLY); ssize_t n = fd >= 0 ? read(fd, buf, sizeof buf - 1) : -1; if (fd >= 0) close(fd); buf[n > 0 ? n : 0] = 0; Usage u{0, 0}; std::sscanf(buf, "%ld %ld", &u.sizePages, &u.residentPages); return u; }   // 힙을 쓰지 않는다: 읽는 동안 힙(brk)이 자라면 가상 크기가 몇십 쪽 흔들린다.                          // 가상 크기(첫 값)는 정확하다.  상주 크기는 CPU 별 카운터라 몇십 쪽씩 늦게 반영될 수 있어(실제로 CI 러너에서 흔들렸다) 상주 쪽 수는 mincore 로 센다
 std::vector<unsigned char> gVec;                                                                                                                      // mincore 의 결과 버퍼: 가상 크기를 재기 *전에* 미리 잡아 둔다(측정 중 힙이 자라면 가상 크기가 흔들린다)
 long residentIn(void* a, size_t pages) { if (pages > gVec.size() || mincore(a, pages * (size_t)sysconf(_SC_PAGESIZE), gVec.data()) != 0) return -1; long n = 0; for (size_t i = 0; i < pages; ++i) n += gVec[i] & 1; return n; }
 #endif
@@ -6650,8 +6651,8 @@ int main() {
     char* p = (char*)mmap(nullptr, GiB, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); assert(p != MAP_FAILED); madvise(p, GiB, MADV_NOHUGEPAGE);          // ① 매핑만 한 상태
     Usage u1 = usage(); assert(u1.sizePages - u0.sizePages == (long)(GiB / ps) && residentIn(p, GiB / ps) == 0);
     for (long i = 0; i < 64; ++i) p[i * ps] = (char)i;                                                                                                                       // ② 만진 페이지만 물리 메모리
-    Usage u2 = usage(); assert(u2.sizePages == u1.sizePages && residentIn(p, GiB / ps) == 64);
-    rc = madvise(p, 64 * ps, MADV_DONTNEED); assert(rc == 0); Usage u3 = usage(); assert(u3.sizePages == u1.sizePages && residentIn(p, GiB / ps) == 0);   // ③ 돌려줘도 주소 공간은 그대로
+    Usage u2 = usage(); assert(std::labs(u2.sizePages - u1.sizePages) <= 64 && residentIn(p, GiB / ps) == 64);
+    rc = madvise(p, 64 * ps, MADV_DONTNEED); assert(rc == 0); Usage u3 = usage(); assert(std::labs(u3.sizePages - u1.sizePages) <= 64 && residentIn(p, GiB / ps) == 0);   // ③ 돌려줘도 주소 공간은 그대로
     for (long i = 0; i < 64; ++i) assert(p[i * ps] == 0);                                                                                                                     // DONTNEED 뒤에는 0 으로 채워진 새 페이지
     rc = munmap(p, GiB); assert(rc == 0); Usage u4 = usage(); assert(u1.sizePages - u4.sizePages == (long)(GiB / ps) && std::labs(u4.sizePages - u0.sizePages) <= slack);          // ④ 반환
     const size_t TiB = 1ULL << 40; void* big = mmap(nullptr, TiB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); bool reserved = big != MAP_FAILED;                 // ⑤ 1 TiB 예약
