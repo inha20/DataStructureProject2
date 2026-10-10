@@ -6623,6 +6623,7 @@ int main() {
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 #if defined(__linux__)
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -6637,23 +6638,25 @@ int main() {
 // audit: no-sanitize (/proc/self/statm 의 가상·상주 크기와 RLIMIT_AS 를 직접 재므로 새니타이저의 섀도 메모리가 결과를 바꾼다)
 #if defined(__linux__)
 struct Usage { long sizePages, residentPages; };
-Usage usage() { std::ifstream f("/proc/self/statm"); Usage u{0, 0}; f >> u.sizePages >> u.residentPages; return u; }
+Usage usage() { std::ifstream f("/proc/self/statm"); Usage u{0, 0}; f >> u.sizePages >> u.residentPages; return u; }                          // 가상 크기(첫 값)는 정확하다.  상주 크기는 CPU 별 카운터라 몇십 쪽씩 늦게 반영될 수 있어(실제로 CI 러너에서 흔들렸다) 상주 쪽 수는 mincore 로 센다
+std::vector<unsigned char> gVec;                                                                                                                      // mincore 의 결과 버퍼: 가상 크기를 재기 *전에* 미리 잡아 둔다(측정 중 힙이 자라면 가상 크기가 흔들린다)
+long residentIn(void* a, size_t pages) { if (pages > gVec.size() || mincore(a, pages * (size_t)sysconf(_SC_PAGESIZE), gVec.data()) != 0) return -1; long n = 0; for (size_t i = 0; i < pages; ++i) n += gVec[i] & 1; return n; }
 #endif
 
 int main() {
 #if defined(__linux__)
     const long ps = sysconf(_SC_PAGESIZE); struct rlimit stack, as; int rc = getrlimit(RLIMIT_STACK, &stack); assert(rc == 0); rc = getrlimit(RLIMIT_AS, &as); assert(rc == 0); assert(stack.rlim_cur > 0 && stack.rlim_cur <= stack.rlim_max);
-    const size_t GiB = 1ULL << 30; const long slack = 16; Usage u0 = usage();
+    const size_t GiB = 1ULL << 30; const long slack = 16; gVec.assign(GiB / (size_t)ps, 0); { Usage warm = usage(); (void)warm; } Usage u0 = usage();
     char* p = (char*)mmap(nullptr, GiB, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); assert(p != MAP_FAILED); madvise(p, GiB, MADV_NOHUGEPAGE);          // ① 매핑만 한 상태
-    Usage u1 = usage(); assert(u1.sizePages - u0.sizePages == (long)(GiB / ps) && u1.residentPages - u0.residentPages <= slack);
+    Usage u1 = usage(); assert(u1.sizePages - u0.sizePages == (long)(GiB / ps) && residentIn(p, GiB / ps) == 0);
     for (long i = 0; i < 64; ++i) p[i * ps] = (char)i;                                                                                                                       // ② 만진 페이지만 물리 메모리
-    Usage u2 = usage(); assert(u2.sizePages == u1.sizePages && u2.residentPages - u1.residentPages >= 64 && u2.residentPages - u1.residentPages <= 64 + slack);
-    rc = madvise(p, 64 * ps, MADV_DONTNEED); assert(rc == 0); Usage u3 = usage(); assert(u3.sizePages == u1.sizePages && u2.residentPages - u3.residentPages >= 64 - slack && u3.residentPages - u1.residentPages <= slack);   // ③ 돌려줘도 주소 공간은 그대로
+    Usage u2 = usage(); assert(u2.sizePages == u1.sizePages && residentIn(p, GiB / ps) == 64);
+    rc = madvise(p, 64 * ps, MADV_DONTNEED); assert(rc == 0); Usage u3 = usage(); assert(u3.sizePages == u1.sizePages && residentIn(p, GiB / ps) == 0);   // ③ 돌려줘도 주소 공간은 그대로
     for (long i = 0; i < 64; ++i) assert(p[i * ps] == 0);                                                                                                                     // DONTNEED 뒤에는 0 으로 채워진 새 페이지
     rc = munmap(p, GiB); assert(rc == 0); Usage u4 = usage(); assert(u1.sizePages - u4.sizePages == (long)(GiB / ps) && std::labs(u4.sizePages - u0.sizePages) <= slack);          // ④ 반환
     const size_t TiB = 1ULL << 40; void* big = mmap(nullptr, TiB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); bool reserved = big != MAP_FAILED;                 // ⑤ 1 TiB 예약
     if (reserved) { Usage b0 = usage(); rc = mprotect(big, (size_t)ps, PROT_READ | PROT_WRITE); assert(rc == 0); ((char*)big)[0] = 1; assert(((char*)big)[0] == 1); Usage b1 = usage();
-        assert(b1.sizePages - u4.sizePages >= (long)(TiB / ps) - slack && b1.residentPages - b0.residentPages <= 1 + slack); munmap(big, TiB); }
+        (void)b0; assert(b1.sizePages - u4.sizePages >= (long)(TiB / ps) - slack && residentIn(big, 16) == 1); munmap(big, TiB); }
     Usage base = usage(); const rlim_t limit = (rlim_t)base.sizePages * (rlim_t)ps + (192ULL << 20);                                                                           // ⑥ RLIMIT_AS
     std::fflush(stdout); pid_t pid = fork(); if (pid == 0) { struct rlimit lim = {limit, as.rlim_max}; if (setrlimit(RLIMIT_AS, &lim) != 0) _exit(10);
         void* a = mmap(nullptr, 64ULL << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); if (a == MAP_FAILED) _exit(11);
@@ -6663,7 +6666,7 @@ int main() {
       void* anon = mmap(nullptr, 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); uint64_t text = (uint64_t)(void*)&usage, mm = (uint64_t)anon;                           // ⑦ 주소 순서
       assert(heapLo != 0 && stackLo != 0 && text < heapLo && heapLo < mm && mm < stackLo); munmap(anon, 1 << 20); }
     { std::ifstream f("/proc/sys/vm/overcommit_memory"); int mode = -1; if (f >> mode) assert(mode >= 0 && mode <= 2); }                                                              // ⑧ overcommit 정책
-    std::cout << "UserMemory: a 1 GiB mapping raised the virtual size by exactly " << GiB / ps << " pages but the resident size by at most " << slack << "; touching 64 pages raised RSS by 64 and MADV_DONTNEED gave them back; " << (reserved ? "1 TiB was reserved with one page committed; " : "(1 TiB reservation refused here); ") << "RLIMIT_AS made a 256 MiB mapping fail with ENOMEM" << std::endl;
+    std::cout << "UserMemory: a 1 GiB mapping raised the virtual size by exactly " << GiB / ps << " pages but made none resident (mincore); touching 64 pages made exactly 64 resident and MADV_DONTNEED gave them back; " << (reserved ? "1 TiB was reserved with one page committed; " : "(1 TiB reservation refused here); ") << "RLIMIT_AS made a 256 MiB mapping fail with ENOMEM" << std::endl;
 #else
     std::cout << "UserMemory: Linux-only demonstration" << std::endl;
 #endif
