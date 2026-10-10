@@ -1,0 +1,96 @@
+name: audit
+
+# fast:    seconds, no compiler (tools self-tests, structure, links, generated documents).
+# compile: g++ -Wall -Wextra over every code block, cached by block hash so only changed blocks are rebuilt.
+#          Entries that probe the machine itself (`// audit: host-dependent`) are left out here: their result depends on the
+#          runner's kernel settings (THP, core-dump helper, stack handling), not on the code in the book.
+# host:    exactly those entries, never blocking -- the log shows what the runner did, a red job does not fail the run.
+# deep:    weekly or by hand: sanitizers, ThreadSanitizer, clang and C++20 -pedantic, plus three repeats of every
+#          thread-using block to catch flaky tests.
+#
+# One run per push: `push` covers every branch, and `pull_request` is kept only for pull requests from forks (a branch
+# of this repository with an open pull request would otherwise run the whole workflow twice per push, and every red
+# run is an e-mail).  A newer push cancels the older run of the same branch.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -I tools/check_all.py
+
+  compile:
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AUDIT_CACHE: ${{ github.workspace }}/.audit-cache.json
+      AUDIT_TIME_SCALE: '3'     # shared 2-4 vCPU runners are several times slower than a workstation
+      AUDIT_SKIP_HOST: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .audit-cache.json
+          key: audit-cache-${{ github.sha }}
+          restore-keys: audit-cache-
+      - run: python3 -I tools/audit.py --strict --jobs 4
+
+  host:
+    needs: fast
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      AUDIT_CACHE: ${{ github.workspace }}/.audit-cache-host.json
+      AUDIT_TIME_SCALE: '6'
+    steps:
+      - uses: actions/checkout@v4
+      - name: what this runner looks like
+        continue-on-error: true
+        run: |
+          uname -r; nproc; free -m
+          for f in enabled defrag shmem_enabled; do echo "THP $f: $(cat /sys/kernel/mm/transparent_hugepage/$f 2>/dev/null)"; done
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"; ulimit -a
+      - run: python3 -I tools/audit.py --strict --host --jobs 1
+
+  deep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      AUDIT_CACHE: ${{ github.workspace }}/.audit-cache-deep.json
+      AUDIT_TIME_SCALE: '3'
+      AUDIT_SKIP_HOST: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      - uses: actions/cache@v4
+        with:
+          path: .audit-cache-deep.json
+          key: audit-cache-deep-${{ github.sha }}
+          restore-keys: audit-cache-deep-
+      - run: python3 -I tools/audit.py --strict --san --tsan --portable --time --jobs 4
+      - run: python3 -I tools/audit.py --strict --repeat 3 --jobs 4
+      - name: machine-probing entries under sanitizers and clang (informational)
+        continue-on-error: true
+        env:
+          AUDIT_SKIP_HOST: '0'
+          AUDIT_TIME_SCALE: '6'
+        run: python3 -I tools/audit.py --strict --san --portable --host --jobs 1

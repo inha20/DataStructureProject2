@@ -1,0 +1,392 @@
+{
+ "_doc": "동명 항목의 분류표. linkcheck.py 가 읽는다.  generic=여러 자료구조에 공통인 일반 연산(검사 제외), homonym=이름만 같고 다른 개념, variant=같은 구조의 다른 관점(서로 상대 위치를 언급해야 함, 값은 기준이 되는 파일), link=정본이 한 곳이고 나머지는 '정본은 File.md Part N' 주석을 가진 링크형 요약 ([파일, Part] 또는 [파일, Part, 정본 쪽 표제] )",
+ "generic": [
+  "Clear",
+  "Copy",
+  "Delete",
+  "Filter",
+  "Insert",
+  "IsEmpty",
+  "IsFull",
+  "Iterator",
+  "Map",
+  "Peek",
+  "PopBack",
+  "PopFront",
+  "PushBack",
+  "PushFront",
+  "Reduce",
+  "Resize",
+  "Reverse",
+  "Search",
+  "Size"
+ ],
+ "homonym": {
+  "Degree": "Graph.md 는 정점의 차수, Tree.md 는 노드의 자식 수",
+  "DetectCycle": "Graph.md 는 그래프의 사이클, List.md 는 연결 리스트의 사이클(Floyd/Brent)",
+  "EulerTour": "Graph.md 는 오일러 경로·회로(Hierholzer), Tree.md 는 트리를 한 바퀴 도는 방문 열"
+ },
+ "variant": {
+  "FenwickTree": "Tree.md",
+  "SegmentTree": "Tree.md",
+  "RadixTree": "Tree.md"
+ },
+ "link": {
+  "AStar": [
+   "PathFinding.md",
+   4
+  ],
+  "BPlusTree": [
+   "Tree.md",
+   13
+  ],
+  "BTree": [
+   "Tree.md",
+   13
+  ],
+  "BellmanFord": [
+   "Graph.md",
+   9
+  ],
+  "BidirectionalSearch": [
+   "Graph.md",
+   10
+  ],
+  "BloomFilter": [
+   "AdvancedDataStructures.md",
+   3
+  ],
+  "BreadthFirstSearch": [
+   "Graph.md",
+   3
+  ],
+  "BuddyAllocator": [
+   "Memory.md",
+   6
+  ],
+  "BuildHeap": [
+   "Queue.md",
+   5
+  ],
+  "CentroidDecomposition": [
+   "Tree.md",
+   15
+  ],
+  "Chord": [
+   "Hash.md",
+   7
+  ],
+  "CompareAndSwap": [
+   "Memory.md",
+   11
+  ],
+  "ConcurrentHashMap": [
+   "Hash.md",
+   12
+  ],
+  "ConnectedComponents": [
+   "Graph.md",
+   4
+  ],
+  "ConsistentHashing": [
+   "Hash.md",
+   7
+  ],
+  "CountMinSketch": [
+   "AdvancedDataStructures.md",
+   3
+  ],
+  "CountingBloomFilter": [
+   "AdvancedDataStructures.md",
+   3
+  ],
+  "CuckooFilter": [
+   "AdvancedDataStructures.md",
+   3
+  ],
+  "DepthFirstSearch": [
+   "Graph.md",
+   3
+  ],
+  "Dijkstra": [
+   "Graph.md",
+   9
+  ],
+  "Dijkstra vs A*": [
+   "PathFinding.md",
+   0
+  ],
+  "FMIndex": [
+   "String.md",
+   9
+  ],
+  "FindSet": [
+   "Graph.md",
+   8
+  ],
+  "FingerTree": [
+   "AdvancedDataStructures.md",
+   4
+  ],
+  "FloydWarshall": [
+   "Graph.md",
+   9
+  ],
+  "GapBuffer": [
+   "String.md",
+   4
+  ],
+  "GreedyBestFirstSearch": [
+   "PathFinding.md",
+   4
+  ],
+  "HashIndex": [
+   "Hash.md",
+   9
+  ],
+  "HeapSort": [
+   "Queue.md",
+   5
+  ],
+  "Heapify": [
+   "Queue.md",
+   5
+  ],
+  "HeavyLightDecomposition": [
+   "Tree.md",
+   15
+  ],
+  "IDAStar": [
+   "Graph.md",
+   10
+  ],
+  "IntervalTree": [
+   "Tree.md",
+   16
+  ],
+  "InvertedIndex": [
+   "String.md",
+   15
+  ],
+  "IterativeDFS": [
+   "Graph.md",
+   3
+  ],
+  "Johnson": [
+   "Graph.md",
+   9
+  ],
+  "JumpPointSearch": [
+   "PathFinding.md",
+   5
+  ],
+  "KDTree": [
+   "Tree.md",
+   11
+  ],
+  "Kademlia": [
+   "Hash.md",
+   7
+  ],
+  "LazyPropagation": [
+   "Tree.md",
+   12
+  ],
+  "LearnedHash": [
+   "Hash.md",
+   15
+  ],
+  "LocalitySensitiveHashing": [
+   "Hash.md",
+   14
+  ],
+  "LockFreeQueue": [
+   "Queue.md",
+   10
+  ],
+  "LockFreeStack": [
+   "Stack.md",
+   9
+  ],
+  "MakeSet": [
+   "Graph.md",
+   8
+  ],
+  "MazeSolver": [
+   "Stack.md",
+   5
+  ],
+  "MerkleTree": [
+   "Tree.md",
+   16
+  ],
+  "MinHash": [
+   "Hash.md",
+   14
+  ],
+  "MultiSourceBFS": [
+   "Queue.md",
+   6
+  ],
+  "Octree": [
+   "Tree.md",
+   11
+  ],
+  "PageTable": [
+   "Memory.md",
+   9
+  ],
+  "PathCompression": [
+   "Graph.md",
+   8
+  ],
+  "PatriciaTrie": [
+   "Tree.md",
+   10
+  ],
+  "PersistentList": [
+   "AdvancedDataStructures.md",
+   1
+  ],
+  "PersistentQueue": [
+   "AdvancedDataStructures.md",
+   1
+  ],
+  "PersistentStack": [
+   "Stack.md",
+   10
+  ],
+  "PieceTable": [
+   "String.md",
+   4
+  ],
+  "PolynomialRollingHash": [
+   "Hash.md",
+   5
+  ],
+  "QuadTree": [
+   "Tree.md",
+   11
+  ],
+  "QuotientFilter": [
+   "AdvancedDataStructures.md",
+   3
+  ],
+  "RTree": [
+   "Tree.md",
+   16
+  ],
+  "RabinFingerprint": [
+   "Hash.md",
+   5
+  ],
+  "Rope": [
+   "String.md",
+   4
+  ],
+  "SPFA": [
+   "Graph.md",
+   9
+  ],
+  "ScapegoatTree": [
+   "Tree.md",
+   13
+  ],
+  "SkipList": [
+   "List.md",
+   10
+  ],
+  "SkipListSet": [
+   "List.md",
+   10,
+   "SkipList"
+  ],
+  "SlabAllocator": [
+   "Memory.md",
+   6
+  ],
+  "SplayTree": [
+   "Tree.md",
+   13
+  ],
+  "StackFrame": [
+   "Stack.md",
+   8
+  ],
+  "StackOverflow": [
+   "Stack.md",
+   10
+  ],
+  "SuffixArray": [
+   "String.md",
+   9
+  ],
+  "SuffixAutomaton": [
+   "String.md",
+   9
+  ],
+  "ThetaStar": [
+   "PathFinding.md",
+   5
+  ],
+  "Treap": [
+   "Tree.md",
+   13
+  ],
+  "UnionByRank": [
+   "Graph.md",
+   8
+  ],
+  "UnionSet": [
+   "Graph.md",
+   8
+  ]
+ },
+ "drift_ok": {
+  "AStar|Graph.md": "Graph 쪽은 휴리스틱 없는 일반 그래프의 상한 (V+E)log V, PathFinding 쪽은 휴리스틱 탐색의 최악 b^d·탐색한 노드 수",
+  "BellmanFord|PathFinding.md": "Graph 는 인접 리스트 저장(V+E)을 포함, PathFinding 은 간선이 암시적인 격자라 O(V)",
+  "BloomFilter|Hash.md": "공간 표기 방식 차이 (m 비트 대 n·log₂(1/p) 로 환산한 값)",
+  "BloomFilter|Set.md": "공간 표기 방식 차이 (m 비트 대 n·log₂(1/p) 로 환산한 값)",
+  "BuddyAllocator|AdvancedDataStructures.md": "같은 O(log n) 의 표기 차이(전체 페이지 수 기준)와 서술형 공간 표기",
+  "CompareAndSwap|AdvancedDataStructures.md": "Memory 쪽은 시험용 배열을 포함한 O(n), ADS 요약은 CAS 한 번의 O(1)",
+  "ConcurrentHashMap|AdvancedDataStructures.md": "ADS 요약은 샤드 수 s 를 공간식에 포함",
+  "ConnectedComponents|Set.md": "접근법 차이: Graph 는 BFS/DFS O(V+E), Set 은 서로소 집합 O((n+m)α(n))",
+  "ConsistentHashing|AdvancedDataStructures.md": "ADS 요약은 가상 노드 수 nv 를 식에 포함",
+  "CountMinSketch|Hash.md": "표기 차이: ADS 는 (ε, δ), Hash 는 d·w (w = ⌈e/ε⌉, d = ⌈ln 1/δ⌉)",
+  "CountingBloomFilter|Set.md": "서술형 공간 표기 차이",
+  "CuckooFilter|Set.md": "서술형 공간 표기 차이",
+  "Dijkstra|PathFinding.md": "Graph 는 인접 리스트 저장(V+E)을 포함, PathFinding 은 간선이 암시적인 격자라 O(V)",
+  "Dijkstra vs A*|Graph.md": "Graph 요약은 확장 한 번의 E log V, PathFinding 정본은 전체 (V+E) log V",
+  "FMIndex|AdvancedDataStructures.md": "서술형 표기 차이 (체크포인트 간격 b, 질의당 비용)",
+  "FindSet|Set.md": "Graph 는 find 한 번의 경로 길이, Set 은 랭크·압축을 합친 분할상환 α(n)",
+  "GapBuffer|AdvancedDataStructures.md": "같은 식의 표기 차이 (gap 대 틈)",
+  "GapBuffer|List.md": "같은 식의 표기 차이 (gap 대 틈)",
+  "HashIndex|AdvancedDataStructures.md": "ADS 요약은 용량 cap 과 버킷 수 b 를 모두 식에 포함",
+  "IntervalTree|AdvancedDataStructures.md": "ADS 요약은 출력 크기 k 를 포함한 질의 한계",
+  "InvertedIndex|Set.md": "String 은 색인 구성, Set 은 질의 포스팅 길이의 합",
+  "Johnson|PathFinding.md": "Graph 쪽은 벨만–포드 항을 따로 적음 O(VE + VE log V) = O(VE log V)",
+  "LearnedHash|AdvancedDataStructures.md": "표본점 수 s 의 표기 차이",
+  "LocalitySensitiveHashing|Set.md": "해시 수 h 대 밴드·행 k 표기",
+  "LockFreeQueue|AdvancedDataStructures.md": "정본은 용량, ADS 요약은 원소 수",
+  "LockFreeStack|AdvancedDataStructures.md": "정본은 노드 풀 크기, ADS 요약은 원소 수",
+  "MazeSolver|PathFinding.md": "Stack/Queue 는 격자 r·c 표기, PathFinding 은 V, E 표기 (V = rc)",
+  "MerkleTree|AdvancedDataStructures.md": "Tree 쪽은 증명 크기 O(log n), ADS 요약은 트리 전체 저장 O(n)",
+  "MultiSourceBFS|PathFinding.md": "Stack/Queue 는 격자 r·c 표기, PathFinding 은 V, E 표기 (V = rc)",
+  "PageTable|AdvancedDataStructures.md": "단계 수 표기 차이 (4 단계 고정 대 레벨 수)와 서술형 공간 표기",
+  "PathCompression|Set.md": "Graph 는 랭크와 함께인 α(n), Set 은 단독 사용 시 분할상환 log n",
+  "PatriciaTrie|AdvancedDataStructures.md": "표기 차이 (키 길이를 비트 수/글자 수로, 키 수 n)",
+  "PieceTable|AdvancedDataStructures.md": "서술형 공간 표기 차이",
+  "PieceTable|List.md": "서술형 공간 표기 차이",
+  "QuotientFilter|Set.md": "Set 요약은 이 책의 개념 모델(런 길이 로그)을, ADS 정본은 실제 구조(클러스터 길이)를 적음",
+  "RTree|AdvancedDataStructures.md": "Tree 는 삽입 O(m log_m n), ADS 요약은 STR 일괄 적재 O(n log n)",
+  "RabinFingerprint|String.md": "Hash 는 사전 계산 표 256 개를 공간에 포함",
+  "Rope|List.md": "List 요약은 균형을 맞추지 않은 로프(연결 O(1), 분할 O(깊이)), String 정본은 균형 로프라 모두 O(log n)",
+  "SPFA|PathFinding.md": "Graph 는 인접 리스트 저장(V+E)을 포함, PathFinding 은 간선이 암시적인 격자라 O(V)",
+  "SlabAllocator|AdvancedDataStructures.md": "Memory 모델은 슬랩 수 선형 탐색, ADS 요약은 실제 커널의 리스트 O(1) 를 적음",
+  "StackFrame|Memory.md": "Stack 은 프레임 크기를 곱해 바이트로, Memory 요약은 프레임 수로 적음",
+  "StackOverflow|Memory.md": "Stack 은 프레임 크기를 곱해 바이트로, Memory 요약은 프레임 수로 적음",
+  "SuffixArray|Tree.md": "각자 코드의 실제 알고리즘: Tree 는 계수 정렬 배가법 O(n log n), String 은 std::sort 배가법 O(n log² n)",
+  "SuffixAutomaton|AdvancedDataStructures.md": "String 은 map 전이(σ 의 로그), ADS 는 배열 전이(공간 nσ)"
+ },
+ "_drift_doc": "drift.py 가 보고한 복잡도 표기 차이를 사람이 검토해 '이름|파일' 별로 사유를 적어 둔 목록.  새 차이가 생기면 검토 후 여기에 사유와 함께 추가한다."
+}
