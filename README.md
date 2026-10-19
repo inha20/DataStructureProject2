@@ -9,6 +9,8 @@
 - 목차와 이식성 표는 [INDEX.md](INDEX.md), 복잡도 모음은 [COMPLEXITY.md](COMPLEXITY.md).
 <!-- status:end -->
 
+> **관련 저장소** - [VacationDataStructure](https://github.com/inha20/VacationDataStructure): 같은 주제(자료구조)를 다루는 저장소로, 설명과 Python 코드를 주차별 노트(01week.md ~ 14 week.md)로 정리한 학습 노트입니다. 이 저장소(DataStructureProject2)는 자료구조를 주제별 책 원고(List.md, Tree.md 등)로 쓰고 C++ 코드를 싣는 책 집필 프로젝트입니다.
+
 저의 생각이 담겨있는, 제가 애정하는 리포지토리인 VacationDataStructure에 이어 DataStructureProject2를 진행합니다.
 
 ------------------- 기존 리포지토리의 README.md ---------------------------------
